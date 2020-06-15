@@ -6,7 +6,7 @@
 mkdir -p MyROMs;
 mkdir -p MyCores;
 
-#wget https://buildbot.libretro.com/nightly/windows/x86_64/redist.7z --directory /tmp;
+wget https://buildbot.libretro.com/nightly/windows/x86_64/redist.7z --directory /tmp;
 
 mkdir -p libretro;
 
