@@ -65,7 +65,8 @@ public:
     static LibretroContext* launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, std::function<void(LibretroContext*)> LoadedCallback);
     FLambdaRunnable* UnrealThreadTask;
 protected:
-    ~LibretroContext();
+    LibretroContext() {}
+    ~LibretroContext() {}
     // UNREAL ENGINE VARIABLES
     
 
@@ -94,8 +95,10 @@ public:
      const uint8_t* g_kbd = NULL;
      struct retro_audio_callback audio_callback = {0};
      func_wrap_t *callback_instance;
+     bool UsingOpenGL = false;
      struct retro_system_av_info av = { 0 };
      std::unordered_map<std::string, std::string> settings;
+     const struct retro_hw_render_context_negotiation_interface* hw_render_context_negotiation = nullptr;
 
      float g_scale = 3;
     bool running = true;

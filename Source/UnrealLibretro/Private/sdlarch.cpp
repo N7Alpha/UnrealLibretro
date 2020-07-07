@@ -28,12 +28,6 @@ REP100(FUNC_WRAP_DEF)
 func_wrap_t func_wrap_table[] = { REP100(FUNC_WRAP_INIT) };
 func_wrap_t* func_wrap_freelist = &func_wrap_table[99];
 
-
-LibretroContext::~LibretroContext() {
-    running = false;
-    // UniquePtrs in header implicitly deleted
-}
-
 /*FString FormatErrorMessage(FString FormatString,...) {
     
 }*/
@@ -156,9 +150,9 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
         check(success);
     }
 
-#if DEBUG_OPENGL == 1
+#if DEBUG_OPENGL
     GLint opengl_flags; 
-    glGetIntegerv(GL_CONTEXT_FLAGS, &opengl_flags); // @todo REMOVE THIS
+    glGetIntegerv(GL_CONTEXT_FLAGS, &opengl_flags);
     if (GLAD_GL_VERSION_4_3) {
         if (opengl_flags & GL_CONTEXT_FLAG_DEBUG_BIT)
         {
@@ -355,19 +349,21 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 		g_video.clip_w = width;
 	}
 
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-	glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
-
-	if (pitch != g_video.pitch) {
-		g_video.pitch = pitch;
-		glPixelStorei(GL_UNPACK_ROW_LENGTH, g_video.pitch / g_video.bpp);
-	}
+	
 
     if (data && data != RETRO_HW_FRAME_BUFFER_VALID) {
         check(g_video.pixfmt == GL_UNSIGNED_SHORT_5_6_5);
         Update16BitTexture(data, width, height, pitch);
     }
     else {
+        check(UsingOpenGL);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
+        if (pitch != g_video.pitch) {
+            g_video.pitch = pitch;
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, g_video.pitch / g_video.bpp);
+        }
+
         Update32BitTexture(width, height);
     }
 }
@@ -495,6 +491,7 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
         hw->get_current_framebuffer = callback_instance->c_get_current_framebuffer;
         hw->get_proc_address = (retro_hw_get_proc_address_t)SDL_GL_GetProcAddress;
         g_video.hw = *hw;
+        UsingOpenGL = true;
         return true;
     }
     case RETRO_ENVIRONMENT_SET_FRAME_TIME_CALLBACK: {
@@ -531,6 +528,30 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
 
         return false;
     }
+    case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS: {
+        auto input_descriptor = (const struct retro_input_descriptor*)data;
+
+        do {
+            UE_LOG(LogTemp, Warning, TEXT("Button Found: %s"), ANSI_TO_TCHAR(input_descriptor->description));
+        } while ((++input_descriptor)->description);
+
+        return true;
+    } 
+    case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER: {
+        unsigned* library = (unsigned*)data;
+        *library = RETRO_HW_CONTEXT_OPENGL_CORE;
+        return true;
+    }
+    case RETRO_ENVIRONMENT_SET_HW_SHARED_CONTEXT: {
+        return true;
+    }
+    case RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE: {
+        const struct retro_hw_render_context_negotiation_interface* iface =
+            (const struct retro_hw_render_context_negotiation_interface*)data;
+
+        hw_render_context_negotiation = iface;
+        return true;
+    }
 	default:
 		core_log(RETRO_LOG_WARN, "Unhandled env #%u", cmd);
 		return false;
@@ -551,7 +572,7 @@ int16_t LibretroContext::core_input_state(unsigned port, unsigned device, unsign
 
     switch (device) {
         case RETRO_DEVICE_ANALOG:   
-            check(index < 2); // "I haven't implemented Triggers and other analog controls yet"
+            //check(index < 2); // "I haven't implemented Triggers and other analog controls yet"
             return analog[id][index];
         case RETRO_DEVICE_JOYPAD:   return g_joy[id];
         default:                    return 0;
@@ -662,13 +683,21 @@ void LibretroContext::core_load_game(const char* filename) {
 
     g_retro.retro_get_system_av_info(&av);
 
-    video_configure(&av.geometry);
+
+    if (UsingOpenGL) {
+        video_configure(&av.geometry);
+    }
 
     { // Unreal Resource init
         auto RenderInitTask = FPlatformProcess::GetSynchEventFromPool();
         auto GameInitTask = FFunctionGraphTask::CreateAndDispatchWhenReady([=]{
-            // Make sure the game objects haven't been deallocated
-            if (!UnrealSoundBuffer.IsValid() || !UnrealRenderTarget.IsValid()) { RenderInitTask->Trigger(); return; }
+            // Make sure the game objects haven't been invalidated
+            if (!UnrealSoundBuffer.IsValid() || !UnrealRenderTarget.IsValid())
+            { 
+                running = false;
+                RenderInitTask->Trigger();
+                return; 
+            }
 
             //  Video Init
 
@@ -727,9 +756,12 @@ void LibretroContext::core_load_game(const char* filename) {
     SDL_RWclose(file);
 
     // Now that we have the system info, set the window title.
-    char window_title[255];
-    snprintf(window_title, sizeof(window_title), "sdlarch %s %s", system.library_name, system.library_version);
-    SDL_SetWindowTitle(g_win, window_title);
+    if (UsingOpenGL) {
+        char window_title[255];
+        snprintf(window_title, sizeof(window_title), "sdlarch %s %s", system.library_name, system.library_version);
+        SDL_SetWindowTitle(g_win, window_title);
+    }
+    
 }
 
 /**
@@ -757,10 +789,6 @@ void LibretroContext::core_unload() {
 std::array<char, 260> LibretroContext::save_directory;
 std::array<char, 260> LibretroContext::system_directory;
 
-/*
-The LibretroContext created will control some aspects of the RenderTarget and SoundEmitter. Specifically configuration parameters like the pixel type, resolution for the RenderTarget. As well as whether the AudioComponent is playing or paused
-WARNING: You cannot release RenderTarget or SoundEmitter until you destruct the LibretroContext given to you
-*/
 LibretroContext* LibretroContext::launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, std::function<void(LibretroContext*)> LoadedCallback) {
 
     
@@ -783,17 +811,17 @@ LibretroContext* LibretroContext::launch(FString core, FString game, UTextureRen
         MemberStaticsInitialized = true;
     }
 
-    static const uint32 MAX_CORES = 100;
-    static const uint32 MAX_INSTANCES = 8*8;
+    static const uint32 MAX_INSTANCES = 100;
+    static const uint32 MAX_INSTANCES_PER_CORE = 8*8;
     static FCriticalSection MultipleDLLInstanceHandlingLock;
-    static TMap<FString, TBitArray<TInlineAllocator<MAX_INSTANCES/8>>> LoadedCoreInstances; // I don't know how important it is in unreal not to frag the heap, but I may as well take precaution
-
+    static TMap<FString, TBitArray<TInlineAllocator<MAX_INSTANCES_PER_CORE/8>>> PerCoreAllocatedInstances;
+    static TBitArray<TInlineAllocator<(MAX_INSTANCES / 8) + 1>> AllocatedInstances(false, MAX_INSTANCES);
     
     // SDL is needed to get OpenGL contexts and windows from the OS in a sane way. I tried looking for an official Unreal way to do it, but I couldn't really find one SDL is so portable though it shouldn't matter
     if (SDL_Init(SDL_INIT_VIDEO) != 0)
         UE_LOG(Libretro, Fatal, TEXT("Failed to initialize SDL"));
 
-    static FThreadSafeCounter ThreadNumber(0);
+
     LibretroContext *l = new LibretroContext();
 
     l->UnrealRenderTarget = MakeWeakObjectPtr(RenderTarget);
@@ -806,27 +834,20 @@ LibretroContext* LibretroContext::launch(FString core, FString game, UTextureRen
     l->UnrealThreadTask = FLambdaRunnable::RunLambdaOnBackGroundThread
     (
         [=]() {
-            auto num = ThreadNumber.Increment(); // @todo make a more clever allocator
-            l->callback_instance = func_wrap_table + num;
-            check(num < MAX_CORES);
-
-            l->g_video.hw.version_major = 4;
-            l->g_video.hw.version_minor = 5;
-            l->g_video.hw.context_type = RETRO_HW_CONTEXT_OPENGL_CORE;
-            l->g_video.hw.context_reset = []() {};
-            l->g_video.hw.context_destroy = []() {};
-
+            
             // Here I check that the same dll isn't loaded twice. If it is you won't obtain a new instance of the dll loaded into memory, instead all variables and function pointers will point to the original loaded dll
             // Luckily you can bypass this limitation by just making copies of that dll and loading those. Which I automate here.
             
             FString InstancedCorePath = core;
-            int32 CoreInstanceNumber = 0;
+            int32 InstanceNumber = 0, CoreInstanceNumber = 0;
             {
                 FScopeLock ScopeLock(&MultipleDLLInstanceHandlingLock);
 
-                auto &CoreInstanceBitArray = LoadedCoreInstances.FindOrAdd(core, TBitArray<TInlineAllocator<MAX_INSTANCES/8>>(false, MAX_INSTANCES));
+                auto &CoreInstanceBitArray = PerCoreAllocatedInstances.FindOrAdd(core, TBitArray<TInlineAllocator<MAX_INSTANCES_PER_CORE/8>>(false, MAX_INSTANCES_PER_CORE));
                 CoreInstanceNumber = CoreInstanceBitArray.FindAndSetFirstZeroBit();
-                check(CoreInstanceNumber != INDEX_NONE);
+                InstanceNumber = AllocatedInstances.FindAndSetFirstZeroBit();
+                l->callback_instance = func_wrap_table + InstanceNumber;
+                check(CoreInstanceNumber != INDEX_NONE || InstanceNumber != INDEX_NONE);
             }
             
             if (CoreInstanceNumber > 0) {
@@ -834,6 +855,12 @@ LibretroContext* LibretroContext::launch(FString core, FString game, UTextureRen
                 bool success = IPlatformFile::GetPlatformPhysical().CopyFile(*InstancedCorePath, *core);
                 check(success || IPlatformFile::GetPlatformPhysical().FileExists(*InstancedCorePath));
             }
+
+            l->g_video.hw.version_major = 4;
+            l->g_video.hw.version_minor = 5;
+            l->g_video.hw.context_type = RETRO_HW_CONTEXT_OPENGL_CORE;
+            l->g_video.hw.context_reset = []() {};
+            l->g_video.hw.context_destroy = []() {};
 
 
             // Loads the dll and its function pointers into g_retro
@@ -879,7 +906,8 @@ LibretroContext* LibretroContext::launch(FString core, FString game, UTextureRen
                     l->audio_callback.callback();
                 }
 
-                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                if (l->UsingOpenGL) { glBindFramebuffer(GL_FRAMEBUFFER, 0); } // @todo: leftover from sdlarch pretty sure this isn't needed remove after testing a few cores without it.
+                
 
                 // @todo My timing solution is a bit adhoc. I'm sure theres probably a better way.
                 // Timing loop
@@ -907,14 +935,16 @@ LibretroContext* LibretroContext::launch(FString core, FString game, UTextureRen
 
             l->core_unload();
             l->video_deinit();
-            SDL_GL_DeleteContext(l->g_ctx);
-            SDL_DestroyWindow(l->g_win); // @todo: In SDLarch's code SDL_Quit was here and that implicitly destroyed some things like windows. So I'm not sure if I'm exhaustively destroying everything that it destroyed yet. In order to fix this you could probably just run SDL_Quit here and step with the debugger to see all the stuff it destroys.
+            if (l->g_ctx) { SDL_GL_DeleteContext(l->g_ctx); }
+            if (l->g_win) { SDL_DestroyWindow(l->g_win); }// @todo: In SDLarch's code SDL_Quit was here and that implicitly destroyed some things like windows. So I'm not sure if I'm exhaustively destroying everything that it destroyed yet. In order to fix this you could probably just run SDL_Quit here and step with the debugger to see all the stuff it destroys.
+            
             l->~LibretroContext();
 
             {
                 FScopeLock scoped_lock(&MultipleDLLInstanceHandlingLock);
 
-                LoadedCoreInstances[core][CoreInstanceNumber] = false;
+                AllocatedInstances[InstanceNumber] = false;
+                PerCoreAllocatedInstances[core][CoreInstanceNumber] = false;
             }
 
         }
