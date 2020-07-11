@@ -689,60 +689,34 @@ void LibretroContext::core_load_game(const char* filename) {
     }
 
     { // Unreal Resource init
-        auto RenderInitTask = FPlatformProcess::GetSynchEventFromPool();
-        auto GameInitTask = FFunctionGraphTask::CreateAndDispatchWhenReady([=]{
+        auto GameThreadMediaResourceInitTask = FFunctionGraphTask::CreateAndDispatchWhenReady([=]
+        {
             // Make sure the game objects haven't been invalidated
             if (!UnrealSoundBuffer.IsValid() || !UnrealRenderTarget.IsValid())
             { 
                 running = false;
-                RenderInitTask->Trigger();
                 return; 
             }
 
             //  Video Init
-
-            UnrealRenderTarget->SizeX = av.geometry.base_width;
-            UnrealRenderTarget->SizeY = av.geometry.base_height;
-            UnrealRenderTarget->OverrideFormat = PF_B8G8R8A8;
-            UnrealRenderTarget->bForceLinearGamma = false;
-
-            // Release the existing texture resource.
-            UnrealRenderTarget->ReleaseResource();
-
-            //Dedicated servers have no texture internals
-            if (FApp::CanEverRender() && !UnrealRenderTarget->HasAnyFlags(RF_ClassDefaultObject))
-            {
-                // Create a new texture resource.
-                UnrealRenderTarget->Resource = UnrealRenderTarget->CreateResource();
-                if (UnrealRenderTarget->Resource)
+            UnrealRenderTarget->InitCustomFormat(av.geometry.base_width, av.geometry.base_height, PF_B8G8R8A8, false);
+            ENQUEUE_RENDER_COMMAND(InitCommand)
+            (
+                [RenderTargetResource = (FTextureRenderTarget2DResource*)UnrealRenderTarget->GameThread_GetRenderTargetResource() , &MyTextureRHI = TextureRHI](FRHICommandListImmediate& RHICmdList)
                 {
-                    LLM_SCOPE(ELLMTag::Textures);
-                    auto RenderTargetResource = (FTextureRenderTarget2DResource*)UnrealRenderTarget->GameThread_GetRenderTargetResource();
-                    
-                    ENQUEUE_RENDER_COMMAND(InitCommand)(
-                        [RenderTargetResource, &MyTextureRHI = TextureRHI, RenderInitTask](FRHICommandListImmediate& RHICmdList)
-                        {
-                            RenderTargetResource->InitResource();
-                            MyTextureRHI = RenderTargetResource->GetTextureRHI(); // @todo: I'm not entirely sure this is threadsafe because I'm writing from the render thread to my libretro, but I think with the synchronization object it should be.
-                            RenderInitTask->Trigger();
-                        });
+                    MyTextureRHI = RenderTargetResource->GetTextureRHI();
                 }
-            }
+            );
 
              // Audio init
             UnrealSoundBuffer->SetSampleRate(av.timing.sample_rate);
             UnrealSoundBuffer->NumChannels = 2;
             QueuedAudio = MakeShared<TCircularQueue<int32>, ESPMode::ThreadSafe>(UNREAL_LIBRETRO_AUDIO_BUFFER_SIZE);
             UnrealSoundBuffer->QueuedAudio = QueuedAudio;
-            
-            
 
-            }, TStatId(), nullptr, ENamedThreads::GameThread);
+        }, TStatId(), nullptr, ENamedThreads::GameThread);
         
-        FTaskGraphInterface::Get().WaitUntilTaskCompletes(GameInitTask);
-        RenderInitTask->Wait();
-
-        FPlatformProcess::ReturnSynchEventToPool(RenderInitTask);
+        FTaskGraphInterface::Get().WaitUntilTaskCompletes(GameThreadMediaResourceInitTask);
     }
 
     // Let the core know that the audio device has been initialized.
