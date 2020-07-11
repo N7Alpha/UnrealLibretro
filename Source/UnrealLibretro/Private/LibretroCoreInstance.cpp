@@ -17,6 +17,24 @@
 ULibretroCoreInstance::ULibretroCoreInstance()
 {
 	PrimaryComponentTick.bCanEverTick = false;
+
+	ResumeEditor = FEditorDelegates::ResumePIE.AddLambda([this](const bool bIsSimulating)
+		{
+			this->instance->UnrealThreadTask->Thread->Suspend(Paused); // This is buggy replace with optional
+		});
+	PauseEditor = FEditorDelegates::PausePIE.AddLambda([this](const bool bIsSimulating)
+		{
+			this->instance->UnrealThreadTask->Thread->Suspend(true);
+		});
+
+	Controller.InsertDefaulted(0, PortCount);
+	Disconnected.InsertDefaulted(0, PortCount);
+	for (int Port = 0; Port < PortCount; Port++) 
+	{
+		InputMap.Add(NewObject<ULibretroInputComponent>());
+		InputMap[Port]->Port = Port;
+		InputMap[Port]->LibretroCoreInstance = this;
+	}
 }
 
 TMap<FKey, ERetroInput> ULibretroCoreInstance::CombineInputMaps(const TMap<FKey, ERetroInput> &InMap1, const TMap<FKey, ERetroInput> &InMap2) {
@@ -130,22 +148,6 @@ void ULibretroCoreInstance::Pause(bool ShouldPause)
 void ULibretroCoreInstance::BeginPlay()
 {
 	Super::BeginPlay();
-	ResumeEditor = FEditorDelegates::ResumePIE.AddLambda([this](const bool bIsSimulating)
-		{
-		this->instance->UnrealThreadTask->Thread->Suspend(Paused);
-		});
-	PauseEditor  = FEditorDelegates::PausePIE .AddLambda([this](const bool bIsSimulating)
-		{
-		this->instance->UnrealThreadTask->Thread->Suspend(true);
-		});
-
-	Controller  .InsertDefaulted(0, PortCount);
-	Disconnected.InsertDefaulted(0, PortCount);
-	for (int Port = 0; Port < PortCount; Port++) {
-		InputMap.Add(NewObject<ULibretroInputComponent>());
-		InputMap[Port]->Port = Port;
-		InputMap[Port]->LibretroCoreInstance = this;
-	}
 
 	/*if (Scalability::GetQualityLevels().AntiAliasingQuality) {
 		FMessageDialog::Open(EAppMsgType::Ok, FText::AsCultureInvariant("You have temporal anti-aliasing enabled. The emulated games will look will look blurry and laggy if you leave this enabled. If you happen to know how to fix this let me know. I tried enabling responsive AA on the material to prevent this, but that didn't work."));
