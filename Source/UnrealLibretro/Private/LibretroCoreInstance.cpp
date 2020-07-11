@@ -63,12 +63,11 @@ void ULibretroCoreInstance::ConnectController(APlayerController* PlayerControlle
 void ULibretroCoreInstance::DisconnectController(int Port) {
 	check(Port >= 0 && Port < PortCount);
 
-	InputMap[Port]->KeyBindings.Empty();
 	auto PlayerController = Controller[Port];
 
 	if (PlayerController.IsValid())
 	{
-		TInlineComponentArray<ULibretroInputComponent*> InputTypes(GetOwner());
+		InputMap[Port]->KeyBindings.Empty();
 
 		PlayerController->PopInputComponent(InputMap[Port]);
 
