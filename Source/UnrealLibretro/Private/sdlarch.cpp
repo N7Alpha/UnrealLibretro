@@ -689,12 +689,14 @@ void LibretroContext::core_load_game(const char* filename) {
     }
 
     { // Unreal Resource init
+        auto RenderInitTask = FPlatformProcess::GetSynchEventFromPool();
         auto GameThreadMediaResourceInitTask = FFunctionGraphTask::CreateAndDispatchWhenReady([=]
         {
             // Make sure the game objects haven't been invalidated
             if (!UnrealSoundBuffer.IsValid() || !UnrealRenderTarget.IsValid())
             { 
                 running = false;
+                RenderInitTask->Trigger();
                 return; 
             }
 
@@ -702,9 +704,10 @@ void LibretroContext::core_load_game(const char* filename) {
             UnrealRenderTarget->InitCustomFormat(av.geometry.base_width, av.geometry.base_height, PF_B8G8R8A8, false);
             ENQUEUE_RENDER_COMMAND(InitCommand)
             (
-                [RenderTargetResource = (FTextureRenderTarget2DResource*)UnrealRenderTarget->GameThread_GetRenderTargetResource() , &MyTextureRHI = TextureRHI](FRHICommandListImmediate& RHICmdList)
+                [RenderTargetResource = (FTextureRenderTarget2DResource*)UnrealRenderTarget->GameThread_GetRenderTargetResource() , &MyTextureRHI = TextureRHI, RenderInitTask](FRHICommandListImmediate& RHICmdList)
                 {
                     MyTextureRHI = RenderTargetResource->GetTextureRHI();
+                    RenderInitTask->Trigger();
                 }
             );
 
@@ -717,6 +720,9 @@ void LibretroContext::core_load_game(const char* filename) {
         }, TStatId(), nullptr, ENamedThreads::GameThread);
         
         FTaskGraphInterface::Get().WaitUntilTaskCompletes(GameThreadMediaResourceInitTask);
+
+        RenderInitTask->Wait();
+        FPlatformProcess::ReturnSynchEventToPool(RenderInitTask);
     }
 
     // Let the core know that the audio device has been initialized.
