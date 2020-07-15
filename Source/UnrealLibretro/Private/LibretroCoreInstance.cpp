@@ -17,24 +17,11 @@
 ULibretroCoreInstance::ULibretroCoreInstance()
 {
 	PrimaryComponentTick.bCanEverTick = false;
-
-	ResumeEditor = FEditorDelegates::ResumePIE.AddLambda([this](const bool bIsSimulating)
-		{
-			this->instance->UnrealThreadTask->Thread->Suspend(Paused); // This is buggy replace with optional
-		});
-	PauseEditor = FEditorDelegates::PausePIE.AddLambda([this](const bool bIsSimulating)
-		{
-			this->instance->UnrealThreadTask->Thread->Suspend(true);
-		});
+	bWantsInitializeComponent = true;
 
 	Controller.InsertDefaulted(0, PortCount);
 	Disconnected.InsertDefaulted(0, PortCount);
-	for (int Port = 0; Port < PortCount; Port++) 
-	{
-		InputMap.Add(NewObject<ULibretroInputComponent>());
-		InputMap[Port]->Port = Port;
-		InputMap[Port]->LibretroCoreInstance = this;
-	}
+	InputMap.Reserve(PortCount);
 }
 
 TMap<FKey, ERetroInput> ULibretroCoreInstance::CombineInputMaps(const TMap<FKey, ERetroInput> &InMap1, const TMap<FKey, ERetroInput> &InMap2) {
@@ -143,6 +130,23 @@ void ULibretroCoreInstance::Pause(bool ShouldPause)
 #include "Editor.h"
 #include "Scalability.h"
 
+void ULibretroCoreInstance::InitializeComponent() {
+	ResumeEditor = FEditorDelegates::ResumePIE.AddLambda([this](const bool bIsSimulating)
+		{
+			this->instance->UnrealThreadTask->Thread->Suspend(Paused); // This is buggy replace with optional
+		});
+	PauseEditor = FEditorDelegates::PausePIE.AddLambda([this](const bool bIsSimulating)
+		{
+			this->instance->UnrealThreadTask->Thread->Suspend(true);
+		});
+
+	for (int Port = 0; Port < PortCount; Port++)
+	{
+		InputMap[Port] = (NewObject<ULibretroInputComponent>());
+		InputMap[Port]->Port = Port;
+		InputMap[Port]->LibretroCoreInstance = this;
+	}
+}
 
 void ULibretroCoreInstance::BeginPlay()
 {
