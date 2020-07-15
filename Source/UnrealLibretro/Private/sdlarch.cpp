@@ -308,39 +308,23 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
          });
  }
 
- void LibretroContext::Update16BitTexture(const void* data, unsigned width, unsigned height, unsigned pitch) {
-     auto region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height);
+ struct _1555_color
+ {
+     uint16 R : 5;
+     uint16 G : 5;
+     uint16 B : 5;
+     uint16 A : 1;
+ };
 
-     auto* rgb565_buffer = (FDXTColor565*)data;
-     auto* bgra_buffer = (uint8*)FMemory::Malloc(4 * width * height);
-     uint8 _5_bit_threshold[32] = { 0, 8, 16, 25, 33, 41, 49, 58, 66, 74, 82, 90, 99, 107, 115, 123, 132, 140, 148, 156, 165, 173, 181, 189, 197, 206, 214, 222, 230, 239, 247, 255 };
-     uint8 _6_bit_threshold[64] = { 0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 45, 49, 53, 57, 61, 65, 69, 73, 77, 81, 85, 89, 93, 97, 101, 105, 109, 113, 117, 121, 125, 130, 134, 138, 142, 146, 150, 154, 158, 162, 166, 170, 174, 178, 182, 186, 190, 194, 198, 202, 206, 210, 215, 219, 223, 227, 231, 235, 239, 243, 247, 251, 255 };
-     for (unsigned int y = 0; y < height; y++) {
-         for (unsigned int x = 0; x < width; x++) { // @todo Theres a neat trick you can do instead of using a LUT. https://stackoverflow.com/a/8579650/6872207 There also might be a utility in libretro common you could use.
-             bgra_buffer[4 * (x + y * width)    ] = _5_bit_threshold[rgb565_buffer[x + pitch / 2 * y].B];
-             bgra_buffer[4 * (x + y * width) + 1] = _6_bit_threshold[rgb565_buffer[x + pitch / 2 * y].G];
-             bgra_buffer[4 * (x + y * width) + 2] = _5_bit_threshold[rgb565_buffer[x + pitch / 2 * y].R];
-             bgra_buffer[4 * (x + y * width) + 3] = 255;
-         }
-     }
+ struct _8888_color {
+     uint16 B : 8;
+     uint16 G : 8;
+     uint16 R : 8;
+     uint16 A : 8;
+ };
 
-     UpdateTextureRegions(TextureRHI, 0, 1, region, 4 * width, 4, (uint8*)bgra_buffer);
- }
-
- void LibretroContext::Update32BitTexture(unsigned width, unsigned height) {
-     auto region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height);
-
-     auto* bgra_buffer = (uint8*)FMemory::Malloc(4 * width * height);
-     glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
-     glGetTexImage(GL_TEXTURE_2D,
-         0,
-         g_video.pixtype,
-         g_video.pixfmt,
-         bgra_buffer);
-
-
-     UpdateTextureRegions(TextureRHI, 0, 1, region, 4 * width, 4, (uint8*)bgra_buffer);
- }
+ const auto &_5_to_8_bit = [](uint8 pixel_channel) { return (pixel_channel << 3) | (pixel_channel >> 2); };
+ const auto &_6_to_8_bit = [](uint8 pixel_channel) { return (pixel_channel << 2) | (pixel_channel >> 4); };
 
  void LibretroContext::video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
     if (g_video.clip_w != width || g_video.clip_h != height)
@@ -351,21 +335,88 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 
 	
 
+    auto* bgra_buffer = (_8888_color*)FMemory::Malloc(4 * width * height);
+
+    // if framebuffer is on CPU
     if (data && data != RETRO_HW_FRAME_BUFFER_VALID) {
-        check(g_video.pixfmt == GL_UNSIGNED_SHORT_5_6_5);
-        Update16BitTexture(data, width, height, pitch);
+        auto region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height);
+        
+
+        switch (g_video.pixfmt) {
+            case GL_UNSIGNED_SHORT_5_6_5: {
+                auto* rgb565_buffer = (FDXTColor565*)data;
+                pitch = pitch / sizeof(rgb565_buffer[0]);
+
+                for (unsigned int y = 0; y < height; y++) {
+                    for (unsigned int x = 0; x < width; x++) {
+                        bgra_buffer[x + y * width].B = _5_to_8_bit(rgb565_buffer[x + pitch * y].B);
+                        bgra_buffer[x + y * width].G = _6_to_8_bit(rgb565_buffer[x + pitch * y].G);
+                        bgra_buffer[x + y * width].R = _5_to_8_bit(rgb565_buffer[x + pitch * y].R);
+                        bgra_buffer[x + y * width].A = 255;
+                    }
+                }
+            }
+            break;
+            case GL_UNSIGNED_SHORT_5_5_5_1: {
+                auto* rgba5551_buffer = (_1555_color*)data;
+                pitch = pitch / sizeof(rgba5551_buffer[0]);
+
+                for (unsigned int y = 0; y < height; y++) {
+                    for (unsigned int x = 0; x < width; x++) {
+                        bgra_buffer[x + y * width].B = _5_to_8_bit(rgba5551_buffer[x + pitch * y].B);
+                        bgra_buffer[x + y * width].G = _5_to_8_bit(rgba5551_buffer[x + pitch * y].G);
+                        bgra_buffer[x + y * width].R = _5_to_8_bit(rgba5551_buffer[x + pitch * y].R);
+                        bgra_buffer[x + y * width].A = 255;
+                    }
+                }
+            }
+            break;
+            case GL_UNSIGNED_INT_8_8_8_8_REV: {
+                auto* bgra8888_buffer = (_8888_color*)data;
+                pitch = pitch / sizeof(bgra8888_buffer[0]);
+
+                for (unsigned int y = 0; y < height; y++) {
+                    for (unsigned int x = 0; x < width; x++) {
+                        bgra_buffer[x + y * width].B = bgra8888_buffer[x + pitch * y].B;
+                        bgra_buffer[x + y * width].G = bgra8888_buffer[x + pitch * y].G;
+                        bgra_buffer[x + y * width].R = bgra8888_buffer[x + pitch * y].R;
+                        bgra_buffer[x + y * width].A = 255;
+                    }
+                }
+            }
+            break;
+            default:
+                checkNoEntry();
+        }
     }
-    else {
-        check(UsingOpenGL);
+    //   if  framebuffer is on GPU
+    else if (data == RETRO_HW_FRAME_BUFFER_VALID) {
+        check(UsingOpenGL && g_video.pixfmt == GL_UNSIGNED_INT_8_8_8_8_REV);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
-        if (pitch != g_video.pitch) {
+        if (pitch != g_video.pitch) { // @todo: I should check if pitch is used anywhere else
             g_video.pitch = pitch;
             glPixelStorei(GL_UNPACK_ROW_LENGTH, g_video.pitch / g_video.bpp);
         }
 
-        Update32BitTexture(width, height);
+        
+
+        glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
+        glGetTexImage(GL_TEXTURE_2D,
+            0,
+            g_video.pixtype,
+            g_video.pixfmt,
+            bgra_buffer);
+
+
+        
     }
+    else {
+        // *Duplicate frame*
+    }
+
+    auto region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height);
+    UpdateTextureRegions(TextureRHI, 0, 1, region, 4 * width, 4, (uint8*)bgra_buffer);
 }
 
  void LibretroContext::video_deinit() {
