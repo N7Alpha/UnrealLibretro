@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/InputComponent.h"
-#include "sdlarch.h"
+#include "libretro/libretro.h"
 
 #include "LibretroInputComponent.generated.h"
 
@@ -12,7 +12,11 @@
 #define BindUnrealButtonToLibretro(RetroButton, UnrealButton)			   BindKey    (UnrealButton, IE_Pressed,  this, &ULibretroInputComponent::ButtonPressed <RetroButton>); \
 																		   BindKey    (UnrealButton, IE_Released, this, &ULibretroInputComponent::ButtonReleased<RetroButton>);
 
-struct FLibretroInputState;
+const int PortCount = 4;
+struct FLibretroInputState {
+	unsigned digital[RETRO_DEVICE_ID_JOYPAD_R3 + 1] = { 0 };
+	int16_t  analog[2][2] = { 0 };
+};
 
 // DO NOT REORDER THESE
 UENUM(BlueprintType)
@@ -48,7 +52,7 @@ class UNREALLIBRETRO_API ULibretroInputComponent : public UInputComponent
 {
 	GENERATED_BODY()
 public:
-	void Initialize(FLibretroInputState* InputState, int Port, TFunction<void()> Disconnect);
+	void Initialize(FLibretroInputState* InputState, TFunction<void()> Disconnect);
 
 	void BindKeys(const TMap<FKey, ERetroInput> &ControllerBindings);
 
@@ -59,12 +63,10 @@ public:
 	template<unsigned RetroButton>
 	void ButtonReleased();
 
-	template<unsigned RetroAxis, unsigned RetroDirection>
+	template<unsigned RetroStick, unsigned RetroAxis>
 	void AxisChanged(float Value);
 
 protected:
-	unsigned (*digital)[RETRO_DEVICE_ID_JOYPAD_R3 + 1];
-	int16_t (*analog)[2][2];
 	
 	static TArray<void (ULibretroInputComponent::*)(), TFixedAllocator<(uint32)ERetroInput::DigitalCount>>      ButtonPressedFunctions;
 
@@ -72,7 +74,8 @@ protected:
 
 	static TArray<void (ULibretroInputComponent::*)(float), TFixedAllocator<(uint32)ERetroInput::AnalogCount>>  ButtonAnalog;
 
-	TFunction<void()> DisconnectFromCreator;
+	FLibretroInputState* InputStatePort;
+	TFunction<void()> DisconnectPort;
 	void DisconnectController();
 
 

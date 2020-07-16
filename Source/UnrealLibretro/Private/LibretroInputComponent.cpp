@@ -4,30 +4,29 @@
 #include "LibretroInputComponent.h"
 #include "LibretroCoreInstance.h"
 // Called when the game starts
-void ULibretroInputComponent::Initialize(FLibretroInputState* InputState, int Port, TFunction<void()> Disconnect) {
-	digital = &InputState->digital[Port];
-	analog =  &InputState->analog[Port];
-	DisconnectFromCreator = Disconnect;
+void ULibretroInputComponent::Initialize(FLibretroInputState* InputState, TFunction<void()> Disconnect) {
+	InputStatePort = InputState;
+	DisconnectPort = Disconnect;
 }
 
 template<unsigned RetroButton>
 void ULibretroInputComponent::ButtonPressed() {
-	(*digital)[RetroButton] = true;
+	InputStatePort->digital[RetroButton] = true;
 }
 
 template<unsigned RetroButton>
 void ULibretroInputComponent::ButtonReleased() {
-	(*digital)[RetroButton] = false;
+	InputStatePort->digital[RetroButton] = false;
 }
 
-template<unsigned RetroDirection, unsigned RetroAxis>
+template<unsigned RetroAxis, unsigned RetroStick>
 void ULibretroInputComponent::AxisChanged(float Value) {
-	float coff = RetroDirection && !RetroAxis ? -1 : 1; // Both Axes should be inverted because of Libretro convention however Unreal has a quirk where the Y-Axis is inverted by default for some reason
-	(*analog)[RetroDirection][RetroAxis] = (int16_t)FMath::RoundHalfToEven(coff * 0x7FFF * Value);
+	float coff = RetroAxis == RETRO_DEVICE_ID_ANALOG_Y && RetroStick == RETRO_DEVICE_INDEX_ANALOG_LEFT ? -1 : 1; // Both Y-Axes should be inverted because of Libretro convention however Unreal has a quirk where the Y-Axis of the right stick is inverted by default for some reason
+	InputStatePort->analog[RetroAxis][RetroStick] = (int16_t)FMath::RoundHalfToEven(coff * 0x7FFF * Value);
 }
 
 void ULibretroInputComponent::DisconnectController() {
-	DisconnectFromCreator();
+	DisconnectPort();
 }
 
 TArray<void (ULibretroInputComponent::*)(), TFixedAllocator<(uint32)ERetroInput::DigitalCount>> ULibretroInputComponent::ButtonReleasedFunctions = {

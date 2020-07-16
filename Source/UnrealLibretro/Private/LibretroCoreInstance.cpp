@@ -22,7 +22,7 @@ ULibretroCoreInstance::ULibretroCoreInstance()
 	Controller.InsertDefaulted(0, PortCount);
 	Disconnected.InsertDefaulted(0, PortCount);
 	InputMap.Reserve(PortCount);
-	InputState = MakeShared<FLibretroInputState, ESPMode::ThreadSafe>();
+	InputState = MakeShared<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe>();
 }
 
 TMap<FKey, ERetroInput> ULibretroCoreInstance::CombineInputMaps(const TMap<FKey, ERetroInput> &InMap1, const TMap<FKey, ERetroInput> &InMap2) {
@@ -147,7 +147,7 @@ void ULibretroCoreInstance::InitializeComponent() {
 	for (int Port = 0; Port < PortCount; Port++)
 	{
 		InputMap[Port] = NewObject<ULibretroInputComponent>();
-		InputMap[Port]->Initialize(InputState.Get(), Port, [Port, this]() { this->DisconnectController(Port); });
+		InputMap[Port]->Initialize(&(*InputState)[Port], [Port, this]() { this->DisconnectController(Port); });
 	}
 }
 
