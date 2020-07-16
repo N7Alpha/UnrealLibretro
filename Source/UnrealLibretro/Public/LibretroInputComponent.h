@@ -14,8 +14,8 @@
 
 const int PortCount = 4;
 struct FLibretroInputState {
-	unsigned digital[RETRO_DEVICE_ID_JOYPAD_R3 + 1] = { 0 };
-	int16_t  analog[2][2] = { 0 };
+	TAtomic<unsigned> digital[RETRO_DEVICE_ID_JOYPAD_R3 + 1] = { 0 };
+	TAtomic<int16_t>  analog[2][2] = { 0 };
 };
 
 // DO NOT REORDER THESE
