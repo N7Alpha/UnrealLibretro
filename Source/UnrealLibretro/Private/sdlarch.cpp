@@ -623,8 +623,8 @@ int16_t LibretroContext::core_input_state(unsigned port, unsigned device, unsign
     switch (device) {
         case RETRO_DEVICE_ANALOG:   
             check(index < 2); // "I haven't implemented Triggers and other analog controls yet"
-            return UnrealInputState->analog[port][id][index];
-        case RETRO_DEVICE_JOYPAD:   return UnrealInputState->digital[port][id];
+            return (*UnrealInputState)[port].analog[id][index];
+        case RETRO_DEVICE_JOYPAD:   return (*UnrealInputState)[port].digital[id];
         default:                    return 0;
     }
 }
@@ -816,12 +816,12 @@ void LibretroContext::core_unload() {
         FPlatformProcess::FreeDllHandle(g_retro.handle);
 }
 
-LibretroContext::LibretroContext(TSharedRef<FLibretroInputState, ESPMode::ThreadSafe> InputState) : UnrealInputState(InputState) {}
+LibretroContext::LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState) : UnrealInputState(InputState) {}
 
 std::array<char, 260> LibretroContext::save_directory;
 std::array<char, 260> LibretroContext::system_directory;
 
-LibretroContext* LibretroContext::launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TSharedPtr<FLibretroInputState, ESPMode::ThreadSafe> InputState, std::function<void(LibretroContext*)> LoadedCallback) {
+LibretroContext* LibretroContext::launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, std::function<void(LibretroContext*)> LoadedCallback) {
 
     
     check(IsInGameThread());
