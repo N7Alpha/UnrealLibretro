@@ -40,6 +40,7 @@
 
 UNREALLIBRETRO_API DECLARE_LOG_CATEGORY_EXTERN(Libretro, Log, All);
 
+struct FLibretroInputState;
 
 extern struct func_wrap_t {
     func_wrap_t* next;
@@ -62,10 +63,10 @@ extern struct func_wrap_t {
 
 struct LibretroContext {
 public:
-    static LibretroContext* launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, std::function<void(LibretroContext*)> LoadedCallback);
+    static LibretroContext* launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TSharedPtr<FLibretroInputState, ESPMode::ThreadSafe> InputState, std::function<void(LibretroContext*)> LoadedCallback);
     FLambdaRunnable* UnrealThreadTask;
 protected:
-    LibretroContext() {}
+    LibretroContext(TSharedRef<FLibretroInputState, ESPMode::ThreadSafe> InputState);
     ~LibretroContext() {}
     // UNREAL ENGINE VARIABLES
     
@@ -73,6 +74,7 @@ protected:
     // From all the crazy container types you can tell I had trouble with multithreading. I would like to just have GC references to UnrealRenderTarget and UnrealSoundEmitter, but I ran into issues putting them into the rootset or trying to make this class into a subclass of UObject since it doesn't like some of the syntax. However from what I understand my solution is threadsafe.
     TWeakObjectPtr<UTextureRenderTarget2D> UnrealRenderTarget;
     TWeakObjectPtr<URawAudioSoundWave> UnrealSoundBuffer;
+    TSharedRef<FLibretroInputState, ESPMode::ThreadSafe> UnrealInputState;
 
     // These are both ThreadSafe shared pointers that are the main bridge between my code and unreal.
     FTexture2DRHIRef TextureRHI; // @todo: be careful with this it can become stale if you reinit the UTextureRenderTarget2D without updating this reference. Say if you were adding a feature to change games without reiniting the entire core. What I really need to do is probably implement my own dynamic texture subclass

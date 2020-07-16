@@ -25,6 +25,10 @@ DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnControllerDisconnected, const class APlaye
 DECLARE_MULTICAST_DELEGATE_FourParams(FOnCoreIsReadyNative, const class ULibretroCoreInstance*, const class UTextureRenderTarget2D*, const class USoundWave*, const bool);
 
 const int PortCount = 4;
+struct FLibretroInputState {
+	unsigned digital[PortCount][RETRO_DEVICE_ID_JOYPAD_R3 + 1] = { 0 };
+	int16_t  analog[PortCount][2][2] = { 0 };
+};
 
 UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent) )
 class UNREALLIBRETRO_API ULibretroCoreInstance : public UActorComponent
@@ -114,6 +118,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void InitializeComponent() override;
 	//virtual bool IsReadyForFinishDestroy() override;
 	FDelegateHandle ResumeEditor, PauseEditor;
 	bool Paused = false;
@@ -125,8 +130,12 @@ protected:
 
 	TArray<FOnControllerDisconnected, TFixedAllocator<PortCount>> Disconnected;
 
+public:
+	/**
+	 * This is what the libretro core reads from when determining input. If you want to use your own input method you can modify this directly.
+	 */
+	TSharedPtr<FLibretroInputState, ESPMode::ThreadSafe> InputState;
 
-
-public:	
+	
 	virtual void BeginDestroy();
 };

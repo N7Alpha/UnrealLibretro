@@ -1,5 +1,6 @@
 
 #include "sdlarch.h"
+#include "LibretroCoreInstance.h"
 
 #include "HAL/FileManager.h"
 #include "Interfaces/IPluginManager.h"
@@ -618,14 +619,12 @@ void LibretroContext::core_input_poll(void) {
 
 
 int16_t LibretroContext::core_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
-	if (port)
-		return 0;
 
     switch (device) {
         case RETRO_DEVICE_ANALOG:   
-            //check(index < 2); // "I haven't implemented Triggers and other analog controls yet"
-            return analog[id][index];
-        case RETRO_DEVICE_JOYPAD:   return g_joy[id];
+            check(index < 2); // "I haven't implemented Triggers and other analog controls yet"
+            return UnrealInputState->analog[port][id][index];
+        case RETRO_DEVICE_JOYPAD:   return UnrealInputState->digital[port][id];
         default:                    return 0;
     }
 }
@@ -817,10 +816,12 @@ void LibretroContext::core_unload() {
         FPlatformProcess::FreeDllHandle(g_retro.handle);
 }
 
+LibretroContext::LibretroContext(TSharedRef<FLibretroInputState, ESPMode::ThreadSafe> InputState) : UnrealInputState(InputState) {}
+
 std::array<char, 260> LibretroContext::save_directory;
 std::array<char, 260> LibretroContext::system_directory;
 
-LibretroContext* LibretroContext::launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, std::function<void(LibretroContext*)> LoadedCallback) {
+LibretroContext* LibretroContext::launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TSharedPtr<FLibretroInputState, ESPMode::ThreadSafe> InputState, std::function<void(LibretroContext*)> LoadedCallback) {
 
     
     check(IsInGameThread());
@@ -853,7 +854,7 @@ LibretroContext* LibretroContext::launch(FString core, FString game, UTextureRen
         UE_LOG(Libretro, Fatal, TEXT("Failed to initialize SDL"));
 
 
-    LibretroContext *l = new LibretroContext();
+    LibretroContext *l = new LibretroContext(InputState.ToSharedRef());
 
     l->UnrealRenderTarget = MakeWeakObjectPtr(RenderTarget);
     l->UnrealSoundBuffer  = MakeWeakObjectPtr(SoundBuffer );

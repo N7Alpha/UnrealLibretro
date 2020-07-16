@@ -12,7 +12,7 @@
 #define BindUnrealButtonToLibretro(RetroButton, UnrealButton)			   BindKey    (UnrealButton, IE_Pressed,  this, &ULibretroInputComponent::ButtonPressed <RetroButton>); \
 																		   BindKey    (UnrealButton, IE_Released, this, &ULibretroInputComponent::ButtonReleased<RetroButton>);
 
-class ULibretroCoreInstance;
+struct FLibretroInputState;
 
 // DO NOT REORDER THESE
 UENUM(BlueprintType)
@@ -48,10 +48,10 @@ class UNREALLIBRETRO_API ULibretroInputComponent : public UInputComponent
 {
 	GENERATED_BODY()
 public:
+	void Initialize(FLibretroInputState* InputState, int Port, TFunction<void()> Disconnect);
+
 	void BindKeys(const TMap<FKey, ERetroInput> &ControllerBindings);
 
-	ULibretroCoreInstance* LibretroCoreInstance;
-	int Port = 0;
 
 	template<unsigned RetroButton>
 	void ButtonPressed();
@@ -63,7 +63,8 @@ public:
 	void AxisChanged(float Value);
 
 protected:
-	
+	unsigned (*digital)[RETRO_DEVICE_ID_JOYPAD_R3 + 1];
+	int16_t (*analog)[2][2];
 	
 	static TArray<void (ULibretroInputComponent::*)(), TFixedAllocator<(uint32)ERetroInput::DigitalCount>>      ButtonPressedFunctions;
 
@@ -71,9 +72,8 @@ protected:
 
 	static TArray<void (ULibretroInputComponent::*)(float), TFixedAllocator<(uint32)ERetroInput::AnalogCount>>  ButtonAnalog;
 
+	TFunction<void()> DisconnectFromCreator;
 	void DisconnectController();
-
-	virtual void BeginPlay() override;	
 
 
 };
