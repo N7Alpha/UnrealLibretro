@@ -86,6 +86,7 @@ protected:
     // UNREAL ENGINE VARIABLES END
 
 public:
+    TAtomic<bool> running = true;
     // As a libretro frontend you own directory path data.
      static std::array<char, 260> system_directory;
      static std::array<char, 260> save_directory;
