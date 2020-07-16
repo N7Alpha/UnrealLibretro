@@ -22,6 +22,7 @@ ULibretroCoreInstance::ULibretroCoreInstance()
 	Controller.InsertDefaulted(0, PortCount);
 	Disconnected.InsertDefaulted(0, PortCount);
 	InputMap.Reserve(PortCount);
+	InputState = MakeShared<FLibretroInputState, ESPMode::ThreadSafe>();
 }
 
 TMap<FKey, ERetroInput> ULibretroCoreInstance::CombineInputMaps(const TMap<FKey, ERetroInput> &InMap1, const TMap<FKey, ERetroInput> &InMap2) {
@@ -30,10 +31,13 @@ TMap<FKey, ERetroInput> ULibretroCoreInstance::CombineInputMaps(const TMap<FKey,
 	return OutMap;
 }
 
+ 
 void ULibretroCoreInstance::ConnectController(APlayerController* PlayerController, int Port, TMap<FKey, ERetroInput> ControllerBindings, FOnControllerDisconnected OnControllerDisconnected)
 {
+	check(Port >= 0 && Port < PortCount);
+
 	if (instance) {
-		check(Port >= 0 && Port < PortCount);
+
 		Controller[Port] = MakeWeakObjectPtr(PlayerController);
 		Disconnected[Port] = OnControllerDisconnected;
 
@@ -97,7 +101,7 @@ void ULibretroCoreInstance::Launch()
 
 	RenderTarget->Filter = TF_Nearest;
 
-	this->instance = LibretroContext::launch(CorePath, RomPath, RenderTarget, AudioBuffer,
+	this->instance = LibretroContext::launch(CorePath, RomPath, RenderTarget, AudioBuffer, InputState,
 		[weakThis = MakeWeakObjectPtr(this)](auto context) 
 			{ // Core Loaded
 			FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady([=]()
@@ -142,9 +146,8 @@ void ULibretroCoreInstance::InitializeComponent() {
 
 	for (int Port = 0; Port < PortCount; Port++)
 	{
-		InputMap[Port] = (NewObject<ULibretroInputComponent>());
-		InputMap[Port]->Port = Port;
-		InputMap[Port]->LibretroCoreInstance = this;
+		InputMap[Port] = NewObject<ULibretroInputComponent>();
+		InputMap[Port]->Initialize(InputState.Get(), Port, [Port, this]() { this->DisconnectController(Port); });
 	}
 }
 
