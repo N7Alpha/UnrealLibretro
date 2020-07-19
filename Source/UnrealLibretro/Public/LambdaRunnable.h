@@ -16,7 +16,7 @@ private:
 	uint64 Number;
 
 	//Lambda function pointer
-	TFunction< void()> FunctionPointer;
+	TUniqueFunction< void()> FunctionPointer;
 
 	//static TArray<FLambdaRunnable*> Runnables;
 	static FThreadSafeCounter ThreadNumber;
@@ -27,7 +27,7 @@ public:
 	FThreadSafeBool Finished;
 
 	//Constructor / Destructor
-	FLambdaRunnable(TFunction< void()> InFunction);
+	FLambdaRunnable(TUniqueFunction< void()> &&InFunction);
 	virtual ~FLambdaRunnable();
 
 	// Begin FRunnable interface.
@@ -44,5 +44,5 @@ public:
 	/*
 	Runs the passed lambda on the background thread, new thread per call
 	*/
-	static FLambdaRunnable* RunLambdaOnBackGroundThread(TFunction< void()> InFunction);
+	static FLambdaRunnable* RunLambdaOnBackGroundThread(TUniqueFunction< void()> &&InFunction);
 };

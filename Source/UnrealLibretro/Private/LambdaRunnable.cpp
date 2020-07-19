@@ -7,9 +7,9 @@
 
 FThreadSafeCounter FLambdaRunnable::ThreadNumber{0};
 
-FLambdaRunnable::FLambdaRunnable(TFunction< void()> InFunction)
+FLambdaRunnable::FLambdaRunnable(TUniqueFunction< void()> &&InFunction)
 {
-	FunctionPointer = InFunction;
+	FunctionPointer = MoveTemp(InFunction);
 	Finished = false;
 	Number = ThreadNumber.Increment();
 	
@@ -62,10 +62,10 @@ void FLambdaRunnable::EnsureCompletion() // @todo: the timing error might be her
 
 }
 
-FLambdaRunnable* FLambdaRunnable::RunLambdaOnBackGroundThread(TFunction< void()> InFunction)
+FLambdaRunnable* FLambdaRunnable::RunLambdaOnBackGroundThread(TUniqueFunction< void()> &&InFunction)
 {
 	FLambdaRunnable* Runnable;
-	Runnable = new FLambdaRunnable(InFunction);
+	Runnable = new FLambdaRunnable(MoveTemp(InFunction));
 	//UE_LOG(LogClass, Log, TEXT("FLambdaRunnable RunLambdaBackGroundThread"));
 	return Runnable;
 }
