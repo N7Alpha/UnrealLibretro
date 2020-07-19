@@ -168,7 +168,8 @@ void ULibretroCoreInstance::BeginDestroy()
 		instance->running = false;
 	}
 
-	for (int Port = 0; Port < PortCount; Port++) {
+	for (int Port = 0; Port < PortCount; Port++)
+	{
 		DisconnectController(Port);
 	}
 	

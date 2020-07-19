@@ -105,7 +105,7 @@ public:
      const struct retro_hw_render_context_negotiation_interface* hw_render_context_negotiation = nullptr;
 
      float g_scale = 3;
-    bool running = true;
+    
 
      struct {
         GLuint tex_id;
@@ -164,31 +164,6 @@ public:
         size_t (*retro_get_memory_size)(unsigned id);
     } g_retro;
 
-
-    struct keymap {
-        unsigned k;
-        unsigned rk;
-    };
-
-    keymap g_binds[13] = {
-        { SDL_SCANCODE_X, RETRO_DEVICE_ID_JOYPAD_A },
-        { SDL_SCANCODE_Z, RETRO_DEVICE_ID_JOYPAD_B },
-        { SDL_SCANCODE_A, RETRO_DEVICE_ID_JOYPAD_Y },
-        { SDL_SCANCODE_S, RETRO_DEVICE_ID_JOYPAD_X },
-        { SDL_SCANCODE_UP, RETRO_DEVICE_ID_JOYPAD_UP },
-        { SDL_SCANCODE_DOWN, RETRO_DEVICE_ID_JOYPAD_DOWN },
-        { SDL_SCANCODE_LEFT, RETRO_DEVICE_ID_JOYPAD_LEFT },
-        { SDL_SCANCODE_RIGHT, RETRO_DEVICE_ID_JOYPAD_RIGHT },
-        { SDL_SCANCODE_RETURN, RETRO_DEVICE_ID_JOYPAD_START },
-        { SDL_SCANCODE_BACKSPACE, RETRO_DEVICE_ID_JOYPAD_SELECT },
-        { SDL_SCANCODE_Q, RETRO_DEVICE_ID_JOYPAD_L },
-        { SDL_SCANCODE_W, RETRO_DEVICE_ID_JOYPAD_R },
-        { 0, 0 }
-    };
-
-     unsigned g_joy [RETRO_DEVICE_ID_JOYPAD_R3 + 1]    = { 0 };
-     int16_t  analog[RETRO_DEVICE_ID_JOYPAD_R3 + 1][2] = { 0 };
-
      
 
 
@@ -198,8 +173,6 @@ public:
      void resize_to_aspect(double ratio, int sw, int sh, int* dw, int* dh);
      void video_configure(const struct retro_game_geometry* geom);
      bool video_set_pixel_format(unsigned format);
-     void Update16BitTexture(const void* data, unsigned width, unsigned height, unsigned pitch);
-     void Update32BitTexture(unsigned width, unsigned height);
      void video_deinit();
      void video_refresh(const void* data, unsigned width, unsigned height, unsigned pitch);
      uintptr_t core_get_current_framebuffer();
