@@ -4,32 +4,38 @@
 #include "LibretroInputComponent.h"
 #include "LibretroCoreInstance.h"
 // Called when the game starts
-void ULibretroInputComponent::Initialize(FLibretroInputState* InputState, TFunction<void()> Disconnect) {
+void ULibretroInputComponent::Initialize(FLibretroInputState* InputState, TFunction<void()> Disconnect)
+{
 	InputStatePort = InputState;
 	DisconnectPort = Disconnect;
 }
 
 template<unsigned RetroButton>
-void ULibretroInputComponent::ButtonPressed() {
-	InputStatePort->digital[RetroButton] = true;
+void ULibretroInputComponent::ButtonPressed()
+{
+	InputStatePort->digital[RetroButton].Store(true, EMemoryOrder::Relaxed);
 }
 
 template<unsigned RetroButton>
-void ULibretroInputComponent::ButtonReleased() {
-	InputStatePort->digital[RetroButton] = false;
+void ULibretroInputComponent::ButtonReleased()
+{
+	InputStatePort->digital[RetroButton].Store(false, EMemoryOrder::Relaxed);
 }
 
 template<unsigned RetroAxis, unsigned RetroStick>
-void ULibretroInputComponent::AxisChanged(float Value) {
+void ULibretroInputComponent::AxisChanged(float Value)
+{
 	float coff = RetroAxis == RETRO_DEVICE_ID_ANALOG_Y && RetroStick == RETRO_DEVICE_INDEX_ANALOG_LEFT ? -1 : 1; // Both Y-Axes should be inverted because of Libretro convention however Unreal has a quirk where the Y-Axis of the right stick is inverted by default for some reason
-	InputStatePort->analog[RetroAxis][RetroStick] = (int16_t)FMath::RoundHalfToEven(coff * 0x7FFF * Value);
+	InputStatePort->analog[RetroAxis][RetroStick].Store((int16_t)FMath::RoundHalfToEven(coff * 0x7FFF * Value), EMemoryOrder::Relaxed); // Some cores support 0x7FFF to -0x7FFF others to -0x8000. However I support only 0x7FFF to -0x7FFF
 }
 
-void ULibretroInputComponent::DisconnectController() {
+void ULibretroInputComponent::DisconnectController()
+{
 	DisconnectPort();
 }
 
-TArray<void (ULibretroInputComponent::*)(), TFixedAllocator<(uint32)ERetroInput::DigitalCount>> ULibretroInputComponent::ButtonReleasedFunctions = {
+TArray<void (ULibretroInputComponent::*)(), TFixedAllocator<(uint32)ERetroInput::DigitalCount>> ULibretroInputComponent::ButtonReleasedFunctions = 
+{
 		&ULibretroInputComponent::ButtonReleased <RETRO_DEVICE_ID_JOYPAD_B     >,
 		&ULibretroInputComponent::ButtonReleased <RETRO_DEVICE_ID_JOYPAD_Y	   >,
 		&ULibretroInputComponent::ButtonReleased <RETRO_DEVICE_ID_JOYPAD_SELECT>,
@@ -48,7 +54,8 @@ TArray<void (ULibretroInputComponent::*)(), TFixedAllocator<(uint32)ERetroInput:
 		&ULibretroInputComponent::ButtonReleased <RETRO_DEVICE_ID_JOYPAD_R3    >
 };
 
-TArray<void (ULibretroInputComponent::*)(), TFixedAllocator<(uint32)ERetroInput::DigitalCount>> ULibretroInputComponent::ButtonPressedFunctions = {
+TArray<void (ULibretroInputComponent::*)(), TFixedAllocator<(uint32)ERetroInput::DigitalCount>> ULibretroInputComponent::ButtonPressedFunctions = 
+{
 		&ULibretroInputComponent::ButtonPressed <RETRO_DEVICE_ID_JOYPAD_B     >,
 		&ULibretroInputComponent::ButtonPressed <RETRO_DEVICE_ID_JOYPAD_Y	  >,
 		&ULibretroInputComponent::ButtonPressed <RETRO_DEVICE_ID_JOYPAD_SELECT>,
@@ -67,7 +74,8 @@ TArray<void (ULibretroInputComponent::*)(), TFixedAllocator<(uint32)ERetroInput:
 		&ULibretroInputComponent::ButtonPressed <RETRO_DEVICE_ID_JOYPAD_R3    >
 };
 
-TArray<void (ULibretroInputComponent::*)(float), TFixedAllocator<(uint32)ERetroInput::AnalogCount>>  ULibretroInputComponent::ButtonAnalog = {
+TArray<void (ULibretroInputComponent::*)(float), TFixedAllocator<(uint32)ERetroInput::AnalogCount>>  ULibretroInputComponent::ButtonAnalog = 
+{
 		&ULibretroInputComponent::AxisChanged   <RETRO_DEVICE_ID_ANALOG_X, RETRO_DEVICE_INDEX_ANALOG_LEFT >,
 		&ULibretroInputComponent::AxisChanged   <RETRO_DEVICE_ID_ANALOG_Y, RETRO_DEVICE_INDEX_ANALOG_LEFT >,
 		&ULibretroInputComponent::AxisChanged   <RETRO_DEVICE_ID_ANALOG_X, RETRO_DEVICE_INDEX_ANALOG_RIGHT>,
@@ -82,7 +90,8 @@ constexpr auto to_integral(E e) -> typename std::underlying_type<E>::type
 	return static_cast<typename std::underlying_type<E>::type>(e);
 }
 
-void ULibretroInputComponent::BindKeys(const TMap<FKey, ERetroInput>& ControllerBindings) {
+void ULibretroInputComponent::BindKeys(const TMap<FKey, ERetroInput>& ControllerBindings)
+{
 	for (auto& kv : ControllerBindings) 
 	{
 		if (kv.Value != ERetroInput::DisconnectController)
