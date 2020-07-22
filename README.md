@@ -2,25 +2,11 @@
 
 # UnrealLibretro
 
-UnrealLibretro is a Libretro Frontend for Unreal Engine. Basically this just lets you run emulators within Unreal Engine. Technically it allows you to run [Libretro Cores](https://docs.libretro.com/meta/core-list/).
+UnrealLibretro is a Libretro Frontend for Unreal Engine. It is a Blueprint compatible library that lets you run emulators within Unreal Engine. More Technically it allows you to run [Libretro Cores](https://docs.libretro.com/meta/core-list/).
 
-## Libretro Core Compatibility
+## Compatibility
 
-Unfortunately the full Libretro API is quite complex so I have only partially implemented it.
-
-### Known working cores
-
-* snes9x
-* mupen64plus_next
-* PPSSPP
-
-### Known broken cores
-
-* Dolphin
-
-## Platform Compatibility
-
-For now UnrealLibretro only works for Windows. Most of the libraries I use are cross platform so it shouldn't be too hard to get it working on other platforms. If you want to fix compatibility with other platforms contributions are welcome.
+**Windows only for now.** More information about platform and  Libretro Core compatibility can be found [here](COMPATIBILITY.md).
 
 ## Installing in your Project
 
@@ -55,25 +41,7 @@ Navigate to UnrealLibretro's content folder in the Unreal Editor content browser
 
 ## Contributing
 
-Try to follow the Unreal Engine coding standards at least in the Unreal based source files. Mainly what needs to be worked on is Libretro core compatibility and probably fleshing out ```ULibretroCoreInstance```. I'm mainly just developing this for a project I'm working on myself, so there also might be some oversights in the API that should be rectified.
-
-## Debugging Libretro Cores
-Debugging libretro cores is kind of a nightmare since a lot of times your game will crash inside the cores code and if you don't have symbols good luck figuring that out. Luckily this [tutorial](https://docs.libretro.com/development/retroarch/compilation/windows/) mostly explains how to get symbolized debugging working. Note: You absolutely must use the MinGW64 terminal not the MSYS2 terminal when building Libretro cores for Windows. Also don't forget to enable the debug flags they mention when building with ```make```.
-
-The one thing that isn't mentioned is that once you successfully build the DLL you have to use [cv2pdb](https://github.com/rainers/cv2pdb/releases/latest) to make a Windows debug symbol database file (pdb).
-
-You produce the pdb by running something like this in MinGW64
-
-```
-cv2pdb.exe {core_name}.exe
-```
-
-The pdb is produced in the same directory as the DLL. Copy both of them over to MyCores. Once that's done Visual Studio should automagically load the pdb  and will ask you to point to the source files. And now you might get more insight into whats going wrong... hopefully.
-
-### Random notes
-Q: Visual Studio loads the source files for the wrong core when debugging 
-
-A: Remove other pdbs AND source files and clean the build and rerun
+Try to follow the Unreal Engine coding standards at least in the Unreal based source files. Mainly what needs to be worked on is Libretro core compatibility and probably fleshing out ```ULibretroCoreInstance``` to incorporate more of the API ```libretro.h``` exposes. I'm mainly just developing this for a project I'm working on myself, so there also might be some oversights in the API that should be rectified. More information about contributing can be found here.
 
 ## Contact
 
