@@ -63,16 +63,21 @@ extern struct func_wrap_t {
 
 
 struct LibretroContext {
-public:
-    static LibretroContext* launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, std::function<void(LibretroContext*)> LoadedCallback);
-    FLambdaRunnable* UnrealThreadTask;
+public:                                                                                                                                             // @todo: The UObjects shouldn't be parameters of this function, and the callback below should pass the audio buffer and framebuffer to the caller as well
+    static LibretroContext* Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, std::function<void(bool)> LoadedCallback);
+    static void             Shutdown(LibretroContext* Instance);
+
+    void                    Pause(bool ShouldPause);
+    
 protected:
     LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState);
     ~LibretroContext() {}
     // UNREAL ENGINE VARIABLES
 
+    TAtomic<bool> running = true;
+    FLambdaRunnable* UnrealThreadTask;
 
-    // From all the crazy container types you can tell I had trouble with multithreading. I would like to just have GC references to UnrealRenderTarget and UnrealSoundEmitter, but I ran into issues putting them into the rootset or trying to make this class into a subclass of UObject since it doesn't like some of the syntax. However from what I understand my solution is threadsafe.
+    // From all the crazy container types you can tell I had trouble with multithreading. However from what I understand my solution is threadsafe.
     TWeakObjectPtr<UTextureRenderTarget2D> UnrealRenderTarget;
     TWeakObjectPtr<URawAudioSoundWave> UnrealSoundBuffer;
     TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> UnrealInputState;
@@ -85,8 +90,7 @@ protected:
 
     // UNREAL ENGINE VARIABLES END
 
-public:
-    TAtomic<bool> running = true;
+    
     // As a libretro frontend you own directory path data.
      static std::array<char, 260> system_directory;
      static std::array<char, 260> save_directory;
