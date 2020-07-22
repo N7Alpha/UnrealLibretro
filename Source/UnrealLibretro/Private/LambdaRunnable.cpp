@@ -14,10 +14,8 @@ FLambdaRunnable::FLambdaRunnable(TUniqueFunction< void()> &&InFunction)
 	Number = ThreadNumber.Increment();
 	
 	FString threadStatGroup = FString::Printf(TEXT("FLambdaRunnable%d"), Number);
-	Thread = FRunnableThread::Create(this, *threadStatGroup, 0, EThreadPriority::TPri_Lowest); // @todo: Thread priority is low because if you set it any higher windows can basically deadlock when stopping your game in the editor. Its kind of outside of my level of understanding to debug this at the moment.
-																							   // From tests I've done so far it seems to be an issue isolated to FRunnableThread and even exists in the lower level FThread as well.
-																							   // if enough work is being performed in outstanding FRunnableThread's to saturate all cores of the processor when you try to stop the game in the editor,
-																							   // then it will lock up Windows entirely
+	Thread = FRunnableThread::Create(this, *threadStatGroup, 0,
+		EThreadPriority::TPri_SlightlyBelowNormal); // This is actually normal thread priority on Windows and probably other platforms as well. You might be tempted to set it higher, but it will deadlock Windows if you have enough work available to saturate all cores. And yes I do mean completely halt the OS.
 }
 
 FLambdaRunnable::~FLambdaRunnable()
