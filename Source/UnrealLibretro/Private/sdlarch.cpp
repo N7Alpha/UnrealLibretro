@@ -821,13 +821,14 @@ LibretroContext::LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, Po
 std::array<char, 260> LibretroContext::save_directory;
 std::array<char, 260> LibretroContext::system_directory;
 
-LibretroContext* LibretroContext::launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, std::function<void(LibretroContext*)> LoadedCallback) {
+LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, std::function<void(bool)> LoadedCallback)
+{
 
-    
     check(IsInGameThread());
 
     static bool MemberStaticsInitialized = false;
-    if (!MemberStaticsInitialized) {
+    if (!MemberStaticsInitialized) 
+    {
         auto InitDirectory = [] (auto &cstr, FString &&Path) {
             auto AbsolutePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*Path);
             bool success = IFileManager::Get().MakeDirectory(*AbsolutePath); // This will block for a small amount of time probably
@@ -858,8 +859,6 @@ LibretroContext* LibretroContext::launch(FString core, FString game, UTextureRen
 
     l->UnrealRenderTarget = MakeWeakObjectPtr(RenderTarget);
     l->UnrealSoundBuffer  = MakeWeakObjectPtr(SoundBuffer );
-
-    
 
     // Kick the initialization process off to another thread. It shouldn't be added to the Unreal task pool because those are too slow and my code relies on OpenGL state being thread local.
     // The Runnable system is the standard way for spawning and managing threads in Unreal. FThread looks enticing, but they removed anyway to detach threads since "it doesn't work as expected"
@@ -914,7 +913,7 @@ LibretroContext* LibretroContext::launch(FString core, FString game, UTextureRen
                 }
             }
 
-            LoadedCallback(l);
+            LoadedCallback(l->g_video.hw.bottom_left_origin);
 
             uint64 frames = 0;
             auto   start = FDateTime::Now();
@@ -983,5 +982,15 @@ LibretroContext* LibretroContext::launch(FString core, FString game, UTextureRen
     );
 
     return l;
-    
+}
+
+void LibretroContext::Shutdown(LibretroContext* Instance) 
+{
+    Instance->Pause(false);
+    Instance->running.Store(false, EMemoryOrder::SequentiallyConsistent);
+}
+
+void LibretroContext::Pause(bool ShouldPause)
+{
+    UnrealThreadTask->Thread->Suspend(ShouldPause);
 }

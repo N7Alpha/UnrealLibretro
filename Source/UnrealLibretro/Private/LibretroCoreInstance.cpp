@@ -15,62 +15,54 @@
 
 
 ULibretroCoreInstance::ULibretroCoreInstance()
+	: InputState(MakeShared<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe>())
 {
 	PrimaryComponentTick.bCanEverTick = false;
 	bWantsInitializeComponent = true;
 
-	Controller.InsertDefaulted(0, PortCount);
-	Disconnected.InsertDefaulted(0, PortCount);
-	InputMap.Reserve(PortCount);
-	InputState = MakeShared<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe>();
+	InputMap.AddZeroed(PortCount);
 }
 
-TMap<FKey, ERetroInput> ULibretroCoreInstance::CombineInputMaps(const TMap<FKey, ERetroInput> &InMap1, const TMap<FKey, ERetroInput> &InMap2) {
+TMap<FKey, ERetroInput> ULibretroCoreInstance::CombineInputMaps(const TMap<FKey, ERetroInput> &InMap1, const TMap<FKey, ERetroInput> &InMap2)
+{
 	auto OutMap(InMap1);
 	OutMap.Append(InMap2);
 	return OutMap;
 }
-
  
 void ULibretroCoreInstance::ConnectController(APlayerController* PlayerController, int Port, TMap<FKey, ERetroInput> ControllerBindings, FOnControllerDisconnected OnControllerDisconnected)
 {
 	check(Port >= 0 && Port < PortCount);
 
-	if (instance) {
+	DisconnectController(Port);
 
-		Controller[Port] = MakeWeakObjectPtr(PlayerController);
-		Disconnected[Port] = OnControllerDisconnected;
+	Controller[Port] = MakeWeakObjectPtr(PlayerController);
+	Disconnected[Port] = OnControllerDisconnected;
 
-		InputMap[Port]->BindKeys(ControllerBindings);
-
-		PlayerController->PushInputComponent(InputMap[Port]);
-	}
-	else {
-		UE_LOG(Libretro, Warning, TEXT("Tried to connect controller before the libretro instance finished launching. If you want to attach the controller right when the console starts try using the On Core Is Ready delegate."));
-	}
+	InputMap[Port]->KeyBindings.Empty();
+	InputMap[Port]->BindKeys(ControllerBindings);
+	PlayerController->PushInputComponent(InputMap[Port]);
 	
 }
 
-void ULibretroCoreInstance::DisconnectController(int Port) {
+void ULibretroCoreInstance::DisconnectController(int Port)
+{
 	check(Port >= 0 && Port < PortCount);
 
 	auto PlayerController = Controller[Port];
 
 	if (PlayerController.IsValid())
 	{
-		InputMap[Port]->KeyBindings.Empty();
-
 		PlayerController->PopInputComponent(InputMap[Port]);
+	}
 
-		Disconnected[Port].ExecuteIfBound(PlayerController.Get(), Port);
-	}
-	else {
-		UE_LOG(Libretro, Warning, TEXT("Tried to disconnect controller from port %d, but the stored reference for PlayerController was null. This means either (likely) one wasn't attached to that port or (unlikely) the player controller was garbage collected"), Port);
-	}
+	Disconnected[Port].ExecuteIfBound(PlayerController.Get(), Port);
 }
 
 void ULibretroCoreInstance::Launch() 
 {
+	Shutdown();
+
 	Rom = Rom.IsEmpty() ? "MAZE" : Rom;
 	Core = Core.IsEmpty() ? "emux_chip8_libretro.dll" : Core;
 
@@ -101,16 +93,15 @@ void ULibretroCoreInstance::Launch()
 
 	RenderTarget->Filter = TF_Nearest;
 
-	this->instance = LibretroContext::launch(CorePath, RomPath, RenderTarget, AudioBuffer, InputState,
-		[weakThis = MakeWeakObjectPtr(this)](auto context) 
+	this->CoreInstance = LibretroContext::Launch(CorePath, RomPath, RenderTarget, AudioBuffer, InputState,
+		[weakThis = MakeWeakObjectPtr(this)](bool bottom_left_origin) 
 			{ // Core Loaded
 			FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady([=]()
 				{
 					if (weakThis.IsValid()) 
 					{
-						weakThis->instance = context;
-						weakThis->OnCoreIsReady.Broadcast(weakThis->RenderTarget, weakThis->AudioBuffer, context->g_video.hw.bottom_left_origin);
-						weakThis->OnCoreIsReadyNative.Broadcast(weakThis.Get(), weakThis->RenderTarget, weakThis->AudioBuffer, context->g_video.hw.bottom_left_origin);
+						weakThis->OnCoreIsReady.Broadcast(weakThis->RenderTarget, weakThis->AudioBuffer, bottom_left_origin);
+						weakThis->OnCoreIsReadyNative.Broadcast(weakThis.Get(), weakThis->RenderTarget, weakThis->AudioBuffer, bottom_left_origin);
 					}
 
 				}, TStatId(), NULL, ENamedThreads::GameThread);
@@ -119,17 +110,20 @@ void ULibretroCoreInstance::Launch()
 
 void ULibretroCoreInstance::Pause(bool ShouldPause)
 {
-	if (instance) 
+	if (CoreInstance.IsSet()) 
 	{
-		instance->UnrealThreadTask->Thread->Suspend(ShouldPause);
+		CoreInstance.GetValue()->Pause(ShouldPause);
 		Paused = ShouldPause;
-	}
-	else 
-	{
-		UE_LOG(Libretro, Warning, TEXT("Tried to resume core that hadn't been launched yet."));
 	}
 }
 
+void ULibretroCoreInstance::Shutdown() {
+	if (CoreInstance.IsSet())
+	{
+		LibretroContext::Shutdown(CoreInstance.GetValue());
+		CoreInstance.Reset();
+	}
+}
 
 #include "Editor.h"
 #include "Scalability.h"
@@ -137,11 +131,19 @@ void ULibretroCoreInstance::Pause(bool ShouldPause)
 void ULibretroCoreInstance::InitializeComponent() {
 	ResumeEditor = FEditorDelegates::ResumePIE.AddLambda([this](const bool bIsSimulating)
 		{
-			this->instance->UnrealThreadTask->Thread->Suspend(Paused); // This is buggy replace with optional
+			// This could have wierd behavior if CoreInstance is launched when the editor is paused. That really shouldn't ever happen though
+			if (this->CoreInstance.IsSet())
+			{
+				this->CoreInstance.GetValue()->Pause(Paused);
+			}
+			
 		});
 	PauseEditor = FEditorDelegates::PausePIE.AddLambda([this](const bool bIsSimulating)
 		{
-			this->instance->UnrealThreadTask->Thread->Suspend(true);
+			if (this->CoreInstance.IsSet())
+			{
+				this->CoreInstance.GetValue()->Pause(false);
+			}
 		});
 
 	for (int Port = 0; Port < PortCount; Port++)
@@ -160,19 +162,19 @@ void ULibretroCoreInstance::BeginPlay()
 	}*/
 }
 
-// @todo: Using this function I think would be the proper way of keeping the UObjects I'm using in LibretroContext alive instead of the weak pointer shared pointer mess I'm currently using. However its kind of a low priority since the current system I'm using works fine
-// bool ULibretroCoreInstance::IsReadyForFinishDestroy() { return false;  }
+// @todo: Using this function I think would be the proper way of keeping the UObjects I'm using in LibretroContext alive instead of the weak pointer shared pointer mess I'm currently using. However its kind of a low priority since the current system I'm using works fine.
+//		  The thing I worry about though is if delaying destruction for a few seconds is simply too long Unreal AFAIK only uses this to delay destruction until render resources are deleted which is no more than a few frames
+//bool ULibretroCoreInstance::IsReadyForFinishDestroy() { return false;  }
+
 void ULibretroCoreInstance::BeginDestroy()
 {
-	if (instance) {
-		instance->running = false;
-	}
-
 	for (int Port = 0; Port < PortCount; Port++)
 	{
 		DisconnectController(Port);
 	}
 	
+	Shutdown();
+
 	FEditorDelegates::ResumePIE.Remove(ResumeEditor);
 	FEditorDelegates::PausePIE .Remove(PauseEditor );
 

@@ -53,6 +53,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Libretro")
 	void Launch();
 
+	UFUNCTION(BlueprintCallable, Category = "Libretro")
+	void Shutdown();
+
 	/**
 	 * Suspends the emulator instance. The game will no longer run until you call Pause with false which will resume gameplay.
 	 * @param ShouldPause - Passing true will Suspend the emulator, false will resume it.
@@ -107,7 +110,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro)
 	FString Core;
 
-	LibretroContext* instance = nullptr;
+	// @todo: It'd be nice if I could use something like std::wrapped_reference however Unreal doesn't offer an equivalent for now
+	/**
+	* Handle to the actual libretro core instance.
+	*/
+	TOptional<LibretroContext*> CoreInstance;
 
 
 protected:
@@ -117,18 +124,18 @@ protected:
 	FDelegateHandle ResumeEditor, PauseEditor;
 	bool Paused = false;
 
-	TArray<TWeakObjectPtr<APlayerController>, TFixedAllocator<PortCount>> Controller;
+	TStaticArray<TWeakObjectPtr<APlayerController>, PortCount> Controller{ nullptr };
 
 	UPROPERTY()
 	TArray<ULibretroInputComponent*> InputMap;
 
-	TArray<FOnControllerDisconnected, TFixedAllocator<PortCount>> Disconnected;
+	TStaticArray<FOnControllerDisconnected, PortCount> Disconnected{ FOnControllerDisconnected() };
 
 public:
 	/**
 	 * This is what the libretro core reads from when determining input. If you want to use your own input method you can modify this directly.
 	 */
-	TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState;
+	TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState;
 	
 	virtual void BeginDestroy();
 };
