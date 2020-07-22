@@ -261,53 +261,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 	return true;
 }
 
- // @todo This function updates the texture, but there are a few frames of renderer latency before it actually updates. It seems managable for now, but it could always be better
- // @todo: Right now anytime I update the frame in unreal engine I allocate more data and issue a command to the render thread just because its simple. I should double buffer and only have one outstanding render command issued at a time eventually though.
- void UpdateTextureRegions(FTexture2DRHIRef TextureRHI, int32 MipIndex, uint32 NumRegions, FUpdateTextureRegion2D Region, uint32 SrcPitch, uint32 SrcBpp, uint8* SrcData)
- {
-     struct FUpdateTextureRegionsData
-     {
-         int32 MipIndex;
-         uint32 NumRegions;
-         const FUpdateTextureRegion2D* Regions;
-         uint32 SrcPitch;
-         uint32 SrcBpp;
-         uint8* SrcData;
-     };
 
-     FUpdateTextureRegionsData* RegionData = new FUpdateTextureRegionsData;
-
-     RegionData->MipIndex = MipIndex;
-     RegionData->NumRegions = NumRegions;
-     RegionData->SrcPitch = SrcPitch;
-     RegionData->SrcBpp = SrcBpp;
-     RegionData->SrcData = SrcData;
-
-     ENQUEUE_RENDER_COMMAND(UpdateTextureRegionsData)(
-         [RegionData, TextureRHI, Region](FRHICommandListImmediate& RHICmdList)
-         {
-             check(TextureRHI.IsValid());
-       
-
-             for (uint32 RegionIndex = 0; RegionIndex < RegionData->NumRegions; ++RegionIndex)
-             {
-
-                 checkf(Region.DestX + Region.Width <= TextureRHI->GetSizeX(), TEXT("UpdateTexture2D out of bounds on X. Texture: %s, %i, %i, %i"), *TextureRHI->GetName().ToString(), Region.DestX, Region.Width, TextureRHI->GetSizeX());
-                 checkf(Region.DestY + Region.Height <= TextureRHI->GetSizeY(), TEXT("UpdateTexture2D out of bounds on Y. Texture: %s, %i, %i, %i"), *TextureRHI->GetName().ToString(), Region.DestY, Region.Height, TextureRHI->GetSizeY());
-                 RHIUpdateTexture2D(
-                     TextureRHI,
-                     RegionData->MipIndex,
-                     Region,
-                     RegionData->SrcPitch,
-                     RegionData->SrcData
-                     + Region.SrcY * RegionData->SrcPitch
-                     + Region.SrcX * RegionData->SrcBpp
-                 );
-             }
-
-             FMemory::Free(RegionData->SrcData);
-         });
- }
 
  struct _1555_color
  {
@@ -324,10 +278,10 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
      uint16 A : 8;
  };
 
- const auto &_5_to_8_bit = [](uint8 pixel_channel) { return (pixel_channel << 3) | (pixel_channel >> 2); };
- const auto &_6_to_8_bit = [](uint8 pixel_channel) { return (pixel_channel << 2) | (pixel_channel >> 4); };
-
+// @todo: This function updates the texture, but there are a few frames of renderer latency before it actually updates. It seems managable for now, but it could always be better
+// @todo: Right now anytime I update the frame in unreal engine I allocate more data and issue a command to the render thread just because its simple. I should double buffer and only have one outstanding render command issued at a time eventually though.
  void LibretroContext::video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
+
     if (g_video.clip_w != width || g_video.clip_h != height)
     {
 		g_video.clip_h = height;
@@ -342,6 +296,8 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
     if (data && data != RETRO_HW_FRAME_BUFFER_VALID) {
         auto region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height);
         
+        const auto& _5_to_8_bit = [](uint8 pixel_channel) { return (pixel_channel << 3) | (pixel_channel >> 2); };
+        const auto& _6_to_8_bit = [](uint8 pixel_channel) { return (pixel_channel << 2) | (pixel_channel >> 4); };
 
         switch (g_video.pixfmt) {
             case GL_UNSIGNED_SHORT_5_6_5: {
@@ -393,6 +349,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
     //   if  framebuffer is on GPU
     else if (data == RETRO_HW_FRAME_BUFFER_VALID) {
         check(UsingOpenGL && g_video.pixfmt == GL_UNSIGNED_INT_8_8_8_8_REV);
+
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
         if (pitch != g_video.pitch) { // @todo: I should check if pitch is used anywhere else
@@ -400,24 +357,37 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
             glPixelStorei(GL_UNPACK_ROW_LENGTH, g_video.pitch / g_video.bpp);
         }
 
-        
-
-        glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
         glGetTexImage(GL_TEXTURE_2D,
             0,
             g_video.pixtype,
             g_video.pixfmt,
             bgra_buffer);
+        glBindTexture(GL_TEXTURE_2D, 0);
 
-
-        
     }
     else {
         // *Duplicate frame*
+        FMemory::Free(bgra_buffer); // This is kind of hacky will fix when add double buffering
+        return;
     }
 
-    auto region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height);
-    UpdateTextureRegions(TextureRHI, 0, 1, region, 4 * width, 4, (uint8*)bgra_buffer);
+
+    ENQUEUE_RENDER_COMMAND(LibretroDrawTexture)(
+        [TextureRHI = this->TextureRHI, MipIndex = 0, Region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height), SrcPitch = 4 * width, SrcBpp = 4, SrcData = (uint8*)bgra_buffer](FRHICommandListImmediate& RHICmdList)
+        {
+            check(TextureRHI.IsValid());
+            RHIUpdateTexture2D(
+                TextureRHI,
+                MipIndex,
+                Region,
+                SrcPitch,
+                SrcData
+                + Region.SrcY * SrcPitch
+                + Region.SrcX * SrcBpp
+            );
+
+            FMemory::Free(SrcData);
+        });
 }
 
  void LibretroContext::video_deinit() {
