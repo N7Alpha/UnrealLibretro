@@ -271,26 +271,19 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
      uint16 A : 1;
  };
 
- struct _8888_color {
-     uint16 B : 8;
-     uint16 G : 8;
-     uint16 R : 8;
-     uint16 A : 8;
- };
-
-// @todo: This function updates the texture, but there are a few frames of renderer latency before it actually updates. It seems managable for now, but it could always be better
-// @todo: Right now anytime I update the frame in unreal engine I allocate more data and issue a command to the render thread just because its simple. I should double buffer and only have one outstanding render command issued at a time eventually though.
+// @todo : Theres a data race here that seems like it would rarely hit and would just result in screen tearing. I should eventually just use a lock and swap the pointer from the background thread and lock when reading in data on the render thread. Doesn't seem like a big deal for now.
+// @todo : From what I've read it should be unsafe to have a data race on a buffer shared between two threads not using an atomic wrapper at least for c++11, but I don't really fully understand this yet and this seems to work
  void LibretroContext::video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
 
-    if (g_video.clip_w != width || g_video.clip_h != height)
-    {
-		g_video.clip_h = height;
-		g_video.clip_w = width;
-	}
-
+    check(bgra_buffers[0]->Num() == width * height);
+    if (!data) {
+        // *Duplicate frame*
+        return;
+    }
+     
 	
-
-    auto* bgra_buffer = (_8888_color*)FMemory::Malloc(4 * width * height);
+    // @todo: this might need to be wrapped in some atomic primitive so the data isn't modified
+     auto bgra_buffer = bgra_buffers[which = !which].Get()->GetData();
 
     // if framebuffer is on CPU
     if (data && data != RETRO_HW_FRAME_BUFFER_VALID) {
@@ -348,6 +341,13 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
     }
     //   if  framebuffer is on GPU
     else if (data == RETRO_HW_FRAME_BUFFER_VALID) {
+
+        if (g_video.clip_w != width || g_video.clip_h != height)
+        {
+            g_video.clip_h = height;
+            g_video.clip_w = width;
+        }
+
         check(UsingOpenGL && g_video.pixfmt == GL_UNSIGNED_INT_8_8_8_8_REV);
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -366,28 +366,32 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 
     }
     else {
-        // *Duplicate frame*
-        FMemory::Free(bgra_buffer); // This is kind of hacky will fix when add double buffering
-        return;
+        checkNoEntry();
     }
 
+    auto *old_buffer = RenderThreadsBuffer.Exchange(bgra_buffer);
 
-    ENQUEUE_RENDER_COMMAND(LibretroDrawTexture)(
-        [TextureRHI = this->TextureRHI, MipIndex = 0, Region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height), SrcPitch = 4 * width, SrcBpp = 4, SrcData = (uint8*)bgra_buffer](FRHICommandListImmediate& RHICmdList)
-        {
-            check(TextureRHI.IsValid());
-            RHIUpdateTexture2D(
-                TextureRHI,
-                MipIndex,
-                Region,
-                SrcPitch,
-                SrcData
-                + Region.SrcY * SrcPitch
-                + Region.SrcX * SrcBpp
-            );
+    if (!old_buffer) {
+        ENQUEUE_RENDER_COMMAND(LibretroDrawTexture)(
+            [TextureRHI = this->TextureRHI, MipIndex = 0, Region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height), SrcPitch = 4 * width, SrcBpp = 4, &Buffer = this->RenderThreadsBuffer](FRHICommandListImmediate& RHICmdList)
+            {
+                check(TextureRHI.IsValid());
 
-            FMemory::Free(SrcData);
-        });
+                uint8* SrcData = (uint8*) Buffer.Exchange(nullptr);
+            
+                RHIUpdateTexture2D(
+                    TextureRHI,
+                    MipIndex,
+                    Region,
+                    SrcPitch,
+                    SrcData
+                    + Region.SrcY * SrcPitch
+                    + Region.SrcX * SrcBpp
+                );
+
+            });
+    }
+        
 }
 
  void LibretroContext::video_deinit() {
@@ -702,7 +706,13 @@ void LibretroContext::core_load_game(const char* filename) {
         UE_LOG(Libretro, Fatal, TEXT("The core failed to load the content."));
 
     g_retro.retro_get_system_av_info(&av);
-
+    
+    // @todo: move this
+    
+    bgra_buffers[0] = MakeShared<TArray<_8888_color>, ESPMode::ThreadSafe>();
+    bgra_buffers[0]->AddUninitialized(av.geometry.base_width * av.geometry.base_height);
+    bgra_buffers[1] = MakeShared<TArray<_8888_color>, ESPMode::ThreadSafe>();
+    bgra_buffers[1]->AddUninitialized(av.geometry.base_width * av.geometry.base_height);
 
     if (UsingOpenGL) {
         video_configure(&av.geometry);
