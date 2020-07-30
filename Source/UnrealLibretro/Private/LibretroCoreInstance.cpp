@@ -142,7 +142,7 @@ void ULibretroCoreInstance::InitializeComponent() {
 		{
 			if (this->CoreInstance.IsSet())
 			{
-				this->CoreInstance.GetValue()->Pause(false);
+				this->CoreInstance.GetValue()->Pause(true);
 			}
 		});
 
