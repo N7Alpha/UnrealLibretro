@@ -32,8 +32,6 @@ class UNREALLIBRETRO_API ULibretroCoreInstance : public UActorComponent
 public:	
 	// Sets default values for this component's properties
 	ULibretroCoreInstance();
-	UFUNCTION(BlueprintCallable, BlueprintPure)
-	static TMap<FKey, ERetroInput> CombineInputMaps(const TMap<FKey, ERetroInput> &InMap1, const TMap<FKey, ERetroInput> &InMap2);
 
 	// DELEGATE FUNCTIONS
 

@@ -22,13 +22,6 @@ ULibretroCoreInstance::ULibretroCoreInstance()
 
 	InputMap.AddZeroed(PortCount);
 }
-
-TMap<FKey, ERetroInput> ULibretroCoreInstance::CombineInputMaps(const TMap<FKey, ERetroInput> &InMap1, const TMap<FKey, ERetroInput> &InMap2)
-{
-	auto OutMap(InMap1);
-	OutMap.Append(InMap2);
-	return OutMap;
-}
  
 void ULibretroCoreInstance::ConnectController(APlayerController* PlayerController, int Port, TMap<FKey, ERetroInput> ControllerBindings, FOnControllerDisconnected OnControllerDisconnected)
 {
