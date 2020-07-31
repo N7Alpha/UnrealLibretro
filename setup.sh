@@ -23,5 +23,5 @@ cp -a /tmp/SDL2-2.0.12/include/. ./Source/UnrealLibretro/Public/SDL2
 cp -a /tmp/SDL2-2.0.12/lib/x64/. ./Binaries/Win64
 
 # Aquire and move unversioned data from unversioned branch (Note this will break if you don't have a really new version of git)
-git fetch origin master:unversioned
+git fetch origin unversioned:unversioned
 git restore --source unversioned Content/
