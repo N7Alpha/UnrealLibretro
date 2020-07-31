@@ -1,8 +1,9 @@
 ###### PROJECT SPECIFIC FILTERS ######
-/Source/UnrealLibretro/Public/SDL2
-/saves
+/Content
 /MyROMs
 /MyGames
+/saves
+/Source/UnrealLibretro/Public/SDL2
 /system
 *.pdb
 
