@@ -10,7 +10,7 @@
 UActorComponent* ULibretroBlueprintFunctionLibrary::HasComponent(AActor* Actor, TSubclassOf<UActorComponent> ComponentClass, EBranchNames& Branch)
 {
 	auto Component = Actor->GetComponentByClass(ComponentClass);
-	Branch = Component->IsValidLowLevel() ? EBranchNames::Yes : EBranchNames::No;
+	Branch = Component ? EBranchNames::Yes : EBranchNames::No;
 	return Component;
 }
 
