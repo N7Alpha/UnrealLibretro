@@ -372,26 +372,27 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
     auto *old_buffer = RenderThreadsBuffer.Exchange(bgra_buffer);
 
     if (!old_buffer) {
-        ENQUEUE_RENDER_COMMAND(LibretroDrawTexture)(
-            [TextureRHI = this->TextureRHI, MipIndex = 0, Region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height), SrcPitch = 4 * width, SrcBpp = 4, &Buffer = this->RenderThreadsBuffer](FRHICommandListImmediate& RHICmdList)
+        CopyToUnrealFramebufferTask = FFunctionGraphTask::CreateAndDispatchWhenReady
+        (
+            [TextureRHI = this->TextureRHI.GetReference(), MipIndex = 0, Region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height), SrcPitch = 4 * width, SrcBpp = 4, &Buffer = this->RenderThreadsBuffer]()
             {
-                check(TextureRHI.IsValid());
+            check(TextureRHI);
 
-                uint8* SrcData = (uint8*) Buffer.Exchange(nullptr);
-            
-                RHIUpdateTexture2D(
-                    TextureRHI,
-                    MipIndex,
-                    Region,
-                    SrcPitch,
-                    SrcData
-                    + Region.SrcY * SrcPitch
-                    + Region.SrcX * SrcBpp
-                );
+            uint8* SrcData = (uint8*)Buffer.Exchange(nullptr);
 
-            });
+            RHIUpdateTexture2D(
+                TextureRHI,
+                MipIndex,
+                Region,
+                SrcPitch,
+                SrcData
+                + Region.SrcY * SrcPitch
+                + Region.SrcX * SrcBpp
+            );
+
+            }
+            , TStatId(), nullptr, ENamedThreads::ActualRenderingThread_Local); // @todo I'm guessing local here means only things issued to the queue from this thread will happen in order. This should be safe, but might need to be changed if I change the way I init my Unreal framebuffer
     }
-        
 }
 
  void LibretroContext::video_deinit() {
@@ -949,7 +950,11 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             if (l->g_ctx) { SDL_GL_DeleteContext(l->g_ctx); }
             if (l->g_win) { SDL_DestroyWindow(l->g_win); }// @todo: In SDLarch's code SDL_Quit was here and that implicitly destroyed some things like windows. So I'm not sure if I'm exhaustively destroying everything that it destroyed yet. In order to fix this you could probably just run SDL_Quit here and step with the debugger to see all the stuff it destroys.
             
-            l->~LibretroContext();
+            if (l->CopyToUnrealFramebufferTask) {
+                FTaskGraphInterface::Get().WaitUntilTaskCompletes(l->CopyToUnrealFramebufferTask);
+            }
+            
+            l->~LibretroContext(); // Partially implemented RAII so this implicitly releases some shared and unique pointers
 
             {
                 FScopeLock scoped_lock(&MultipleDLLInstanceHandlingLock);

@@ -96,7 +96,7 @@ protected:
     bool which = false;
     TSharedPtr<TArray<_8888_color>, ESPMode::ThreadSafe> bgra_buffers[2] = { nullptr, nullptr };
     TAtomic<_8888_color*> RenderThreadsBuffer = nullptr;
-    
+    FGraphEventRef CopyToUnrealFramebufferTask;
 
     // UNREAL ENGINE VARIABLES END
 
