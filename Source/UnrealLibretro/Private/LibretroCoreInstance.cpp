@@ -3,8 +3,9 @@
 
 #include "LibretroCoreInstance.h"
 #include "LibretroInputComponent.h"
-#include "RHIResources.h"
 #include "libretro/libretro.h"
+
+#include "RHIResources.h"
 #include "LambdaRunnable.h"
 #include <Runtime\Core\Public\HAL\PlatformFilemanager.h>
 #include "Misc/MessageDialog.h"
@@ -12,7 +13,7 @@
 
 #include "Interfaces/IPluginManager.h"
 
-
+#define NOT_LAUNCHED_GUARD if (!CoreInstance.IsSet()) { return; }
 
 ULibretroCoreInstance::ULibretroCoreInstance()
 	: InputState(MakeShared<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe>())
@@ -74,10 +75,8 @@ void ULibretroCoreInstance::Launch()
 		return;
 	}
 
-	if (!AudioBuffer) 
-	{
-		AudioBuffer = NewObject<URawAudioSoundWave>();
-	}
+
+	AudioBuffer = NewObject<URawAudioSoundWave>();
 
 	if (!RenderTarget)
 	{
@@ -91,31 +90,108 @@ void ULibretroCoreInstance::Launch()
 			{ // Core Loaded
 			FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady([=]()
 				{
-					if (weakThis.IsValid()) 
+					if (weakThis.IsValid())
 					{
 						weakThis->OnCoreIsReady.Broadcast(weakThis->RenderTarget, weakThis->AudioBuffer, bottom_left_origin);
-						weakThis->OnCoreIsReadyNative.Broadcast(weakThis.Get(), weakThis->RenderTarget, weakThis->AudioBuffer, bottom_left_origin);
 					}
 
-				}, TStatId(), NULL, ENamedThreads::GameThread);
+				}, TStatId(), nullptr, ENamedThreads::GameThread);
 			});
 }
 
 void ULibretroCoreInstance::Pause(bool ShouldPause)
 {
-	if (CoreInstance.IsSet()) 
-	{
-		CoreInstance.GetValue()->Pause(ShouldPause);
-		Paused = ShouldPause;
-	}
+	NOT_LAUNCHED_GUARD
+
+	CoreInstance.GetValue()->Pause(ShouldPause);
+	Paused = ShouldPause;
 }
 
 void ULibretroCoreInstance::Shutdown() {
-	if (CoreInstance.IsSet())
-	{
-		LibretroContext::Shutdown(CoreInstance.GetValue());
-		CoreInstance.Reset();
-	}
+	
+	NOT_LAUNCHED_GUARD
+
+	LibretroContext::Shutdown(CoreInstance.GetValue());
+	CoreInstance.Reset();
+}
+
+TMap<FString, FGraphEventRef> ULibretroCoreInstance::LastWriteTask;
+
+// These functions are clusters. They will be rewritten... eventually.
+void ULibretroCoreInstance::LoadState(const FString Identifier)
+{
+	NOT_LAUNCHED_GUARD
+
+	FGraphEventArray Prerequisites{ LastWriteTask.FindOrAdd(this->SaveStatePath(Identifier)) };
+
+	FFunctionGraphTask::CreateAndDispatchWhenReady
+	(
+		[SaveStatePath = this->SaveStatePath(Identifier), WeakThis = MakeWeakObjectPtr(this), Rom = this->Rom]()
+		{
+			TArray<uint8> SaveStateBuffer;
+
+			if (!FFileHelper::LoadFileToArray(SaveStateBuffer, *SaveStatePath))
+			{
+				return; // We just assume failure means the file did not exist and we do nothing
+			}
+			
+
+			FFunctionGraphTask::CreateAndDispatchWhenReady
+			(
+				[WeakThis, SaveStateBuffer = MoveTemp(SaveStateBuffer), SaveStatePath, Rom]() mutable
+				{
+					if (WeakThis.IsValid() && WeakThis->CoreInstance.IsSet() && WeakThis->Rom == Rom) // The last equality operation is hacky, but I plan to completely rewrite all this code later
+					{
+						WeakThis->CoreInstance.GetValue()->EnqueueTask
+						(
+							[SaveStateBuffer = MoveTemp(SaveStateBuffer)](libretro_api_t& libretro_api)
+							{
+								check(SaveStateBuffer.Num() == libretro_api.retro_serialize_size() || !"Save State file did not match the save state size in folder"); // because of emulator versions these might not match up
+								libretro_api.retro_unserialize(SaveStateBuffer.GetData(), SaveStateBuffer.Num());
+							}
+						);
+					}
+				}
+				, TStatId(), nullptr, ENamedThreads::GameThread
+			);
+		}
+		, TStatId(), Prerequisites[0].IsValid() ? &Prerequisites : nullptr
+	);
+}
+
+void ULibretroCoreInstance::SaveState(const FString Identifier)
+{
+	NOT_LAUNCHED_GUARD
+
+	TArray<uint8> *SaveStateBuffer = new TArray<uint8>(); // @dynamic
+
+	FGraphEventArray Prerequisites{ LastWriteTask.FindOrAdd(this->SaveStatePath(Identifier)) };
+	
+    // This async task is executed second
+	auto SaveStateToFileTask = TGraphTask<FFunctionGraphTask>::CreateTask(Prerequisites[0].IsValid() ? &Prerequisites : nullptr).ConstructAndHold
+	(
+		[SaveStateBuffer, SaveStatePath = this->SaveStatePath(Identifier)]() // @dynamic The capture here does a copy on the heap probably
+		{
+			FFileHelper::SaveArrayToFile(*SaveStateBuffer, *SaveStatePath, &IFileManager::Get(), FILEWRITE_None);
+			delete SaveStateBuffer;
+		}
+		, TStatId(), ENamedThreads::AnyThread
+	);
+	
+	LastWriteTask[this->SaveStatePath(Identifier)] = SaveStateToFileTask->GetCompletionEvent();
+	
+	// This async task is executed first
+	this->CoreInstance.GetValue()->EnqueueTask
+	(
+		[SaveStateBuffer, SaveStateToFileTask](libretro_api_t& libretro_api)
+		{
+			SaveStateBuffer->Reserve(libretro_api.retro_serialize_size() + 2); // The plus two is a slight optimization based on how SaveArrayToFile works
+			SaveStateBuffer->AddUninitialized(libretro_api.retro_serialize_size());
+			libretro_api.retro_serialize(static_cast<void*>(SaveStateBuffer->GetData()), libretro_api.retro_serialize_size());
+
+			SaveStateToFileTask->Unlock(); // This uses _InterlockedCompareExchange which has a memory barrier so it should be thread-safe
+		}
+	);
 }
 
 #include "Editor.h"
@@ -124,19 +200,14 @@ void ULibretroCoreInstance::Shutdown() {
 void ULibretroCoreInstance::InitializeComponent() {
 	ResumeEditor = FEditorDelegates::ResumePIE.AddLambda([this](const bool bIsSimulating)
 		{
-			// This could have wierd behavior if CoreInstance is launched when the editor is paused. That really shouldn't ever happen though
-			if (this->CoreInstance.IsSet())
-			{
-				this->CoreInstance.GetValue()->Pause(Paused);
-			}
-			
+			// This could have weird behavior if CoreInstance is launched when the editor is paused. That really shouldn't ever happen though
+			NOT_LAUNCHED_GUARD
+			this->CoreInstance.GetValue()->Pause(Paused);
 		});
 	PauseEditor = FEditorDelegates::PausePIE.AddLambda([this](const bool bIsSimulating)
 		{
-			if (this->CoreInstance.IsSet())
-			{
-				this->CoreInstance.GetValue()->Pause(true);
-			}
+			NOT_LAUNCHED_GUARD
+			this->CoreInstance.GetValue()->Pause(true);
 		});
 
 	for (int Port = 0; Port < PortCount; Port++)

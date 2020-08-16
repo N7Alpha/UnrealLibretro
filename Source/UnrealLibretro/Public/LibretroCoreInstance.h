@@ -13,6 +13,7 @@
 #include "RawAudioSoundWave.h"
 #include "LibretroInputComponent.h"
 #include "sdlarch.h"
+#include "Interfaces/IPluginManager.h"
 #include "LibretroCoreInstance.generated.h"
 
 
@@ -21,8 +22,6 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnCoreIsReady, const class UText
 
 DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnControllerDisconnected, const class APlayerController*, PlayerController, const int, Port);
 
-/** shadow delegate declaration for above */
-DECLARE_MULTICAST_DELEGATE_FourParams(FOnCoreIsReadyNative, const class ULibretroCoreInstance*, const class UTextureRenderTarget2D*, const class USoundWave*, const bool);
 
 UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent) )
 class UNREALLIBRETRO_API ULibretroCoreInstance : public UActorComponent
@@ -35,46 +34,73 @@ public:
 
 	// DELEGATE FUNCTIONS
 
+	/**
+	 * Issued after the emulator has been successfully launched
+	 */
 	UPROPERTY(BlueprintAssignable)
 	FOnCoreIsReady OnCoreIsReady;
-
-	FOnCoreIsReadyNative OnCoreIsReadyNative; // @todo not really sure how much this OnCoreIsReadyNative delegate is needed I was just mimicking Unreal Engine example code
-
-
-	
-											  
+								  
 	// BLUEPRINT CALLABLE FUNCTIONS
 
 	/**
-	 * Starts the launch process on a background thread. After the emulator has been successfully launched it will issue the event "On Core Is Ready".
+	 * @brief Starts the launch process on a background thread
+	 *
+	 * Functions marked "Ineffective Before Launch" should now function properly.
+	 * After the emulator has been successfully launched it will issue the event "On Core Is Ready".
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Libretro")
 	void Launch();
 
-	UFUNCTION(BlueprintCallable, Category = "Libretro")
+	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
 	void Shutdown();
 
 	/**
-	 * Suspends the emulator instance. The game will no longer run until you call Pause with false which will resume gameplay.
-	 * @param ShouldPause - Passing true will Suspend the emulator, false will resume it.
+	 * @brief Basically the same as loading a state in an emulator.
+	 *
+	 * The save states are unique based on the Rom's filename.
+	 * 
+	 * **Caution**: Don't use save states with one ROM on multiple different emulators,
+	 * likely their serialization formats will be different and this will trigger an assert.
+	 *
+	 * @param Identifier - Allows for storing multiple save states per ROM
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Libretro")
-	void Pause(bool ShouldPause);
+	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
+	void LoadState(const FString Identifier = "Default");
 
 	/**
-	 * Disables input on PlayerCharacter and sets PlayerCharacter's APlayerController to control the port of the console using sibling LibretroInputComponent's attached to the AActor.
-	 * PlayerCharacter's input is reenabled once DisconnectController is called.
-	 * Note: This isn't an end all be all solution to handling input. Depending on the kind of functionality you want you might want to write your own solution. You can look at LibretroInputComponent to get an idea of how this might be done.
-	 * @param PlayerController - The Player Controller that will control the Port. You will probably have to disable input handling if PlayerController is controlling a pawn I don't disable it automatically or use the posession system Unreal uses.
+	 * @brief Basically the same as saving a state in an emulator.
+	 *
+	 * @see LoadState(const FString)
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
+	void SaveState(const FString Identifier = "Default");
+
+	/**
+	 * @brief Suspends the emulator instance. @details The game will no longer run until you call Pause with false which will resume gameplay.
+	 * 
+	 * @param ShouldPause - Passing true will Suspend the emulator, false will resume it.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
+	void Pause(bool ShouldPause = true);
+
+	/**
+	 * @brief Allows a user to control the Game.
+	 *
+	 * **Note:** This isn't an end all be all solution to handling input. Depending on the kind of functionality you want you might want to write your own solution. You can look at LibretroInputComponent to get an idea of how this might be done.
+	 * 
+	 * @param PlayerController - The Player Controller that will control the Port. You will probably have to disable input handling if PlayerController is controlling a pawn I don't disable it automatically or use the possession system Unreal uses.
 	 * @param Port - Should be set between 0-3. 0 would control first player.
-	 * @param ControllerBindings - Bindings between Unreal Keys and Libretros abstract controller interface. Be careful, the Libretro controller abstraction is counterintuitive since it uses the SNES layout you can read more about it here https://retropie.org.uk/docs/RetroArch-Configuration/.
+	 * @param ControllerBindings - Bindings between Unreal Keys and Libretro's abstract controller interface. Be careful, the Libretro controller abstraction is counterintuitive since it uses the SNES layout you can read more about it [here](https://retropie.org.uk/docs/RetroArch-Configuration/).
 	 * @param OnControllerDisconnected - Called when DisconnectController(Port) is called and is called automatically if the LibretroComponent is destroyed.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Libretro")
 	void ConnectController(APlayerController* PlayerController, int Port, TMap<FKey, ERetroInput> ControllerBindings, FOnControllerDisconnected OnControllerDisconnected);
 
 	/**
-	 * Causes this Libretro instance to no longer recieves input from PlayerController attached to the port and calls the associated On Controller Disconnected delegate.
+	 * @brief Stops user attached to the port from controlling the game.
+	 * 
+	 * Causes this Libretro instance to no longer receive input from PlayerController attached to the port and calls the associated On Controller Disconnected delegate.
+	 * 
 	 * @param Port - Should be set between 0-3. 0 would disconnect first player.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Libretro")
@@ -121,6 +147,7 @@ protected:
 	//virtual bool IsReadyForFinishDestroy() override;
 	FDelegateHandle ResumeEditor, PauseEditor;
 	bool Paused = false;
+	static TMap<FString, FGraphEventRef> LastWriteTask; // @dynamic
 
 	TStaticArray<TWeakObjectPtr<APlayerController>, PortCount> Controller{ nullptr };
 
@@ -128,6 +155,13 @@ protected:
 	TArray<ULibretroInputComponent*> InputMap;
 
 	TStaticArray<FOnControllerDisconnected, PortCount> Disconnected{ FOnControllerDisconnected() };
+
+	FString SaveStatePath(FString Identifier)
+	{
+		auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
+		
+		return FPaths::Combine(LibretroPluginRootPath, TEXT("Saves"), TEXT("SaveStates"), Rom, Identifier + ".sav");
+	}
 
 public:
 	/**

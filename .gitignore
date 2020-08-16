@@ -2,9 +2,9 @@
 /Content
 /MyROMs
 /MyGames
-/saves
+/Saves
 /Source/UnrealLibretro/Public/SDL2
-/system
+/System
 *.pdb
 
 
