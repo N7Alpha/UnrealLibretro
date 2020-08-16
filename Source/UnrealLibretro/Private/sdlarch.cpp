@@ -403,7 +403,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 }
 
 size_t LibretroContext::audio_write(const int16_t *buf, unsigned frames) {
-    if ( running ) { 
+    if LIKELY( enqueue_audio ) { 
         unsigned FramesEnqueued = 0;
         while (FramesEnqueued < frames && QueuedAudio->Enqueue(((int32*)buf)[FramesEnqueued])) {
             FramesEnqueued++;
@@ -640,6 +640,9 @@ void LibretroContext::core_load(const char *sofile) {
 	load_retro_sym(retro_unload_game);
     load_retro_sym(retro_get_memory_data);
     load_retro_sym(retro_get_memory_size);
+    load_retro_sym(retro_serialize_size);
+    load_retro_sym(retro_serialize);
+    load_retro_sym(retro_unserialize);
 
 	load_sym(set_environment, retro_set_environment);
 	load_sym(set_video_refresh, retro_set_video_refresh);
@@ -819,8 +822,8 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
         };
         
         auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
-        InitDirectory(system_directory, LibretroPluginRootPath + "/system/");
-        InitDirectory(save_directory,   LibretroPluginRootPath + "/saves/");
+        InitDirectory(system_directory, LibretroPluginRootPath + "/System/");
+        InitDirectory(save_directory,   LibretroPluginRootPath + "/Saves/SRAM/");
 
         MemberStaticsInitialized = true;
     }
@@ -901,7 +904,7 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             while (l->running) {
                 // Update the game loop timer.
 
-
+                
 
                 if (l->runloop_frame_time.callback) {
                     retro_time_t current = cpu_features_get_time_usec();
@@ -935,9 +938,15 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
                 }
                 FPlatformProcess::Sleep(FMath::Max(0.0, sleep));
                 // End of Timing Loop
+
+                // Execute tasks from command queue
+                TUniqueFunction<void(libretro_api_t&)> Task;
+                while (l->LibretroAPITasks.Dequeue(Task)) {
+                    Task(l->g_retro);
+                }
             }
 
-            // Save SRam
+            // Save SRam @todo competing reads and writes can happen here
             FFileHelper::SaveArrayToFile(TArrayView<const uint8>((uint8*)l->g_retro.retro_get_memory_data(RETRO_MEMORY_SAVE_RAM), l->g_retro.retro_get_memory_size(RETRO_MEMORY_SAVE_RAM)),
                 *SRAMPath,
                 &IFileManager::Get(),
@@ -972,10 +981,23 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 void LibretroContext::Shutdown(LibretroContext* Instance) 
 {
     Instance->Pause(false);
-    Instance->running.Store(false, EMemoryOrder::SequentiallyConsistent);
+
+    Instance->enqueue_audio.Store(false, EMemoryOrder::SequentiallyConsistent);
+	// We enqueue the shutdown procedure as the final task since we want outstanding tasks to be executed first
+    Instance->EnqueueTask([Instance](auto&&)
+    {
+        Instance->running.Store(false, EMemoryOrder::SequentiallyConsistent);
+    });
+    
 }
 
 void LibretroContext::Pause(bool ShouldPause)
 {
     UnrealThreadTask->Thread->Suspend(ShouldPause);
 }
+
+void LibretroContext::EnqueueTask(TUniqueFunction<void(libretro_api_t&)> LibretroAPITask)
+{
+    check(IsInGameThread()); // LibretroAPITasks is a single producer single consumer queue
+    LibretroAPITasks.Enqueue(MoveTemp(LibretroAPITask));
+};

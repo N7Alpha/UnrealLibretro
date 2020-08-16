@@ -6,7 +6,7 @@
 #include "RawAudioSoundWave.h"
 #include <Runtime\Engine\Classes\Engine\TextureRenderTarget2D.h>
 
-#include "glad/gl.h" // TODO: This will shadow driver implementations of OpenGL functions with glad's macro defined functions. If the user happens to be using OpenGL for some other purpose when they include this header it will cause weird behavior. A way to fix it would be to find a way to just declare OpenGL Types since that's all I need in this header or use glad's multi-instance version that doesn't Alias OpenGL functions.
+#include "glad/gl.h" // @todo This will shadow driver implementations of OpenGL functions with glad's macro defined functions. If the user happens to be using OpenGL for some other purpose when they include this header it will cause weird behavior. A way to fix it would be to find a way to just declare OpenGL Types since that's all I need in this header or use glad's multi-instance version that doesn't Alias OpenGL functions.
 #include "glad/khrplatform.h"
 
 
@@ -61,20 +61,46 @@ extern struct func_wrap_t {
     std::function<uintptr_t(void)> get_current_framebuffer;
 } func_wrap_table[];
 
+struct libretro_api_t {
+    void* handle;
+    bool initialized;
+
+    void     (*retro_init)(void);
+    void     (*retro_deinit)(void);
+    unsigned (*retro_api_version)(void);
+    void     (*retro_get_system_info)(struct retro_system_info* info);
+    void     (*retro_get_system_av_info)(struct retro_system_av_info* info);
+    void     (*retro_set_controller_port_device)(unsigned port, unsigned device);
+    void     (*retro_reset)(void);
+    void     (*retro_run)(void);
+    size_t   (*retro_serialize_size)(void);
+    bool     (*retro_serialize)(void *data, size_t size);
+    bool     (*retro_unserialize)(const void *data, size_t size);
+    //	void retro_cheat_reset(void);
+    //	void retro_cheat_set(unsigned index, bool enabled, const char *code);
+    bool     (*retro_load_game)(const struct retro_game_info* game);
+    //	bool retro_load_game_special(unsigned game_type, const struct retro_game_info *info, size_t num_info);
+    void     (*retro_unload_game)(void);
+    //	unsigned retro_get_region(void);
+    void*    (*retro_get_memory_data)(unsigned id);
+    size_t   (*retro_get_memory_size)(unsigned id);
+};
 
 struct LibretroContext {
 public:                                                                                                                                             // @todo: The UObjects shouldn't be parameters of this function, and the callback below should pass the audio buffer and framebuffer to the caller as well
     static LibretroContext* Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, std::function<void(bool)> LoadedCallback);
     static void             Shutdown(LibretroContext* Instance);
 
-    void                    Pause(bool ShouldPause);
+           void             Pause(bool ShouldPause);
+           void             EnqueueTask(TUniqueFunction<void(libretro_api_t&)> LibretroAPITask);
     
 protected:
     LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState);
     ~LibretroContext() {}
-    // UNREAL ENGINE VARIABLES
 
     TAtomic<bool> running = true;
+    TAtomic<bool> enqueue_audio = true; // @hack prevents hangs when destructing because some cores will call audio_write in an infinite loop until audio is enqueued. We have a fixed size audio buffer and have no real control over how the audio is dequeued so this can happen often.
+    bool          exit_run_loop = false;
     FLambdaRunnable* UnrealThreadTask;
 
     // From all the crazy container types you can tell I had trouble with multithreading. However from what I understand my solution is threadsafe.
@@ -98,7 +124,11 @@ protected:
     TAtomic<_8888_color*> RenderThreadsBuffer = nullptr;
     FGraphEventRef CopyToUnrealFramebufferTask;
 
-    // UNREAL ENGINE VARIABLES END
+    libretro_api_t g_retro;
+
+    TQueue<TUniqueFunction<void(libretro_api_t&)>, EQueueMode::Spsc> LibretroAPITasks; // TQueue<T, EQueueMode::Spsc> has aquire-release semantics on Enqueue and Dequeue so this should be thread-safe
+
+
 
     
     // As a libretro frontend you own directory path data.
@@ -152,31 +182,6 @@ protected:
         GLint u_mvp;
 
     } g_shader = { 0 };
-
-     struct {
-        void* handle;
-        bool initialized;
-
-        void (*retro_init)(void);
-        void (*retro_deinit)(void);
-        unsigned (*retro_api_version)(void);
-        void (*retro_get_system_info)(struct retro_system_info* info);
-        void (*retro_get_system_av_info)(struct retro_system_av_info* info);
-        void (*retro_set_controller_port_device)(unsigned port, unsigned device);
-        void (*retro_reset)(void);
-        void (*retro_run)(void);
-        //	size_t retro_serialize_size(void);
-        //	bool retro_serialize(void *data, size_t size);
-        //	bool retro_unserialize(const void *data, size_t size);
-        //	void retro_cheat_reset(void);
-        //	void retro_cheat_set(unsigned index, bool enabled, const char *code);
-        bool (*retro_load_game)(const struct retro_game_info* game);
-        //	bool retro_load_game_special(unsigned game_type, const struct retro_game_info *info, size_t num_info);
-        void (*retro_unload_game)(void);
-        //	unsigned retro_get_region(void);
-        void *(*retro_get_memory_data)(unsigned id);
-        size_t (*retro_get_memory_size)(unsigned id);
-    } g_retro;
 
      
 
