@@ -808,14 +808,14 @@ std::array<char, 260> LibretroContext::system_directory;
 LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, std::function<void(bool)> LoadedCallback)
 {
 
-    check(IsInGameThread());
+    check(IsInGameThread()); // So static initialization is safe
 
     static bool MemberStaticsInitialized = false;
     if (!MemberStaticsInitialized) 
     {
         auto InitDirectory = [] (auto &cstr, FString &&Path) {
             auto AbsolutePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*Path);
-            bool success = IFileManager::Get().MakeDirectory(*AbsolutePath); // This will block for a small amount of time probably
+            bool success = IFileManager::Get().MakeDirectory(*AbsolutePath, true); // This will block for a small amount of time probably
             check(success);
             errno_t failure = strncpy_s(cstr.data(), cstr.size(), StringCast<ANSICHAR>(*AbsolutePath).Get(), cstr.size());
             check(!failure);

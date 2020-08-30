@@ -5,16 +5,16 @@
 #DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 mkdir -p MyROMs
 mkdir -p MyCores
-mkdir -p Saves/SaveStates Saves/SRAM
 mkdir -p Binaries/Win64
+mkdir -p libretro
+
+# Download tool dependencies
+pacman -S --noconfirm --needed p7zip
 
 # Download general binaries for running Libretro Cores
 wget -c https://buildbot.libretro.com/nightly/windows/x86_64/redist.7z --directory /tmp
 
-mkdir -p libretro
-
 # Install p7zip for openning windows 7Zip files
-pacman -S --noconfirm --needed p7zip
 7z x -aoa -o./libretro /tmp/redist.7z
 
 # Download SDL2 and install it. You could probably just use the one in the Libretro folder, but god knows I'm not changing it now
