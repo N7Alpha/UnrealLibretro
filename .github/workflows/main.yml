@@ -24,18 +24,14 @@ jobs:
         
       # Runs setup.sh in the root of the project directory. 
       - name: Run Setup Script
-        run: |
-          sudo apt-get install dos2unix
-          dos2unix $GITHUB_WORKSPACE/setup.sh
-          sudo $GITHUB_WORKSPACE/setup.sh
+        run: sudo ./setup.sh
           
       # Removes source-control files and other miscellaneous files. Also fixes some permissions.
       - name: Cleanup Project Directory
         run: |
-          rm $GITHUB_WORKSPACE/setup.sh $GITHUB_WORKSPACE/.gitignore 
-          sudo rm -rf $GITHUB_WORKSPACE/.git $GITHUB_WORKSPACE/.github
-          sudo find $GITHUB_WORKSPACE/libretro -type d -exec chmod 755 {} \;
-          sudo find $GITHUB_WORKSPACE/libretro -type f -exec chmod 644 {} \;
+          sudo rm -rf setup.sh .git*
+          sudo find libretro -type d -exec chmod 755 {} \;
+          sudo find libretro -type f -exec chmod 644 {} \;
           
       - name: Upload Build-Artifact
         uses: actions/upload-artifact@v2.1.4
@@ -43,6 +39,6 @@ jobs:
           # Artifact name
           name: UnrealLibretro
           # Upload the whole project directory
-          path: ${{ github.workspace }}
+          path: ${{ github.workspace }}/..
           # The desired behavior if no files are found using the provided path.
           if-no-files-found: error
