@@ -33,7 +33,9 @@ jobs:
           sudo find libretro -type d -exec chmod 755 {} \;
           sudo find libretro -type f -exec chmod 644 {} \;
           mkdir UnrealLibretro
+          shopt -s extglob dotglob
           mv !(UnrealLibretro) UnrealLibretro 
+          shopt -u dotglob
           
       - name: Upload Build-Artifact
         uses: actions/upload-artifact@v2.1.4
