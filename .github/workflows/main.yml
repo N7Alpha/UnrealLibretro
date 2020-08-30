@@ -34,7 +34,7 @@ jobs:
           sudo find libretro -type f -exec chmod 644 {} \;
           mkdir UnrealLibretro
           shopt -s extglob dotglob
-          mv !(UnrealLibretro) UnrealLibretro 
+          sudo mv !(UnrealLibretro) UnrealLibretro
           shopt -u dotglob
           
       - name: Upload Build-Artifact
