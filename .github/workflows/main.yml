@@ -22,9 +22,25 @@ jobs:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v2
         
-      # Runs a single command using the runners shell
+      # Runs setup.sh in the root of the project directory. 
       - name: Run Setup Script
         run: |
           sudo apt-get install dos2unix
           dos2unix $GITHUB_WORKSPACE/setup.sh
           sudo $GITHUB_WORKSPACE/setup.sh
+          
+      # Removes source-control files and other miscellaneous files
+      - name: Cleanup Project Directory
+        run: |
+          rm $GITHUB_WORKSPACE/setup.sh $GITHUB_WORKSPACE/.gitignore 
+          rm -r $GITHUB_WORKSPACE/.git $GITHUB_WORKSPACE/.github
+          
+      - name: Upload Build-Artifact
+        uses: actions/upload-artifact@v2.1.4
+        with:
+          # Artifact name
+          name: UnrealLibretro
+          # A file, directory or wildcard pattern that describes what to upload
+          path: $GITHUB_WORKSPACE
+          # The desired behavior if no files are found using the provided path.
+          if-no-files-found: error
