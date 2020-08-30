@@ -24,4 +24,7 @@ jobs:
         
       # Runs a single command using the runners shell
       - name: Run Setup Script
-        run: $GITHUB_WORKSPACE/setup.sh
+        run: |
+          apt-get install dos2unix
+          dos2unix $GITHUB_WORKSPACE/setup.sh
+          $GITHUB_WORKSPACE/setup.sh
