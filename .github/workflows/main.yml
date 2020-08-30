@@ -33,7 +33,7 @@ jobs:
       - name: Cleanup Project Directory
         run: |
           rm $GITHUB_WORKSPACE/setup.sh $GITHUB_WORKSPACE/.gitignore 
-          rm -r $GITHUB_WORKSPACE/.git $GITHUB_WORKSPACE/.github
+          sudo rm -rf $GITHUB_WORKSPACE/.git $GITHUB_WORKSPACE/.github
           
       - name: Upload Build-Artifact
         uses: actions/upload-artifact@v2.1.4
