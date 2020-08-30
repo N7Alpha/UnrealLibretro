@@ -1,0 +1,4 @@
+# This is quite implicit in what its doing. But its saying for all files (the * wildcard) if it thinks its a text file. It will try to automatically manage their line endings. Specifically it should make committed files have LF line endings most of the time.
+* text=auto
+
+*.png binary
