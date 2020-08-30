@@ -144,9 +144,13 @@ void ULibretroCoreInstance::LoadState(const FString Identifier)
 					{
 						WeakThis->CoreInstance.GetValue()->EnqueueTask
 						(
-							[SaveStateBuffer = MoveTemp(SaveStateBuffer)](libretro_api_t& libretro_api)
+							[SaveStateBuffer = MoveTemp(SaveStateBuffer), Core = WeakThis->Core](libretro_api_t& libretro_api)
 							{
-								check(SaveStateBuffer.Num() == libretro_api.retro_serialize_size() || !"Save State file did not match the save state size in folder"); // because of emulator versions these might not match up
+								if (SaveStateBuffer.Num() != libretro_api.retro_serialize_size())
+								{
+									UE_LOG(Libretro, Warning, TEXT("Save state file size specified by %s did not match the save state size in folder. File Size : %d Core Size: %zu. Going to try to load it anyway."), *Core, SaveStateBuffer.Num(), libretro_api.retro_serialize_size()) // because of emulator versions these might not match up also some Libretro cores don't follow spec
+								}
+								
 								libretro_api.retro_unserialize(SaveStateBuffer.GetData(), SaveStateBuffer.Num());
 							}
 						);
