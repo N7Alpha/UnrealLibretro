@@ -43,6 +43,6 @@ jobs:
           # Artifact name
           name: UnrealLibretro
           # Upload the whole project directory
-          path: ${{ github.workspace }}
+          path: ${{ github.workspace }}/**/*
           # The desired behavior if no files are found using the provided path.
           if-no-files-found: error
