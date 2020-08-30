@@ -34,8 +34,8 @@ jobs:
         run: |
           rm $GITHUB_WORKSPACE/setup.sh $GITHUB_WORKSPACE/.gitignore 
           sudo rm -rf $GITHUB_WORKSPACE/.git $GITHUB_WORKSPACE/.github
-          find $GITHUB_WORKSPACE/libretro -type d -exec chmod 755 {} \;
-          find $GITHUB_WORKSPACE/libretro -type f -exec chmod 644 {} \;
+          sudo find $GITHUB_WORKSPACE/libretro -type d -exec chmod 755 {} \;
+          sudo find $GITHUB_WORKSPACE/libretro -type f -exec chmod 644 {} \;
           
       - name: Upload Build-Artifact
         uses: actions/upload-artifact@v2.1.4
