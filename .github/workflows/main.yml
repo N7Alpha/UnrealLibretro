@@ -32,8 +32,8 @@ jobs:
           sudo rm -rf setup.sh *.md .git*
           sudo find libretro -type d -exec chmod 755 {} \;
           sudo find libretro -type f -exec chmod 644 {} \;
-          touch MyROMs/Place\ Your\ ROMs\ in\ this\ Directory
-          touch MyCores/Place\ Your\ Libretro\ Cores\ in\ this\ Directory
+          sudo touch MyROMs/Place\ Your\ ROMs\ in\ this\ Directory
+          sudo touch MyCores/Place\ Your\ Libretro\ Cores\ in\ this\ Directory
           mkdir UnrealLibretro
           shopt -s extglob dotglob
           sudo mv !(UnrealLibretro) UnrealLibretro
@@ -45,6 +45,6 @@ jobs:
           # Artifact name
           name: UnrealLibretro
           # Upload the whole project directory
-          path: ${{ github.workspace }}/**/*
+          path: ${{ github.workspace }}
           # The desired behavior if no files are found using the provided path.
           if-no-files-found: error
