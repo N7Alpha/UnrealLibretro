@@ -61,7 +61,7 @@ extern struct func_wrap_t {
     std::function<uintptr_t(void)> get_current_framebuffer;
 } func_wrap_table[];
 
-struct libretro_api_t {
+struct libretro_api_t { // @todo the retro prefix to the functions is superfluous, but you must change the macro that binds the function pointers from the dll as well
     void* handle;
     bool initialized;
 
@@ -202,5 +202,4 @@ protected:
      int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id);
      void core_load(const char* sofile);
      void core_load_game(const char* filename);
-     void core_unload();
 };
