@@ -805,7 +805,7 @@ LibretroContext::LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, Po
 std::array<char, 260> LibretroContext::save_directory;
 std::array<char, 260> LibretroContext::system_directory;
 
-LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, std::function<void(bool)> LoadedCallback)
+LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, std::function<void(bool)> LoadedCallback, TFunction<void(LibretroContext*)> PostConstructed)
 {
 
     check(IsInGameThread()); // So static initialization is safe
@@ -840,6 +840,7 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
 
     LibretroContext *l = new LibretroContext(InputState.ToSharedRef());
+    PostConstructed(l);
 
     l->UnrealRenderTarget = MakeWeakObjectPtr(RenderTarget);
     l->UnrealSoundBuffer  = MakeWeakObjectPtr(SoundBuffer );
@@ -887,24 +888,17 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             // Configure the player input devices.
             l->g_retro.retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
 
-            // Load SRAM if it exists
-            auto SRAMPath = (FString(save_directory.data()) + FPaths::GetBaseFilename(*game) + ".srm");
-            {
-                auto File = IPlatformFile::GetPlatformPhysical().OpenRead(*SRAMPath);
-                if (File && l->g_retro.retro_get_memory_size(RETRO_MEMORY_SAVE_RAM)) {
-                    File->Read((uint8*)l->g_retro.retro_get_memory_data(RETRO_MEMORY_SAVE_RAM), l->g_retro.retro_get_memory_size(RETRO_MEMORY_SAVE_RAM));
-                    File->~IFileHandle();
-                }
-            }
-
             LoadedCallback(l->g_video.hw.bottom_left_origin);
 
             uint64 frames = 0;
             auto   start = FDateTime::Now();
             while (l->running) {
-                // Update the game loop timer.
-
-                
+            	
+                // Execute tasks from command queue
+                TUniqueFunction<void(libretro_api_t&)> Task;
+                while (l->LibretroAPITasks.Dequeue(Task)) {
+                    Task(l->g_retro);
+                }
 
                 if (l->runloop_frame_time.callback) {
                     retro_time_t current = cpu_features_get_time_usec();
@@ -937,21 +931,9 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
                     frames = 0;
                 }
                 FPlatformProcess::Sleep(FMath::Max(0.0, sleep));
-                // End of Timing Loop
-
-                // Execute tasks from command queue
-                TUniqueFunction<void(libretro_api_t&)> Task;
-                while (l->LibretroAPITasks.Dequeue(Task)) {
-                    Task(l->g_retro);
-                }
+                // End of Timing
             }
 
-            // Save SRam @todo competing reads and writes can happen here
-            FFileHelper::SaveArrayToFile(TArrayView<const uint8>((uint8*)l->g_retro.retro_get_memory_data(RETRO_MEMORY_SAVE_RAM), l->g_retro.retro_get_memory_size(RETRO_MEMORY_SAVE_RAM)),
-                *SRAMPath,
-                &IFileManager::Get(),
-                FILEWRITE_None
-            );
 
 
             l->core_unload();

@@ -147,7 +147,6 @@ protected:
 	//virtual bool IsReadyForFinishDestroy() override;
 	FDelegateHandle ResumeEditor, PauseEditor;
 	bool Paused = false;
-	static TMap<FString, FGraphEventRef> LastWriteTask; // @dynamic
 
 	TStaticArray<TWeakObjectPtr<APlayerController>, PortCount> Controller{ nullptr };
 
@@ -156,11 +155,21 @@ protected:
 
 	TStaticArray<FOnControllerDisconnected, PortCount> Disconnected{ FOnControllerDisconnected() };
 
+	
+	FGraphEventRef AccessFileOrderedOnCoreThread(FString FilePath, TFunction<void(FString, libretro_api_t&)> IOOperation);
+	
 	FString SaveStatePath(FString Identifier)
 	{
 		auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
 		
 		return FPaths::Combine(LibretroPluginRootPath, TEXT("Saves"), TEXT("SaveStates"), Rom, Identifier + ".sav");
+	}
+
+	FString SRAMPath(FString Identifier)
+	{
+		auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
+
+		return FPaths::Combine(LibretroPluginRootPath, TEXT("Saves"), TEXT("SRAM"), Rom, Identifier + ".srm");
 	}
 
 public:
