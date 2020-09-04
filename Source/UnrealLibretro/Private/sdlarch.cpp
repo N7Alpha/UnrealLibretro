@@ -687,7 +687,7 @@ void LibretroContext::core_load_game(const char* filename) {
     SDL_RWops* file = SDL_RWFromFile(filename, "rb");
 
     if (!file)
-        UE_LOG(Libretro, Fatal, TEXT("Failed to load %s: %s"), filename, SDL_GetError());
+        UE_LOG(Libretro, Fatal, TEXT("Failed to load %hs: %hs"), filename, SDL_GetError());
 
     info.path = filename;
     info.meta = "";
@@ -703,7 +703,7 @@ void LibretroContext::core_load_game(const char* filename) {
             UE_LOG(Libretro, Fatal, TEXT("Failed to allocate memory for the content"));
 
         if (!SDL_RWread(file, (void*)info.data, info.size, 1))
-            UE_LOG(Libretro, Fatal, TEXT("Failed to read file data: %s"), SDL_GetError());
+            UE_LOG(Libretro, Fatal, TEXT("Failed to read file data: %hs"), SDL_GetError());
     }
 
     if (!g_retro.retro_load_game(&info))
@@ -792,14 +792,6 @@ static retro_time_t cpu_features_get_time_usec(void) {
     return (retro_time_t)SDL_GetTicks();
 }
 
-void LibretroContext::core_unload() {
-	if (g_retro.initialized)
-		g_retro.retro_deinit();
-
-    if (g_retro.handle)
-        FPlatformProcess::FreeDllHandle(g_retro.handle);
-}
-
 LibretroContext::LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState) : UnrealInputState(InputState) {}
 
 std::array<char, 260> LibretroContext::save_directory;
@@ -853,24 +845,25 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             
             // Here I check that the same dll isn't loaded twice. If it is you won't obtain a new instance of the dll loaded into memory, instead all variables and function pointers will point to the original loaded dll
             // Luckily you can bypass this limitation by just making copies of that dll and loading those. Which I automate here.
-            
             FString InstancedCorePath = core;
             int32 InstanceNumber = 0, CoreInstanceNumber = 0;
+        	[&my_callbacks = l->callback_instance, &core, &InstancedCorePath, &InstanceNumber, &CoreInstanceNumber]()
             {
                 FScopeLock ScopeLock(&MultipleDLLInstanceHandlingLock);
 
                 auto &CoreInstanceBitArray = PerCoreAllocatedInstances.FindOrAdd(core, TBitArray<TInlineAllocator<MAX_INSTANCES_PER_CORE/8>>(false, MAX_INSTANCES_PER_CORE));
                 CoreInstanceNumber = CoreInstanceBitArray.FindAndSetFirstZeroBit();
                 InstanceNumber = AllocatedInstances.FindAndSetFirstZeroBit();
-                l->callback_instance = func_wrap_table + InstanceNumber;
+                my_callbacks = func_wrap_table + InstanceNumber;
                 check(CoreInstanceNumber != INDEX_NONE || InstanceNumber != INDEX_NONE);
-            }
-            
-            if (CoreInstanceNumber > 0) {
-                InstancedCorePath = FString::Printf(TEXT("%s%d.%s"), *FPaths::GetBaseFilename(*core, false), CoreInstanceNumber, *FPaths::GetExtension(*core));
-                bool success = IPlatformFile::GetPlatformPhysical().CopyFile(*InstancedCorePath, *core);
-                check(success || IPlatformFile::GetPlatformPhysical().FileExists(*InstancedCorePath));
-            }
+
+                if (CoreInstanceNumber > 0) {
+                    InstancedCorePath = FString::Printf(TEXT("%s%d.%s"), *FPaths::GetBaseFilename(*core, false), CoreInstanceNumber, *FPaths::GetExtension(*core));
+                    bool success = IPlatformFile::GetPlatformPhysical().CopyFile(*InstancedCorePath, *core);
+                    check(success || IPlatformFile::GetPlatformPhysical().FileExists(*InstancedCorePath));
+                }
+            }();
+
 
             l->g_video.hw.version_major = 4;
             l->g_video.hw.version_minor = 5;
@@ -935,8 +928,12 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             }
 
 
+            if (l->g_retro.initialized)
+                l->g_retro.retro_deinit();
 
-            l->core_unload();
+            if (l->g_retro.handle)
+                FPlatformProcess::FreeDllHandle(l->g_retro.handle);
+        	
             l->video_deinit();
             if (l->g_ctx) { SDL_GL_DeleteContext(l->g_ctx); }
             if (l->g_win) { SDL_DestroyWindow(l->g_win); }// @todo: In SDLarch's code SDL_Quit was here and that implicitly destroyed some things like windows. So I'm not sure if I'm exhaustively destroying everything that it destroyed yet. In order to fix this you could probably just run SDL_Quit here and step with the debugger to see all the stuff it destroys.
