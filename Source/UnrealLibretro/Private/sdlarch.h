@@ -88,7 +88,7 @@ struct libretro_api_t {
 
 struct LibretroContext {
 public:                                                                                                                                             // @todo: The UObjects shouldn't be parameters of this function, and the callback below should pass the audio buffer and framebuffer to the caller as well
-    static LibretroContext* Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, std::function<void(bool)> LoadedCallback);
+    static LibretroContext* Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, std::function<void(bool)> LoadedCallback, TFunction<void(LibretroContext*)> PostConstructed);
     static void             Shutdown(LibretroContext* Instance);
 
            void             Pause(bool ShouldPause);
