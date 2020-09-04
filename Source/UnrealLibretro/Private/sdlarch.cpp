@@ -815,7 +815,7 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
         
         auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
         InitDirectory(system_directory, LibretroPluginRootPath + "/System/");
-        InitDirectory(save_directory,   LibretroPluginRootPath + "/Saves/SRAM/");
+        InitDirectory(save_directory,   LibretroPluginRootPath + "/Saves/" );
 
         MemberStaticsInitialized = true;
     }
