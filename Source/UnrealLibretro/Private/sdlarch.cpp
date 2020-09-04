@@ -847,15 +847,16 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             // Luckily you can bypass this limitation by just making copies of that dll and loading those. Which I automate here.
             FString InstancedCorePath = core;
             int32 InstanceNumber = 0, CoreInstanceNumber = 0;
-        	[&my_callbacks = l->callback_instance, &core, &InstancedCorePath, &InstanceNumber, &CoreInstanceNumber]()
+        	[&core, &InstancedCorePath, &InstanceNumber, &CoreInstanceNumber]()
             {
-                FScopeLock ScopeLock(&MultipleDLLInstanceHandlingLock);
+                {
+                    FScopeLock ScopeLock(&MultipleDLLInstanceHandlingLock);
 
-                auto &CoreInstanceBitArray = PerCoreAllocatedInstances.FindOrAdd(core, TBitArray<TInlineAllocator<MAX_INSTANCES_PER_CORE/8>>(false, MAX_INSTANCES_PER_CORE));
-                CoreInstanceNumber = CoreInstanceBitArray.FindAndSetFirstZeroBit();
-                InstanceNumber = AllocatedInstances.FindAndSetFirstZeroBit();
-                my_callbacks = func_wrap_table + InstanceNumber;
-                check(CoreInstanceNumber != INDEX_NONE || InstanceNumber != INDEX_NONE);
+                    auto& CoreInstanceBitArray = PerCoreAllocatedInstances.FindOrAdd(core, TBitArray<TInlineAllocator<MAX_INSTANCES_PER_CORE / 8>>(false, MAX_INSTANCES_PER_CORE));
+                    CoreInstanceNumber = CoreInstanceBitArray.FindAndSetFirstZeroBit();
+                    InstanceNumber = AllocatedInstances.FindAndSetFirstZeroBit();
+                    check(CoreInstanceNumber != INDEX_NONE && InstanceNumber != INDEX_NONE);
+                }
 
                 if (CoreInstanceNumber > 0) {
                     InstancedCorePath = FString::Printf(TEXT("%s%d.%s"), *FPaths::GetBaseFilename(*core, false), CoreInstanceNumber, *FPaths::GetExtension(*core));
