@@ -10,6 +10,8 @@ public class UnrealLibretro : ModuleRules
 
 		PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../../Binaries/Win64/SDL2.lib"));
 		PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../../Binaries/Win64/SDL2test.lib"));
+        PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../../Binaries/Mac/libSDL2-2.0.0.dylib"));
+        
 
 		PublicIncludePaths.AddRange(
 			new string[] {
@@ -38,6 +40,7 @@ public class UnrealLibretro : ModuleRules
 				"Slate",
 				"HeadMountedDisplay",
 				"Projects"
+                
 				// ... add other public dependencies that you statically link with here ...
 			}
 			);

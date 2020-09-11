@@ -29,9 +29,33 @@ REP100(FUNC_WRAP_DEF)
 func_wrap_t func_wrap_table[] = { REP100(FUNC_WRAP_INIT) };
 func_wrap_t* func_wrap_freelist = &func_wrap_table[99];
 
-/*FString FormatErrorMessage(FString FormatString,...) {
-    
-}*/
+#define ENUM_GL_PROCEDURES(EnumMacro) \
+        EnumMacro(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer) \
+        EnumMacro(PFNGLBINDRENDERBUFFERPROC, glBindRenderbuffer) \
+        EnumMacro(PFNGLBINDTEXTUREPROC, glBindTexture) \
+        EnumMacro(PFNGLCHECKFRAMEBUFFERSTATUSPROC, glCheckFramebufferStatus) \
+        EnumMacro(PFNGLCLEARPROC, glClear) \
+        EnumMacro(PFNGLCLEARCOLORPROC, glClearColor) \
+        EnumMacro(PFNGLDEBUGMESSAGECALLBACKPROC, glDebugMessageCallback) \
+        EnumMacro(PFNGLDEBUGMESSAGECONTROLPROC, glDebugMessageControl) \
+        EnumMacro(PFNGLDELETEBUFFERSPROC, glDeleteBuffers) \
+        EnumMacro(PFNGLDELETETEXTURESPROC, glDeleteTextures) \
+        EnumMacro(PFNGLENABLEPROC, glEnable) \
+        EnumMacro(PFNGLFRAMEBUFFERRENDERBUFFERPROC, glFramebufferRenderbuffer) \
+        EnumMacro(PFNGLFRAMEBUFFERTEXTURE2DPROC, glFramebufferTexture2D) \
+        EnumMacro(PFNGLGENFRAMEBUFFERSPROC, glGenFramebuffers) \
+        EnumMacro(PFNGLGENRENDERBUFFERSPROC, glGenRenderbuffers) \
+        EnumMacro(PFNGLGENTEXTURESPROC, glGenTextures) \
+        EnumMacro(PFNGLGETINTEGERVPROC, glGetIntegerv) \
+        EnumMacro(PFNGLGETSTRINGPROC, glGetString) \
+        EnumMacro(PFNGLGETTEXIMAGEPROC, glGetTexImage) \
+        EnumMacro(PFNGLPIXELSTOREIPROC, glPixelStorei) \
+        EnumMacro(PFNGLRENDERBUFFERSTORAGEPROC, glRenderbufferStorage) \
+        EnumMacro(PFNGLTEXIMAGE2DPROC, glTexImage2D)
+
+/** Define all GL functions. */
+#define DEFINE_GL_PROCEDURES(Type,Func) static Type Func = NULL;
+ENUM_GL_PROCEDURES(DEFINE_GL_PROCEDURES);
 
 void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
 
@@ -144,11 +168,24 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
         UE_LOG(Libretro, Fatal, TEXT("Failed to create OpenGL context: %s"), SDL_GetError());
 
     if (g_video.hw.context_type == RETRO_HW_CONTEXT_OPENGLES2) {
-        auto success = gladLoadGLES2((GLADloadfunc)SDL_GL_GetProcAddress);
-        check(success);
+        /// @todo auto success = gladLoadGLES2((GLADloadfunc)SDL_GL_GetProcAddress);
+        checkNoEntry();
     } else {
-        auto success = gladLoadGL((GLADloadfunc)SDL_GL_GetProcAddress);
-        check(success);
+        #pragma warning(push)
+        #pragma warning(disable:4191)
+
+        // Initialize all entry points.
+        #define GET_GL_PROCEDURES(Type,Func) Func = (Type)SDL_GL_GetProcAddress(#Func);
+        ENUM_GL_PROCEDURES(GET_GL_PROCEDURES);
+
+        // Check that all of the entry points have been initialized.
+        bool bFoundAllEntryPoints = true;
+        #define CHECK_GL_PROCEDURES(Type,Func) if (Func == NULL) { bFoundAllEntryPoints = false; UE_LOG(Libretro, Warning, TEXT("Failed to find entry point for %s"), TEXT(#Func)); }
+        ENUM_GL_PROCEDURES(CHECK_GL_PROCEDURES);
+        checkf(bFoundAllEntryPoints, TEXT("Failed to find all OpenGL entry points."));
+
+        // Restore warning C4191.
+        #pragma warning(pop)
     }
 
 #if DEBUG_OPENGL
@@ -192,11 +229,19 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 
 	nwidth *= g_scale;
 	nheight *= g_scale;
+    
+
     if (!g_win) { // Create window
-        static FCriticalSection WindowLock; // SDL State isn't threadlocal like OpenGL so we have to synchronize here when we create a window
-        FScopeLock scoped_lock(&WindowLock);
-        
-		create_window(nwidth, nheight);
+        #if PLATFORM_APPLE
+            dispatch_sync(dispatch_get_main_queue(),
+            ^{
+                create_window(nwidth, nheight);
+            });
+        #else
+            static FCriticalSection WindowLock; // SDL State isn't threadlocal like OpenGL so we haveto synchronize here when we create a window @todo don't think the initialization of WindowLock is threadsafe here unless its constructor does some magic
+            FScopeLock scoped_lock(&WindowLock);
+            create_window(nwidth, nheight);
+        #endif
     }
 
     if (g_video.tex_id)
@@ -391,7 +436,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
             );
 
             }
-            , TStatId(), nullptr, ENamedThreads::ActualRenderingThread_Local); // @todo I'm guessing local here means only things issued to the queue from this thread will happen in order. This should be safe, but might need to be changed if I change the way I init my Unreal framebuffer
+            , TStatId(), nullptr, ENamedThreads::ActualRenderingThread_Local); // @todo I'm guessing local here means only things issued to the queue from this thread will happen in order. This should be safe, but might need to be changed if I change the way I init my Unreal framebuffer. Specifically right now I block until the framebuffer is initialized, but if I change it so it doesn't block then the command to init the framebuffer is coming from the gamethread so a write to the framebuffer might happen before its initialized
     }
 }
 
@@ -621,8 +666,7 @@ void LibretroContext::core_load(const char *sofile) {
 	memset(&g_retro, 0, sizeof(g_retro));
     auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
     auto dllPath = FPaths::Combine(LibretroPluginRootPath, "libretro");
-    FPlatformProcess::AddDllDirectory(*dllPath);
-    FPlatformProcess::AddDllDirectory(*FPaths::Combine(LibretroPluginRootPath, "MyTutorialDLLs")); // @todo: Cleanup the directory searching stuff here and in LibretroCoreInstance
+    FPlatformProcess::AddDllDirectory(*dllPath); // @todo: Cleanup the directory searching stuff here and in LibretroCoreInstance
     g_retro.handle = FPlatformProcess::GetDllHandle(ANSI_TO_TCHAR(sofile));
 
 	if (!g_retro.handle)
@@ -786,12 +830,12 @@ void LibretroContext::core_load_game(const char* filename) {
  * Returns: time in microseconds.
  **/
 
-
+#include <dispatch/dispatch.h>
 
 static retro_time_t cpu_features_get_time_usec(void) {
     return (retro_time_t)SDL_GetTicks();
 }
-
+#include <string.h>
 LibretroContext::LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState) : UnrealInputState(InputState) {}
 
 std::array<char, 260> LibretroContext::save_directory;
@@ -806,16 +850,15 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     if (!MemberStaticsInitialized) 
     {
         auto InitDirectory = [] (auto &cstr, FString &&Path) {
-            auto AbsolutePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*Path);
+            FString AbsolutePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*Path);
             bool success = IFileManager::Get().MakeDirectory(*AbsolutePath, true); // This will block for a small amount of time probably
-            check(success);
-            errno_t failure = strncpy_s(cstr.data(), cstr.size(), StringCast<ANSICHAR>(*AbsolutePath).Get(), cstr.size());
-            check(!failure);
+            check(success && cstr.size() > AbsolutePath.Len());
+            strcpy(cstr.data(), StringCast<ANSICHAR>(*AbsolutePath).Get()); // @todo should probably just make the AbsolutePath a TArray
         };
         
         auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
-        InitDirectory(system_directory, LibretroPluginRootPath + "/System/");
-        InitDirectory(save_directory,   LibretroPluginRootPath + "/Saves/" );
+        InitDirectory(system_directory, FPaths::Combine(LibretroPluginRootPath, "System"));
+        InitDirectory(save_directory,   FPaths::Combine(LibretroPluginRootPath, "Saves" ));
 
         MemberStaticsInitialized = true;
     }
@@ -827,8 +870,16 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     static TBitArray<TInlineAllocator<(MAX_INSTANCES / 8) + 1>> AllocatedInstances(false, MAX_INSTANCES);
     
     // SDL is needed to get OpenGL contexts and windows from the OS in a sane way. I tried looking for an official Unreal way to do it, but I couldn't really find one SDL is so portable though it shouldn't matter
-    if (SDL_Init(SDL_INIT_VIDEO) != 0)
-        UE_LOG(Libretro, Fatal, TEXT("Failed to initialize SDL"));
+    
+    const auto my_SDL_init = []() { // This is called in separate places depending on the platform
+        if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+            UE_LOG(Libretro, Fatal, TEXT("Failed to initialize SDL"));
+        }
+    };
+    
+    #if !PLATFORM_APPLE
+        my_SDL_init();
+    #endif
 
 
     LibretroContext *l = new LibretroContext(InputState.ToSharedRef());
@@ -842,7 +893,9 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     l->UnrealThreadTask = FLambdaRunnable::RunLambdaOnBackGroundThread
     (
         [=]() {
-            
+            #if PLATFORM_APPLE
+                dispatch_sync(dispatch_get_main_queue(), ^{ my_SDL_init(); }); // here so we don't block the game thread too long since this has to synchronize with the main thread every time.
+            #endif
             // Here I check that the same dll isn't loaded twice. If it is you won't obtain a new instance of the dll loaded into memory, instead all variables and function pointers will point to the original loaded dll
             // Luckily you can bypass this limitation by just making copies of that dll and loading those. Which I automate here.
             FString InstancedCorePath = core;
@@ -865,6 +918,7 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
                 }
             }();
 
+            l->callback_instance = func_wrap_table + InstanceNumber;
 
             l->g_video.hw.version_major = 4;
             l->g_video.hw.version_minor = 5;
@@ -877,7 +931,7 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             l->core_load(TCHAR_TO_ANSI(*InstancedCorePath));
 
             // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initalizes the unreal engine resources for audio and video.
-            l->core_load_game(TCHAR_TO_ANSI(*game));
+            l->core_load_game(TCHAR_TO_ANSI(*IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*game)));
 
             // Configure the player input devices.
             l->g_retro.retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);

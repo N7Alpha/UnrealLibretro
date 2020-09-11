@@ -1,10 +1,9 @@
+#!/bin/bash
 # This file will download the required binaries, headers, and create user folders. After running this you can drag and drop the UnrealLibretro folder into your project's plugins folder
 # and you should be able to load the plugin, and the example blueprint.
-#!/bin/bash
 
 #DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
-mkdir -p MyROMs
-mkdir -p MyCores
+mkdir -p MyROMs MyCores
 mkdir -p Binaries/Win64
 mkdir -p libretro
 

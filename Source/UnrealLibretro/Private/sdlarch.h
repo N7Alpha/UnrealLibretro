@@ -4,15 +4,15 @@
 
 
 #include "RawAudioSoundWave.h"
-#include <Runtime\Engine\Classes\Engine\TextureRenderTarget2D.h>
+#include "Engine/TextureRenderTarget2D.h"
 
-#include "glad/gl.h" // @todo This will shadow driver implementations of OpenGL functions with glad's macro defined functions. If the user happens to be using OpenGL for some other purpose when they include this header it will cause weird behavior. A way to fix it would be to find a way to just declare OpenGL Types since that's all I need in this header or use glad's multi-instance version that doesn't Alias OpenGL functions.
-#include "glad/khrplatform.h"
+/*#pragma warning(push)
+#pragma warning(disable:4191)
+#pragma warning(pop)*/
+#include "OpenGL/GL/glcorearb.h"
+#include "OpenGL/GL/glext.h"
 
-
-#include "Windows/PreWindowsApi.h"
 #include "SDL2/SDL.h"
-#include "Windows/PostWindowsApi.h"
 
 #include "libretro/libretro.h"
 
@@ -98,8 +98,8 @@ protected:
     LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState);
     ~LibretroContext() {}
 
-    TAtomic<bool> running = true;
-    TAtomic<bool> enqueue_audio = true; // @hack prevents hangs when destructing because some cores will call audio_write in an infinite loop until audio is enqueued. We have a fixed size audio buffer and have no real control over how the audio is dequeued so this can happen often.
+    TAtomic<bool> running{true};
+    TAtomic<bool> enqueue_audio{true}; // @hack prevents hangs when destructing because some cores will call audio_write in an infinite loop until audio is enqueued. We have a fixed size audio buffer and have no real control over how the audio is dequeued so this can happen often.
     bool          exit_run_loop = false;
     FLambdaRunnable* UnrealThreadTask;
 
@@ -121,7 +121,7 @@ protected:
 
     bool which = false;
     TSharedPtr<TArray<_8888_color>, ESPMode::ThreadSafe> bgra_buffers[2] = { nullptr, nullptr };
-    TAtomic<_8888_color*> RenderThreadsBuffer = nullptr;
+    TAtomic<_8888_color*> RenderThreadsBuffer{nullptr};
     FGraphEventRef CopyToUnrealFramebufferTask;
 
     libretro_api_t g_retro;
@@ -144,7 +144,7 @@ protected:
      struct retro_audio_callback audio_callback = {0};
      func_wrap_t *callback_instance;
      bool UsingOpenGL = false;
-     struct retro_system_av_info av = { 0 };
+     struct retro_system_av_info av = {{0}, {0}};
      std::unordered_map<std::string, std::string> settings;
      const struct retro_hw_render_context_negotiation_interface* hw_render_context_negotiation = nullptr;
 
