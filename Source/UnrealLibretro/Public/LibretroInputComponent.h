@@ -13,14 +13,16 @@
 																		   BindKey    (UnrealButton, IE_Released, this, &ULibretroInputComponent::ButtonReleased<RetroButton>);
 
 const int PortCount = 4;
-struct FLibretroInputState {
-	TAtomic<unsigned> digital[RETRO_DEVICE_ID_JOYPAD_R3 + 1] = { 0 };
-	TAtomic<int16_t>  analog[2][2] = { 0 };
+struct FLibretroInputState
+{ // @todo should verify these call the zero init constructor
+    TAtomic<unsigned> digital[RETRO_DEVICE_ID_JOYPAD_R3 + 1]{};
+    TAtomic<int16_t>  analog[2][2]{};
 };
 
 // DO NOT REORDER THESE
 UENUM(BlueprintType)
-enum  class ERetroInput : uint8 {
+enum  class ERetroInput : uint8
+{
 	B,
 	Y,
 	SELECT,

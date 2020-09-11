@@ -7,7 +7,7 @@
 
 #include "RHIResources.h"
 #include "LambdaRunnable.h"
-#include <Runtime\Core\Public\HAL\PlatformFilemanager.h>
+#include "HAL/PlatformFilemanager.h"
 #include "Misc/MessageDialog.h"
 
 
@@ -116,7 +116,7 @@ void ULibretroCoreInstance::Launch()
         FMessageDialog::Open(EAppMsgType::Ok, FText::AsCultureInvariant("Failed to launch Libretro core. Couldn't find core at path " + IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*CorePath)));
         return;
     }
-    else if (!IPlatformFile::GetPlatformPhysical().FileExists(*RomPath))
+    else if (!IPlatformFile::GetPlatformPhysical().FileExists(*RomPath) && !IPlatformFile::GetPlatformPhysical().DirectoryExists(*RomPath))
     {
         FMessageDialog::Open(EAppMsgType::Ok, FText::AsCultureInvariant("Failed to launch Libretro core " + Core + ". Couldn't find ROM at path " + IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*RomPath)));
         return;

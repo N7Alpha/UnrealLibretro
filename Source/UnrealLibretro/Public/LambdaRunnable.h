@@ -1,5 +1,5 @@
 #pragma once
-#include <Runtime\Core\Public\HAL\ThreadSafeBool.h>
+#include "HAL/ThreadSafeBool.h"
 #include "CoreMinimal.h"
 #include "HAL/Runnable.h"
 #include "HAL/RunnableThread.h"

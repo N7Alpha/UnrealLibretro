@@ -3,7 +3,7 @@
 #include "LambdaRunnable.h"
 #include "HAL/Runnable.h"
 #include "HAL/RunnableThread.h" 
-#include <Runtime\Core\Public\Containers\UnrealString.h>
+#include "Containers/UnrealString.h"
 
 FThreadSafeCounter FLambdaRunnable::ThreadNumber{0};
 

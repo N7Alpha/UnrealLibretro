@@ -5,8 +5,6 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Engine/TextureRenderTarget2D.h"
-#include <Runtime\Engine\Classes\Engine\StaticMeshActor.h>
-#include <Runtime\Engine\Classes\Engine\TextureRenderTarget2D.h>
 #include "Components/AudioComponent.h"
 #include "Components/InputComponent.h"
 #include "GameFramework/PlayerController.h"
