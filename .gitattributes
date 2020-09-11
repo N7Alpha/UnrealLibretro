@@ -2,3 +2,10 @@
 * text=auto
 
 *.png binary
+
+*.sln                                      eol=crlf
+*.vcxproj                                  eol=crlf
+*.vcxproj.filters                          eol=crlf
+*.cs                                       eol=crlf
+
+*.sh                                       eol=lf
