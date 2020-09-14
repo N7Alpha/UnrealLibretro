@@ -5,6 +5,10 @@
 #include "HAL/FileManager.h"
 #include "Interfaces/IPluginManager.h"
 
+#if PLATFORM_APPLE
+#include <dispatch/dispatch.h>
+#endif
+
 DEFINE_LOG_CATEGORY(Libretro)
 #define DEBUG_OPENGL 0
 
@@ -15,8 +19,8 @@ DEFINE_LOG_CATEGORY(Libretro)
 #define REP10(P, M)  M(P##0) M(P##1) M(P##2) M(P##3) M(P##4) M(P##5) M(P##6) M(P##7) M(P##8) M(P##9)
 #define REP100(M) REP10(,M) REP10(1,M) REP10(2,M) REP10(3,M) REP10(4,M) REP10(5,M) REP10(6,M) REP10(7,M) REP10(8,M) REP10(9,M)
 
-#define FUNC_WRAP_INIT(M) { M ? func_wrap_table+M-1 : 0, func_wrap_cfunc##M, func_wrap_video_refresh##M, func_wrap_audio_sample##M, func_wrap_environment##M, func_wrap_input_poll##M, func_wrap_input_state##M, func_wrap_get_current_framebuffer##M },
-#define FUNC_WRAP_DEF(M) size_t  func_wrap_cfunc##M(const int16_t *data, size_t frames) { return func_wrap_table[M].fn(data, frames); } \
+#define FUNC_WRAP_INIT(M) { M ? func_wrap_table+M-1 : 0, func_wrap_audio_write##M, func_wrap_video_refresh##M, func_wrap_audio_sample##M, func_wrap_environment##M, func_wrap_input_poll##M, func_wrap_input_state##M, func_wrap_get_current_framebuffer##M },
+#define FUNC_WRAP_DEF(M) size_t  func_wrap_audio_write##M(const int16_t *data, size_t frames) { return func_wrap_table[M].audio_write(data, frames); } \
                          void    func_wrap_video_refresh##M(const void *data, unsigned width, unsigned height, size_t pitch) { return func_wrap_table[M].video_refresh(data, width, height, pitch); } \
                          void    func_wrap_audio_sample##M(int16_t left, int16_t right) { return func_wrap_table[M].audio_sample(left, right); } \
                          bool    func_wrap_environment##M(unsigned cmd, void *data) { return func_wrap_table[M].environment(cmd, data); } \
@@ -85,7 +89,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
     if (0 == ((*(void**)&V) = FPlatformProcess::GetDllExport(g_retro.handle, TEXT(#S)))) \
         UE_LOG(Libretro, Fatal, TEXT("Failed to load symbol '" #S "'': %u"), FPlatformMisc::GetLastError()); \
 	} while (0)
-#define load_retro_sym(S) load_sym(g_retro.S, S)
+#define load_retro_sym(S) load_sym(g_retro.S, retro_##S)
 
 
  void LibretroContext::init_framebuffer(int width, int height)
@@ -334,8 +338,8 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
     if (data && data != RETRO_HW_FRAME_BUFFER_VALID) {
         auto region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height);
         
-        const auto& _5_to_8_bit = [](uint8 pixel_channel) { return (pixel_channel << 3) | (pixel_channel >> 2); };
-        const auto& _6_to_8_bit = [](uint8 pixel_channel) { return (pixel_channel << 2) | (pixel_channel >> 4); };
+        const auto& _5_to_8_bit = [](uint8 pixel_channel)->uint8 { return (pixel_channel << 3) | (pixel_channel >> 2); };
+        const auto& _6_to_8_bit = [](uint8 pixel_channel)->uint8 { return (pixel_channel << 2) | (pixel_channel >> 4); };
 
         switch (g_video.pixfmt) {
             case GL_UNSIGNED_SHORT_5_6_5: {
@@ -436,7 +440,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
             );
 
             }
-            , TStatId(), nullptr, ENamedThreads::ActualRenderingThread_Local); // @todo I'm guessing local here means only things issued to the queue from this thread will happen in order. This should be safe, but might need to be changed if I change the way I init my Unreal framebuffer. Specifically right now I block until the framebuffer is initialized, but if I change it so it doesn't block then the command to init the framebuffer is coming from the gamethread so a write to the framebuffer might happen before its initialized
+            , TStatId(), nullptr, ENamedThreads::ActualRenderingThread_Local); // @todo change to ENQUEUE_RENDERING_COMMAND.... The RHI documentation has a general fence you can use as well I believe
     }
 }
 
@@ -447,7 +451,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 	g_video.tex_id = 0;
 }
 
-size_t LibretroContext::audio_write(const int16_t *buf, unsigned frames) {
+size_t LibretroContext::audio_write(const int16_t *buf, size_t frames) {
     if LIKELY( enqueue_audio ) { 
         unsigned FramesEnqueued = 0;
         while (FramesEnqueued < frames && QueuedAudio->Enqueue(((int32*)buf)[FramesEnqueued])) {
@@ -652,7 +656,7 @@ int16_t LibretroContext::core_input_state(unsigned port, unsigned device, unsign
 
 void LibretroContext::core_audio_sample(int16_t left, int16_t right) {
 	int16_t buf[2] = {left, right};
-	audio_write(buf, 1);
+	audio_write(buf, (size_t)1);
 }
 
 
@@ -672,21 +676,21 @@ void LibretroContext::core_load(const char *sofile) {
 	if (!g_retro.handle)
         UE_LOG(LogTemp, Fatal ,TEXT("Failed to load core: %s"), ANSI_TO_TCHAR(sofile));
 
-	load_retro_sym(retro_init);
-	load_retro_sym(retro_deinit);
-	load_retro_sym(retro_api_version);
-	load_retro_sym(retro_get_system_info);
-	load_retro_sym(retro_get_system_av_info);
-	load_retro_sym(retro_set_controller_port_device);
-	load_retro_sym(retro_reset);
-	load_retro_sym(retro_run);
-	load_retro_sym(retro_load_game);
-	load_retro_sym(retro_unload_game);
-    load_retro_sym(retro_get_memory_data);
-    load_retro_sym(retro_get_memory_size);
-    load_retro_sym(retro_serialize_size);
-    load_retro_sym(retro_serialize);
-    load_retro_sym(retro_unserialize);
+	load_retro_sym(init);
+	load_retro_sym(deinit);
+	load_retro_sym(api_version);
+	load_retro_sym(get_system_info);
+	load_retro_sym(get_system_av_info);
+	load_retro_sym(set_controller_port_device);
+	load_retro_sym(reset);
+	load_retro_sym(run);
+	load_retro_sym(load_game);
+	load_retro_sym(unload_game);
+    load_retro_sym(get_memory_data);
+    load_retro_sym(get_memory_size);
+    load_retro_sym(serialize_size);
+    load_retro_sym(serialize);
+    load_retro_sym(unserialize);
 
 	load_sym(set_environment, retro_set_environment);
 	load_sym(set_video_refresh, retro_set_video_refresh);
@@ -695,7 +699,7 @@ void LibretroContext::core_load(const char *sofile) {
 	load_sym(set_audio_sample, retro_set_audio_sample);
 	load_sym(set_audio_sample_batch, retro_set_audio_sample_batch);
 
-    callback_instance->fn = [=](const int16_t *data, size_t frames) {
+    callback_instance->audio_write = [=](const int16_t *data, size_t frames) {
         return audio_write(data, frames);
     };
     callback_instance->video_refresh = [=](const void* data, unsigned width, unsigned height, size_t pitch) {
@@ -705,7 +709,6 @@ void LibretroContext::core_load(const char *sofile) {
     callback_instance->audio_sample = [=](int16_t left, int16_t right) { return core_audio_sample(left, right); };
     callback_instance->input_poll = [=]() { return core_input_poll();  };
     callback_instance->input_state = [=](unsigned port, unsigned device, unsigned index, unsigned id) { return core_input_state(port, device, index, id); };
-
     callback_instance->get_current_framebuffer = [=]() { return core_get_current_framebuffer(); };
 
     set_environment(callback_instance->c_environment);
@@ -713,11 +716,11 @@ void LibretroContext::core_load(const char *sofile) {
     set_input_poll(callback_instance->c_input_poll);
     set_input_state(callback_instance->c_input_state);
     set_audio_sample(callback_instance->c_audio_sample);
-    set_audio_sample_batch(callback_instance->c_fn);
+    set_audio_sample_batch(callback_instance->c_audio_write);
 
     
 
-	g_retro.retro_init();
+	g_retro.init();
 	g_retro.initialized = true;
 
 	UE_LOG(Libretro, Log, TEXT("Core loaded"));
@@ -738,7 +741,7 @@ void LibretroContext::core_load_game(const char* filename) {
     info.data = NULL;
     info.size = SDL_RWsize(file);
 
-    g_retro.retro_get_system_info(&system);
+    g_retro.get_system_info(&system);
 
     if (!system.need_fullpath) {
         info.data = SDL_malloc(info.size);
@@ -750,10 +753,10 @@ void LibretroContext::core_load_game(const char* filename) {
             UE_LOG(Libretro, Fatal, TEXT("Failed to read file data: %hs"), SDL_GetError());
     }
 
-    if (!g_retro.retro_load_game(&info))
+    if (!g_retro.load_game(&info))
         UE_LOG(Libretro, Fatal, TEXT("The core failed to load the content."));
 
-    g_retro.retro_get_system_av_info(&av);
+    g_retro.get_system_av_info(&av);
     
     // @todo: move this
     
@@ -773,7 +776,13 @@ void LibretroContext::core_load_game(const char* filename) {
             // Make sure the game objects haven't been invalidated
             if (!UnrealSoundBuffer.IsValid() || !UnrealRenderTarget.IsValid())
             { 
-                running = false;
+                { // @hack until we acquire are own resources and don't rely on getting them by proxy through a UObject
+                    callback_instance->audio_write = [](const int16_t* data, size_t frames) {
+                        return frames;
+                    };
+                    callback_instance->video_refresh = [=](const void* data, unsigned width, unsigned height, size_t pitch) {};
+                    callback_instance->audio_sample = [=](int16_t left, int16_t right) {};
+                }
                 RenderInitTask->Trigger();
                 return; 
             }
@@ -830,7 +839,6 @@ void LibretroContext::core_load_game(const char* filename) {
  * Returns: time in microseconds.
  **/
 
-#include <dispatch/dispatch.h>
 
 static retro_time_t cpu_features_get_time_usec(void) {
     return (retro_time_t)SDL_GetTicks();
@@ -841,7 +849,8 @@ LibretroContext::LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, Po
 std::array<char, 260> LibretroContext::save_directory;
 std::array<char, 260> LibretroContext::system_directory;
 
-LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, std::function<void(bool)> LoadedCallback, TFunction<void(LibretroContext*)> PostConstructed)
+LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, TUniqueFunction
+                                         <void(libretro_api_t&, bool)> LoadedCallback)
 {
 
     check(IsInGameThread()); // So static initialization is safe
@@ -853,13 +862,13 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             FString AbsolutePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*Path);
             bool success = IFileManager::Get().MakeDirectory(*AbsolutePath, true); // This will block for a small amount of time probably
             check(success && cstr.size() > AbsolutePath.Len());
-            strcpy(cstr.data(), StringCast<ANSICHAR>(*AbsolutePath).Get()); // @todo should probably just make the AbsolutePath a TArray
+            auto RAII_ANSIString = StringCast<ANSICHAR>(*AbsolutePath);
+            strcpy(cstr.data(), RAII_ANSIString.Get()); // @todo should probably just make the AbsolutePath a TArray
         };
         
-        auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
-        InitDirectory(system_directory, FPaths::Combine(LibretroPluginRootPath, "System"));
-        InitDirectory(save_directory,   FPaths::Combine(LibretroPluginRootPath, "Saves" ));
-
+        auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin(TEXT("UnrealLibretro"))->GetBaseDir();
+        InitDirectory(system_directory, FPaths::Combine(LibretroPluginRootPath, TEXT("System")));
+        InitDirectory(save_directory, FPaths::Combine(LibretroPluginRootPath, TEXT("Saves"), TEXT("Core")));
         MemberStaticsInitialized = true;
     }
 
@@ -883,7 +892,6 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
 
     LibretroContext *l = new LibretroContext(InputState.ToSharedRef());
-    PostConstructed(l);
 
     l->UnrealRenderTarget = MakeWeakObjectPtr(RenderTarget);
     l->UnrealSoundBuffer  = MakeWeakObjectPtr(SoundBuffer );
@@ -892,10 +900,11 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     // The Runnable system is the standard way for spawning and managing threads in Unreal. FThread looks enticing, but they removed anyway to detach threads since "it doesn't work as expected"
     l->UnrealThreadTask = FLambdaRunnable::RunLambdaOnBackGroundThread
     (
-        [=]() {
+        [=, LoadedCallback = MoveTemp(LoadedCallback)]() {
             #if PLATFORM_APPLE
                 dispatch_sync(dispatch_get_main_queue(), ^{ my_SDL_init(); }); // here so we don't block the game thread too long since this has to synchronize with the main thread every time.
             #endif
+        	
             // Here I check that the same dll isn't loaded twice. If it is you won't obtain a new instance of the dll loaded into memory, instead all variables and function pointers will point to the original loaded dll
             // Luckily you can bypass this limitation by just making copies of that dll and loading those. Which I automate here.
             FString InstancedCorePath = core;
@@ -930,23 +939,17 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             // Loads the dll and its function pointers into g_retro
             l->core_load(TCHAR_TO_ANSI(*InstancedCorePath));
 
-            // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initalizes the unreal engine resources for audio and video.
+            // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
             l->core_load_game(TCHAR_TO_ANSI(*IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*game)));
 
             // Configure the player input devices.
-            l->g_retro.retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
+            l->g_retro.set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
 
-            LoadedCallback(l->g_video.hw.bottom_left_origin);
+            LoadedCallback(l->g_retro, l->g_video.hw.bottom_left_origin);
 
             uint64 frames = 0;
             auto   start = FDateTime::Now();
             while (l->running) {
-            	
-                // Execute tasks from command queue
-                TUniqueFunction<void(libretro_api_t&)> Task;
-                while (l->LibretroAPITasks.Dequeue(Task)) {
-                    Task(l->g_retro);
-                }
 
                 if (l->runloop_frame_time.callback) {
                     retro_time_t current = cpu_features_get_time_usec();
@@ -968,23 +971,30 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
                 // @todo My timing solution is a bit adhoc. I'm sure theres probably a better way.
                 // Timing loop
-                l->g_retro.retro_run();
+                l->g_retro.run();
+            	
+                // Execute tasks from command queue
+                // It's semantically significant that this is here. Since I hook in save state operations here it must necessarily come after run is called on the core
+                TUniqueFunction<void(libretro_api_t&)> Task;
+                while (l->LibretroAPITasks.Dequeue(Task)) {
+                    Task(l->g_retro);
+                }
 
                 frames++;
-
 
                 auto sleep = (frames / l->av.timing.fps) - (FDateTime::Now() - start).GetTotalSeconds();
                 if (sleep < -(1 / l->av.timing.fps)) { // If over a frame behind don't try to catch up to the next frame
                     start = FDateTime::Now();
                     frames = 0;
                 }
+
                 FPlatformProcess::Sleep(FMath::Max(0.0, sleep));
-                // End of Timing
+                // End of Timing loop
             }
 
 
             if (l->g_retro.initialized)
-                l->g_retro.retro_deinit();
+                l->g_retro.deinit();
 
             if (l->g_retro.handle)
                 FPlatformProcess::FreeDllHandle(l->g_retro.handle);
@@ -1005,7 +1015,6 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
                 AllocatedInstances[InstanceNumber] = false;
                 PerCoreAllocatedInstances[core][CoreInstanceNumber] = false;
             }
-
         }
     );
 
@@ -1025,7 +1034,7 @@ void LibretroContext::Shutdown(LibretroContext* Instance)
     
 }
 
-void LibretroContext::Pause(bool ShouldPause)
+void LibretroContext::Pause(bool ShouldPause) // @todo not safe implementation if you aquire locks which we do
 {
     UnrealThreadTask->Thread->Suspend(ShouldPause);
 }
