@@ -105,7 +105,6 @@ public:
 	void DisconnectController(int Port);
 
 
-
 	// EDITOR PROPERTIES
 
 	/**
@@ -152,9 +151,6 @@ protected:
 	TArray<ULibretroInputComponent*> InputMap;
 
 	TStaticArray<FOnControllerDisconnected, PortCount> Disconnected{ FOnControllerDisconnected() };
-
-	
-	FGraphEventRef AccessFileOrderedOnCoreThread(FString FilePath, TFunction<void(FString, libretro_api_t&)> IOOperation);
 	
 	FString SaveStatePath(FString Identifier)
 	{

@@ -1,94 +1,93 @@
 #pragma once
 
-
-
-
-#include "RawAudioSoundWave.h"
-#include "Engine/TextureRenderTarget2D.h"
-
 /*#pragma warning(push)
 #pragma warning(disable:4191)
 #pragma warning(pop)*/
-#include "OpenGL/GL/glcorearb.h"
-#include "OpenGL/GL/glext.h"
 
-#include "SDL2/SDL.h"
-
+// Libretro API
 #include "libretro/libretro.h"
+static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 
-#include <stdio.h>
-#include <array>
 
-// C++
+// Standard Template Library https://docs.unrealengine.com/en-US/Programming/Development/CodingStandard/#useofstandardlibraries
 //#include <variant>
-#include <functional>
-
+#include <array>
 #include <unordered_map>
 #include <string>
 
 // Unreal imports
 #include "CoreMinimal.h"
-#include "Misc/Paths.h"
-#include "Misc/Optional.h"
-#include "GenericPlatform/GenericPlatformProcess.h"
 #include "LambdaRunnable.h"
-#include "CoreGlobals.h"
-#include "Templates/UniquePtr.h"
 #include "UObject/WeakObjectPtrTemplates.h"
-#include "Components/AudioComponent.h"
-#include "Misc/FileHelper.h"
 #include "LibretroInputComponent.h"
 
+#include "RawAudioSoundWave.h"
+#include "Engine/TextureRenderTarget2D.h"
+
+// Third party libraries
+#if PLATFORM_WINDOWS
+#include "Windows/PreWindowsApi.h"
+#endif
+
+#include "SDL2/SDL.h"
+#include "OpenGL/GL/glcorearb.h"
+
+#if PLATFORM_WINDOWS
+#include "Windows/PostWindowsApi.h"
+#endif
+
+#include <type_traits>
 UNREALLIBRETRO_API DECLARE_LOG_CATEGORY_EXTERN(Libretro, Log, All);
 
 struct FLibretroInputState;
 
 extern struct func_wrap_t {
     func_wrap_t* next;
-    retro_audio_sample_batch_t c_fn;
-    retro_video_refresh_t c_video_refresh;
-    retro_audio_sample_t c_audio_sample;
-    retro_environment_t c_environment;
-    retro_input_poll_t c_input_poll;
-    retro_input_state_t c_input_state;
-    retro_hw_get_current_framebuffer_t c_get_current_framebuffer;
-    std::function<size_t(const int16_t*, size_t)>    fn;
-    std::function<void(const void*, unsigned, unsigned, size_t)> video_refresh;
-    std::function<void(int16_t, int16_t)> audio_sample;
-    std::function<bool(unsigned cmd, void* data)> environment;
-    std::function<void(void)> input_poll;
-    std::function<int16_t(unsigned port, unsigned device, unsigned index, unsigned id)> input_state;
-    std::function<uintptr_t(void)> get_current_framebuffer;
+	
+    retro_audio_sample_batch_t                                                c_audio_write;
+    retro_video_refresh_t                                                     c_video_refresh;
+    retro_audio_sample_t                                                      c_audio_sample;
+    retro_environment_t                                                       c_environment;
+    retro_input_poll_t                                                        c_input_poll;
+    retro_input_state_t                                                       c_input_state;
+    retro_hw_get_current_framebuffer_t                                        c_get_current_framebuffer;
+    TUniqueFunction<TRemovePointer<retro_audio_sample_batch_t        >::Type>   audio_write; // Changed these to TUniqueFunction because std::function throws exceptions even with -O3 and -fno-exceptions surprisingly https://godbolt.org/z/oqP3vT
+    TUniqueFunction<TRemovePointer<retro_video_refresh_t             >::Type>   video_refresh;
+    TUniqueFunction<TRemovePointer<retro_audio_sample_t              >::Type>   audio_sample;
+    TUniqueFunction<TRemovePointer<retro_environment_t               >::Type>   environment;
+    TUniqueFunction<TRemovePointer<retro_input_poll_t                >::Type>   input_poll;
+    TUniqueFunction<TRemovePointer<retro_input_state_t               >::Type>   input_state;
+    TUniqueFunction<TRemovePointer<retro_hw_get_current_framebuffer_t>::Type>   get_current_framebuffer;
 } func_wrap_table[];
 
 struct libretro_api_t { // @todo the retro prefix to the functions is superfluous, but you must change the macro that binds the function pointers from the dll as well
     void* handle;
     bool initialized;
 
-    void     (*retro_init)(void);
-    void     (*retro_deinit)(void);
-    unsigned (*retro_api_version)(void);
-    void     (*retro_get_system_info)(struct retro_system_info* info);
-    void     (*retro_get_system_av_info)(struct retro_system_av_info* info);
-    void     (*retro_set_controller_port_device)(unsigned port, unsigned device);
-    void     (*retro_reset)(void);
-    void     (*retro_run)(void);
-    size_t   (*retro_serialize_size)(void);
-    bool     (*retro_serialize)(void *data, size_t size);
-    bool     (*retro_unserialize)(const void *data, size_t size);
-    //	void retro_cheat_reset(void);
-    //	void retro_cheat_set(unsigned index, bool enabled, const char *code);
-    bool     (*retro_load_game)(const struct retro_game_info* game);
-    //	bool retro_load_game_special(unsigned game_type, const struct retro_game_info *info, size_t num_info);
-    void     (*retro_unload_game)(void);
-    //	unsigned retro_get_region(void);
-    void*    (*retro_get_memory_data)(unsigned id);
-    size_t   (*retro_get_memory_size)(unsigned id);
+    void     (*init)(void);
+    void     (*deinit)(void);
+    unsigned (*api_version)(void);
+    void     (*get_system_info)(struct retro_system_info* info);
+    void     (*get_system_av_info)(struct retro_system_av_info* info);
+    void     (*set_controller_port_device)(unsigned port, unsigned device);
+    void     (*reset)(void);
+    void     (*run)(void);
+    size_t   (*serialize_size)(void);
+    bool     (*serialize)(void *data, size_t size);
+    bool     (*unserialize)(const void *data, size_t size);
+    //    void cheat_reset(void);
+    //	  void cheat_set(unsigned index, bool enabled, const char *code);
+    bool     (*load_game)(const struct retro_game_info* game);
+    //	  bool load_game_special(unsigned game_type, const struct retro_game_info *info, size_t num_info);
+    void     (*unload_game)(void);
+    //unsigned get_region(void);
+    void*    (*get_memory_data)(unsigned id);
+    size_t   (*get_memory_size)(unsigned id);
 };
 
 struct LibretroContext {
 public:                                                                                                                                             // @todo: The UObjects shouldn't be parameters of this function, and the callback below should pass the audio buffer and framebuffer to the caller as well
-    static LibretroContext* Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, std::function<void(bool)> LoadedCallback, TFunction<void(LibretroContext*)> PostConstructed);
+    static LibretroContext* Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, TUniqueFunction<void(libretro_api_t&, bool)> LoadedCallback);
     static void             Shutdown(LibretroContext* Instance);
 
            void             Pause(bool ShouldPause);
@@ -196,7 +195,7 @@ protected:
      void video_refresh(const void* data, unsigned width, unsigned height, unsigned pitch);
      uintptr_t core_get_current_framebuffer();
      void core_audio_sample(int16_t left, int16_t right);
-     size_t audio_write(const int16_t* buf, unsigned frames);
+     size_t audio_write(const int16_t* buf, size_t frames);
      bool core_environment(unsigned cmd, void* data);
      void core_input_poll(void);
      int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id);

@@ -9,7 +9,7 @@
 #include "LambdaRunnable.h"
 #include "HAL/PlatformFilemanager.h"
 #include "Misc/MessageDialog.h"
-
+#include "Misc/FileHelper.h"
 
 #include "Interfaces/IPluginManager.h"
 
@@ -22,44 +22,31 @@ TRefCountPtr<T>&& Replace(TRefCountPtr<T> & a, TRefCountPtr<T> && b)
     return MoveTemp(b);
 }
 
+// The procedure below is a pretty nasty crutch. I need it because I don't know how to reason about the lifetime of the background threads running the Libretro Cores.
+// If I could find some engine hook that can defer the loading of levels until all IO Operations I perform are finished I could get rid of this.
+// If you didn't have this crutch potentially a race condition can occur if say you have a instance setup to be persistent (Saves state when its destroyed; loads state when its created)
+// And you don't synchronize the lifetimes of the instances which asynchronously write to the save files to be mutually exclusive and ordered between levels then you
+// can imagine a scenario where you reload a level and the loading state operation of the new instance happens before the saving sate of old instance and
+// thus you load an old state and the user loses progress or even worse the save file is corrupted from a simultaneous read and write.
 TMap<FString, FGraphEventRef> LastIOTask; // @dynamic
-// This is a pretty nasty crutch just because I don't know how to reason about the lifetime of the background task running the libretro cores.
-template <typename... TArgs>
-FGraphEventRef AccessFileOrdered(FString FilePath, TFunction<void(FString, TArgs...)> IOOperation, TFunction<void(TUniqueFunction<void(TArgs...)>)> EnqueueTask)
+
+TUniqueFunction<void(libretro_api_t&)> MakeOrderedFileAccessOperation(FString FilePath, TFunction<void(FString, libretro_api_t&)> IOOperation) // @todo trigger assert if the operation is released before being called
 {
     check(IsInGameThread());
 
     auto ThisIOOperation = TGraphTask<FNullGraphTask>::CreateTask().ConstructAndHold(TStatId(), ENamedThreads::AnyThread);
 
-    EnqueueTask
-    (
-        [IOOperation, FilePath, ThisIOOperation, LastIOOperation = Replace(LastIOTask.FindOrAdd(FilePath), ThisIOOperation->GetCompletionEvent())]
-        (auto Args)
+    return [IOOperation, FilePath, ThisIOOperation, LastIOOperation = Replace(LastIOTask.FindOrAdd(FilePath), ThisIOOperation->GetCompletionEvent())]
+    (auto libretro_api)
+    {
+        if (LastIOOperation)
         {
-            if (LastIOOperation)
-            {
-                FTaskGraphInterface::Get().WaitUntilTaskCompletes(LastIOOperation);
-            }
-        	
-            IOOperation(FilePath, Args);
-            ThisIOOperation->Unlock(); // This uses _InterlockedCompareExchange which has a memory barrier so it should be thread-safe
+            FTaskGraphInterface::Get().WaitUntilTaskCompletes(LastIOOperation);
         }
-    );
 
-    return LastIOTask[FilePath];
-}
-// todo merge the above function into this one
-FGraphEventRef ULibretroCoreInstance::AccessFileOrderedOnCoreThread(FString FilePath, TFunction<void(FString, libretro_api_t&)> IOOperation)
-{
-    return AccessFileOrdered(FilePath,
-                             IOOperation,
-                    TFunction<void(TUniqueFunction<void(libretro_api_t&)>)>(
-				       [this](auto IOOperation)
-						     {
-						         this->CoreInstance.GetValue()->EnqueueTask(MoveTemp(IOOperation));
-						     }
-                            )
-                            );
+        IOOperation(FilePath, libretro_api);
+        ThisIOOperation->Unlock(); // This uses _InterlockedCompareExchange which has a memory barrier so it should be thread-safe
+    };
 }
 
 ULibretroCoreInstance::ULibretroCoreInstance()
@@ -132,33 +119,34 @@ void ULibretroCoreInstance::Launch()
 
     RenderTarget->Filter = TF_Nearest;
 
-    LibretroContext::Launch(CorePath, RomPath, RenderTarget, AudioBuffer, InputState,
-        [weakThis = MakeWeakObjectPtr(this)](bool bottom_left_origin) 
-            { // Core Loaded
-            FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady([=]()
-                {
-                    if (weakThis.IsValid())
-                    {
-                        weakThis->OnCoreIsReady.Broadcast(weakThis->RenderTarget, weakThis->AudioBuffer, bottom_left_origin);
-                    }
-
-                }, TStatId(), nullptr, ENamedThreads::GameThread);
-            },
-            [this](LibretroContext *JustConstructedContext)
+    auto LoadSRAM = MakeOrderedFileAccessOperation(SRAMPath("Default"),
+        [](FString SRAMPath, libretro_api_t& libretro_api)
+        {
+            auto File = IPlatformFile::GetPlatformPhysical().OpenRead(*SRAMPath);
+            if (File && libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM))
             {
-                this->CoreInstance = JustConstructedContext; // todo its kind of crazy to have this hook here
-                AccessFileOrderedOnCoreThread(SRAMPath("Default"),
-                    [](auto SRAMPath, auto libretro_api)
-                    {
-                        auto File = IPlatformFile::GetPlatformPhysical().OpenRead(*SRAMPath);
-                        if (File && libretro_api.retro_get_memory_size(RETRO_MEMORY_SAVE_RAM))
-                        {
-                            File->Read((uint8*)libretro_api.retro_get_memory_data(RETRO_MEMORY_SAVE_RAM), libretro_api.retro_get_memory_size(RETRO_MEMORY_SAVE_RAM));
-                            File->~IFileHandle(); // must be called explicitly
-                        }
-                    }
-                );
-            });
+                File->Read((uint8*)libretro_api.get_memory_data(RETRO_MEMORY_SAVE_RAM), libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM));
+                File->~IFileHandle(); // must be called explicitly
+            }
+        }
+     );
+
+    this->CoreInstance = LibretroContext::Launch(CorePath, RomPath, RenderTarget, AudioBuffer, InputState,
+	    [weakThis = MakeWeakObjectPtr(this), LoadSRAM = MoveTemp(LoadSRAM)](libretro_api_t &libretro_api, bool bottom_left_origin) 
+	    {   // Core has loaded
+            
+	        // Load save data into core
+		    LoadSRAM(libretro_api);
+	        
+	        // Notify delegate
+	        FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady([=]()
+	        {
+	            if (weakThis.IsValid())
+	            {
+	                weakThis->OnCoreIsReady.Broadcast(weakThis->RenderTarget, weakThis->AudioBuffer, bottom_left_origin);
+	            }
+	        }, TStatId(), nullptr, ENamedThreads::GameThread);
+	    });
 }
 
 void ULibretroCoreInstance::Pause(bool ShouldPause)
@@ -182,22 +170,30 @@ void ULibretroCoreInstance::LoadState(const FString Identifier)
 {
     NOT_LAUNCHED_GUARD
 
-    AccessFileOrderedOnCoreThread(this->SaveStatePath(Identifier),
-        [Core = this->Core](auto SavePath, auto libretro_api)
+    auto LoadSaveState = MakeOrderedFileAccessOperation(this->SaveStatePath(Identifier),
+		[Core = this->Core](auto SaveStatePath, auto libretro_api)
+		{
+		    TArray<uint8> SaveStateBuffer;
+
+		    if (!FFileHelper::LoadFileToArray(SaveStateBuffer, *SaveStatePath))
+		    {
+		        return; // We just assume failure means the file did not exist and we do nothing
+		    }
+
+		    if (SaveStateBuffer.Num() != libretro_api.serialize_size()) // because of emulator versions these might not match up also some Libretro cores don't follow spec so the size can change between calls to serialize_size
+		    {
+		        UE_LOG(Libretro, Warning, TEXT("Save state file size specified by %s did not match the save state size in folder. File Size : %d Core Size: %zu. Going to try to load it anyway."), *Core, SaveStateBuffer.Num(), libretro_api.serialize_size()) 
+		    }
+
+		    libretro_api.unserialize(SaveStateBuffer.GetData(), SaveStateBuffer.Num());
+		}
+    );
+
+    CoreInstance.GetValue()->EnqueueTask
+	(
+        [LoadSaveState = MoveTemp(LoadSaveState)](auto libretro_api)
         {
-            TArray<uint8> SaveStateBuffer;
-
-            if (!FFileHelper::LoadFileToArray(SaveStateBuffer, *SavePath))
-            {
-                return; // We just assume failure means the file did not exist and we do nothing
-            }
-
-            if (SaveStateBuffer.Num() != libretro_api.retro_serialize_size()) // because of emulator versions these might not match up also some Libretro cores don't follow spec
-            {
-                UE_LOG(Libretro, Warning, TEXT("Save state file size specified by %s did not match the save state size in folder. File Size : %d Core Size: %zu. Going to try to load it anyway."), *Core, SaveStateBuffer.Num(), libretro_api.retro_serialize_size()) 
-            }
-
-            libretro_api.retro_unserialize(SaveStateBuffer.GetData(), SaveStateBuffer.Num());
+			LoadSaveState(libretro_api);
         }
     );
 }
@@ -228,9 +224,9 @@ void ULibretroCoreInstance::SaveState(const FString Identifier)
 	(
 		[SaveStateBuffer, SaveStateToFileTask](libretro_api_t& libretro_api)
 		{
-			SaveStateBuffer->Reserve(libretro_api.retro_serialize_size() + 2); // The plus two is a slight optimization based on how SaveArrayToFile works
-			SaveStateBuffer->AddUninitialized(libretro_api.retro_serialize_size());
-			libretro_api.retro_serialize(static_cast<void*>(SaveStateBuffer->GetData()), libretro_api.retro_serialize_size());
+			SaveStateBuffer->Reserve(libretro_api.serialize_size() + 2); // The plus two is a slight optimization based on how SaveArrayToFile works
+			SaveStateBuffer->AddUninitialized(libretro_api.serialize_size());
+			libretro_api.serialize(static_cast<void*>(SaveStateBuffer->GetData()), libretro_api.serialize_size());
 
 			SaveStateToFileTask->Unlock(); // This uses _InterlockedCompareExchange which has a memory barrier so it should be thread-safe
 		}
@@ -282,15 +278,22 @@ void ULibretroCoreInstance::BeginDestroy()
 
     if (this->CoreInstance.IsSet())
     {
-        // Save SRam
-        AccessFileOrderedOnCoreThread(SRAMPath("Default"),
+        auto SaveSRAM = MakeOrderedFileAccessOperation(SRAMPath("Default"),
             [](auto SRAMPath, auto libretro_api)
             {
                 FFileHelper::SaveArrayToFile
                 (
-                    TArrayView<const uint8>((uint8*)libretro_api.retro_get_memory_data(RETRO_MEMORY_SAVE_RAM), libretro_api.retro_get_memory_size(RETRO_MEMORY_SAVE_RAM)),
+                    TArrayView<const uint8>((uint8*)libretro_api.get_memory_data(RETRO_MEMORY_SAVE_RAM), libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM)),
                     *SRAMPath
                 );
+            });
+    	
+        // Save SRam
+        this->CoreInstance.GetValue()->EnqueueTask
+    	(
+            [SaveSRAM = MoveTemp(SaveSRAM)](auto libretro_api)
+            {
+	            SaveSRAM(libretro_api);
             }
         );
     }

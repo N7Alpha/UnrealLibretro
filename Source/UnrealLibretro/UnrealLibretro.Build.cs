@@ -1,5 +1,6 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
+using System;
 using UnrealBuildTool;
 
 public class UnrealLibretro : ModuleRules
@@ -8,12 +9,21 @@ public class UnrealLibretro : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
-		PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../../Binaries/Win64/SDL2.lib"));
-		PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../../Binaries/Win64/SDL2test.lib"));
-        PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../../Binaries/Mac/libSDL2-2.0.0.dylib"));
-        
+        if (Target.Platform.Equals(UnrealTargetPlatform.Mac))
+        {
+            PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../../Binaries/Mac/libSDL2-2.0.0.dylib"));
+		}
+        else if (Target.Platform.Equals(UnrealTargetPlatform.Win64))
+        {
+            PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../../Binaries/Win64/SDL2.lib"));
+            PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../../Binaries/Win64/SDL2test.lib"));
+		}
+        else
+        {
+			throw new System.PlatformNotSupportedException("Only building for Windows 64-bit and MacOS is supported");
+        }
 
-		PublicIncludePaths.AddRange(
+        PublicIncludePaths.AddRange(
 			new string[] {
 				// ... add public include paths required here ...
 			}
