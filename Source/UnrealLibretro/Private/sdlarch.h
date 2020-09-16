@@ -36,7 +36,6 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 #include "Windows/PostWindowsApi.h"
 #endif
 
-#include <type_traits>
 UNREALLIBRETRO_API DECLARE_LOG_CATEGORY_EXTERN(Libretro, Log, All);
 
 struct FLibretroInputState;

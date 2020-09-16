@@ -11,13 +11,15 @@ public class UnrealLibretro : ModuleRules
 
         if (Target.Platform.Equals(UnrealTargetPlatform.Mac))
         {
-            PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../../Binaries/Mac/libSDL2-2.0.0.dylib"));
-		}
+            PrivateIncludePaths.Add(System.IO.Path.Combine(ModuleDirectory, "ThirdParty/Mac/Include"));
+            PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "ThirdParty/Mac/Libraries/libSDL2-2.0.0.dylib"));
+        }
         else if (Target.Platform.Equals(UnrealTargetPlatform.Win64))
         {
-            PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../../Binaries/Win64/SDL2.lib"));
-            PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../../Binaries/Win64/SDL2test.lib"));
-		}
+            PrivateIncludePaths.Add(System.IO.Path.Combine(ModuleDirectory, "ThirdParty/Win64/Include"));
+            PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "ThirdParty/Win64/Libraries/SDL2.lib"));
+            PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "ThirdParty/Win64/Libraries/SDL2test.lib"));
+        }
         else
         {
 			throw new System.PlatformNotSupportedException("Only building for Windows 64-bit and MacOS is supported");
