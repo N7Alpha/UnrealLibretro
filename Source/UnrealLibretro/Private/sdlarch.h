@@ -30,7 +30,7 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 #endif
 
 #include "SDL2/SDL.h"
-#include "OpenGL/GL/glcorearb.h"
+#include "ThirdParty/OpenGL/GL/glcorearb.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/PostWindowsApi.h"
