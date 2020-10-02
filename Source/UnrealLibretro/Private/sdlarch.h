@@ -27,13 +27,17 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 // Third party libraries
 #if PLATFORM_WINDOWS
 #include "Windows/PreWindowsApi.h"
+#include "ThirdParty/Win64/Include/SDL2/SDL.h"
 #endif
 
-#include "SDL2/SDL.h"
 #include "ThirdParty/OpenGL/GL/glcorearb.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/PostWindowsApi.h"
+#endif
+
+#if PLATFORM_APPLE
+#include "ThirdParty/MacOS/Include/SDL2/SDL.h"
 #endif
 
 UNREALLIBRETRO_API DECLARE_LOG_CATEGORY_EXTERN(Libretro, Log, All);
