@@ -11,7 +11,7 @@ public class UnrealLibretro : ModuleRules
 
         if (Target.Platform.Equals(UnrealTargetPlatform.Mac))
         {
-            PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../ThirdParty/Mac/Libraries/libSDL2-2.0.0.dylib"));
+            PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../ThirdParty/MacOS/Libraries/libSDL2-2.0.0.dylib"));
         }
         else if (Target.Platform.Equals(UnrealTargetPlatform.Win64))
         {
