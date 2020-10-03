@@ -115,10 +115,10 @@ protected:
     TSharedPtr<TCircularQueue<int32>, ESPMode::ThreadSafe> QueuedAudio;
 
     struct _8888_color {
-        uint16 B : 8;
-        uint16 G : 8;
-        uint16 R : 8;
-        uint16 A : 8;
+        uint32 B : 8;
+        uint32 G : 8;
+        uint32 R : 8;
+        uint32 A : 8;
     };
 
     bool which = false;
