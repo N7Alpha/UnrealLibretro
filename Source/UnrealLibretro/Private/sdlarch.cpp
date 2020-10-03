@@ -320,17 +320,14 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
      uint16 A : 1;
  };
 
+
+// Stripped down code for profiling purposes https://godbolt.org/z/c57esx
 // @todo : Theres a data race here that seems like it would rarely hit and would just result in screen tearing. I should eventually just use a lock and swap the pointer from the background thread and lock when reading in data on the render thread. Doesn't seem like a big deal for now.
 // @todo : From what I've read it should be unsafe to have a data race on a buffer shared between two threads not using an atomic wrapper at least for c++11, but I don't really fully understand this yet and this seems to work
  void LibretroContext::video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
 
     check(bgra_buffers[0]->Num() == width * height);
-    if (!data) {
-        // *Duplicate frame*
-        return;
-    }
      
-	
     // @todo: this might need to be wrapped in some atomic primitive so the data isn't modified
      auto bgra_buffer = bgra_buffers[which = !which].Get()->GetData();
 
@@ -415,7 +412,8 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 
     }
     else {
-        checkNoEntry();
+        // *Duplicate frame*
+        return;
     }
 
     auto *old_buffer = RenderThreadsBuffer.Exchange(bgra_buffer);
