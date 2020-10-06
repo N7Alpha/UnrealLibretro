@@ -419,9 +419,10 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
     auto *old_buffer = RenderThreadsBuffer.Exchange(bgra_buffer);
 
     if (!old_buffer) {
-        CopyToUnrealFramebufferTask = FFunctionGraphTask::CreateAndDispatchWhenReady
+        ENQUEUE_RENDER_COMMAND(CopyToUnrealFramebufferTask) // @todo this triggers an assert on MacOS
         (
-            [TextureRHI = this->TextureRHI.GetReference(), MipIndex = 0, Region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height), SrcPitch = 4 * width, SrcBpp = 4, &Buffer = this->RenderThreadsBuffer]()
+            [TextureRHI = this->TextureRHI.GetReference(), MipIndex = 0, Region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height), SrcPitch = 4 * width, SrcBpp = 4, &Buffer = this->RenderThreadsBuffer]
+            (FRHICommandListImmediate& RHICmdList)
             {
             check(TextureRHI);
 
@@ -438,7 +439,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
             );
 
             }
-            , TStatId(), nullptr, ENamedThreads::ActualRenderingThread_Local); // @todo change to ENQUEUE_RENDERING_COMMAND.... The RHI documentation has a general fence you can use as well I believe
+        );
     }
 }
 
@@ -1000,9 +1001,24 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             l->video_deinit();
             if (l->g_ctx) { SDL_GL_DeleteContext(l->g_ctx); }
             if (l->g_win) { SDL_DestroyWindow(l->g_win); }// @todo: In SDLarch's code SDL_Quit was here and that implicitly destroyed some things like windows. So I'm not sure if I'm exhaustively destroying everything that it destroyed yet. In order to fix this you could probably just run SDL_Quit here and step with the debugger to see all the stuff it destroys.
-            
-            if (l->CopyToUnrealFramebufferTask) {
-                FTaskGraphInterface::Get().WaitUntilTaskCompletes(l->CopyToUnrealFramebufferTask);
+            {
+                /*
+                 From https://docs.unrealengine.com/en-US/Programming/Rendering/ParallelRendering/index.html#synchronization
+                 
+                 "It is also guaranteed that, regardless of how parallelization is configured, the order of submission of commands to the GPU is unchanged from the order the commands would have been submitted in a single-threaded renderer. This is required to ensure consistency and must be maintained if rendering code is changed."
+                 */
+                auto FenceEvent = FPlatformProcess::GetSynchEventFromPool();
+                
+                ENQUEUE_RENDER_COMMAND(LibretroFence)
+                (
+                    [FenceEvent](FRHICommandListImmediate& RHICmdList)
+                    {
+                        FenceEvent->Trigger();
+                    }
+                );
+                
+                FenceEvent->Wait();
+                FPlatformProcess::ReturnSynchEventToPool(FenceEvent);
             }
             
             l->~LibretroContext(); // Partially implemented RAII so this implicitly releases some shared and unique pointers
