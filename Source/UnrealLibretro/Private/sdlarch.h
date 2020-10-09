@@ -44,9 +44,7 @@ UNREALLIBRETRO_API DECLARE_LOG_CATEGORY_EXTERN(Libretro, Log, All);
 
 struct FLibretroInputState;
 
-extern struct func_wrap_t {
-    func_wrap_t* next;
-	
+extern struct libretro_callbacks_t {
     retro_audio_sample_batch_t                                                c_audio_write;
     retro_video_refresh_t                                                     c_video_refresh;
     retro_audio_sample_t                                                      c_audio_sample;
@@ -61,9 +59,9 @@ extern struct func_wrap_t {
     TUniqueFunction<TRemovePointer<retro_input_poll_t                >::Type>   input_poll;
     TUniqueFunction<TRemovePointer<retro_input_state_t               >::Type>   input_state;
     TUniqueFunction<TRemovePointer<retro_hw_get_current_framebuffer_t>::Type>   get_current_framebuffer;
-} func_wrap_table[];
+} libretro_callbacks_table[];
 
-struct libretro_api_t { // @todo the retro prefix to the functions is superfluous, but you must change the macro that binds the function pointers from the dll as well
+struct libretro_api_t {
     void* handle;
     bool initialized;
 
@@ -101,13 +99,13 @@ protected:
     ~LibretroContext() {}
 
     TAtomic<bool> running{true};
-    TAtomic<bool> enqueue_audio{true}; // @hack prevents hangs when destructing because some cores will call audio_write in an infinite loop until audio is enqueued. We have a fixed size audio buffer and have no real control over how the audio is dequeued so this can happen often.
+    TAtomic<bool> enqueue_audio{true}; // @hack prevents hangs when destructing because some cores will call core_audio_write in an infinite loop until audio is enqueued. We have a fixed size audio buffer and have no real control over how the audio is dequeued so this can happen often.
     bool          exit_run_loop = false;
-    FLambdaRunnable* UnrealThreadTask;
+    FLambdaRunnable* UnrealThreadTask = nullptr;
 
     // From all the crazy container types you can tell I had trouble with multithreading. However from what I understand my solution is threadsafe.
-    TWeakObjectPtr<UTextureRenderTarget2D> UnrealRenderTarget;
-    TWeakObjectPtr<URawAudioSoundWave> UnrealSoundBuffer;
+    TWeakObjectPtr<UTextureRenderTarget2D> UnrealRenderTarget{nullptr};
+    TWeakObjectPtr<URawAudioSoundWave> UnrealSoundBuffer{nullptr};
     TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> UnrealInputState;
 
     // These are both ThreadSafe shared pointers that are the main bridge between my code and unreal.
@@ -122,12 +120,12 @@ protected:
     };
 
     bool which = false;
-    TSharedPtr<TArray<_8888_color>, ESPMode::ThreadSafe> bgra_buffers[2] = { nullptr, nullptr };
+    _8888_color *bgra_buffers[2] = { nullptr, nullptr };
     TAtomic<_8888_color*> RenderThreadsBuffer{nullptr};
 
-    libretro_api_t g_retro;
-
-    TQueue<TUniqueFunction<void(libretro_api_t&)>, EQueueMode::Spsc> LibretroAPITasks; // TQueue<T, EQueueMode::Spsc> has aquire-release semantics on Enqueue and Dequeue so this should be thread-safe
+    libretro_api_t     libretro_api = {0};
+    libretro_callbacks_t* callback_instance = nullptr;
+    TQueue<TUniqueFunction<void(libretro_api_t&)>, EQueueMode::Spsc> LibretroAPITasks; // TQueue<T, EQueueMode::Spsc> has acquire-release semantics on Enqueue and Dequeue so this should be thread-safe
 
 
 
@@ -136,14 +134,12 @@ protected:
      static std::array<char, 260> system_directory;
      static std::array<char, 260> save_directory;
 
-     SDL_Window* g_win = NULL;
-     SDL_GLContext g_ctx = NULL;
-     SDL_AudioDeviceID g_pcm = 0;
+     SDL_Window* g_win = nullptr;
+     SDL_GLContext g_ctx = nullptr;
      struct retro_frame_time_callback runloop_frame_time = {0};
      retro_usec_t runloop_frame_time_last = 0;
-     const uint8_t* g_kbd = NULL;
      struct retro_audio_callback audio_callback = {0};
-     func_wrap_t *callback_instance;
+     
      bool UsingOpenGL = false;
      struct retro_system_av_info av = {{0}, {0}};
      std::unordered_map<std::string, std::string> settings;
@@ -160,10 +156,7 @@ protected:
         int glmajor;
         int glminor;
 
-
         GLuint pitch;
-        GLint tex_w, tex_h;
-        GLuint clip_w, clip_h;
 
         GLuint pixfmt;
         GLuint pixtype;
@@ -172,35 +165,18 @@ protected:
         struct retro_hw_render_callback hw;
     } g_video = { 0 };
 
-     struct {
-        GLuint vao;
-        GLuint vbo;
-        GLuint program;
-
-        GLint i_pos;
-        GLint i_coord;
-        GLint u_tex;
-        GLint u_mvp;
-
-    } g_shader = { 0 };
-
-     
-
-
-
-     void init_framebuffer(int width, int height);
-     void create_window(int width, int height);
-     void resize_to_aspect(double ratio, int sw, int sh, int* dw, int* dh);
+	
+     void create_window();
      void video_configure(const struct retro_game_geometry* geom);
-     bool video_set_pixel_format(unsigned format);
-     void video_deinit();
-     void video_refresh(const void* data, unsigned width, unsigned height, unsigned pitch);
-     uintptr_t core_get_current_framebuffer();
-     void core_audio_sample(int16_t left, int16_t right);
-     size_t audio_write(const int16_t* buf, size_t frames);
-     bool core_environment(unsigned cmd, void* data);
-     void core_input_poll(void);
+     
+     void load(const char* sofile);
+     void load_game(const char* filename);
+
+	 // These are the callbacks the Libretro Core calls directly via C-function wrappers. This is where the callback implementation logic is.
+     void    core_video_refresh(const void* data, unsigned width, unsigned height, unsigned pitch);
+     void    core_audio_sample(int16_t left, int16_t right);
+     size_t  core_audio_write(const int16_t* buf, size_t frames);
      int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id);
-     void core_load(const char* sofile);
-     void core_load_game(const char* filename);
+     // void   core_input_poll(void);
+     bool    core_environment(unsigned cmd, void* data);
 };
