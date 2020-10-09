@@ -1001,24 +1001,40 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             l->video_deinit();
             if (l->g_ctx) { SDL_GL_DeleteContext(l->g_ctx); }
             if (l->g_win) { SDL_DestroyWindow(l->g_win); }// @todo: In SDLarch's code SDL_Quit was here and that implicitly destroyed some things like windows. So I'm not sure if I'm exhaustively destroying everything that it destroyed yet. In order to fix this you could probably just run SDL_Quit here and step with the debugger to see all the stuff it destroys.
+
+        	if (l->bgra_buffers[0] || l->bgra_buffers[1])
             {
                 /*
                  From https://docs.unrealengine.com/en-US/Programming/Rendering/ParallelRendering/index.html#synchronization
                  
                  "It is also guaranteed that, regardless of how parallelization is configured, the order of submission of commands to the GPU is unchanged from the order the commands would have been submitted in a single-threaded renderer. This is required to ensure consistency and must be maintained if rendering code is changed."
                  */
-                auto FenceEvent = FPlatformProcess::GetSynchEventFromPool();
+                auto CopyToUnrealFramebufferFinished = TGraphTask<FNullGraphTask>::CreateTask().ConstructAndHold(TStatId(), ENamedThreads::AnyThread);
                 
-                ENQUEUE_RENDER_COMMAND(LibretroFence)
+                ENQUEUE_RENDER_COMMAND(CopyToUnrealFramebufferFence)
                 (
-                    [FenceEvent](FRHICommandListImmediate& RHICmdList)
+                    [CopyToUnrealFramebufferFinished](FRHICommandListImmediate& RHICmdList)
                     {
-                        FenceEvent->Trigger();
+                        auto RHIThreadFence = RHICmdList.RHIThreadFence();
+                    	if (RHIThreadFence)
+                    	{
+                    		if (!RHIThreadFence->AddSubsequent(CopyToUnrealFramebufferFinished))
+                    		{
+                                CopyToUnrealFramebufferFinished->Unlock();
+                    		}
+                    	}
                     }
                 );
-                
-                FenceEvent->Wait();
-                FPlatformProcess::ReturnSynchEventToPool(FenceEvent);
+
+        		if (l->bgra_buffers[0])
+        		{
+                    FMemory::Free(l->bgra_buffers[0]);
+        		}
+
+        		if (l->bgra_buffers[1])
+        		{
+                    FMemory::Free(l->bgra_buffers[1]);
+        		}
             }
             
             l->~LibretroContext(); // Partially implemented RAII so this implicitly releases some shared and unique pointers
