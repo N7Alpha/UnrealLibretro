@@ -14,24 +14,24 @@ DEFINE_LOG_CATEGORY(Libretro)
 
 // MY EYEEEEESSS.... Even though this looks heavily obfuscated what this actually accomplishes is relatively simple. It allows us to run multiple libretro cores at once. 
 // We have to do it this way because when libretro calls a callback we implemented there really isn't any suitable way to tell which core the call came from.
-// So we just statically generate a bunch of callback functions with macros and write their function pointers into an array of func_wrap_t's and issue them at runtime.
+// So we just statically generate a bunch of callback functions with macros and write their function pointers into an array of libretro_callbacks_t's and issue them at runtime.
 // These generated callbacks call std::functions which can capture arguments. So we capture this and now it calls our callbacks on a per instance basis.
 #define REP10(P, M)  M(P##0) M(P##1) M(P##2) M(P##3) M(P##4) M(P##5) M(P##6) M(P##7) M(P##8) M(P##9)
 #define REP100(M) REP10(,M) REP10(1,M) REP10(2,M) REP10(3,M) REP10(4,M) REP10(5,M) REP10(6,M) REP10(7,M) REP10(8,M) REP10(9,M)
 
-#define FUNC_WRAP_INIT(M) { M ? func_wrap_table+M-1 : 0, func_wrap_audio_write##M, func_wrap_video_refresh##M, func_wrap_audio_sample##M, func_wrap_environment##M, func_wrap_input_poll##M, func_wrap_input_state##M, func_wrap_get_current_framebuffer##M },
-#define FUNC_WRAP_DEF(M) size_t  func_wrap_audio_write##M(const int16_t *data, size_t frames) { return func_wrap_table[M].audio_write(data, frames); } \
-                         void    func_wrap_video_refresh##M(const void *data, unsigned width, unsigned height, size_t pitch) { return func_wrap_table[M].video_refresh(data, width, height, pitch); } \
-                         void    func_wrap_audio_sample##M(int16_t left, int16_t right) { return func_wrap_table[M].audio_sample(left, right); } \
-                         bool    func_wrap_environment##M(unsigned cmd, void *data) { return func_wrap_table[M].environment(cmd, data); } \
-                         void    func_wrap_input_poll##M() { return func_wrap_table[M].input_poll(); } \
-                         int16_t func_wrap_input_state##M(unsigned port, unsigned device, unsigned index, unsigned id) { return func_wrap_table[M].input_state(port, device, index, id); } \
-                         uintptr_t func_wrap_get_current_framebuffer##M() { return func_wrap_table[M].get_current_framebuffer(); }
+#define FUNC_WRAP_INIT(M) {      func_wrap_audio_write##M, func_wrap_video_refresh##M, func_wrap_audio_sample##M, func_wrap_environment##M, func_wrap_input_poll##M, func_wrap_input_state##M, func_wrap_get_current_framebuffer##M },
+#define FUNC_WRAP_DEF(M) size_t  func_wrap_audio_write##M(const int16_t *data, size_t frames) { return libretro_callbacks_table[M].audio_write(data, frames); } \
+                         void    func_wrap_video_refresh##M(const void *data, unsigned width, unsigned height, size_t pitch) { return libretro_callbacks_table[M].video_refresh(data, width, height, pitch); } \
+                         void    func_wrap_audio_sample##M(int16_t left, int16_t right) { return libretro_callbacks_table[M].audio_sample(left, right); } \
+                         bool    func_wrap_environment##M(unsigned cmd, void *data) { return libretro_callbacks_table[M].environment(cmd, data); } \
+                         void    func_wrap_input_poll##M() { return libretro_callbacks_table[M].input_poll(); } \
+                         int16_t func_wrap_input_state##M(unsigned port, unsigned device, unsigned index, unsigned id) { return libretro_callbacks_table[M].input_state(port, device, index, id); } \
+                         uintptr_t func_wrap_get_current_framebuffer##M() { return libretro_callbacks_table[M].get_current_framebuffer(); }
 
 
 REP100(FUNC_WRAP_DEF)
-func_wrap_t func_wrap_table[] = { REP100(FUNC_WRAP_INIT) };
-func_wrap_t* func_wrap_freelist = &func_wrap_table[99];
+libretro_callbacks_t libretro_callbacks_table[] = { REP100(FUNC_WRAP_INIT) };
+libretro_callbacks_t* func_wrap_freelist = &libretro_callbacks_table[99];
 
 #define ENUM_GL_PROCEDURES(EnumMacro) \
         EnumMacro(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer) \
@@ -57,11 +57,18 @@ func_wrap_t* func_wrap_freelist = &func_wrap_table[99];
         EnumMacro(PFNGLRENDERBUFFERSTORAGEPROC, glRenderbufferStorage) \
         EnumMacro(PFNGLTEXIMAGE2DPROC, glTexImage2D)
 
-/** Define all GL functions. */
+// @todo These procedure pointer definitions should be instance based not static technically, but I'm pretty sure it doesn't really matter
 #define DEFINE_GL_PROCEDURES(Type,Func) static Type Func = NULL;
 ENUM_GL_PROCEDURES(DEFINE_GL_PROCEDURES);
 
-void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
+#define load_sym(V, S) do {\
+    if (0 == ((*(void**)&V) = FPlatformProcess::GetDllExport(libretro_api.handle, TEXT(#S)))) \
+        UE_LOG(Libretro, Fatal, TEXT("Failed to load symbol '" #S "'': %u"), FPlatformMisc::GetLastError()); \
+	} while (0)
+#define load_retro_sym(S) load_sym(libretro_api.S, retro_##S)
+
+
+void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam){
 
     switch (severity) {
     case GL_DEBUG_SEVERITY_HIGH:
@@ -81,60 +88,8 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 
 }
 
-
-
-
-
-#define load_sym(V, S) do {\
-    if (0 == ((*(void**)&V) = FPlatformProcess::GetDllExport(g_retro.handle, TEXT(#S)))) \
-        UE_LOG(Libretro, Fatal, TEXT("Failed to load symbol '" #S "'': %u"), FPlatformMisc::GetLastError()); \
-	} while (0)
-#define load_retro_sym(S) load_sym(g_retro.S, retro_##S)
-
-
- void LibretroContext::init_framebuffer(int width, int height)
-{
-    glGenFramebuffers(1, &g_video.fbo_id);
-    glBindFramebuffer(GL_FRAMEBUFFER, g_video.fbo_id);
-
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_video.tex_id, 0);
-
-    if (g_video.hw.depth && g_video.hw.stencil) {
-        glGenRenderbuffers(1, &g_video.rbo_id);
-        glBindRenderbuffer(GL_RENDERBUFFER, g_video.rbo_id);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
-
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, g_video.rbo_id);
-    } else if (g_video.hw.depth) {
-        glGenRenderbuffers(1, &g_video.rbo_id);
-        glBindRenderbuffer(GL_RENDERBUFFER, g_video.rbo_id);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
-
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_video.rbo_id);
-    }
-
-    if (g_video.hw.depth || g_video.hw.stencil)
-        glBindRenderbuffer(GL_RENDERBUFFER, 0);
-
-    glBindRenderbuffer(GL_RENDERBUFFER, 0);
-
-    SDL_assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
-
-    glClearColor(0, 0, 0, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
-
-
-
- void LibretroContext::create_window(int width, int height) {
+ void LibretroContext::create_window() {
     SDL_GL_ResetAttributes(); // SDL state isn't thread local unlike OpenGL. So Libretro Cores could potentially interfere with eachother's Attributes since you're setting globals.
-
-    SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
-    SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
-    SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
-    SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
 
     if (g_video.hw.context_type == RETRO_HW_CONTEXT_OPENGL_CORE || g_video.hw.version_major >= 3) {
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, g_video.hw.version_major); 
@@ -211,40 +166,18 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
     UE_LOG(Libretro, Verbose, TEXT("GL_VERSION: %s\n"), glGetString(GL_VERSION));
 }
 
-
- void LibretroContext::resize_to_aspect(double ratio, int sw, int sh, int *dw, int *dh) {
-	*dw = sw;
-	*dh = sh;
-
-	if (ratio <= 0)
-		ratio = (double)sw / sh;
-
-	if ((float)sw / sh < 1)
-		*dw = *dh * ratio;
-	else
-		*dh = *dw / ratio;
-}
-
-
  void LibretroContext::video_configure(const struct retro_game_geometry *geom) {
-	int nwidth, nheight;
-
-	resize_to_aspect(geom->aspect_ratio, geom->base_width * 1, geom->base_height * 1, &nwidth, &nheight);
-
-	nwidth *= g_scale;
-	nheight *= g_scale;
-    
 
     if (!g_win) { // Create window
         #if PLATFORM_APPLE
             dispatch_sync(dispatch_get_main_queue(),
             ^{
-                create_window(nwidth, nheight);
+                create_window();
             });
         #else
-            static FCriticalSection WindowLock; // SDL State isn't threadlocal like OpenGL so we haveto synchronize here when we create a window @todo don't think the initialization of WindowLock is threadsafe here unless its constructor does some magic
+            static FCriticalSection WindowLock; // SDL State isn't threadlocal like OpenGL so we have to synchronize here when we create a window @todo don't think the initialization of WindowLock is threadsafe here unless its constructor does some magic
             FScopeLock scoped_lock(&WindowLock);
-            create_window(nwidth, nheight);
+            create_window();
         #endif
     }
 
@@ -270,46 +203,44 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 
 	glBindTexture(GL_TEXTURE_2D, 0);
 
-    init_framebuffer(geom->base_width, geom->base_height);
+	[width = geom->base_width, height = geom->base_height, &g_video = this->g_video]
+	()
+	{
+        glGenFramebuffers(1, &g_video.fbo_id);
+        glBindFramebuffer(GL_FRAMEBUFFER, g_video.fbo_id);
 
-	g_video.tex_w = geom->max_width;
-	g_video.tex_h = geom->max_height;
-	g_video.clip_w = geom->base_width;
-	g_video.clip_h = geom->base_height;
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_video.tex_id, 0);
 
+        if (g_video.hw.depth && g_video.hw.stencil) {
+            glGenRenderbuffers(1, &g_video.rbo_id);
+            glBindRenderbuffer(GL_RENDERBUFFER, g_video.rbo_id);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
 
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, g_video.rbo_id);
+        }
+        else if (g_video.hw.depth) {
+            glGenRenderbuffers(1, &g_video.rbo_id);
+            glBindRenderbuffer(GL_RENDERBUFFER, g_video.rbo_id);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
 
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_video.rbo_id);
+        }
+
+        if (g_video.hw.depth || g_video.hw.stencil)
+            glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+        SDL_assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }();
+	
     g_video.hw.context_reset();
 }
-
-
- bool LibretroContext::video_set_pixel_format(unsigned format) {
-	if (g_video.tex_id)
-		UE_LOG(Libretro, Fatal, TEXT("Tried to change pixel format after initialization."));
-
-	switch (format) {
-	case RETRO_PIXEL_FORMAT_0RGB1555:
-		g_video.pixfmt = GL_UNSIGNED_SHORT_5_5_5_1;
-		g_video.pixtype = GL_BGRA;
-		g_video.bpp = sizeof(uint16_t);
-		break;
-	case RETRO_PIXEL_FORMAT_XRGB8888:
-		g_video.pixfmt = GL_UNSIGNED_INT_8_8_8_8_REV;
-		g_video.pixtype = GL_BGRA;
-		g_video.bpp = sizeof(uint32_t);
-		break;
-	case RETRO_PIXEL_FORMAT_RGB565:
-		g_video.pixfmt  = GL_UNSIGNED_SHORT_5_6_5;
-		g_video.pixtype = GL_RGB;
-		g_video.bpp = sizeof(uint16_t);
-		break;
-	default:
-		UE_LOG(Libretro, Fatal, TEXT("Unknown pixel type %u"), format);
-	}
-
-	return true;
-}
-
 
 
  struct _1555_color
@@ -320,16 +251,15 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
      uint16 A : 1;
  };
 
-
 // Stripped down code for profiling purposes https://godbolt.org/z/c57esx
 // @todo : Theres a data race here that seems like it would rarely hit and would just result in screen tearing. I should eventually just use a lock and swap the pointer from the background thread and lock when reading in data on the render thread. Doesn't seem like a big deal for now.
 // @todo : From what I've read it should be unsafe to have a data race on a buffer shared between two threads not using an atomic wrapper at least for c++11, but I don't really fully understand this yet and this seems to work
- void LibretroContext::video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
+ void LibretroContext::core_video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
 
-    check(bgra_buffers[0]->Num() == width * height);
+    check(av.geometry.base_width == width && av.geometry.base_height == height);
      
     // @todo: this might need to be wrapped in some atomic primitive so the data isn't modified
-     auto bgra_buffer = bgra_buffers[which = !which].Get()->GetData();
+     auto bgra_buffer = bgra_buffers[which = !which];
 
     // if framebuffer is on CPU
     if (data && data != RETRO_HW_FRAME_BUFFER_VALID) {
@@ -388,17 +318,11 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
     //   if  framebuffer is on GPU
     else if (data == RETRO_HW_FRAME_BUFFER_VALID) {
 
-        if (g_video.clip_w != width || g_video.clip_h != height)
-        {
-            g_video.clip_h = height;
-            g_video.clip_w = width;
-        }
-
         check(UsingOpenGL && g_video.pixfmt == GL_UNSIGNED_INT_8_8_8_8_REV);
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
-        if (pitch != g_video.pitch) { // @todo: I should check if pitch is used anywhere else
+        if UNLIKELY(pitch != g_video.pitch) {
             g_video.pitch = pitch;
             glPixelStorei(GL_UNPACK_ROW_LENGTH, g_video.pitch / g_video.bpp);
         }
@@ -424,33 +348,25 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
             [TextureRHI = this->TextureRHI.GetReference(), MipIndex = 0, Region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height), SrcPitch = 4 * width, SrcBpp = 4, &Buffer = this->RenderThreadsBuffer]
             (FRHICommandListImmediate& RHICmdList)
             {
-            check(TextureRHI);
+	            check(TextureRHI);
 
-            uint8* SrcData = (uint8*)Buffer.Exchange(nullptr);
+	            uint8* SrcData = (uint8*)Buffer.Exchange(nullptr);
 
-            RHIUpdateTexture2D(
-                TextureRHI,
-                MipIndex,
-                Region,
-                SrcPitch,
-                SrcData
-                + Region.SrcY * SrcPitch
-                + Region.SrcX * SrcBpp
-            );
-
+	            RHICmdList.UpdateTexture2D(
+	                TextureRHI,
+	                MipIndex,
+	                Region,
+	                SrcPitch,
+	                SrcData
+	                + Region.SrcY * SrcPitch
+	                + Region.SrcX * SrcBpp
+	            );
             }
         );
     }
 }
 
- void LibretroContext::video_deinit() {
-	if (g_video.tex_id)
-		glDeleteTextures(1, &g_video.tex_id);
-
-	g_video.tex_id = 0;
-}
-
-size_t LibretroContext::audio_write(const int16_t *buf, size_t frames) {
+size_t LibretroContext::core_audio_write(const int16_t *buf, size_t frames) {
     if LIKELY( enqueue_audio ) { 
         unsigned FramesEnqueued = 0;
         while (FramesEnqueued < frames && QueuedAudio->Enqueue(((int32*)buf)[FramesEnqueued])) {
@@ -459,7 +375,7 @@ size_t LibretroContext::audio_write(const int16_t *buf, size_t frames) {
 
         return FramesEnqueued;
     } else {
-        return frames; // With some cores audio_write is called repeatedly until it is written. So we have to check to make sure we're still supposed to be running since the consumer on the gamethread may stop consuming audio anytime which would put us in an infinite loop if we didn't check.
+        return frames; // With some cores core_audio_write is called repeatedly until it is written. So we have to check to make sure we're still supposed to be running since the consumer on the gamethread may stop consuming audio anytime which would put us in an infinite loop if we didn't check.
                        // You could also just lie to the core and always say you're reading in all the data all the time, but I've found that causes more audio buffer underruns somehow.
     }
     
@@ -492,14 +408,7 @@ static void core_log(enum retro_log_level level, const char *fmt, ...) {
 
 }
 
-uintptr_t LibretroContext::core_get_current_framebuffer() {
-    return g_video.fbo_id;
-}
-
-
 bool LibretroContext::core_environment(unsigned cmd, void *data) {
-	bool *bval;
-
 	switch (cmd) {
     case RETRO_ENVIRONMENT_GET_VARIABLE: {
         struct retro_variable* var = (struct retro_variable*)data;
@@ -549,17 +458,42 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
 		cb->log = core_log;
         return true;
 	}
-	case RETRO_ENVIRONMENT_GET_CAN_DUPE:
-		bval = (bool*)data;
-		*bval = true;
+	case RETRO_ENVIRONMENT_GET_CAN_DUPE: {
+        bool *bval = (bool *)data;
+        *bval = true;
         return true;
+    }
+		
 	case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: {
-		const enum retro_pixel_format *fmt = (enum retro_pixel_format *)data;
+		const enum retro_pixel_format *format = (enum retro_pixel_format *)data;
 
-		if (*fmt > RETRO_PIXEL_FORMAT_RGB565)
+		if (*format > RETRO_PIXEL_FORMAT_RGB565)
 			return false;
 
-		return video_set_pixel_format(*fmt);
+        if (g_video.tex_id)
+            UE_LOG(Libretro, Fatal, TEXT("Tried to change pixel format after initialization."));
+
+        switch (*format) {
+	        case RETRO_PIXEL_FORMAT_0RGB1555:
+	            g_video.pixfmt = GL_UNSIGNED_SHORT_5_5_5_1;
+	            g_video.pixtype = GL_BGRA;
+	            g_video.bpp = sizeof(uint16_t);
+	            break;
+	        case RETRO_PIXEL_FORMAT_XRGB8888:
+	            g_video.pixfmt = GL_UNSIGNED_INT_8_8_8_8_REV;
+	            g_video.pixtype = GL_BGRA;
+	            g_video.bpp = sizeof(uint32_t);
+	            break;
+	        case RETRO_PIXEL_FORMAT_RGB565:
+	            g_video.pixfmt = GL_UNSIGNED_SHORT_5_6_5;
+	            g_video.pixtype = GL_RGB;
+	            g_video.bpp = sizeof(uint16_t);
+	            break;
+	        default:
+	            UE_LOG(Libretro, Fatal, TEXT("Unknown pixel type %u"), *format);
+        }
+
+        return true;
 	}
     case RETRO_ENVIRONMENT_SET_HW_RENDER: {
         struct retro_hw_render_callback *hw = (struct retro_hw_render_callback*)data;
@@ -635,12 +569,6 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
     return false;
 }
 
-
-void LibretroContext::core_input_poll(void) {
-
-}
-
-
 int16_t LibretroContext::core_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
 
     switch (device) {
@@ -655,24 +583,24 @@ int16_t LibretroContext::core_input_state(unsigned port, unsigned device, unsign
 
 void LibretroContext::core_audio_sample(int16_t left, int16_t right) {
 	int16_t buf[2] = {left, right};
-	audio_write(buf, (size_t)1);
+	core_audio_write(buf, (size_t)1);
 }
 
 
-void LibretroContext::core_load(const char *sofile) {
+void LibretroContext::load(const char *sofile) {
 	void (*set_environment)(retro_environment_t) = NULL;
 	void (*set_video_refresh)(retro_video_refresh_t) = NULL;
 	void (*set_input_poll)(retro_input_poll_t) = NULL;
 	void (*set_input_state)(retro_input_state_t) = NULL;
 	void (*set_audio_sample)(retro_audio_sample_t) = NULL;
 	void (*set_audio_sample_batch)(retro_audio_sample_batch_t) = NULL;
-	memset(&g_retro, 0, sizeof(g_retro));
+	memset(&libretro_api, 0, sizeof(libretro_api));
     auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
     auto dllPath = FPaths::Combine(LibretroPluginRootPath, "libretro");
     FPlatformProcess::AddDllDirectory(*dllPath); // @todo: Cleanup the directory searching stuff here and in LibretroCoreInstance
-    g_retro.handle = FPlatformProcess::GetDllHandle(ANSI_TO_TCHAR(sofile));
+    libretro_api.handle = FPlatformProcess::GetDllHandle(ANSI_TO_TCHAR(sofile));
 
-	if (!g_retro.handle)
+	if (!libretro_api.handle)
         UE_LOG(LogTemp, Fatal ,TEXT("Failed to load core: %s"), ANSI_TO_TCHAR(sofile));
 
 	load_retro_sym(init);
@@ -698,17 +626,17 @@ void LibretroContext::core_load(const char *sofile) {
 	load_sym(set_audio_sample, retro_set_audio_sample);
 	load_sym(set_audio_sample_batch, retro_set_audio_sample_batch);
 
-    callback_instance->audio_write = [=](const int16_t *data, size_t frames) {
-        return audio_write(data, frames);
-    };
     callback_instance->video_refresh = [=](const void* data, unsigned width, unsigned height, size_t pitch) {
-        return video_refresh(data, width, height, pitch);
+        return core_video_refresh(data, width, height, pitch);
     };
-    callback_instance->environment = [=](unsigned cmd, void* data) { return core_environment(cmd, data); };
+    callback_instance->audio_write = [=](const int16_t *data, size_t frames) {
+        return core_audio_write(data, frames);
+    };
     callback_instance->audio_sample = [=](int16_t left, int16_t right) { return core_audio_sample(left, right); };
-    callback_instance->input_poll = [=]() { return core_input_poll();  };
     callback_instance->input_state = [=](unsigned port, unsigned device, unsigned index, unsigned id) { return core_input_state(port, device, index, id); };
-    callback_instance->get_current_framebuffer = [=]() { return core_get_current_framebuffer(); };
+    callback_instance->input_poll = [=]() { };
+    callback_instance->environment = [=](unsigned cmd, void* data) { return core_environment(cmd, data); };
+ 	callback_instance->get_current_framebuffer = [=]() { return g_video.fbo_id; };
 
     set_environment(callback_instance->c_environment);
     set_video_refresh(callback_instance->c_video_refresh);
@@ -719,14 +647,14 @@ void LibretroContext::core_load(const char *sofile) {
 
     
 
-	g_retro.init();
-	g_retro.initialized = true;
+	libretro_api.init();
+	libretro_api.initialized = true;
 
 	UE_LOG(Libretro, Log, TEXT("Core loaded"));
 }
 
 
-void LibretroContext::core_load_game(const char* filename) {
+void LibretroContext::load_game(const char* filename) {
     struct retro_system_info system = { 0 };
     struct retro_game_info info = { filename, 0 };
 
@@ -740,7 +668,7 @@ void LibretroContext::core_load_game(const char* filename) {
     info.data = NULL;
     info.size = SDL_RWsize(file);
 
-    g_retro.get_system_info(&system);
+    libretro_api.get_system_info(&system);
 
     if (!system.need_fullpath) {
         info.data = SDL_malloc(info.size);
@@ -752,17 +680,15 @@ void LibretroContext::core_load_game(const char* filename) {
             UE_LOG(Libretro, Fatal, TEXT("Failed to read file data: %hs"), SDL_GetError());
     }
 
-    if (!g_retro.load_game(&info))
+    if (!libretro_api.load_game(&info))
         UE_LOG(Libretro, Fatal, TEXT("The core failed to load the content."));
 
-    g_retro.get_system_av_info(&av);
+    libretro_api.get_system_av_info(&av);
     
     // @todo: move this
     
-    bgra_buffers[0] = MakeShared<TArray<_8888_color>, ESPMode::ThreadSafe>();
-    bgra_buffers[0]->AddUninitialized(av.geometry.base_width * av.geometry.base_height);
-    bgra_buffers[1] = MakeShared<TArray<_8888_color>, ESPMode::ThreadSafe>();
-    bgra_buffers[1]->AddUninitialized(av.geometry.base_width * av.geometry.base_height);
+    bgra_buffers[0] = (_8888_color*) FMemory::Malloc(av.geometry.base_width * av.geometry.base_height * sizeof(bgra_buffers[0][0]));
+    bgra_buffers[1] = (_8888_color*) FMemory::Malloc(av.geometry.base_width * av.geometry.base_height * sizeof(bgra_buffers[1][0]));
 
     if (UsingOpenGL) {
         video_configure(&av.geometry);
@@ -820,13 +746,6 @@ void LibretroContext::core_load_game(const char* filename) {
         SDL_free((void*)info.data);
 
     SDL_RWclose(file);
-
-    // Now that we have the system info, set the window title.
-    if (UsingOpenGL) {
-        char window_title[255];
-        snprintf(window_title, sizeof(window_title), "sdlarch %s %s", system.library_name, system.library_version);
-        SDL_SetWindowTitle(g_win, window_title);
-    }
     
 }
 
@@ -926,7 +845,7 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
                 }
             }();
 
-            l->callback_instance = func_wrap_table + InstanceNumber;
+            l->callback_instance = libretro_callbacks_table + InstanceNumber;
 
             l->g_video.hw.version_major = 4;
             l->g_video.hw.version_minor = 5;
@@ -935,16 +854,16 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             l->g_video.hw.context_destroy = []() {};
 
 
-            // Loads the dll and its function pointers into g_retro
-            l->core_load(TCHAR_TO_ANSI(*InstancedCorePath));
+            // Loads the dll and its function pointers into libretro_api
+            l->load(TCHAR_TO_ANSI(*InstancedCorePath));
 
             // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
-            l->core_load_game(TCHAR_TO_ANSI(*IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*game)));
+            l->load_game(TCHAR_TO_ANSI(*IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*game)));
 
             // Configure the player input devices.
-            l->g_retro.set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
+            l->libretro_api.set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
 
-            LoadedCallback(l->g_retro, l->g_video.hw.bottom_left_origin);
+            LoadedCallback(l->libretro_api, l->g_video.hw.bottom_left_origin);
 
             uint64 frames = 0;
             auto   start = FDateTime::Now();
@@ -970,13 +889,13 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
                 // @todo My timing solution is a bit adhoc. I'm sure theres probably a better way.
                 // Timing loop
-                l->g_retro.run();
+                l->libretro_api.run();
             	
                 // Execute tasks from command queue
                 // It's semantically significant that this is here. Since I hook in save state operations here it must necessarily come after run is called on the core
                 TUniqueFunction<void(libretro_api_t&)> Task;
                 while (l->LibretroAPITasks.Dequeue(Task)) {
-                    Task(l->g_retro);
+                    Task(l->libretro_api);
                 }
 
                 frames++;
@@ -991,16 +910,31 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
                 // End of Timing loop
             }
 
-
-            if (l->g_retro.initialized)
-                l->g_retro.deinit();
-
-            if (l->g_retro.handle)
-                FPlatformProcess::FreeDllHandle(l->g_retro.handle);
+            // Explicit Cleanup
+            if (l->libretro_api.initialized)
+            {
+	            l->libretro_api.deinit();
+            }
         	
-            l->video_deinit();
-            if (l->g_ctx) { SDL_GL_DeleteContext(l->g_ctx); }
-            if (l->g_win) { SDL_DestroyWindow(l->g_win); }// @todo: In SDLarch's code SDL_Quit was here and that implicitly destroyed some things like windows. So I'm not sure if I'm exhaustively destroying everything that it destroyed yet. In order to fix this you could probably just run SDL_Quit here and step with the debugger to see all the stuff it destroys.
+            if (l->libretro_api.handle)
+            {
+	            FPlatformProcess::FreeDllHandle(l->libretro_api.handle);
+            }
+        	
+            if (l->g_video.tex_id)
+            {
+                glDeleteTextures(1, &l->g_video.tex_id);
+            }
+                
+            if (l->g_ctx)
+            {
+	            SDL_GL_DeleteContext(l->g_ctx);
+            }
+        	
+            if (l->g_win)
+            {
+	            SDL_DestroyWindow(l->g_win);  // @todo: In SDLarch's code SDL_Quit was here and that implicitly destroyed some things like windows. So I'm not sure if I'm exhaustively destroying everything that it destroyed yet. In order to fix this you could probably just run SDL_Quit here and step with the debugger to see all the stuff it destroys.
+            }
 
         	if (l->bgra_buffers[0] || l->bgra_buffers[1])
             {
@@ -1037,7 +971,7 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
         		}
             }
             
-            l->~LibretroContext(); // Partially implemented RAII so this implicitly releases some shared and unique pointers
+            l->~LibretroContext(); // implicitly releases shared reference to pcm audio buffer and input state
 
             {
                 FScopeLock scoped_lock(&MultipleDLLInstanceHandlingLock);
