@@ -98,8 +98,8 @@ protected:
     LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState);
     ~LibretroContext() {}
 
-    TAtomic<bool> running{true};
-    TAtomic<bool> enqueue_audio{true}; // @hack prevents hangs when destructing because some cores will call core_audio_write in an infinite loop until audio is enqueued. We have a fixed size audio buffer and have no real control over how the audio is dequeued so this can happen often.
+    bool shutdown = false;
+    TAtomic<bool> shutdown_audio{false}; // @hack prevents hangs when destructing because some cores will call core_audio_write in an infinite loop until audio is enqueued. We have a fixed size audio buffer and have no real control over how the audio is dequeued so this can happen often.
     bool          exit_run_loop = false;
     FLambdaRunnable* UnrealThreadTask = nullptr;
 
@@ -144,8 +144,6 @@ protected:
      struct retro_system_av_info av = {{0}, {0}};
      std::unordered_map<std::string, std::string> settings;
      const struct retro_hw_render_context_negotiation_interface* hw_render_context_negotiation = nullptr;
-
-     float g_scale = 3;
     
 
      struct {
