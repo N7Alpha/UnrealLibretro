@@ -367,7 +367,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 }
 
 size_t LibretroContext::core_audio_write(const int16_t *buf, size_t frames) {
-    if LIKELY( enqueue_audio ) { 
+    if LIKELY(!shutdown_audio) { 
         unsigned FramesEnqueued = 0;
         while (FramesEnqueued < frames && QueuedAudio->Enqueue(((int32*)buf)[FramesEnqueued])) {
             FramesEnqueued++;
@@ -867,7 +867,7 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
             uint64 frames = 0;
             auto   start = FDateTime::Now();
-            while (l->running) {
+            while (!l->shutdown) {
 
                 if (l->runloop_frame_time.callback) {
                     retro_time_t current = cpu_features_get_time_usec();
@@ -989,11 +989,11 @@ void LibretroContext::Shutdown(LibretroContext* Instance)
 {
     Instance->Pause(false);
 
-    Instance->enqueue_audio.Store(false, EMemoryOrder::SequentiallyConsistent);
+    Instance->shutdown_audio.Store(true, EMemoryOrder::SequentiallyConsistent);
 	// We enqueue the shutdown procedure as the final task since we want outstanding tasks to be executed first
     Instance->EnqueueTask([Instance](auto&&)
     {
-        Instance->running.Store(false, EMemoryOrder::SequentiallyConsistent);
+        Instance->shutdown = true;
     });
     
 }
