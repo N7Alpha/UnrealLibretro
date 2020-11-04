@@ -46,7 +46,7 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 
 struct FLibretroInputState;
 
-extern struct libretro_callbacks_t {
+extern struct libretro_callbacks_t { // @todo Move into implementation and forward declare
     retro_audio_sample_batch_t                                                c_audio_write;
     retro_video_refresh_t                                                     c_video_refresh;
     retro_audio_sample_t                                                      c_audio_sample;
@@ -63,7 +63,7 @@ extern struct libretro_callbacks_t {
     TUniqueFunction<TRemovePointer<retro_hw_get_current_framebuffer_t>::Type>   get_current_framebuffer;
 } libretro_callbacks_table[];
 
-struct libretro_api_t {
+struct libretro_api_t { // @todo move next to the api object
     void* handle;
     bool initialized;
 
