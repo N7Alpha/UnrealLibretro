@@ -797,17 +797,6 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     static TBitArray<TInlineAllocator<(MAX_INSTANCES / 8) + 1>> AllocatedInstances(false, MAX_INSTANCES);
     
     // SDL is needed to get OpenGL contexts and windows from the OS in a sane way. I tried looking for an official Unreal way to do it, but I couldn't really find one SDL is so portable though it shouldn't matter
-    
-    const auto my_SDL_init = []() { // This is called in separate places depending on the platform
-        if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-            UE_LOG(Libretro, Fatal, TEXT("Failed to initialize SDL"));
-        }
-    };
-    
-    #if !PLATFORM_APPLE
-        my_SDL_init();
-    #endif
-
 
     LibretroContext *l = new LibretroContext(InputState.ToSharedRef());
 
@@ -819,10 +808,6 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     l->UnrealThreadTask = FLambdaRunnable::RunLambdaOnBackGroundThread
     (
         [=, LoadedCallback = MoveTemp(LoadedCallback)]() {
-            #if PLATFORM_APPLE
-                dispatch_sync(dispatch_get_main_queue(), ^{ my_SDL_init(); }); // here so we don't block the game thread too long since this has to synchronize with the main thread every time.
-            #endif
-        	
             // Here I check that the same dll isn't loaded twice. If it is you won't obtain a new instance of the dll loaded into memory, instead all variables and function pointers will point to the original loaded dll
             // Luckily you can bypass this limitation by just making copies of that dll and loading those. Which I automate here.
             FString InstancedCorePath = core;

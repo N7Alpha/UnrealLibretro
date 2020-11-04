@@ -1,6 +1,7 @@
 #include "RawAudioSoundWave.h"
 #include "Engine.h"
 #include "ActiveSound.h"
+#include "UnrealLibretro.h"
 
 /* UMediaSoundWave structors
  *****************************************************************************/
@@ -29,7 +30,7 @@ int32 URawAudioSoundWave::GeneratePCMData( uint8* PCMData, const int32 SamplesNe
 	}
 
 	if (SamplesIWillGive != FramesDequeued) {
-		UE_LOG(LogTemp, Warning, TEXT("Buffer overrun by %d bytes. Filling with 0 data"), 4 * (SamplesIWillGive - FramesDequeued));
+		UE_LOG(Libretro, Warning, TEXT("Buffer overrun by %d bytes. Filling with 0 data"), 4 * (SamplesIWillGive - FramesDequeued));
 		FMemory::Memzero(PCMData+4*FramesDequeued, 4 * (SamplesIWillGive - FramesDequeued));
 	}
 
