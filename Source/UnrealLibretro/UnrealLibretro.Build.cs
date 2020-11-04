@@ -11,31 +11,21 @@ public class UnrealLibretro : ModuleRules
 
         if (Target.Platform.Equals(UnrealTargetPlatform.Mac))
         {
-            PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../ThirdParty/MacOS/Libraries/libSDL2-2.0.0.dylib"));
+			RuntimeDependencies.Add("$(PluginDir)/Binaries/Win64/ThirdParty/libSDL2*.dylib"); // globbed because libSDL2.dylib is an alias
+			PublicAdditionalLibraries.Add("$(PluginDir)/Binaries/Mac/ThirdParty/libSDL2.dylib");
         }
         else if (Target.Platform.Equals(UnrealTargetPlatform.Win64))
         {
-            PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../ThirdParty/Win64/Libraries/SDL2.lib"));
-            PublicAdditionalLibraries.Add(System.IO.Path.Combine(ModuleDirectory, "../ThirdParty/Win64/Libraries/SDL2test.lib"));
+            PublicAdditionalLibraries.Add("$(PluginDir)/Binaries/Win64/ThirdParty/SDL2.lib");
+
+			RuntimeDependencies.Add("$(PluginDir)/Binaries/Win64/ThirdParty/SDL2.dll");
+			PublicDelayLoadDLLs.Add("SDL2.dll");
         }
         else
         {
 			throw new System.PlatformNotSupportedException("Only building for Windows 64-bit and MacOS is supported");
         }
-
-        PublicIncludePaths.AddRange(
-			new string[] {
-				// ... add public include paths required here ...
-			}
-			);
-				
 		
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				// ... add other private include paths required here ...
-			}
-			);
-			
 		
 		PublicDependencyModuleNames.AddRange(
 			new string[]
@@ -48,26 +38,7 @@ public class UnrealLibretro : ModuleRules
 				"Engine",
 				"InputCore",
 				"Slate",
-				"HeadMountedDisplay",
 				"Projects"
-                
-				// ... add other public dependencies that you statically link with here ...
-			}
-			);
-			
-		
-		PrivateDependencyModuleNames.AddRange(
-			new string[]
-			{
-				// ... add private dependencies that you statically link with here ...	
-			}
-			);
-		
-		
-		DynamicallyLoadedModuleNames.AddRange(
-			new string[]
-			{
-				// ... add any modules that your module loads dynamically here ...
 			}
 			);
 	}

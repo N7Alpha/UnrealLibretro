@@ -3,7 +3,7 @@
 /MyROMs
 /MyGames
 /Saves
-/Source/ThirdParty
+/Source/UnrealLibretro/Private/*/SDL2
 /System
 *.pdb
 
