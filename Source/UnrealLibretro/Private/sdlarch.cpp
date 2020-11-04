@@ -9,7 +9,6 @@
 #include <dispatch/dispatch.h>
 #endif
 
-DEFINE_LOG_CATEGORY(Libretro)
 #define DEBUG_OPENGL 0
 
 // MY EYEEEEESSS.... Even though this looks heavily obfuscated what this actually accomplishes is relatively simple. It allows us to run multiple libretro cores at once. 

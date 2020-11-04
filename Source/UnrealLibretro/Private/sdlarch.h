@@ -17,6 +17,7 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 
 // Unreal imports
 #include "CoreMinimal.h"
+#include "UnrealLibretro.h" // For Libretro debug log category
 #include "LambdaRunnable.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 #include "LibretroInputComponent.h"

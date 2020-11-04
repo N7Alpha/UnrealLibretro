@@ -4,6 +4,8 @@
 
 #include "Modules/ModuleManager.h"
 
+UNREALLIBRETRO_API DECLARE_LOG_CATEGORY_EXTERN(Libretro, Log, All);
+
 class FUnrealLibretroModule : public IModuleInterface
 {
 public:
