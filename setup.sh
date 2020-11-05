@@ -22,4 +22,4 @@ wget -c https://buildbot.libretro.com/nightly/windows/x86_64/redist.7z --directo
 
 # Acquire and move unversioned data from unversioned branch (Note this will break if you don't have a really new version of git)
 git fetch -f origin unversioned:unversioned
-git restore --source unversioned Source/ Content/ Binaries/
+git restore --source unversioned Content/ Binaries/ Source/UnrealLibretro/Private/Windows/SDL2 Source/UnrealLibretro/Private/Mac/SDL2
