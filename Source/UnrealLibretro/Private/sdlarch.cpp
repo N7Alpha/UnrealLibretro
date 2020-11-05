@@ -593,10 +593,7 @@ void LibretroContext::load(const char *sofile) {
 	void (*set_input_state)(retro_input_state_t) = NULL;
 	void (*set_audio_sample)(retro_audio_sample_t) = NULL;
 	void (*set_audio_sample_batch)(retro_audio_sample_batch_t) = NULL;
-	memset(&libretro_api, 0, sizeof(libretro_api));
-    auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
-    auto dllPath = FPaths::Combine(LibretroPluginRootPath, "libretro");
-    FPlatformProcess::AddDllDirectory(*dllPath); // @todo: Cleanup the directory searching stuff here and in LibretroCoreInstance
+    
     libretro_api.handle = FPlatformProcess::GetDllHandle(ANSI_TO_TCHAR(sofile));
 
 	if (!libretro_api.handle)
