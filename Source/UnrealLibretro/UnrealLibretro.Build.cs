@@ -18,7 +18,6 @@ public class UnrealLibretro : ModuleRules
         {
             PublicAdditionalLibraries.Add("$(PluginDir)/Binaries/Win64/ThirdParty/SDL2.lib");
 
-			RuntimeDependencies.Add("$(PluginDir)/Binaries/Win64/ThirdParty/SDL2.dll");
 			PublicDelayLoadDLLs.Add("SDL2.dll");
         }
         else
