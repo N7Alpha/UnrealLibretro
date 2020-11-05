@@ -5,24 +5,11 @@
 # Prompt user to install 7zip if necessary
 if ! command -v 7z
 then
-    echo "7zip not installed"
-    echo "Do you wish to install this program?"
-    select yn in "Yes" "No"
-    case $yn in
-        Yes ) echo "Attempting to install";;
-        No )  echo "7zip needs to be installed to run setup"; exit;;
-    esac
-
-    if   command -v brew
-    then
-        brew install p7zip
-    elif command -v pacman
-    then
-        pacman -S --noconfirm --needed p7zip
-    else
-        echo "Couldn't find a package manager for this platform"
-        exit;
-    fi
+    echo "7zip is not installed"
+    echo "Try one of these commands to install it:"
+    printf "\tMINGW: pacman -S --noconfirm --needed p7zip\n"
+    printf "\tMacOS: brew install p7zip\n"
+    exit 127;
 fi
 
 # Make directories that won't be dynamically generated
