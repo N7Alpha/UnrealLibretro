@@ -14,11 +14,11 @@ fi
 
 # Make directories that won't be dynamically generated
 mkdir -p MyROMs MyCores
-mkdir -p libretro
+mkdir -p Binaries/Win64/ThirdParty/libretro
 
 # Get general binaries for running Libretro Cores on Windows
 wget -c https://buildbot.libretro.com/nightly/windows/x86_64/redist.7z --directory /tmp
-7z x -aoa -o./libretro /tmp/redist.7z
+7z x -aoa -oBinaries/Win64/ThirdParty/libretro /tmp/redist.7z
 
 # Acquire and move unversioned data from unversioned branch (Note this will break if you don't have a really new version of git)
 git fetch -f origin unversioned:unversioned
