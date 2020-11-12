@@ -6,9 +6,9 @@ name: CI
 # events but only for the master branch
 on:
   push:
-    branches: [ master ]
+    branches: [ master test-github-workflow ]
   pull_request:
-    branches: [ master ]
+    branches: [ master test-github-workflow]
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
@@ -30,14 +30,9 @@ jobs:
       - name: Prepare Project Directory
         run: |
           sudo rm -rf setup.sh *.md .git*
-          sudo find libretro -type d -exec chmod 755 {} \;
-          sudo find libretro -type f -exec chmod 644 {} \;
-          sudo touch MyROMs/Place\ Your\ ROMs\ in\ this\ Directory
-          sudo touch MyCores/Place\ Your\ Libretro\ Cores\ in\ this\ Directory
+          sudo touch "MyROMs/Place Your ROMs in this Directory" "MyCores/Place Your Libretro Cores in this Directory"
           mkdir UnrealLibretro
-          shopt -s extglob dotglob
           sudo mv !(UnrealLibretro) UnrealLibretro
-          shopt -u dotglob
           
       - name: Upload Build-Artifact
         uses: actions/upload-artifact@v2.1.4
