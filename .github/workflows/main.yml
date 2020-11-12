@@ -7,9 +7,9 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [ master test-github-workflow ]
+    branches: [ master ]
   pull_request:
-    branches: [ master test-github-workflow ]
+    branches: [ master ]
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
@@ -33,7 +33,7 @@ jobs:
           sudo rm -rf setup.sh *.md .git*
           sudo touch "MyROMs/Place Your ROMs in this Directory" "MyCores/Place Your Libretro Cores in this Directory"
           mkdir UnrealLibretro
-          sudo mv !(UnrealLibretro) UnrealLibretro
+          sudo mv * UnrealLibretro
           touch "Place the UnrealLibretro directory into your Unreal Engine projects Plugin directory"
           
       - name: Upload Build-Artifact
