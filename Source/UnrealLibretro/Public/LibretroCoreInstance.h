@@ -3,18 +3,9 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Components/ActorComponent.h"
-#include "Engine/TextureRenderTarget2D.h"
-#include "Components/AudioComponent.h"
-#include "Components/InputComponent.h"
 #include "GameFramework/PlayerController.h"
-#include "RawAudioSoundWave.h"
-#include "LibretroInputComponent.h"
-#include "sdlarch.h"
-#include "Interfaces/IPluginManager.h"
+#include "LibretroInputDefinitions.h"
 #include "LibretroCoreInstance.generated.h"
-
-
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnCoreIsReady, const class UTextureRenderTarget2D*, LibretroFramebuffer, const class USoundWave*, AudioBuffer, const bool, BottomLeftOrigin);
 
@@ -26,25 +17,28 @@ class UNREALLIBRETRO_API ULibretroCoreInstance : public UActorComponent
 {
 	GENERATED_BODY()
 
-public:	
-	// Sets default values for this component's properties
+public:
+	/** Lifetime */
 	ULibretroCoreInstance();
+	virtual void BeginDestroy();
 
-	// DELEGATE FUNCTIONS
 
+	/** Delegate Functions */
 	/**
 	 * Issued after the emulator has been successfully launched
 	 */
 	UPROPERTY(BlueprintAssignable)
 	FOnCoreIsReady OnCoreIsReady;
-								  
-	// BLUEPRINT CALLABLE FUNCTIONS
 
+								  
+	/** Blueprint Callable Functions */
 	/**
 	 * @brief Starts the launch process on a background thread
-	 *
-	 * Functions marked "Ineffective Before Launch" should now function properly.
 	 * After the emulator has been successfully launched it will issue the event "On Core Is Ready".
+	 * 
+	 * **Note:** This will implicitly call Shutdown if a Core is already running
+	 * 
+	 * **Postcondition:** Immediately after calling this function functions marked "Ineffective Before Launch" should now function properly.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Libretro")
 	void Launch();
@@ -53,20 +47,22 @@ public:
 	void Shutdown();
 
 	/**
-	 * @brief Basically the same as loading a state in an emulator.
+	 * @brief Basically the same as loading a state in an emulator
 	 *
-	 * The save states are unique based on the Rom's filename.
+	 * The save states are unique based on the Rom's filename and the passed identifier.
 	 * 
 	 * **Caution**: Don't use save states with one ROM on multiple different emulators,
 	 * likely their serialization formats will be different and this will trigger an assert.
 	 *
 	 * @param Identifier - Allows for storing multiple save states per ROM
+	 * 
+	 * @see https://higan.readthedocs.io/en/stable/concepts/save-states/#save-states-versus-in-game-saves
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
 	void LoadState(const FString Identifier = "Default");
 
 	/**
-	 * @brief Basically the same as saving a state in an emulator.
+	 * @brief Basically the same as saving a state in an emulator
 	 *
 	 * @see LoadState(const FString)
 	 */
@@ -74,7 +70,7 @@ public:
 	void SaveState(const FString Identifier = "Default");
 
 	/**
-	 * @brief Suspends the emulator instance. @details The game will no longer run until you call Pause with false which will resume gameplay.
+	 * @brief Suspends the emulator instance @details The game will no longer run until you call Pause with false which will resume gameplay.
 	 * 
 	 * @param ShouldPause - Passing true will Suspend the emulator, false will resume it.
 	 */
@@ -105,16 +101,17 @@ public:
 	void DisconnectController(int Port);
 
 
-	// EDITOR PROPERTIES
-
-	/**
-	 * Optionally needs to be set. This is where the game's framebuffer will be written
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro)
+	/** Blueprint Properties */
+	UPROPERTY(BlueprintReadOnly, Category = Libretro)
 	UTextureRenderTarget2D* RenderTarget;
 
-	UPROPERTY()
-	URawAudioSoundWave* AudioBuffer;
+	UPROPERTY(BlueprintReadOnly, Category = Libretro)
+	USoundWave* AudioBuffer;
+
+	/**
+	 * This is what the libretro core reads from when determining input. If you want to use your own input method you can modify this directly.
+	 */
+	TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState;
 
 	/**
 	 * You should provide a path to your ROM relative to the MyROMs directory in the UnrealLibretro directory in your project's Plugins directory.
@@ -131,46 +128,27 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro)
 	FString Core;
 
-	// @todo: It'd be nice if I could use something like std::wrapped_reference however Unreal doesn't offer an equivalent for now
 	/**
-	* Handle to the actual libretro core instance.
-	*/
-	TOptional<LibretroContext*> CoreInstance;
-
+	 * Determines a unique location where an SRAM file will be written. This would only be needed if you were running two instances of the same game at once
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro, AdvancedDisplay)
+	FString SRAMIdentifier = "Default";
 
 protected:
+	// @todo: It'd be nice if I could use something like std::wrapped_reference however Unreal doesn't offer an equivalent for now
+	TOptional<struct LibretroContext*> CoreInstance;
+
 	virtual void BeginPlay() override;
 	virtual void InitializeComponent() override;
-	//virtual bool IsReadyForFinishDestroy() override;
+
 	FDelegateHandle ResumeEditor, PauseEditor;
 	bool Paused = false;
 
+	
+	UPROPERTY()
+	TArray<class ULibretroInputComponent*> InputMap;
+
 	TStaticArray<TWeakObjectPtr<APlayerController>, PortCount> Controller{ nullptr };
 
-	UPROPERTY()
-	TArray<ULibretroInputComponent*> InputMap;
-
 	TStaticArray<FOnControllerDisconnected, PortCount> Disconnected{ FOnControllerDisconnected() };
-	
-	FString SaveStatePath(FString Identifier)
-	{
-		auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
-		
-		return FPaths::Combine(LibretroPluginRootPath, TEXT("Saves"), TEXT("SaveStates"), Rom, Identifier + ".sav");
-	}
-
-	FString SRAMPath(FString Identifier)
-	{
-		auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
-
-		return FPaths::Combine(LibretroPluginRootPath, TEXT("Saves"), TEXT("SRAM"), Rom, Identifier + ".srm");
-	}
-
-public:
-	/**
-	 * This is what the libretro core reads from when determining input. If you want to use your own input method you can modify this directly.
-	 */
-	TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState;
-	
-	virtual void BeginDestroy();
 };

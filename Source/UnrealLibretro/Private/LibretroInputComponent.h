@@ -5,49 +5,9 @@
 #include "CoreMinimal.h"
 #include "Components/InputComponent.h"
 #include "libretro/libretro.h"
+#include "LibretroInputDefinitions.h"
 
 #include "LibretroInputComponent.generated.h"
-
-
-#define BindUnrealButtonToLibretro(RetroButton, UnrealButton)			   BindKey    (UnrealButton, IE_Pressed,  this, &ULibretroInputComponent::ButtonPressed <RetroButton>); \
-																		   BindKey    (UnrealButton, IE_Released, this, &ULibretroInputComponent::ButtonReleased<RetroButton>);
-
-const int PortCount = 4;
-struct FLibretroInputState
-{ // @todo should verify these call the zero init constructor
-    TAtomic<unsigned> digital[RETRO_DEVICE_ID_JOYPAD_R3 + 1]{};
-    TAtomic<int16_t>  analog[2][2]{};
-};
-
-// DO NOT REORDER THESE
-UENUM(BlueprintType)
-enum  class ERetroInput : uint8
-{
-	B,
-	Y,
-	SELECT,
-	START,
-	UP,
-	DOWN,
-	LEFT,
-	RIGHT,
-	A,
-	X,
-	L,
-	R,
-	L2,
-	R2,
-	L3,
-	R3,
-	LeftX,
-	LeftY,
-	RightX,
-	RightY,
-	DisconnectController,
-
-	DigitalCount = LeftX UMETA(Hidden),
-	AnalogCount = DisconnectController - DigitalCount UMETA(Hidden)
-};
 
 UCLASS(ClassGroup=(Custom), hidecategories = (Activation, "Components|Activation"))
 class UNREALLIBRETRO_API ULibretroInputComponent : public UInputComponent

@@ -110,7 +110,5 @@ void ULibretroInputComponent::BindKeys(const TMap<FKey, ERetroInput>& Controller
 		{
 			BindKey(kv.Key, IE_Pressed, this, &ULibretroInputComponent::DisconnectController);
 		}
-		
-		
 	}
 }
