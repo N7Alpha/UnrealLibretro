@@ -33,7 +33,7 @@ jobs:
           sudo rm -rf setup.sh *.md .git*
           sudo touch "MyROMs/Place Your ROMs in this Directory" "MyCores/Place Your Libretro Cores in this Directory"
           mkdir UnrealLibretro
-          sudo mv -f * UnrealLibretro; true
+          mv $(ls | grep -v UnrealLibretro) UnrealLibretro
           touch "Place the UnrealLibretro directory into your Unreal Engine projects Plugin directory"
           
       - name: Upload Build-Artifact
