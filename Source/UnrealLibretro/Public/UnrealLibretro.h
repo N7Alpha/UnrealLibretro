@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Modules/ModuleManager.h"
+#include "Interfaces/IPluginManager.h"
 
 UNREALLIBRETRO_API DECLARE_LOG_CATEGORY_EXTERN(Libretro, Log, All);
 
@@ -13,7 +14,42 @@ public:
 	/** IModuleInterface implementation */
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
-	
+
+
+	/** Path Resolution */
+	static FString CorePath(const FString& Core)
+	{
+		auto UnrealLibretro = IPluginManager::Get().FindPlugin("UnrealLibretro");
+		verify(UnrealLibretro.IsValid());
+
+		return FPaths::Combine(UnrealLibretro->GetBaseDir(), TEXT("MyCores"), Core);
+	}
+
+	static FString ROMPath(const FString& Rom)
+	{
+		auto UnrealLibretro = IPluginManager::Get().FindPlugin("UnrealLibretro");
+		verify(UnrealLibretro.IsValid());
+		
+		return FPaths::Combine(UnrealLibretro->GetBaseDir(), TEXT("MyROMs"), Rom);
+	}
+
+	static FString SaveStatePath(const FString& Rom, const FString& Identifier)
+	{
+		auto UnrealLibretro = IPluginManager::Get().FindPlugin("UnrealLibretro");
+		verify(UnrealLibretro.IsValid());
+
+		return FPaths::Combine(UnrealLibretro->GetBaseDir(), TEXT("Saves"), TEXT("SaveStates"), Rom, Identifier + ".sav");
+	}
+
+	static FString SRAMPath(const FString& Rom, const FString& Identifier)
+	{
+		auto UnrealLibretro = IPluginManager::Get().FindPlugin("UnrealLibretro");
+		verify(UnrealLibretro.IsValid());
+
+		return FPaths::Combine(UnrealLibretro->GetBaseDir(), TEXT("Saves"), TEXT("SRAM"), Rom, Identifier + ".srm");
+	}
+
+
 private:
 	void* SDLHandle;
 

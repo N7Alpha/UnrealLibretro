@@ -1,19 +1,22 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
-
 #include "LibretroCoreInstance.h"
-#include "LibretroInputComponent.h"
+
 #include "libretro/libretro.h"
 
 #include "RHIResources.h"
-#include "LambdaRunnable.h"
 #include "HAL/PlatformFilemanager.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/FileHelper.h"
 
+#include "LibretroInputComponent.h"
+#include "RawAudioSoundWave.h"
+#include "LambdaRunnable.h"
+#include "sdlarch.h"
+
 #include "Interfaces/IPluginManager.h"
 
-#define NOT_LAUNCHED_GUARD if (!CoreInstance.IsSet()) { return; }
+#define NOT_LAUNCHED_GUARD if (!CoreInstance.IsSet()) { UE_LOG(Libretro, Warning, TEXT("Called function '%hs' before Libretro Core '%s' was launched. This has no effect"), __func__, *Core) return; }
 
 template<typename T>
 TRefCountPtr<T>&& Replace(TRefCountPtr<T> & a, TRefCountPtr<T> && b)
@@ -54,7 +57,6 @@ ULibretroCoreInstance::ULibretroCoreInstance()
 {
     PrimaryComponentTick.bCanEverTick = false;
     bWantsInitializeComponent = true;
-
     InputMap.AddZeroed(PortCount);
 }
  
@@ -70,21 +72,18 @@ void ULibretroCoreInstance::ConnectController(APlayerController* PlayerControlle
     InputMap[Port]->KeyBindings.Empty();
     InputMap[Port]->BindKeys(ControllerBindings);
     PlayerController->PushInputComponent(InputMap[Port]);
-    
 }
 
 void ULibretroCoreInstance::DisconnectController(int Port)
 {
     check(Port >= 0 && Port < PortCount);
 
-    auto PlayerController = Controller[Port];
-
-    if (PlayerController.IsValid())
+    if (Controller[Port].IsValid())
     {
-        PlayerController->PopInputComponent(InputMap[Port]);
+        Controller[Port]->PopInputComponent(InputMap[Port]);
     }
 
-    Disconnected[Port].ExecuteIfBound(PlayerController.Get(), Port);
+    Disconnected[Port].ExecuteIfBound(Controller[Port].Get(), Port);
 }
 
 void ULibretroCoreInstance::Launch() 
@@ -95,22 +94,22 @@ void ULibretroCoreInstance::Launch()
     Core = Core.IsEmpty() ? "emux_chip8_libretro.dll" : Core;
 
     auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
-    auto CorePath = FPaths::Combine(LibretroPluginRootPath, TEXT("MyCores"), Core);
-    auto RomPath  = FPaths::Combine(LibretroPluginRootPath, TEXT("MyROMs"), Rom );
+    auto CorePath = FUnrealLibretroModule::CorePath(Core);
+    auto RomPath  = FUnrealLibretroModule::ROMPath (Rom );
 
     if (!IPlatformFile::GetPlatformPhysical().FileExists(*CorePath))
     {
-        FMessageDialog::Open(EAppMsgType::Ok, FText::AsCultureInvariant("Failed to launch Libretro core. Couldn't find core at path " + IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*CorePath)));
+        UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Couldn't find core at path '%s'"), *Core, *CorePath);
         return;
     }
     else if (!IPlatformFile::GetPlatformPhysical().FileExists(*RomPath) && !IPlatformFile::GetPlatformPhysical().DirectoryExists(*RomPath))
     {
-        FMessageDialog::Open(EAppMsgType::Ok, FText::AsCultureInvariant("Failed to launch Libretro core " + Core + ". Couldn't find ROM at path " + IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*RomPath)));
+        UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Couldn't find ROM at path '%s'"), *Core, *RomPath);
         return;
     }
 
-
-    AudioBuffer = NewObject<URawAudioSoundWave>();
+    typedef URawAudioSoundWave AudioBufferInternal;
+    AudioBuffer = NewObject<AudioBufferInternal>();
 
     if (!RenderTarget)
     {
@@ -204,12 +203,12 @@ void ULibretroCoreInstance::SaveState(const FString Identifier)
 
 	TArray<uint8> *SaveStateBuffer = new TArray<uint8>(); // @dynamic
 
-	FGraphEventArray Prerequisites{ LastIOTask.FindOrAdd(this->SaveStatePath(Identifier)) };
+	FGraphEventArray Prerequisites{ LastIOTask.FindOrAdd(FUnrealLibretroModule::SaveStatePath(Rom, Identifier)) };
 	
     // This async task is executed second
 	auto SaveStateToFileTask = TGraphTask<FFunctionGraphTask>::CreateTask(Prerequisites[0].IsValid() ? &Prerequisites : nullptr).ConstructAndHold
 	(
-		[SaveStateBuffer, SaveStatePath = this->SaveStatePath(Identifier)]() // @dynamic The capture here does a copy on the heap probably
+		[SaveStateBuffer, SaveStatePath = FUnrealLibretroModule::SaveStatePath(Rom, Identifier)]() // @dynamic The capture here does a copy on the heap probably
 		{
 			FFileHelper::SaveArrayToFile(*SaveStateBuffer, *SaveStatePath, &IFileManager::Get(), FILEWRITE_None);
 			delete SaveStateBuffer;
@@ -217,7 +216,7 @@ void ULibretroCoreInstance::SaveState(const FString Identifier)
 		, TStatId(), ENamedThreads::AnyThread
 	);
 	
-	LastIOTask[this->SaveStatePath(Identifier)] = SaveStateToFileTask->GetCompletionEvent();
+	LastIOTask[FUnrealLibretroModule::SaveStatePath(Rom, Identifier)] = SaveStateToFileTask->GetCompletionEvent();
 	
 	// This async task is executed first
 	this->CoreInstance.GetValue()->EnqueueTask
@@ -264,10 +263,6 @@ void ULibretroCoreInstance::BeginPlay()
         FMessageDialog::Open(EAppMsgType::Ok, FText::AsCultureInvariant("You have temporal anti-aliasing enabled. The emulated games will look will look blurry and laggy if you leave this enabled. If you happen to know how to fix this let me know. I tried enabling responsive AA on the material to prevent this, but that didn't work."));
     }*/
 }
-
-// @todo: Using this function I think would be the proper way of keeping the UObjects I'm using in LibretroContext alive instead of the weak pointer shared pointer mess I'm currently using. However its kind of a low priority since the current system I'm using works fine.
-//		  The thing I worry about though is if delaying destruction for a few seconds is simply too long Unreal AFAIK only uses this to delay destruction until render resources are deleted which is no more than a few frames
-//bool ULibretroCoreInstance::IsReadyForFinishDestroy() { return false;  }
 
 void ULibretroCoreInstance::BeginDestroy()
 {
