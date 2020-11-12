@@ -35,6 +35,7 @@ jobs:
           sudo mkdir UnrealLibretro
           sudo mv $(ls | grep -v UnrealLibretro) UnrealLibretro
           sudo touch "Place the UnrealLibretro directory into your Unreal Engine projects Plugin directory"
+          sudo chmod -R 755 *
           
       - name: Upload Build-Artifact
         uses: actions/upload-artifact@v2.1.4
