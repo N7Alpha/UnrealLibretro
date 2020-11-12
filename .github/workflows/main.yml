@@ -30,12 +30,14 @@ jobs:
       # Removes source-control files and other miscellaneous files. Also fixes some permissions. Then puts all the project files under the plugin directory so Unreal Engine can find it
       - name: Prepare Project 
         run: |
+          sudo chmod 755 *
           sudo rm -rf setup.sh *.md .git*
           sudo touch "MyROMs/Place Your ROMs in this Directory" "MyCores/Place Your Libretro Cores in this Directory"
           sudo mkdir UnrealLibretro
-          sudo mv $(ls | grep -v UnrealLibretro) UnrealLibretro
+          shopt -s extglob dotglob
+          sudo mv !(UnrealLibretro) UnrealLibretro
+          shopt -u dotglob
           sudo touch "Place the UnrealLibretro directory into your Unreal Engine projects Plugin directory"
-          sudo chmod -R 755 *
           
       - name: Upload Build-Artifact
         uses: actions/upload-artifact@v2.1.4
