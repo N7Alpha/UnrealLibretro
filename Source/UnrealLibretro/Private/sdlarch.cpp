@@ -18,6 +18,23 @@
 #define REP10(P, M)  M(P##0) M(P##1) M(P##2) M(P##3) M(P##4) M(P##5) M(P##6) M(P##7) M(P##8) M(P##9)
 #define REP100(M) REP10(,M) REP10(1,M) REP10(2,M) REP10(3,M) REP10(4,M) REP10(5,M) REP10(6,M) REP10(7,M) REP10(8,M) REP10(9,M)
 
+extern struct libretro_callbacks_t {
+    retro_audio_sample_batch_t                                                c_audio_write;
+    retro_video_refresh_t                                                     c_video_refresh;
+    retro_audio_sample_t                                                      c_audio_sample;
+    retro_environment_t                                                       c_environment;
+    retro_input_poll_t                                                        c_input_poll;
+    retro_input_state_t                                                       c_input_state;
+    retro_hw_get_current_framebuffer_t                                        c_get_current_framebuffer;
+    TUniqueFunction<TRemovePointer<retro_audio_sample_batch_t        >::Type>   audio_write; // Changed these to TUniqueFunction because std::function throws exceptions even with -O3 and -fno-exceptions surprisingly https://godbolt.org/z/oqP3vT
+    TUniqueFunction<TRemovePointer<retro_video_refresh_t             >::Type>   video_refresh;
+    TUniqueFunction<TRemovePointer<retro_audio_sample_t              >::Type>   audio_sample;
+    TUniqueFunction<TRemovePointer<retro_environment_t               >::Type>   environment;
+    TUniqueFunction<TRemovePointer<retro_input_poll_t                >::Type>   input_poll;
+    TUniqueFunction<TRemovePointer<retro_input_state_t               >::Type>   input_state;
+    TUniqueFunction<TRemovePointer<retro_hw_get_current_framebuffer_t>::Type>   get_current_framebuffer;
+} libretro_callbacks_table[];
+
 #define FUNC_WRAP_INIT(M) {      func_wrap_audio_write##M, func_wrap_video_refresh##M, func_wrap_audio_sample##M, func_wrap_environment##M, func_wrap_input_poll##M, func_wrap_input_state##M, func_wrap_get_current_framebuffer##M },
 #define FUNC_WRAP_DEF(M) size_t  func_wrap_audio_write##M(const int16_t *data, size_t frames) { return libretro_callbacks_table[M].audio_write(data, frames); } \
                          void    func_wrap_video_refresh##M(const void *data, unsigned width, unsigned height, size_t pitch) { return libretro_callbacks_table[M].video_refresh(data, width, height, pitch); } \
@@ -30,7 +47,6 @@
 
 REP100(FUNC_WRAP_DEF)
 libretro_callbacks_t libretro_callbacks_table[] = { REP100(FUNC_WRAP_INIT) };
-libretro_callbacks_t* func_wrap_freelist = &libretro_callbacks_table[99];
 
 #define ENUM_GL_PROCEDURES(EnumMacro) \
         EnumMacro(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer) \
@@ -497,7 +513,10 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
     case RETRO_ENVIRONMENT_SET_HW_RENDER: {
         struct retro_hw_render_callback *hw = (struct retro_hw_render_callback*)data;
         hw->get_current_framebuffer = callback_instance->c_get_current_framebuffer;
+#pragma warning(push)
+#pragma warning(disable:4191)
         hw->get_proc_address = (retro_hw_get_proc_address_t)SDL_GL_GetProcAddress;
+#pragma warning(pop)
         g_video.hw = *hw;
         UsingOpenGL = true;
         return true;
@@ -515,13 +534,13 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
     }
     case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: {
         const char** retro_path = (const char**)data;
-        *retro_path = save_directory.data();
+        *retro_path = FUnrealLibretroModule::retro_save_directory.GetData();
 
         return true;
     }
     case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY: {
         const char** retro_path = (const char**)data;
-        *retro_path = system_directory.data();
+        *retro_path = FUnrealLibretroModule::retro_system_directory.GetData();
         
         return true;
     }
@@ -760,39 +779,17 @@ static retro_time_t cpu_features_get_time_usec(void) {
 #include <string.h>
 LibretroContext::LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState) : UnrealInputState(InputState) {}
 
-std::array<char, 260> LibretroContext::save_directory;
-std::array<char, 260> LibretroContext::system_directory;
-
 LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, TUniqueFunction
                                          <void(libretro_api_t&, bool)> LoadedCallback)
 {
 
     check(IsInGameThread()); // So static initialization is safe
 
-    static bool MemberStaticsInitialized = false;
-    if (!MemberStaticsInitialized) 
-    {
-        auto InitDirectory = [] (auto &cstr, FString &&Path) {
-            FString AbsolutePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*Path);
-            bool success = IFileManager::Get().MakeDirectory(*AbsolutePath, true); // This will block for a small amount of time probably
-            check(success && cstr.size() > AbsolutePath.Len());
-            auto RAII_ANSIString = StringCast<ANSICHAR>(*AbsolutePath);
-            strcpy(cstr.data(), RAII_ANSIString.Get()); // @todo should probably just make the AbsolutePath a TArray
-        };
-        
-        auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin(TEXT("UnrealLibretro"))->GetBaseDir();
-        InitDirectory(system_directory, FPaths::Combine(LibretroPluginRootPath, TEXT("System")));
-        InitDirectory(save_directory, FPaths::Combine(LibretroPluginRootPath, TEXT("Saves"), TEXT("Core")));
-        MemberStaticsInitialized = true;
-    }
-
     static const uint32 MAX_INSTANCES = 100;
     static const uint32 MAX_INSTANCES_PER_CORE = 8*8;
     static FCriticalSection MultipleDLLInstanceHandlingLock;
     static TMap<FString, TBitArray<TInlineAllocator<MAX_INSTANCES_PER_CORE/8>>> PerCoreAllocatedInstances;
     static TBitArray<TInlineAllocator<(MAX_INSTANCES / 8) + 1>> AllocatedInstances(false, MAX_INSTANCES);
-    
-    // SDL is needed to get OpenGL contexts and windows from the OS in a sane way. I tried looking for an official Unreal way to do it, but I couldn't really find one SDL is so portable though it shouldn't matter
 
     LibretroContext *l = new LibretroContext(InputState.ToSharedRef());
 

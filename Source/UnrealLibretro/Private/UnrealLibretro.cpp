@@ -20,6 +20,9 @@ DEFINE_LOG_CATEGORY(Libretro)
 
 #define LOCTEXT_NAMESPACE "FUnrealLibretroModule"
 
+TStaticArray<char, 1024> FUnrealLibretroModule::retro_save_directory{0};
+TStaticArray<char, 1024> FUnrealLibretroModule::retro_system_directory{0};
+
 void FUnrealLibretroModule::StartupModule()
 {
 	// This code will execute after your module is loaded into memory; the exact timing is specified in the .uplugin file per-module
@@ -39,6 +42,7 @@ void FUnrealLibretroModule::StartupModule()
 #define LIBRETRO_MODULE_LOAD_ERROR(msg) FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("LibretroError", msg LIBRETRO_NOTE)); \
 										UE_LOG(Libretro, Fatal, TEXT(msg LIBRETRO_NOTE));
 
+	// SDL is needed to get OpenGL contexts and windows from the OS in a sane way. I tried looking for an official Unreal way to do it, but I couldn't really find one SDL is so portable though it shouldn't matter
 	SDLHandle = !LibraryPath.IsEmpty() ? FPlatformProcess::GetDllHandle(*LibraryPath) : nullptr;
 
 	if (!SDLHandle)
@@ -62,6 +66,17 @@ void FUnrealLibretroModule::StartupModule()
 #if PLATFORM_WINDOWS
 	FPlatformProcess::PushDllDirectory(*RedistDirectory);
 #endif
+
+	auto InitDirectory = [](auto &cstr, FString&& Path) {
+		FString AbsolutePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*Path);
+		bool success = IFileManager::Get().MakeDirectory(*AbsolutePath, true);
+		check(success);
+		TStringConvert<TCHAR, char>::Convert(cstr.GetData(), cstr.Num(), *AbsolutePath, AbsolutePath.Len()); // has internal assertion if fails
+	};
+	
+	auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin(TEXT("UnrealLibretro"))->GetBaseDir();
+	InitDirectory(retro_system_directory, FPaths::Combine(LibretroPluginRootPath, TEXT("System")));
+	InitDirectory(retro_save_directory, FPaths::Combine(LibretroPluginRootPath, TEXT("Saves"), TEXT("Core")));
 }
 
 void FUnrealLibretroModule::ShutdownModule()

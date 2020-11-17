@@ -10,20 +10,20 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 
 
 // Standard Template Library https://docs.unrealengine.com/en-US/Programming/Development/CodingStandard/#useofstandardlibraries
-//#include <variant>
 #include <array>
 #include <unordered_map>
 #include <string>
 
 // Unreal imports
 #include "CoreMinimal.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
+#include "LibretroInputDefinitions.h"
+#include "RawAudioSoundWave.h"
 #include "UnrealLibretro.h" // For Libretro debug log category
 #include "LambdaRunnable.h"
-#include "UObject/WeakObjectPtrTemplates.h"
-#include "LibretroInputComponent.h"
 
-#include "RawAudioSoundWave.h"
-#include "Engine/TextureRenderTarget2D.h"
 
 // Third party libraries
 #if PLATFORM_WINDOWS
@@ -44,26 +44,9 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 #include "Windows/PostWindowsApi.h"
 #endif
 
-struct FLibretroInputState;
+struct libretro_callbacks_t;
 
-extern struct libretro_callbacks_t { // @todo Move into implementation and forward declare
-    retro_audio_sample_batch_t                                                c_audio_write;
-    retro_video_refresh_t                                                     c_video_refresh;
-    retro_audio_sample_t                                                      c_audio_sample;
-    retro_environment_t                                                       c_environment;
-    retro_input_poll_t                                                        c_input_poll;
-    retro_input_state_t                                                       c_input_state;
-    retro_hw_get_current_framebuffer_t                                        c_get_current_framebuffer;
-    TUniqueFunction<TRemovePointer<retro_audio_sample_batch_t        >::Type>   audio_write; // Changed these to TUniqueFunction because std::function throws exceptions even with -O3 and -fno-exceptions surprisingly https://godbolt.org/z/oqP3vT
-    TUniqueFunction<TRemovePointer<retro_video_refresh_t             >::Type>   video_refresh;
-    TUniqueFunction<TRemovePointer<retro_audio_sample_t              >::Type>   audio_sample;
-    TUniqueFunction<TRemovePointer<retro_environment_t               >::Type>   environment;
-    TUniqueFunction<TRemovePointer<retro_input_poll_t                >::Type>   input_poll;
-    TUniqueFunction<TRemovePointer<retro_input_state_t               >::Type>   input_state;
-    TUniqueFunction<TRemovePointer<retro_hw_get_current_framebuffer_t>::Type>   get_current_framebuffer;
-} libretro_callbacks_table[];
-
-struct libretro_api_t { // @todo move next to the api object
+struct libretro_api_t {
     void* handle;
     bool initialized;
 
@@ -125,30 +108,24 @@ protected:
     _8888_color *bgra_buffers[2] = { nullptr, nullptr };
     TAtomic<_8888_color*> RenderThreadsBuffer{nullptr};
 
-    libretro_api_t     libretro_api = {0};
+    libretro_api_t        libretro_api = {0};
     libretro_callbacks_t* callback_instance = nullptr;
     TQueue<TUniqueFunction<void(libretro_api_t&)>, EQueueMode::Spsc> LibretroAPITasks; // TQueue<T, EQueueMode::Spsc> has acquire-release semantics on Enqueue and Dequeue so this should be thread-safe
 
 
-
+    SDL_Window* g_win = nullptr;
+    SDL_GLContext g_ctx = nullptr;
+    struct retro_frame_time_callback runloop_frame_time = {0};
+    retro_usec_t runloop_frame_time_last = 0;
+    struct retro_audio_callback audio_callback = {0};
     
-    // As a libretro frontend you own directory path data.
-     static std::array<char, 260> system_directory;
-     static std::array<char, 260> save_directory;
-
-     SDL_Window* g_win = nullptr;
-     SDL_GLContext g_ctx = nullptr;
-     struct retro_frame_time_callback runloop_frame_time = {0};
-     retro_usec_t runloop_frame_time_last = 0;
-     struct retro_audio_callback audio_callback = {0};
-     
-     bool UsingOpenGL = false;
-     struct retro_system_av_info av = {{0}, {0}};
-     std::unordered_map<std::string, std::string> settings;
-     const struct retro_hw_render_context_negotiation_interface* hw_render_context_negotiation = nullptr;
+    bool UsingOpenGL = false;
+    struct retro_system_av_info av = {{0}, {0}};
+    std::unordered_map<std::string, std::string> settings;
+    const struct retro_hw_render_context_negotiation_interface* hw_render_context_negotiation = nullptr;
     
 
-     struct {
+    struct {
         GLuint tex_id;
         GLuint fbo_id;
         GLuint rbo_id;
@@ -166,17 +143,17 @@ protected:
     } g_video = { 0 };
 
 	
-     void create_window();
-     void video_configure(const struct retro_game_geometry* geom);
-     
-     void load(const char* sofile);
-     void load_game(const char* filename);
+    void create_window();
+    void video_configure(const struct retro_game_geometry* geom);
+    
+    void load(const char* sofile);
+    void load_game(const char* filename);
 
-	 // These are the callbacks the Libretro Core calls directly via C-function wrappers. This is where the callback implementation logic is.
-     void    core_video_refresh(const void* data, unsigned width, unsigned height, unsigned pitch);
-     void    core_audio_sample(int16_t left, int16_t right);
-     size_t  core_audio_write(const int16_t* buf, size_t frames);
-     int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id);
-     // void   core_input_poll(void);
-     bool    core_environment(unsigned cmd, void* data);
+	// These are the callbacks the Libretro Core calls directly via C-function wrappers. This is where the callback implementation logic is.
+    void    core_video_refresh(const void* data, unsigned width, unsigned height, unsigned pitch);
+    void    core_audio_sample(int16_t left, int16_t right);
+    size_t  core_audio_write(const int16_t* buf, size_t frames);
+    int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id);
+    // void   core_input_poll(void);
+    bool    core_environment(unsigned cmd, void* data);
 };

@@ -49,6 +49,9 @@ public:
 		return FPaths::Combine(UnrealLibretro->GetBaseDir(), TEXT("Saves"), TEXT("SRAM"), Rom, Identifier + ".srm");
 	}
 
+	// As a libretro frontend you own directory path data that you provide to the core
+	static TStaticArray<char, 1024> retro_save_directory;
+	static TStaticArray<char, 1024> retro_system_directory;
 
 private:
 	void* SDLHandle;
