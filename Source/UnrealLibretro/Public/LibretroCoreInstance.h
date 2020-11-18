@@ -141,7 +141,6 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void InitializeComponent() override;
 
-	FDelegateHandle ResumeEditor, PauseEditor;
 	bool Paused = false;
 
 	

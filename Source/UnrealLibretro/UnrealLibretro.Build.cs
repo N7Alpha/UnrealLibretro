@@ -32,7 +32,6 @@ public class UnrealLibretro : ModuleRules
 				"Core",
 				"RenderCore",
 				"RHI",
-				"UnrealEd",
 				"CoreUObject",
 				"Engine",
 				"InputCore",

@@ -229,21 +229,9 @@ void ULibretroCoreInstance::SaveState(const FString Identifier)
 	);
 }
 
-#include "Editor.h"
 #include "Scalability.h"
 
 void ULibretroCoreInstance::InitializeComponent() {
-    ResumeEditor = FEditorDelegates::ResumePIE.AddLambda([this](const bool bIsSimulating)
-        {
-            // This could have weird behavior if CoreInstance is launched when the editor is paused. That really shouldn't ever happen though
-            NOT_LAUNCHED_GUARD
-            this->CoreInstance.GetValue()->Pause(Paused);
-        });
-    PauseEditor = FEditorDelegates::PausePIE.AddLambda([this](const bool bIsSimulating)
-        {
-            NOT_LAUNCHED_GUARD
-            this->CoreInstance.GetValue()->Pause(true);
-        });
 
     for (int Port = 0; Port < PortCount; Port++)
     {
@@ -285,9 +273,6 @@ void ULibretroCoreInstance::BeginDestroy()
 
         Shutdown();
     }
-
-    FEditorDelegates::ResumePIE.Remove(ResumeEditor);
-    FEditorDelegates::PausePIE .Remove(PauseEditor );
 
     Super::BeginDestroy();
 }
