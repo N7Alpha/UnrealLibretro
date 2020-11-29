@@ -54,12 +54,12 @@ public:
 	 * **Caution**: Don't use save states with one ROM on multiple different emulators,
 	 * likely their serialization formats will be different and this will trigger an assert.
 	 *
-	 * @param Identifier - Allows for storing multiple save states per ROM
+	 * @param FilePath - Allows for storing multiple save states per ROM
 	 * 
 	 * @see https://higan.readthedocs.io/en/stable/concepts/save-states/#save-states-versus-in-game-saves
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
-	void LoadState(const FString Identifier = "Default");
+	void LoadState(const FString &FilePath = "Default.sav");
 
 	/**
 	 * @brief Basically the same as saving a state in an emulator
@@ -67,7 +67,7 @@ public:
 	 * @see LoadState(const FString)
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
-	void SaveState(const FString Identifier = "Default");
+	void SaveState(const FString &FilePath = "Default.sav");
 
 	/**
 	 * @brief Suspends the emulator instance @details The game will no longer run until you call Pause with false which will resume gameplay.
@@ -118,7 +118,7 @@ public:
 	 * So if your ROM is at [MyProjectName]/Plugins/UnrealLibretro/MyROMs/myrom.rom this should be set to myrom.rom
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro)
-	FString Rom;
+	FString RomPath;
 
 	/**
 	 * You should provide a path to your Libretro core relative to the MyCores directory in the UnrealLibretro directory in your project's Plugins directory.
@@ -126,13 +126,14 @@ public:
 	 * You can get Libretro Cores from here https://buildbot.libretro.com/nightly/windows/x86_64/latest/
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro)
-	FString Core;
+	FString CorePath;
 
 	/**
-	 * Determines a unique location where an SRAM file will be written. This would only be needed if you were running two instances of the same game at once
+	 * Provided by some cores. FPath is either absolute or relative to $(PluginDir)/UnrealLibretro/Saves/SaveStates/$(RomFileName)/  
+	 * This would only be needed if you were running two instances of the same game at once or you were specifying some other path on the filesystem
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro, AdvancedDisplay)
-	FString SRAMIdentifier = "Default";
+	FString SRAMPath = "Default.srm";
 
 protected:
 	// @todo: It'd be nice if I could use something like std::wrapped_reference however Unreal doesn't offer an equivalent for now

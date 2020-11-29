@@ -17,41 +17,36 @@ public:
 
 
 	/** Path Resolution */
-	static FString CorePath(const FString& Core)
+	template <typename... PathTypes>
+	static FString IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(const FString& Path, PathTypes&&... InPaths)
 	{
+		if (!FPaths::IsRelative(Path)) return Path;
+		check(IsInGameThread()); // For IPluginManager
 		auto UnrealLibretro = IPluginManager::Get().FindPlugin("UnrealLibretro");
-		verify(UnrealLibretro.IsValid());
+		check(UnrealLibretro.IsValid());
 
-		return FPaths::Combine(UnrealLibretro->GetBaseDir(), TEXT("MyCores"), Core);
+		return FPaths::Combine(UnrealLibretro->GetBaseDir(), InPaths..., Path);
 	}
 
-	static FString ROMPath(const FString& Rom)
+	static FString ResolveCorePath(const FString& UnresolvedCorePath)
 	{
-		auto UnrealLibretro = IPluginManager::Get().FindPlugin("UnrealLibretro");
-		verify(UnrealLibretro.IsValid());
-		
-		return FPaths::Combine(UnrealLibretro->GetBaseDir(), TEXT("MyROMs"), Rom);
+		return IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(UnresolvedCorePath, TEXT("MyCores"));
 	}
 
-	static FString SaveStatePath(const FString& Rom, const FString& Identifier)
+	static FString ResolveROMPath(const FString& UnresolvedRomRom)
 	{
-		auto UnrealLibretro = IPluginManager::Get().FindPlugin("UnrealLibretro");
-		verify(UnrealLibretro.IsValid());
-
-		return FPaths::Combine(UnrealLibretro->GetBaseDir(), TEXT("Saves"), TEXT("SaveStates"), Rom, Identifier + ".sav");
+		return IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(UnresolvedRomRom, TEXT("MyROMs"));
 	}
 
-	static FString SRAMPath(const FString& Rom, const FString& Identifier)
+	static FString ResolveSaveStatePath(const FString& UnresolvedRomPath, const FString& UnresolvedSavePath)
 	{
-		auto UnrealLibretro = IPluginManager::Get().FindPlugin("UnrealLibretro");
-		verify(UnrealLibretro.IsValid());
-
-		return FPaths::Combine(UnrealLibretro->GetBaseDir(), TEXT("Saves"), TEXT("SRAM"), Rom, Identifier + ".srm");
+		return IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(UnresolvedSavePath, TEXT("Saves"), TEXT("SaveStates"), FPaths::GetCleanFilename(UnresolvedRomPath));
 	}
 
-	// As a libretro frontend you own directory path data that you provide to the core
-	static TStaticArray<char, 1024> retro_save_directory;
-	static TStaticArray<char, 1024> retro_system_directory;
+	static FString ResolveSRAMPath(const FString& UnresolvedRomPath, const FString& UnresolvedSavePath)
+	{
+		return IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(UnresolvedSavePath, TEXT("Saves"), TEXT("SRAM"), FPaths::GetCleanFilename(UnresolvedRomPath));
+	}
 
 private:
 	void* SDLHandle;

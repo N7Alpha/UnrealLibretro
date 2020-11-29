@@ -1,9 +1,9 @@
 
 #include "sdlarch.h"
+#include "LibretroSettings.h"
 #include "LibretroCoreInstance.h"
 
 #include "HAL/FileManager.h"
-#include "Interfaces/IPluginManager.h"
 
 #if PLATFORM_APPLE
 #include <dispatch/dispatch.h>
@@ -534,13 +534,15 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
     }
     case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: {
         const char** retro_path = (const char**)data;
-        *retro_path = FUnrealLibretroModule::retro_save_directory.GetData();
+        verify(IFileManager::Get().MakeDirectory(ANSI_TO_TCHAR(this->core_save_directory.GetData()), true));
+        *retro_path = core_save_directory.GetData();
 
         return true;
     }
     case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY: {
         const char** retro_path = (const char**)data;
-        *retro_path = FUnrealLibretroModule::retro_system_directory.GetData();
+        verify(IFileManager::Get().MakeDirectory(ANSI_TO_TCHAR(this->core_system_directory.GetData()), true));
+        *retro_path = core_system_directory.GetData();
         
         return true;
     }
@@ -793,6 +795,21 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
     LibretroContext *l = new LibretroContext(InputState.ToSharedRef());
 
+    auto ConvertPath = [](auto &core_directory, const FString& CoreDirectory)
+    {
+        FString AbsolutePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(CoreDirectory));
+        core_directory.AddZeroed(TStringConvert<TCHAR, char>::ConvertedLength(*AbsolutePath, AbsolutePath.Len()));
+        TStringConvert<TCHAR, char>::Convert(core_directory.GetData(), // has internal assertion if fails
+                                             core_directory.Num(),
+                                            *AbsolutePath,
+                                             AbsolutePath.Len());
+    };
+
+    auto LibretroSettings = GetDefault<ULibretroSettings>();
+
+    ConvertPath(l->core_save_directory, LibretroSettings->CoreSaveDirectory);
+    ConvertPath(l->core_system_directory, LibretroSettings->CoreSystemDirectory);
+
     l->UnrealRenderTarget = MakeWeakObjectPtr(RenderTarget);
     l->UnrealSoundBuffer  = MakeWeakObjectPtr(SoundBuffer );
 
@@ -831,9 +848,8 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             l->g_video.hw.context_reset = []() {};
             l->g_video.hw.context_destroy = []() {};
 
-
             // Loads the dll and its function pointers into libretro_api
-            l->load(TCHAR_TO_ANSI(*InstancedCorePath));
+            l->load(TCHAR_TO_ANSI(*IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*InstancedCorePath)));
 
             // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
             l->load_game(TCHAR_TO_ANSI(*IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*game)));

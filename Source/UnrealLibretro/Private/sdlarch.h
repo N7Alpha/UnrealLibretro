@@ -97,6 +97,9 @@ protected:
     FTexture2DRHIRef TextureRHI; // @todo: be careful with this it can become stale if you reinit the UTextureRenderTarget2D without updating this reference. Say if you were adding a feature to change games without reiniting the entire core. What I really need to do is probably implement my own dynamic texture subclass
     TSharedPtr<TCircularQueue<int32>, ESPMode::ThreadSafe> QueuedAudio;
 
+    TArray<char, TInlineAllocator<512>> core_save_directory,
+                                        core_system_directory;
+
     struct _8888_color {
         uint32 B : 8;
         uint32 G : 8;

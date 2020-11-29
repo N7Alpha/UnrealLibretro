@@ -4,9 +4,7 @@
 
 #include "libretro/libretro.h"
 
-#include "RHIResources.h"
 #include "HAL/PlatformFilemanager.h"
-#include "Misc/MessageDialog.h"
 #include "Misc/FileHelper.h"
 
 #include "LibretroInputComponent.h"
@@ -14,9 +12,7 @@
 #include "LambdaRunnable.h"
 #include "sdlarch.h"
 
-#include "Interfaces/IPluginManager.h"
-
-#define NOT_LAUNCHED_GUARD if (!CoreInstance.IsSet()) { UE_LOG(Libretro, Warning, TEXT("Called function '%hs' before Libretro Core '%s' was launched. This has no effect"), __func__, *Core) return; }
+#define NOT_LAUNCHED_GUARD if (!CoreInstance.IsSet()) { UE_LOG(Libretro, Warning, TEXT("Called function '%hs' before Libretro Core '%s' was launched. This has no effect"), __func__, *CorePath) return; }
 
 template<typename T>
 TRefCountPtr<T>&& Replace(TRefCountPtr<T> & a, TRefCountPtr<T> && b)
@@ -89,22 +85,18 @@ void ULibretroCoreInstance::DisconnectController(int Port)
 void ULibretroCoreInstance::Launch() 
 {
     Shutdown();
+    
+    auto _CorePath = FUnrealLibretroModule::ResolveCorePath(this->CorePath);
+    auto _RomPath  = FUnrealLibretroModule::ResolveROMPath (this->RomPath);
 
-    Rom = Rom.IsEmpty() ? "MAZE" : Rom;
-    Core = Core.IsEmpty() ? "emux_chip8_libretro.dll" : Core;
-
-    auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
-    auto CorePath = FUnrealLibretroModule::CorePath(Core);
-    auto RomPath  = FUnrealLibretroModule::ROMPath (Rom );
-
-    if (!IPlatformFile::GetPlatformPhysical().FileExists(*CorePath))
+    if (!IPlatformFile::GetPlatformPhysical().FileExists(*_CorePath))
     {
-        UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Couldn't find core at path '%s'"), *Core, *CorePath);
+        UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Couldn't find core at path '%s'"), *_CorePath, *_CorePath);
         return;
     }
-    else if (!IPlatformFile::GetPlatformPhysical().FileExists(*RomPath) && !IPlatformFile::GetPlatformPhysical().DirectoryExists(*RomPath))
+    else if (!IPlatformFile::GetPlatformPhysical().FileExists(*_RomPath) && !IPlatformFile::GetPlatformPhysical().DirectoryExists(*_RomPath))
     {
-        UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Couldn't find ROM at path '%s'"), *Core, *RomPath);
+        UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Couldn't find ROM at path '%s'"), *_CorePath, *_RomPath);
         return;
     }
 
@@ -116,10 +108,10 @@ void ULibretroCoreInstance::Launch()
         RenderTarget = NewObject<UTextureRenderTarget2D>();
     }
 
-    RenderTarget->Filter = TF_Nearest;
+    RenderTarget->Filter = TF_Nearest; // @todo remove this
 
-    this->CoreInstance = LibretroContext::Launch(CorePath, RomPath, RenderTarget, static_cast<AudioBufferInternal*>(AudioBuffer), InputState,
-	    [weakThis = MakeWeakObjectPtr(this), OrderedFileAccess = GameThread_PrepareBlockingOrderedOperation(FUnrealLibretroModule::SRAMPath(Rom, "Default"))]
+    this->CoreInstance = LibretroContext::Launch(_CorePath, _RomPath, RenderTarget, static_cast<AudioBufferInternal*>(AudioBuffer), InputState,
+	    [weakThis = MakeWeakObjectPtr(this), OrderedFileAccess = GameThread_PrepareBlockingOrderedOperation(FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath))]
         (libretro_api_t &libretro_api, bool bottom_left_origin) 
 	    {   // Core has loaded
             
@@ -163,17 +155,16 @@ void ULibretroCoreInstance::Shutdown() {
     CoreInstance.Reset();
 }
 
-// These functions are clusters. They will be rewritten... eventually.
-void ULibretroCoreInstance::LoadState(const FString Identifier)
+void ULibretroCoreInstance::LoadState(const FString& FilePath)
 {
     NOT_LAUNCHED_GUARD
 
     CoreInstance.GetValue()->EnqueueTask(
-        [Core = this->Core, OrderedSaveStateFileAccess = GameThread_PrepareBlockingOrderedOperation(FUnrealLibretroModule::SaveStatePath(Rom, Identifier))]
+        [CorePath = this->CorePath, OrderedSaveStateFileAccess = GameThread_PrepareBlockingOrderedOperation(FUnrealLibretroModule::ResolveSaveStatePath(RomPath, FilePath))]
         (auto libretro_api)
         {
             OrderedSaveStateFileAccess(
-            [&libretro_api, &Core]
+            [&libretro_api, &CorePath]
             (auto SaveStatePath)
             {
                 TArray<uint8> SaveStateBuffer;
@@ -186,7 +177,7 @@ void ULibretroCoreInstance::LoadState(const FString Identifier)
 
                 if (SaveStateBuffer.Num() != libretro_api.serialize_size()) // because of emulator versions these might not match up also some Libretro cores don't follow spec so the size can change between calls to serialize_size
                 {
-                    UE_LOG(Libretro, Warning, TEXT("Save state file size specified by '%s' did not match the save state size in folder. File Size : %d Core Size: %zu. Going to try to load it anyway."), *Core, SaveStateBuffer.Num(), libretro_api.serialize_size())
+                    UE_LOG(Libretro, Warning, TEXT("Save state file size specified by '%s' did not match the save state size in folder. File Size : %d Core Size: %zu. Going to try to load it anyway."), *CorePath, SaveStateBuffer.Num(), libretro_api.serialize_size())
                 }
 
                 libretro_api.unserialize(SaveStateBuffer.GetData(), SaveStateBuffer.Num());
@@ -194,18 +185,19 @@ void ULibretroCoreInstance::LoadState(const FString Identifier)
         });
 }
 
-void ULibretroCoreInstance::SaveState(const FString Identifier)
+// This function is disgusting I'm sorry
+void ULibretroCoreInstance::SaveState(const FString& FilePath)
 {
 	NOT_LAUNCHED_GUARD
 
 	TArray<uint8> *SaveStateBuffer = new TArray<uint8>(); // @dynamic
 
-	FGraphEventArray Prerequisites{ LastIOTask.FindOrAdd(FUnrealLibretroModule::SaveStatePath(Rom, Identifier)) };
+	FGraphEventArray Prerequisites{ LastIOTask.FindOrAdd(FUnrealLibretroModule::ResolveSaveStatePath(RomPath, FilePath)) };
 	
     // This async task is executed second
 	auto SaveStateToFileTask = TGraphTask<FFunctionGraphTask>::CreateTask(Prerequisites[0].IsValid() ? &Prerequisites : nullptr).ConstructAndHold
 	(
-		[SaveStateBuffer, SaveStatePath = FUnrealLibretroModule::SaveStatePath(Rom, Identifier)]() // @dynamic The capture here does a copy on the heap probably
+		[SaveStateBuffer, SaveStatePath = FUnrealLibretroModule::ResolveSaveStatePath(RomPath, FilePath)]() // @dynamic The capture here does a copy on the heap probably
 		{
 			FFileHelper::SaveArrayToFile(*SaveStateBuffer, *SaveStatePath, &IFileManager::Get(), FILEWRITE_None);
 			delete SaveStateBuffer;
@@ -213,7 +205,7 @@ void ULibretroCoreInstance::SaveState(const FString Identifier)
 		, TStatId(), ENamedThreads::AnyThread
 	);
 	
-	LastIOTask[FUnrealLibretroModule::SaveStatePath(Rom, Identifier)] = SaveStateToFileTask->GetCompletionEvent();
+	LastIOTask[FUnrealLibretroModule::ResolveSaveStatePath(RomPath, FilePath)] = SaveStateToFileTask->GetCompletionEvent();
 	
 	// This async task is executed first
 	this->CoreInstance.GetValue()->EnqueueTask
@@ -260,7 +252,7 @@ void ULibretroCoreInstance::BeginDestroy()
     {
         // Save SRam
         this->CoreInstance.GetValue()->EnqueueTask(
-            [AccessSRAMFileOrdered = GameThread_PrepareBlockingOrderedOperation(FUnrealLibretroModule::SRAMPath(Rom, "Default"))](auto libretro_api)
+            [AccessSRAMFileOrdered = GameThread_PrepareBlockingOrderedOperation(FUnrealLibretroModule::ResolveSRAMPath(RomPath, SRAMPath))](auto libretro_api)
             {
 	            AccessSRAMFileOrdered(
                     [&libretro_api](auto SRAMPath)

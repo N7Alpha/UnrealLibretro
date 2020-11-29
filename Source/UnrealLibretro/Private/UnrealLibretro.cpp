@@ -16,12 +16,11 @@
 #include <dispatch/dispatch.h>
 #endif
 
+#include "LibretroSettings.h"
+
 DEFINE_LOG_CATEGORY(Libretro)
 
 #define LOCTEXT_NAMESPACE "FUnrealLibretroModule"
-
-TStaticArray<char, 1024> FUnrealLibretroModule::retro_save_directory{0};
-TStaticArray<char, 1024> FUnrealLibretroModule::retro_system_directory{0};
 
 void FUnrealLibretroModule::StartupModule()
 {
@@ -66,17 +65,6 @@ void FUnrealLibretroModule::StartupModule()
 #if PLATFORM_WINDOWS
 	FPlatformProcess::PushDllDirectory(*RedistDirectory);
 #endif
-
-	auto InitDirectory = [](auto &cstr, FString&& Path) {
-		FString AbsolutePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*Path);
-		bool success = IFileManager::Get().MakeDirectory(*AbsolutePath, true);
-		check(success);
-		TStringConvert<TCHAR, char>::Convert(cstr.GetData(), cstr.Num(), *AbsolutePath, AbsolutePath.Len()); // has internal assertion if fails
-	};
-	
-	auto LibretroPluginRootPath = IPluginManager::Get().FindPlugin(TEXT("UnrealLibretro"))->GetBaseDir();
-	InitDirectory(retro_system_directory, FPaths::Combine(LibretroPluginRootPath, TEXT("System")));
-	InitDirectory(retro_save_directory, FPaths::Combine(LibretroPluginRootPath, TEXT("Saves"), TEXT("Core")));
 }
 
 void FUnrealLibretroModule::ShutdownModule()
