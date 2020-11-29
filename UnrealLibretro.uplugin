@@ -18,7 +18,8 @@
 		{
 			"Name": "UnrealLibretro",
 			"Type": "Runtime",
-			"LoadingPhase": "Default"
+			"LoadingPhase": "Default",
+			"WhitelistPlatforms": [ "Win64", "Mac" ]
 		}
 	]
 }
