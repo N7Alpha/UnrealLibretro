@@ -267,8 +267,9 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
  };
 
 // Stripped down code for profiling purposes https://godbolt.org/z/c57esx
-// @todo : Theres a data race here that seems like it would rarely hit and would just result in screen tearing. I should eventually just use a lock and swap the pointer from the background thread and lock when reading in data on the render thread. Doesn't seem like a big deal for now.
-// @todo : From what I've read it should be unsafe to have a data race on a buffer shared between two threads not using an atomic wrapper at least for c++11, but I don't really fully understand this yet and this seems to work
+// @todo : Theres a data race here that seems like it would rarely hit, but its still pretty bad.
+//         I should eventually just use a lock and swap the pointer from the background thread and lock when reading in data on the render thread. 
+//         Doesn't seem like a big deal for now.
  void LibretroContext::core_video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
 
     check(av.geometry.base_width == width && av.geometry.base_height == height);
@@ -766,19 +767,6 @@ void LibretroContext::load_game(const char* filename) {
     
 }
 
-/**
- * cpu_features_get_time_usec:
- *
- * Gets time in microseconds.
- *
- * Returns: time in microseconds.
- **/
-
-
-static retro_time_t cpu_features_get_time_usec(void) {
-    return (retro_time_t)SDL_GetTicks();
-}
-#include <string.h>
 LibretroContext::LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState) : UnrealInputState(InputState) {}
 
 LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, TUniqueFunction
@@ -814,7 +802,7 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     l->UnrealSoundBuffer  = MakeWeakObjectPtr(SoundBuffer );
 
     // Kick the initialization process off to another thread. It shouldn't be added to the Unreal task pool because those are too slow and my code relies on OpenGL state being thread local.
-    // The Runnable system is the standard way for spawning and managing threads in Unreal. FThread looks enticing, but they removed anyway to detach threads since "it doesn't work as expected"
+    // The Runnable system is the standard way for spawning and managing threads in Unreal. FThread looks enticing, but they removed any way to detach threads since "it doesn't work as expected"
     l->UnrealThreadTask = FLambdaRunnable::RunLambdaOnBackGroundThread
     (
         [=, LoadedCallback = MoveTemp(LoadedCallback)]() {
@@ -864,7 +852,7 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             while (!l->shutdown) {
 
                 if (l->runloop_frame_time.callback) {
-                    retro_time_t current = cpu_features_get_time_usec();
+                    retro_time_t current = (retro_time_t)SDL_GetTicks();
                     retro_time_t delta = current - l->runloop_frame_time_last;
 
                     if (!l->runloop_frame_time_last)
@@ -932,37 +920,22 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
         	if (l->bgra_buffers[0] || l->bgra_buffers[1])
             {
-                /*
-                 From https://docs.unrealengine.com/en-US/Programming/Rendering/ParallelRendering/index.html#synchronization
-                 
-                 "It is also guaranteed that, regardless of how parallelization is configured, the order of submission of commands to the GPU is unchanged from the order the commands would have been submitted in a single-threaded renderer. This is required to ensure consistency and must be maintained if rendering code is changed."
-                 */
-                auto CopyToUnrealFramebufferFinished = TGraphTask<FNullGraphTask>::CreateTask().ConstructAndHold(TStatId(), ENamedThreads::AnyThread);
-                
-                ENQUEUE_RENDER_COMMAND(CopyToUnrealFramebufferFence)
-                (
-                    [CopyToUnrealFramebufferFinished](FRHICommandListImmediate& RHICmdList)
+                ENQUEUE_RENDER_COMMAND(CopyToUnrealFramebufferFence)([bgra_buffers = l->bgra_buffers](FRHICommandListImmediate& RHICmdList)
                     {
-                        auto RHIThreadFence = RHICmdList.RHIThreadFence();
-                    	if (RHIThreadFence)
-                    	{
-                    		if (!RHIThreadFence->AddSubsequent(CopyToUnrealFramebufferFinished))
-                    		{
-                                CopyToUnrealFramebufferFinished->Unlock();
-                    		}
-                    	}
+                        RHICmdList.EnqueueLambda([=](FRHICommandList&)
+                        {
+                            if (bgra_buffers[0])
+                            {
+                                FMemory::Free(bgra_buffers[0]);
+                            }
+
+                            if (bgra_buffers[1])
+                            {
+                                FMemory::Free(bgra_buffers[1]);
+                            }
+                        });
                     }
                 );
-
-        		if (l->bgra_buffers[0])
-        		{
-                    FMemory::Free(l->bgra_buffers[0]);
-        		}
-
-        		if (l->bgra_buffers[1])
-        		{
-                    FMemory::Free(l->bgra_buffers[1]);
-        		}
             }
             
             l->~LibretroContext(); // implicitly releases shared reference to pcm audio buffer and input state

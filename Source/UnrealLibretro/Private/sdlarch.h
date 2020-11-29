@@ -85,7 +85,6 @@ protected:
 
     bool shutdown = false;
     TAtomic<bool> shutdown_audio{false}; // @hack prevents hangs when destructing because some cores will call core_audio_write in an infinite loop until audio is enqueued. We have a fixed size audio buffer and have no real control over how the audio is dequeued so this can happen often.
-    bool          exit_run_loop = false;
     FLambdaRunnable* UnrealThreadTask = nullptr;
 
     // From all the crazy container types you can tell I had trouble with multithreading. However from what I understand my solution is threadsafe.
