@@ -27,12 +27,7 @@ public class UnrealLibretro : ModuleRules
 			RuntimeDependencies.Add("$(PluginDir)/Binaries/Win64/ThirdParty/libretro/*");
 			PublicDelayLoadDLLs.Add("SDL2.dll");
         }
-        else
-        {
-			throw new System.PlatformNotSupportedException("Only building for Windows 64-bit and MacOS is supported");
-        }
-		
-		
+
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
