@@ -63,15 +63,19 @@ void FUnrealLibretroModule::StartupModule()
 	}
 
 #if PLATFORM_WINDOWS
-	FPlatformProcess::PushDllDirectory(*RedistDirectory);
+	FPlatformProcess::AddDllDirectory(*RedistDirectory);
 #endif
 }
 
 void FUnrealLibretroModule::ShutdownModule()
 {
-	// This function may be called during shutdown to clean up your module.  For modules that support dynamic reloading,
-	// we call this function before unloading the module.
-
+	// @todo For now I skip resource cleanup. It could be added back if I added isReadyForFinishDestroy(bool) to ULibretroCoreInstance
+	// in conjunction with waiting for the LibretroContext to destruct since UE uses the outstanding UObjects from this module visible through
+	// the reflection system (UProperty, etc)  to determine when it is safe to shutdown this module.
+	// This is because LibretroContext depends on the dlls and paths loaded by this module and is destructed asynchronously and is not a UObject.
+	// I could also fix the shutdown_audio hack as well as remove the numerous weak pointers in LibretroContext.
+	// I'm nervous how much the engine will block the game thread on that condition though so that still might not be a solution.
+#if 0
 #if PLATFORM_APPLE
 	dispatch_sync(dispatch_get_main_queue(), ^ {
 #endif
@@ -83,10 +87,8 @@ void FUnrealLibretroModule::ShutdownModule()
 	FPlatformProcess::FreeDllHandle(SDLHandle);
 	SDLHandle = nullptr;
 
-#if PLATFORM_WINDOWS
-	FPlatformProcess::PopDllDirectory(*RedistDirectory);
+	// @todo Remove RedistDirectory from Searchpath
 #endif
-	
 }
 
 #undef LOCTEXT_NAMESPACE
