@@ -20,7 +20,10 @@ class UNREALLIBRETRO_API ULibretroCoreInstance : public UActorComponent
 public:
 	/** Lifetime */
 	ULibretroCoreInstance();
+	virtual void InitializeComponent() override;
+	virtual void BeginPlay() override;
 	virtual void BeginDestroy();
+	
 
 
 	/** Delegate Functions */
@@ -52,7 +55,7 @@ public:
 	 * The save states are unique based on the Rom's filename and the passed identifier.
 	 * 
 	 * **Caution**: Don't use save states with one ROM on multiple different emulators,
-	 * likely their serialization formats will be different and this will trigger an assert.
+	 * likely their serialization formats will be different.
 	 *
 	 * @param FilePath - Allows for storing multiple save states per ROM
 	 * 
@@ -138,9 +141,6 @@ public:
 protected:
 	// @todo: It'd be nice if I could use something like std::wrapped_reference however Unreal doesn't offer an equivalent for now
 	TOptional<struct LibretroContext*> CoreInstance;
-
-	virtual void BeginPlay() override;
-	virtual void InitializeComponent() override;
 
 	bool Paused = false;
 
