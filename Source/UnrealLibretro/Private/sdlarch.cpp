@@ -801,6 +801,8 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     l->UnrealRenderTarget = MakeWeakObjectPtr(RenderTarget);
     l->UnrealSoundBuffer  = MakeWeakObjectPtr(SoundBuffer );
 
+    l->PauseEvent = FPlatformProcess::GetSynchEventFromPool(true);
+
     // Kick the initialization process off to another thread. It shouldn't be added to the Unreal task pool because those are too slow and my code relies on OpenGL state being thread local.
     // The Runnable system is the standard way for spawning and managing threads in Unreal. FThread looks enticing, but they removed any way to detach threads since "it doesn't work as expected"
     l->UnrealThreadTask = FLambdaRunnable::RunLambdaOnBackGroundThread
@@ -937,6 +939,11 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
                     }
                 );
             }
+
+            if (l->PauseEvent)
+            {
+                FPlatformProcess::ReturnSynchEventToPool(l->PauseEvent);
+            }
             
             l->~LibretroContext(); // implicitly releases shared reference to pcm audio buffer and input state
 
@@ -959,15 +966,26 @@ void LibretroContext::Shutdown(LibretroContext* Instance)
     Instance->shutdown_audio.Store(true, EMemoryOrder::SequentiallyConsistent);
 	// We enqueue the shutdown procedure as the final task since we want outstanding tasks to be executed first
     Instance->EnqueueTask([Instance](auto&&)
-    {
-        Instance->shutdown = true;
-    });
+        {
+            Instance->shutdown = true;
+        });
     
 }
 
-void LibretroContext::Pause(bool ShouldPause) // @todo not safe implementation if you aquire locks which we do
+void LibretroContext::Pause(bool ShouldPause)
 {
-    UnrealThreadTask->Thread->Suspend(ShouldPause);
+    if (ShouldPause)
+    {
+        this->PauseEvent->Reset();
+        this->EnqueueTask([this](auto&&)
+            {
+                this->PauseEvent->Wait();
+            });
+    }
+    else
+    {
+        this->PauseEvent->Trigger();
+    }
 }
 
 void LibretroContext::EnqueueTask(TUniqueFunction<void(libretro_api_t&)> LibretroAPITask)
