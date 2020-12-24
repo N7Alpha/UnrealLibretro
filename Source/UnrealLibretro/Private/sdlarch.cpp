@@ -171,17 +171,18 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
     }
 
 #if DEBUG_OPENGL
-    GLint opengl_flags; 
+    GLint opengl_flags, 
+          major_version, minor_version; 
     glGetIntegerv(GL_CONTEXT_FLAGS, &opengl_flags);
-    if (GLAD_GL_VERSION_4_3) {
-        if (opengl_flags & GL_CONTEXT_FLAG_DEBUG_BIT)
-        {
-            glEnable(GL_DEBUG_OUTPUT);
-            glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
-            glDebugMessageCallback(glDebugOutput, nullptr);
-            glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, GL_TRUE);
-        }
-
+    glGetIntegerv(GL_MAJOR_VERSION, &major_version);
+    glGetIntegerv(GL_MINOR_VERSION, &minor_version);
+    if (   major_version >= 4 && minor_version >= 3 
+        && (opengl_flags & GL_CONTEXT_FLAG_DEBUG_BIT))
+    {
+        glEnable(GL_DEBUG_OUTPUT);
+        glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+        glDebugMessageCallback(glDebugOutput, nullptr);
+        glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, GL_TRUE);
     }
 #endif
 
