@@ -564,14 +564,16 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
     }
     case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: {
         const char** retro_path = (const char**)data;
-        verify(IFileManager::Get().MakeDirectory(ANSI_TO_TCHAR(this->core_save_directory.GetData()), true));
+        auto RAII = StringCast<TCHAR>(this->core_save_directory.GetData());
+        verify(IFileManager::Get().MakeDirectory(RAII.Get(), true));
         *retro_path = core_save_directory.GetData();
 
         return true;
     }
     case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY: {
         const char** retro_path = (const char**)data;
-        verify(IFileManager::Get().MakeDirectory(ANSI_TO_TCHAR(this->core_system_directory.GetData()), true));
+        auto RAII = StringCast<TCHAR>(this->core_system_directory.GetData());
+        verify(IFileManager::Get().MakeDirectory(RAII.Get(), true));
         *retro_path = core_system_directory.GetData();
         
         return true;
@@ -856,17 +858,17 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
     auto ConvertPath = [](auto &core_directory, const FString& CoreDirectory)
     {
-        FString AbsolutePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(CoreDirectory));
-        core_directory.AddZeroed(TStringConvert<TCHAR, char>::ConvertedLength(*AbsolutePath, AbsolutePath.Len()));
+        FString AbsoluteCoreDirectory = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(CoreDirectory));
+        core_directory.SetNumZeroed(TStringConvert<TCHAR, char>::ConvertedLength(*AbsoluteCoreDirectory, AbsoluteCoreDirectory.Len()) + 1);
         TStringConvert<TCHAR, char>::Convert(core_directory.GetData(), // has internal assertion if fails
                                              core_directory.Num(),
-                                            *AbsolutePath,
-                                             AbsolutePath.Len());
+                                            *AbsoluteCoreDirectory,
+                                             AbsoluteCoreDirectory.Len());
     };
 
     auto LibretroSettings = GetDefault<ULibretroSettings>();
 
-    ConvertPath(l->core_save_directory, LibretroSettings->CoreSaveDirectory);
+    ConvertPath(l->core_save_directory,   LibretroSettings->CoreSaveDirectory);
     ConvertPath(l->core_system_directory, LibretroSettings->CoreSystemDirectory);
 
     l->UnrealRenderTarget = MakeWeakObjectPtr(RenderTarget);
