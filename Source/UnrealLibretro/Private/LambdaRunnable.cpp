@@ -7,13 +7,13 @@
 
 FThreadSafeCounter FLambdaRunnable::ThreadNumber{0};
 
-FLambdaRunnable::FLambdaRunnable(TUniqueFunction< void()> &&InFunction)
+FLambdaRunnable::FLambdaRunnable(FString ThreadName, TUniqueFunction< void()> InFunction)
 {
 	FunctionPointer = MoveTemp(InFunction);
 	Finished = false;
 	Number = ThreadNumber.Increment();
 	
-	FString threadStatGroup = FString::Printf(TEXT("FLambdaRunnable%d"), Number);
+	FString threadStatGroup = FString::Printf(TEXT("%s%d"), *ThreadName, Number);
 	Thread = FRunnableThread::Create(this, *threadStatGroup, 0,
 		EThreadPriority::TPri_SlightlyBelowNormal); // This is actually normal thread priority on Windows and probably other platforms as well. You might be tempted to set it higher, but it will deadlock Windows if you have enough work available to saturate all cores. And yes I do mean completely halt the OS.
 }
@@ -49,7 +49,7 @@ void FLambdaRunnable::Stop()
 
 void FLambdaRunnable::Exit()
 {
-
+	delete this;
 }
 
 void FLambdaRunnable::EnsureCompletion() // @todo: the timing error might be here also this will leak memory
@@ -60,10 +60,10 @@ void FLambdaRunnable::EnsureCompletion() // @todo: the timing error might be her
 
 }
 
-FLambdaRunnable* FLambdaRunnable::RunLambdaOnBackGroundThread(TUniqueFunction< void()> &&InFunction)
+FLambdaRunnable* FLambdaRunnable::RunLambdaOnBackGroundThread(FString ThreadName, TUniqueFunction< void()> InFunction)
 {
 	FLambdaRunnable* Runnable;
-	Runnable = new FLambdaRunnable(MoveTemp(InFunction));
+	Runnable = new FLambdaRunnable(ThreadName, MoveTemp(InFunction));
 	//UE_LOG(LogClass, Log, TEXT("FLambdaRunnable RunLambdaBackGroundThread"));
 	return Runnable;
 }

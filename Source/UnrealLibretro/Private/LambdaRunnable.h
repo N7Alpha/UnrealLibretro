@@ -27,7 +27,7 @@ public:
 	FThreadSafeBool Finished;
 
 	//Constructor / Destructor
-	FLambdaRunnable(TUniqueFunction< void()> &&InFunction);
+	FLambdaRunnable(FString ThreadName, TUniqueFunction< void()> InFunction);
 	virtual ~FLambdaRunnable();
 
 	// Begin FRunnable interface.
@@ -44,5 +44,5 @@ public:
 	/*
 	Runs the passed lambda on the background thread, new thread per call
 	*/
-	static FLambdaRunnable* RunLambdaOnBackGroundThread(TUniqueFunction< void()> &&InFunction);
+	static FLambdaRunnable* RunLambdaOnBackGroundThread(FString ThreadName, TUniqueFunction< void()> InFunction);
 };

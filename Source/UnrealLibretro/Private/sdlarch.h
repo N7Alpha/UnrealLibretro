@@ -44,6 +44,7 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 #include "Windows/PostWindowsApi.h"
 #endif
 
+DECLARE_STATS_GROUP(TEXT("UnrealLibretro"), STATGROUP_UnrealLibretro, STATCAT_Advanced);
 struct libretro_callbacks_t;
 
 struct libretro_api_t {
@@ -108,9 +109,8 @@ protected:
         uint32 A : 8;
     };
 
-    bool which = false;
+    bool free_framebuffer_index = false;
     _8888_color *bgra_buffers[2] = { nullptr, nullptr };
-    TAtomic<_8888_color*> RenderThreadsBuffer{nullptr};
 
     libretro_api_t        libretro_api = {0};
     libretro_callbacks_t* callback_instance = nullptr;
@@ -128,11 +128,19 @@ protected:
     std::unordered_map<std::string, std::string> settings;
     const struct retro_hw_render_context_negotiation_interface* hw_render_context_negotiation = nullptr;
     
+	struct
+	{
+        FCriticalSection CriticalSection;
+        _8888_color* ClientBuffer{nullptr};
+	} FrameUpload;
 
     struct {
         GLuint tex_id;
         GLuint fbo_id;
         GLuint rbo_id;
+
+        GLuint pbo_ids[2];
+        GLsync fence;
 
         int glmajor;
         int glminor;
@@ -149,7 +157,8 @@ protected:
 	
     void create_window();
     void video_configure(const struct retro_game_geometry* geom);
-    
+    void prepare_frame_for_upload_to_unreal_RHI(_8888_color* const buffer);
+
     void load(const char* sofile);
     void load_game(const char* filename);
 

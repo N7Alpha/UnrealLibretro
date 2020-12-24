@@ -70,7 +70,15 @@ libretro_callbacks_t libretro_callbacks_table[] = { REP100(FUNC_WRAP_INIT) };
         EnumMacro(PFNGLGETTEXIMAGEPROC, glGetTexImage) \
         EnumMacro(PFNGLPIXELSTOREIPROC, glPixelStorei) \
         EnumMacro(PFNGLRENDERBUFFERSTORAGEPROC, glRenderbufferStorage) \
-        EnumMacro(PFNGLTEXIMAGE2DPROC, glTexImage2D)
+        EnumMacro(PFNGLTEXIMAGE2DPROC, glTexImage2D) \
+        EnumMacro(PFNGLFENCESYNCPROC, glFenceSync) \
+        EnumMacro(PFNGLDELETESYNCPROC, glDeleteSync) \
+        EnumMacro(PFNGLCLIENTWAITSYNCPROC, glClientWaitSync) \
+        EnumMacro(PFNGLGENBUFFERSPROC, glGenBuffers) \
+        EnumMacro(PFNGLBINDBUFFERPROC, glBindBuffer) \
+        EnumMacro(PFNGLMAPBUFFERPROC, glMapBuffer) \
+        EnumMacro(PFNGLUNMAPBUFFERPROC, glUnmapBuffer) \
+        EnumMacro(PFNGLBUFFERDATAPROC, glBufferData) \
 
 // @todo These procedure pointer definitions should be instance based not static technically, but I'm pretty sure it doesn't really matter
 #define DEFINE_GL_PROCEDURES(Type,Func) static Type Func = NULL;
@@ -196,53 +204,51 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
         #endif
     }
 
-    if (g_video.tex_id)
-        glDeleteTextures(1, &g_video.tex_id);
-
-    g_video.tex_id = 0;
-
 	if (!g_video.pixfmt)
 		g_video.pixfmt = GL_UNSIGNED_SHORT_5_5_5_1;
 
-	glGenTextures(1, &g_video.tex_id);
-
-	if (!g_video.tex_id)
-		UE_LOG(Libretro, Fatal, TEXT("Failed to create the video texture"));
-
 	g_video.pitch = geom->base_width * g_video.bpp;
 
-	glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
+    [&geom, &g_video = this->g_video]
+    ()
+    {
+        glGenTextures(1, &g_video.tex_id);
 
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, geom->max_width, geom->max_height, 0,
-			g_video.pixtype, g_video.pixfmt, NULL);
+        if (!g_video.tex_id)
+            UE_LOG(Libretro, Fatal, TEXT("Failed to create the video texture"));
 
-	glBindTexture(GL_TEXTURE_2D, 0);
+        glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, geom->max_width, 
+                                                 geom->max_height,
+                                                 0,
+                                                 g_video.pixtype, 
+                                                 g_video.pixfmt,
+                                                 NULL);
+        glBindTexture(GL_TEXTURE_2D, 0);
 
-	[width = geom->base_width, height = geom->base_height, &g_video = this->g_video]
-	()
-	{
+
         glGenFramebuffers(1, &g_video.fbo_id);
         glBindFramebuffer(GL_FRAMEBUFFER, g_video.fbo_id);
 
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_video.tex_id, 0);
 
-        if (g_video.hw.depth && g_video.hw.stencil) {
+        if (   g_video.hw.depth  // @todo something seems off in these conditionals
+            && g_video.hw.stencil) {
             glGenRenderbuffers(1, &g_video.rbo_id);
             glBindRenderbuffer(GL_RENDERBUFFER, g_video.rbo_id);
-            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, geom->base_width, 
+                                                                        geom->base_height);
 
             glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, g_video.rbo_id);
         }
         else if (g_video.hw.depth) {
             glGenRenderbuffers(1, &g_video.rbo_id);
             glBindRenderbuffer(GL_RENDERBUFFER, g_video.rbo_id);
-            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, geom->base_width, 
+                                                                         geom->base_height);
 
             glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_video.rbo_id);
-        }
-
-        if (g_video.hw.depth || g_video.hw.stencil)
-            glBindRenderbuffer(GL_RENDERBUFFER, 0);
+        }  
 
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
 
@@ -252,6 +258,16 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
         glClear(GL_COLOR_BUFFER_BIT);
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        {
+            glGenBuffers(2, g_video.pbo_ids);
+            for (int i = 0; i < sizeof(g_video.pbo_ids) / sizeof(GLuint); i++)
+            {
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, g_video.pbo_ids[i]);
+                glBufferData(GL_PIXEL_PACK_BUFFER, 4 * geom->max_width * geom->max_height, 0, GL_DYNAMIC_READ);
+            }
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        }
     }();
 	
     g_video.hw.context_reset();
@@ -267,19 +283,14 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
  };
 
 // Stripped down code for profiling purposes https://godbolt.org/z/c57esx
-// @todo : Theres a data race here that seems like it would rarely hit, but its still pretty bad.
-//         I should eventually just use a lock and swap the pointer from the background thread and lock when reading in data on the render thread. 
-//         Doesn't seem like a big deal for now.
  void LibretroContext::core_video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
-
-    check(av.geometry.base_width == width && av.geometry.base_height == height);
-     
-    // @todo: this might need to be wrapped in some atomic primitive so the data isn't modified
-     auto bgra_buffer = bgra_buffers[which = !which];
-
-    // if framebuffer is on CPU
+    DECLARE_SCOPE_CYCLE_COUNTER(TEXT("PrepareFrameBufferForRenderThread"), STAT_LibretroPrepareFrameBufferForRenderThread, STATGROUP_UnrealLibretro);
+    check(av.geometry.base_width == width && av.geometry.base_height == height); // @todo resize framebuffer appropriately
+    
     if (data && data != RETRO_HW_FRAME_BUFFER_VALID) {
-        auto region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height);
+        DECLARE_SCOPE_CYCLE_COUNTER(TEXT("CPUConvertAndCopyFramebuffer"), STAT_LibretroCPUConvertAndCopyFramebuffer, STATGROUP_UnrealLibretro);
+    	
+        auto bgra_buffer = bgra_buffers[free_framebuffer_index = !free_framebuffer_index];
         
         const auto& _5_to_8_bit = [](uint8 pixel_channel)->uint8 { return (pixel_channel << 3) | (pixel_channel >> 2); };
         const auto& _6_to_8_bit = [](uint8 pixel_channel)->uint8 { return (pixel_channel << 2) | (pixel_channel >> 4); };
@@ -330,55 +341,72 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
             default:
                 checkNoEntry();
         }
+
+        this->prepare_frame_for_upload_to_unreal_RHI(bgra_buffer);
     }
-    //   if  framebuffer is on GPU
     else if (data == RETRO_HW_FRAME_BUFFER_VALID) {
-
+        // OpenGL is asynchronous and because of GPU driver reasons (work is executed FIFO for some drivers)
+        // if we try reading the framebuffer we'll block here and consequently the framerate will be capped by Unreal Engines framerate
+        // which will cause stuttering if its too low since most emulated games logic is tied to the framerate so we async copy the framebuffer and check a fence later
         check(UsingOpenGL && g_video.pixfmt == GL_UNSIGNED_INT_8_8_8_8_REV);
-
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
+    	
         if UNLIKELY(pitch != g_video.pitch) {
+            glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
             g_video.pitch = pitch;
             glPixelStorei(GL_UNPACK_ROW_LENGTH, g_video.pitch / g_video.bpp);
+            glBindTexture(GL_TEXTURE_2D, 0);
         }
 
-        glGetTexImage(GL_TEXTURE_2D,
-            0,
-            g_video.pixtype,
-            g_video.pixfmt,
-            bgra_buffer);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        switch (glClientWaitSync(g_video.fence, GL_SYNC_FLUSH_COMMANDS_BIT, 0)) {
+            case GL_TIMEOUT_EXPIRED:
+                UE_LOG(Libretro, Verbose, TEXT("Frame didn't render in time will try copying next time..."))
+                    break;
+            case GL_ALREADY_SIGNALED:
+            case GL_CONDITION_SATISFIED:
+            {
+                DECLARE_SCOPE_CYCLE_COUNTER(TEXT("GPUAsyncCopy"), STAT_LibretroGPUAsyncCopy, STATGROUP_UnrealLibretro);
+                { // Hand off previously copied frame to Unreal
+                    glBindBuffer(GL_PIXEL_PACK_BUFFER, g_video.pbo_ids[!free_framebuffer_index]);
 
+                    void* frame_buffer = glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+                    check(frame_buffer);
+                    prepare_frame_for_upload_to_unreal_RHI((_8888_color*)frame_buffer);
+                }
+
+                { // Download Libretro Core frame from OpenGL asynchronously
+                    glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
+                    glBindBuffer(GL_PIXEL_PACK_BUFFER, g_video.pbo_ids[free_framebuffer_index]);
+                    verify(glUnmapBuffer(GL_PIXEL_PACK_BUFFER) == GL_TRUE);
+                    auto async_read_bound_texture_into_bound_pbo = [&]()
+                    {
+                        GLint mip_level = 0;
+                        void* offset_into_pbo_where_data_is_written = 0x0;
+                        // This call is async always and a DMA transfer on most platforms
+                        glGetTexImage(GL_TEXTURE_2D,
+                            mip_level,
+                            g_video.pixtype,
+                            g_video.pixfmt,
+                            offset_into_pbo_where_data_is_written);
+                    };
+                    async_read_bound_texture_into_bound_pbo();
+                    glDeleteSync(g_video.fence);
+                    g_video.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+                }
+
+                free_framebuffer_index = !free_framebuffer_index;
+
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+                glBindTexture(GL_TEXTURE_2D, 0);
+                break;
+            }
+            case GL_WAIT_FAILED:
+            default:
+                checkNoEntry();
+        }
     }
     else {
         // *Duplicate frame*
         return;
-    }
-
-    auto *old_buffer = RenderThreadsBuffer.Exchange(bgra_buffer);
-
-    if (!old_buffer) {
-        ENQUEUE_RENDER_COMMAND(CopyToUnrealFramebufferTask) // @todo this triggers an assert on MacOS
-        (
-            [TextureRHI = this->TextureRHI.GetReference(), MipIndex = 0, Region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height), SrcPitch = 4 * width, SrcBpp = 4, &Buffer = this->RenderThreadsBuffer]
-            (FRHICommandListImmediate& RHICmdList)
-            {
-	            check(TextureRHI);
-
-	            uint8* SrcData = (uint8*)Buffer.Exchange(nullptr);
-
-	            RHICmdList.UpdateTexture2D(
-	                TextureRHI,
-	                MipIndex,
-	                Region,
-	                SrcPitch,
-	                SrcData
-	                + Region.SrcY * SrcPitch
-	                + Region.SrcX * SrcBpp
-	            );
-            }
-        );
     }
 }
 
@@ -767,13 +795,55 @@ void LibretroContext::load_game(const char* filename) {
     
 }
 
+void LibretroContext::prepare_frame_for_upload_to_unreal_RHI(_8888_color* const buffer)
+ {
+    _8888_color*  old_buffer;
+    {
+        FScopeLock SwapPointer(&this->FrameUpload.CriticalSection);
+        old_buffer = this->FrameUpload.ClientBuffer;
+        this->FrameUpload.ClientBuffer = buffer;
+    }
+
+    if (!old_buffer)
+    {
+        ENQUEUE_RENDER_COMMAND(CopyToUnrealFramebufferTask)( // @todo this triggers an assert on MacOS you can get around it by enqueuing through the TaskGraph instead no idea why this is the case
+            [TextureRHI = this->TextureRHI.GetReference(), 
+             MipIndex   = 0,
+             Region     = FUpdateTextureRegion2D(0, 0, 0, 0, this->av.geometry.base_width,
+                                                             this->av.geometry.base_height),
+             SrcPitch   = 4 * this->av.geometry.base_width,
+             SrcBpp     = 4,
+             this]
+        (FRHICommandListImmediate& RHICmdList)
+        {
+            check(TextureRHI);
+
+            RHICmdList.EnqueueLambda([=](FRHICommandList&)
+                {
+                    FScopeLock UploadTextureToRenderHardware(&this->FrameUpload.CriticalSection);
+                    GDynamicRHI->RHIUpdateTexture2D(
+                        TextureRHI,
+                        MipIndex,
+                        Region,
+                        SrcPitch,
+                        (uint8*)this->FrameUpload.ClientBuffer
+                        + Region.SrcY * SrcPitch
+                        + Region.SrcX * SrcBpp);
+                    this->FrameUpload.ClientBuffer = nullptr;
+                }
+            );
+        }
+        );
+    }
+ }
+
 LibretroContext::LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState) : UnrealInputState(InputState) {}
 
 LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, TUniqueFunction
                                          <void(libretro_api_t&, bool)> LoadedCallback)
 {
 
-    check(IsInGameThread()); // So static initialization is safe
+    check(IsInGameThread()); // So static initialization is safe + UObject access
 
     static const uint32 MAX_INSTANCES = 100;
     static const uint32 MAX_INSTANCES_PER_CORE = 8*8;
@@ -806,7 +876,7 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     // Kick the initialization process off to another thread. It shouldn't be added to the Unreal task pool because those are too slow and my code relies on OpenGL state being thread local.
     // The Runnable system is the standard way for spawning and managing threads in Unreal. FThread looks enticing, but they removed any way to detach threads since "it doesn't work as expected"
     l->UnrealThreadTask = FLambdaRunnable::RunLambdaOnBackGroundThread
-    (
+    (FPaths::GetCleanFilename(core) + FPaths::GetCleanFilename(game),
         [=, LoadedCallback = MoveTemp(LoadedCallback)]() {
             // Here I check that the same dll isn't loaded twice. If it is you won't obtain a new instance of the dll loaded into memory, instead all variables and function pointers will point to the original loaded dll
             // Luckily you can bypass this limitation by just making copies of that dll and loading those. Which I automate here.
@@ -848,50 +918,60 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             l->libretro_api.set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
 
             LoadedCallback(l->libretro_api, l->g_video.hw.bottom_left_origin);
+        	
+        	// This simplifies the logic in core_video_refresh
+            if (l->UsingOpenGL) {
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, l->g_video.pbo_ids[l->free_framebuffer_index]);
+                glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+                l->g_video.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+            }
 
             uint64 frames = 0;
             auto   start = FDateTime::Now();
             while (!l->shutdown) {
+                DECLARE_SCOPE_CYCLE_COUNTER(TEXT("Frame"), STAT_LibretroFrame, STATGROUP_UnrealLibretro);
+                {
+                    DECLARE_SCOPE_CYCLE_COUNTER(TEXT("Work"), STAT_LibretroWork, STATGROUP_UnrealLibretro);
 
-                if (l->runloop_frame_time.callback) {
-                    retro_time_t current = (retro_time_t)SDL_GetTicks();
-                    retro_time_t delta = current - l->runloop_frame_time_last;
+                    if (l->runloop_frame_time.callback) {
+                        retro_time_t current = (retro_time_t)SDL_GetTicks();
+                        retro_time_t delta = current - l->runloop_frame_time_last;
 
-                    if (!l->runloop_frame_time_last)
-                        delta = l->runloop_frame_time.reference;
-                    l->runloop_frame_time_last = current;
-                    l->runloop_frame_time.callback(delta * 1000);
+                        if (!l->runloop_frame_time_last)
+                            delta = l->runloop_frame_time.reference;
+                        l->runloop_frame_time_last = current;
+                        l->runloop_frame_time.callback(delta * 1000);
+                    }
+
+                    // Ask the core to emit the audio.
+                    if (l->audio_callback.callback) {
+                        l->audio_callback.callback();
+                    }
+
+                    l->libretro_api.run();
+
+                    // Execute tasks from command queue
+                    // It's semantically significant that this is here. Since I hook in save state operations here it must necessarily come after run is called on the core
+                    TUniqueFunction<void(libretro_api_t&)> Task;
+                    while (l->LibretroAPITasks.Dequeue(Task)) {
+                        Task(l->libretro_api);
+                    }
                 }
-
-                // Ask the core to emit the audio.
-                if (l->audio_callback.callback) {
-                    l->audio_callback.callback();
-                }
-
-                if (l->UsingOpenGL) { glBindFramebuffer(GL_FRAMEBUFFER, 0); } // @todo: leftover from sdlarch pretty sure this isn't needed remove after testing a few cores without it.
-                
-
-                // @todo My timing solution is a bit adhoc. I'm sure theres probably a better way.
-                // Timing loop
-                l->libretro_api.run();
             	
-                // Execute tasks from command queue
-                // It's semantically significant that this is here. Since I hook in save state operations here it must necessarily come after run is called on the core
-                TUniqueFunction<void(libretro_api_t&)> Task;
-                while (l->LibretroAPITasks.Dequeue(Task)) {
-                    Task(l->libretro_api);
+                { // @todo My timing solution is a bit adhoc. I'm sure theres probably a better way.
+                    DECLARE_SCOPE_CYCLE_COUNTER(TEXT("Sleep"), STAT_LibretroSleep, STATGROUP_UnrealLibretro);
+
+                    frames++;
+
+                    double sleep = (frames / l->av.timing.fps) - (FDateTime::Now() - start).GetTotalSeconds();
+                    if (sleep < -(1 / l->av.timing.fps)) { // If over a frame behind don't try to catch up to the next frame
+                        start = FDateTime::Now();
+                        frames = 0;
+                    }
+
+                    FPlatformProcess::Sleep(FMath::Max(0.0, sleep));
                 }
-
-                frames++;
-
-                auto sleep = (frames / l->av.timing.fps) - (FDateTime::Now() - start).GetTotalSeconds();
-                if (sleep < -(1 / l->av.timing.fps)) { // If over a frame behind don't try to catch up to the next frame
-                    start = FDateTime::Now();
-                    frames = 0;
-                }
-
-                FPlatformProcess::Sleep(FMath::Max(0.0, sleep));
-                // End of Timing loop
             }
 
             // Explicit Cleanup
@@ -904,54 +984,51 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             {
 	            FPlatformProcess::FreeDllHandle(l->libretro_api.handle);
             }
-        	
-            if (l->g_video.tex_id)
-            {
-                glDeleteTextures(1, &l->g_video.tex_id);
-            }
-                
-            if (l->g_ctx)
-            {
-	            SDL_GL_DeleteContext(l->g_ctx);
-            }
-        	
-            if (l->g_win)
-            {
-	            SDL_DestroyWindow(l->g_win);  // @todo: In SDLarch's code SDL_Quit was here and that implicitly destroyed some things like windows. So I'm not sure if I'm exhaustively destroying everything that it destroyed yet. In order to fix this you could probably just run SDL_Quit here and step with the debugger to see all the stuff it destroys.
-            }
-
-        	if (l->bgra_buffers[0] || l->bgra_buffers[1])
-            {
-                ENQUEUE_RENDER_COMMAND(CopyToUnrealFramebufferFence)([bgra_buffers = l->bgra_buffers](FRHICommandListImmediate& RHICmdList)
-                    {
-                        RHICmdList.EnqueueLambda([=](FRHICommandList&)
-                        {
-                            if (bgra_buffers[0])
-                            {
-                                FMemory::Free(bgra_buffers[0]);
-                            }
-
-                            if (bgra_buffers[1])
-                            {
-                                FMemory::Free(bgra_buffers[1]);
-                            }
-                        });
-                    }
-                );
-            }
 
             if (l->PauseEvent)
             {
                 FPlatformProcess::ReturnSynchEventToPool(l->PauseEvent);
             }
-            
-            l->~LibretroContext(); // implicitly releases shared reference to pcm audio buffer and input state
+
+            l->QueuedAudio.Reset();
 
             {
                 FScopeLock scoped_lock(&MultipleDLLInstanceHandlingLock);
 
                 AllocatedInstances[InstanceNumber] = false;
                 PerCoreAllocatedInstances[core][CoreInstanceNumber] = false;
+            }
+        	
+            {
+                if (l->g_win)
+                {
+                    verify(SDL_GL_MakeCurrent(l->g_win, NULL) == 0);
+                    SDL_DestroyWindow(l->g_win);  // @todo: In SDLarch's code SDL_Quit was here and that implicitly destroyed some things like windows. So I'm not sure if I'm exhaustively destroying everything that it destroyed yet. In order to fix this you could probably just run SDL_Quit here and step with the debugger to see all the stuff it destroys.
+                }
+            	
+                ENQUEUE_RENDER_COMMAND(LibretroCleanupResourcesSharedWithRenderThread)([l](FRHICommandListImmediate& RHICmdList)
+                    {
+                        RHICmdList.EnqueueLambda([l](FRHICommandList&)
+                            {
+                                for (int i : {0, 1})
+                                {
+                                    if (l->bgra_buffers[i])
+                                    {
+                                        FMemory::Free(l->bgra_buffers[i]);
+                                    }
+                                }
+
+                                if (l->g_ctx)
+                                {
+                                    SDL_GL_DeleteContext(l->g_ctx); /** implicitly releases resources like fbos, pbos, and textures */
+                                }
+
+                                l->TextureRHI.SafeRelease();
+                        	
+                                delete l; /** UnrealInputState shared reference released and value members */
+                            });
+                    }
+                );
             }
         }
     );
