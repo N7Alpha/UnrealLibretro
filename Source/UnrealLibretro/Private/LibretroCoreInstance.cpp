@@ -77,9 +77,8 @@ void ULibretroCoreInstance::DisconnectController(int Port)
     if (Controller[Port].IsValid())
     {
         Controller[Port]->PopInputComponent(InputMap[Port]);
+        Disconnected[Port].ExecuteIfBound(Controller[Port].Get(), Port);
     }
-
-    Disconnected[Port].ExecuteIfBound(Controller[Port].Get(), Port);
 }
 
 void ULibretroCoreInstance::Launch() 
@@ -199,7 +198,8 @@ void ULibretroCoreInstance::SaveState(const FString& FilePath)
 	(
 		[SaveStateBuffer, SaveStatePath = FUnrealLibretroModule::ResolveSaveStatePath(RomPath, FilePath)]() // @dynamic The capture here does a copy on the heap probably
 		{
-			FFileHelper::SaveArrayToFile(*SaveStateBuffer, *SaveStatePath, &IFileManager::Get(), FILEWRITE_None);
+			FFileHelper::SaveArrayToFile(*SaveStateBuffer, 
+                                         *SaveStatePath);
 			delete SaveStateBuffer;
 		}
 		, TStatId(), ENamedThreads::AnyThread
