@@ -11,42 +11,7 @@
 
 #define DEBUG_OPENGL 0
 
-// MY EYEEEEESSS.... Even though this looks heavily obfuscated what this actually accomplishes is relatively simple. It allows us to run multiple libretro cores at once. 
-// We have to do it this way because when libretro calls a callback we implemented there really isn't any suitable way to tell which core the call came from.
-// So we just statically generate a bunch of callback functions with macros and write their function pointers into an array of libretro_callbacks_t's and issue them at runtime.
-// These generated callbacks call std::functions which can capture arguments. So we capture this and now it calls our callbacks on a per instance basis.
-#define REP10(P, M)  M(P##0) M(P##1) M(P##2) M(P##3) M(P##4) M(P##5) M(P##6) M(P##7) M(P##8) M(P##9)
-#define REP100(M) REP10(,M) REP10(1,M) REP10(2,M) REP10(3,M) REP10(4,M) REP10(5,M) REP10(6,M) REP10(7,M) REP10(8,M) REP10(9,M)
-
-extern struct libretro_callbacks_t {
-    retro_audio_sample_batch_t                                                c_audio_write;
-    retro_video_refresh_t                                                     c_video_refresh;
-    retro_audio_sample_t                                                      c_audio_sample;
-    retro_environment_t                                                       c_environment;
-    retro_input_poll_t                                                        c_input_poll;
-    retro_input_state_t                                                       c_input_state;
-    retro_hw_get_current_framebuffer_t                                        c_get_current_framebuffer;
-    TUniqueFunction<TRemovePointer<retro_audio_sample_batch_t        >::Type>   audio_write; // Changed these to TUniqueFunction because std::function throws exceptions even with -O3 and -fno-exceptions surprisingly https://godbolt.org/z/oqP3vT
-    TUniqueFunction<TRemovePointer<retro_video_refresh_t             >::Type>   video_refresh;
-    TUniqueFunction<TRemovePointer<retro_audio_sample_t              >::Type>   audio_sample;
-    TUniqueFunction<TRemovePointer<retro_environment_t               >::Type>   environment;
-    TUniqueFunction<TRemovePointer<retro_input_poll_t                >::Type>   input_poll;
-    TUniqueFunction<TRemovePointer<retro_input_state_t               >::Type>   input_state;
-    TUniqueFunction<TRemovePointer<retro_hw_get_current_framebuffer_t>::Type>   get_current_framebuffer;
-} libretro_callbacks_table[];
-
-#define FUNC_WRAP_INIT(M) {      func_wrap_audio_write##M, func_wrap_video_refresh##M, func_wrap_audio_sample##M, func_wrap_environment##M, func_wrap_input_poll##M, func_wrap_input_state##M, func_wrap_get_current_framebuffer##M },
-#define FUNC_WRAP_DEF(M) size_t  func_wrap_audio_write##M(const int16_t *data, size_t frames) { return libretro_callbacks_table[M].audio_write(data, frames); } \
-                         void    func_wrap_video_refresh##M(const void *data, unsigned width, unsigned height, size_t pitch) { return libretro_callbacks_table[M].video_refresh(data, width, height, pitch); } \
-                         void    func_wrap_audio_sample##M(int16_t left, int16_t right) { return libretro_callbacks_table[M].audio_sample(left, right); } \
-                         bool    func_wrap_environment##M(unsigned cmd, void *data) { return libretro_callbacks_table[M].environment(cmd, data); } \
-                         void    func_wrap_input_poll##M() { return libretro_callbacks_table[M].input_poll(); } \
-                         int16_t func_wrap_input_state##M(unsigned port, unsigned device, unsigned index, unsigned id) { return libretro_callbacks_table[M].input_state(port, device, index, id); } \
-                         uintptr_t func_wrap_get_current_framebuffer##M() { return libretro_callbacks_table[M].get_current_framebuffer(); }
-
-
-REP100(FUNC_WRAP_DEF)
-libretro_callbacks_t libretro_callbacks_table[] = { REP100(FUNC_WRAP_INIT) };
+thread_local LibretroContext* ThreadLocalLibretroContext = nullptr;
 
 #define ENUM_GL_PROCEDURES(EnumMacro) \
         EnumMacro(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer) \
@@ -542,7 +507,7 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
 	}
     case RETRO_ENVIRONMENT_SET_HW_RENDER: {
         struct retro_hw_render_callback *hw = (struct retro_hw_render_callback*)data;
-        hw->get_current_framebuffer = callback_instance->c_get_current_framebuffer;
+        hw->get_current_framebuffer = []()->uintptr_t { return ThreadLocalLibretroContext->g_video.fbo_id; };
 #pragma warning(push)
 #pragma warning(disable:4191)
         hw->get_proc_address = (retro_hw_get_proc_address_t)SDL_GL_GetProcAddress;
@@ -675,31 +640,44 @@ void LibretroContext::load(const char *sofile) {
 	load_sym(set_audio_sample, retro_set_audio_sample);
 	load_sym(set_audio_sample_batch, retro_set_audio_sample_batch);
 
-    callback_instance->video_refresh = [=](const void* data, unsigned width, unsigned height, size_t pitch) {
-        return core_video_refresh(data, width, height, pitch);
-    };
-    callback_instance->audio_write = [=](const int16_t *data, size_t frames) {
-        return core_audio_write(data, frames);
-    };
-    callback_instance->audio_sample = [=](int16_t left, int16_t right) { return core_audio_sample(left, right); };
-    callback_instance->input_state = [=](unsigned port, unsigned device, unsigned index, unsigned id) { return core_input_state(port, device, index, id); };
-    callback_instance->input_poll = [=]() { };
-    callback_instance->environment = [=](unsigned cmd, void* data) { return core_environment(cmd, data); };
- 	callback_instance->get_current_framebuffer = [=]() { return g_video.fbo_id; };
-
-    set_environment(callback_instance->c_environment);
-    set_video_refresh(callback_instance->c_video_refresh);
-    set_input_poll(callback_instance->c_input_poll);
-    set_input_state(callback_instance->c_input_state);
-    set_audio_sample(callback_instance->c_audio_sample);
-    set_audio_sample_batch(callback_instance->c_audio_write);
-
-    
+    set_environment(
+	    [](unsigned cmd, void* data)
+	    {
+		    return ThreadLocalLibretroContext->core_environment(cmd, data);
+	    });
+ 	
+    set_video_refresh(
+        [](const void* data, unsigned width, unsigned height, size_t pitch) 
+        {
+        	return ThreadLocalLibretroContext->core_video_refresh(data, width, height, pitch);
+        });
+ 	
+    set_input_poll(
+        []()
+	    {
+            return;
+	    });
+ 	
+    set_input_state(
+        [](unsigned port, unsigned device, unsigned index, unsigned id)
+        {
+	        return ThreadLocalLibretroContext->core_input_state(port, device, index, id);
+        });
+ 	
+    set_audio_sample(
+        [](int16_t left, int16_t right)
+        {
+	        return ThreadLocalLibretroContext->core_audio_sample(left, right);
+        });
+ 	
+    set_audio_sample_batch(
+        [](const int16_t* data, size_t frames) 
+        {
+			return ThreadLocalLibretroContext->core_audio_write(data, frames);
+        });
 
 	libretro_api.init();
 	libretro_api.initialized = true;
-
-	UE_LOG(Libretro, Log, TEXT("Core loaded"));
 }
 
 
@@ -747,37 +725,44 @@ void LibretroContext::load_game(const char* filename) {
         auto RenderInitTask = FPlatformProcess::GetSynchEventFromPool();
         auto GameThreadMediaResourceInitTask = FFunctionGraphTask::CreateAndDispatchWhenReady([=]
         {
+            QueuedAudio = MakeShared<TCircularQueue<int32>, ESPMode::ThreadSafe>(UNREAL_LIBRETRO_AUDIO_BUFFER_SIZE); // @todo move to audio init when the hack below is removed
+        	
             // Make sure the game objects haven't been invalidated
             if (!UnrealSoundBuffer.IsValid() || !UnrealRenderTarget.IsValid())
-            { 
-                { // @hack until we acquire are own resources and don't rely on getting them by proxy through a UObject
-                    callback_instance->audio_write = [](const int16_t* data, size_t frames) {
-                        return frames;
-                    };
-                    callback_instance->video_refresh = [=](const void* data, unsigned width, unsigned height, size_t pitch) {};
-                    callback_instance->audio_sample = [=](int16_t left, int16_t right) {};
-                }
-                RenderInitTask->Trigger();
-                return; 
+            {   // @hack until we acquire our own resources and don't rely on getting them by proxy through a UObject
+                ENQUEUE_RENDER_COMMAND(DummyLibretroCoreFramebufferInitCommand)
+                    ([this, RenderInitTask](FRHICommandListImmediate& RHICmdList)
+                        {
+                            FRHIResourceCreateInfo Info{ TEXT("Dummy Texture for now") };
+                            this->TextureRHI = RHICreateTexture2D(av.geometry.base_width,
+                                                                  av.geometry.base_height,
+                                                                  PF_B8G8R8A8,
+                                                                  1,
+                                                                  1,
+                                                                  TexCreate_CPUWritable | TexCreate_Dynamic,
+                                                                  Info);
+                            RenderInitTask->Trigger();
+                        });
             }
-
-            //  Video Init
-            UnrealRenderTarget->InitCustomFormat(av.geometry.base_width, av.geometry.base_height, PF_B8G8R8A8, false);
-            ENQUEUE_RENDER_COMMAND(InitCommand)
-            (
-                [RenderTargetResource = (FTextureRenderTarget2DResource*)UnrealRenderTarget->GameThread_GetRenderTargetResource() , &MyTextureRHI = TextureRHI, RenderInitTask](FRHICommandListImmediate& RHICmdList)
+            else
+            {
+                //  Video Init
+                UnrealRenderTarget->InitCustomFormat(av.geometry.base_width, av.geometry.base_height, PF_B8G8R8A8, false);
+                ENQUEUE_RENDER_COMMAND(InitCommand)
+                    (
+                        [RenderTargetResource = (FTextureRenderTarget2DResource*)UnrealRenderTarget->GameThread_GetRenderTargetResource(), &MyTextureRHI = TextureRHI, RenderInitTask](FRHICommandListImmediate& RHICmdList)
                 {
                     MyTextureRHI = RenderTargetResource->GetTextureRHI();
                     RenderInitTask->Trigger();
                 }
-            );
+                );
 
-             // Audio init
-            UnrealSoundBuffer->SetSampleRate(av.timing.sample_rate);
-            UnrealSoundBuffer->NumChannels = 2;
-            QueuedAudio = MakeShared<TCircularQueue<int32>, ESPMode::ThreadSafe>(UNREAL_LIBRETRO_AUDIO_BUFFER_SIZE);
-            UnrealSoundBuffer->QueuedAudio = QueuedAudio;
-
+                // Audio init
+                UnrealSoundBuffer->SetSampleRate(av.timing.sample_rate);
+                UnrealSoundBuffer->NumChannels = 2;
+                UnrealSoundBuffer->QueuedAudio = QueuedAudio;
+            }
+        	
         }, TStatId(), nullptr, ENamedThreads::GameThread);
         
         FTaskGraphInterface::Get().WaitUntilTaskCompletes(GameThreadMediaResourceInitTask);
@@ -848,12 +833,6 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
     check(IsInGameThread()); // So static initialization is safe + UObject access
 
-    static const uint32 MAX_INSTANCES = 100;
-    static const uint32 MAX_INSTANCES_PER_CORE = 8*8;
-    static FCriticalSection MultipleDLLInstanceHandlingLock;
-    static TMap<FString, TBitArray<TInlineAllocator<MAX_INSTANCES_PER_CORE/8>>> PerCoreAllocatedInstances;
-    static TBitArray<TInlineAllocator<(MAX_INSTANCES / 8) + 1>> AllocatedInstances(false, MAX_INSTANCES);
-
     LibretroContext *l = new LibretroContext(InputState.ToSharedRef());
 
     auto ConvertPath = [](auto &core_directory, const FString& CoreDirectory)
@@ -879,29 +858,12 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     l->UnrealThreadTask = FLambdaRunnable::RunLambdaOnBackGroundThread
     (FPaths::GetCleanFilename(core) + FPaths::GetCleanFilename(game),
         [=, LoadedCallback = MoveTemp(LoadedCallback)]() {
-            // Here I check that the same dll isn't loaded twice. If it is you won't obtain a new instance of the dll loaded into memory, instead all variables and function pointers will point to the original loaded dll
-            // Luckily you can bypass this limitation by just making copies of that dll and loading those. Which I automate here.
-            FString InstancedCorePath = core;
-            int32 InstanceNumber = 0, CoreInstanceNumber = 0;
-        	[&core, &InstancedCorePath, &InstanceNumber, &CoreInstanceNumber]()
-            {
-                {
-                    FScopeLock ScopeLock(&MultipleDLLInstanceHandlingLock);
-
-                    auto& CoreInstanceBitArray = PerCoreAllocatedInstances.FindOrAdd(core, TBitArray<TInlineAllocator<MAX_INSTANCES_PER_CORE / 8>>(false, MAX_INSTANCES_PER_CORE));
-                    CoreInstanceNumber = CoreInstanceBitArray.FindAndSetFirstZeroBit();
-                    InstanceNumber = AllocatedInstances.FindAndSetFirstZeroBit();
-                    check(CoreInstanceNumber != INDEX_NONE && InstanceNumber != INDEX_NONE);
-                }
-
-                if (CoreInstanceNumber > 0) {
-                    InstancedCorePath = FString::Printf(TEXT("%s%d.%s"), *FPaths::GetBaseFilename(*core, false), CoreInstanceNumber, *FPaths::GetExtension(*core));
-                    bool success = IPlatformFile::GetPlatformPhysical().CopyFile(*InstancedCorePath, *core);
-                    check(success || IPlatformFile::GetPlatformPhysical().FileExists(*InstancedCorePath));
-                }
-            }();
-
-            l->callback_instance = libretro_callbacks_table + InstanceNumber;
+			ThreadLocalLibretroContext = l;
+        	
+            // Here I load a copy of the dll instead of the original. If you load the same dll multiple times you won't obtain a new instance of the dll loaded into memory,
+            // instead all variables and function pointers will point to the original loaded dll
+            const FString InstancedCorePath = FString::Printf(TEXT("%s.%s"), *FGuid::NewGuid().ToString(), *FPaths::GetExtension(*core));
+            verify(IPlatformFile::GetPlatformPhysical().CopyFile(*InstancedCorePath, *core));
 
             l->g_video.hw.version_major = 4;
             l->g_video.hw.version_minor = 5;
@@ -988,15 +950,9 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 	            FPlatformProcess::FreeDllHandle(l->libretro_api.handle);
             }
 
+            IPlatformFile::GetPlatformPhysical().DeleteFile(*InstancedCorePath);
 
             l->QueuedAudio.Reset();
-
-            {
-                FScopeLock scoped_lock(&MultipleDLLInstanceHandlingLock);
-
-                AllocatedInstances[InstanceNumber] = false;
-                PerCoreAllocatedInstances[core][CoreInstanceNumber] = false;
-            }
         	
             {
                 if (l->g_win)

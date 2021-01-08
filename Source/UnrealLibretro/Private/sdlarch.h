@@ -119,7 +119,6 @@ protected:
     _8888_color *bgra_buffers[2] = { nullptr, nullptr };
 
     libretro_api_t        libretro_api = {0};
-    libretro_callbacks_t* callback_instance = nullptr;
     TQueue<TUniqueFunction<void(libretro_api_t&)>, EQueueMode::Spsc> LibretroAPITasks; // TQueue<T, EQueueMode::Spsc> has acquire-release semantics on Enqueue and Dequeue so this should be thread-safe
 
 
