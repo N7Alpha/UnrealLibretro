@@ -874,8 +874,6 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     l->UnrealRenderTarget = MakeWeakObjectPtr(RenderTarget);
     l->UnrealSoundBuffer  = MakeWeakObjectPtr(SoundBuffer );
 
-    l->PauseEvent = FPlatformProcess::GetSynchEventFromPool(true);
-
     // Kick the initialization process off to another thread. It shouldn't be added to the Unreal task pool because those are too slow and my code relies on OpenGL state being thread local.
     // The Runnable system is the standard way for spawning and managing threads in Unreal. FThread looks enticing, but they removed any way to detach threads since "it doesn't work as expected"
     l->UnrealThreadTask = FLambdaRunnable::RunLambdaOnBackGroundThread
@@ -932,8 +930,10 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
             uint64 frames = 0;
             auto   start = FDateTime::Now();
-            while (!l->shutdown) {
+            while (l->CoreState.load(std::memory_order_relaxed) != ECoreState::Shutdown)
+            {
                 DECLARE_SCOPE_CYCLE_COUNTER(TEXT("Frame"), STAT_LibretroFrame, STATGROUP_UnrealLibretro);
+				if (l->CoreState.load(std::memory_order_relaxed) == ECoreState::Running)
                 {
                     DECLARE_SCOPE_CYCLE_COUNTER(TEXT("Work"), STAT_LibretroWork, STATGROUP_UnrealLibretro);
 
@@ -953,13 +953,13 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
                     }
 
                     l->libretro_api.run();
-
-                    // Execute tasks from command queue
-                    // It's semantically significant that this is here. Since I hook in save state operations here it must necessarily come after run is called on the core
-                    TUniqueFunction<void(libretro_api_t&)> Task;
-                    while (l->LibretroAPITasks.Dequeue(Task)) {
-                        Task(l->libretro_api);
-                    }
+                }
+            
+                // Execute tasks from command queue
+				// It's semantically significant that this is here. Since I hook in save state operations here it must necessarily come after run is called on the core
+                TUniqueFunction<void(libretro_api_t&)> Task;
+                while (l->LibretroAPITasks.Dequeue(Task)) {
+                    Task(l->libretro_api);
                 }
             	
                 { // @todo My timing solution is a bit adhoc. I'm sure theres probably a better way.
@@ -988,10 +988,6 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 	            FPlatformProcess::FreeDllHandle(l->libretro_api.handle);
             }
 
-            if (l->PauseEvent)
-            {
-                FPlatformProcess::ReturnSynchEventToPool(l->PauseEvent);
-            }
 
             l->QueuedAudio.Reset();
 
@@ -1041,31 +1037,18 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
 void LibretroContext::Shutdown(LibretroContext* Instance) 
 {
-    Instance->Pause(false);
-
     Instance->shutdown_audio.Store(true, EMemoryOrder::SequentiallyConsistent);
 	// We enqueue the shutdown procedure as the final task since we want outstanding tasks to be executed first
     Instance->EnqueueTask([Instance](auto&&)
         {
-            Instance->shutdown = true;
+            Instance->CoreState.store(ECoreState::Shutdown, std::memory_order_relaxed);
         });
-    
 }
 
 void LibretroContext::Pause(bool ShouldPause)
 {
-    if (ShouldPause)
-    {
-        this->PauseEvent->Reset();
-        this->EnqueueTask([this](auto&&)
-            {
-                this->PauseEvent->Wait();
-            });
-    }
-    else
-    {
-        this->PauseEvent->Trigger();
-    }
+    this->CoreState.store(ShouldPause ? ECoreState::Paused : ECoreState::Running,
+                          std::memory_order_relaxed);
 }
 
 void LibretroContext::EnqueueTask(TUniqueFunction<void(libretro_api_t&)> LibretroAPITask)

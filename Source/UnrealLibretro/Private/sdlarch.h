@@ -10,7 +10,7 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 
 
 // Standard Template Library https://docs.unrealengine.com/en-US/Programming/Development/CodingStandard/#useofstandardlibraries
-#include <array>
+#include <atomic>
 #include <unordered_map>
 #include <string>
 
@@ -84,7 +84,15 @@ protected:
     LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState);
     ~LibretroContext() {}
 
-    bool shutdown = false;
+    enum class ECoreState : int8
+	{
+    	Running,
+    	Paused,
+    	Shutdown
+	};
+	
+    std::atomic<ECoreState> CoreState = ECoreState::Running;
+	
     TAtomic<bool> shutdown_audio{false}; // @hack prevents hangs when destructing because some cores will call core_audio_write in an infinite loop until audio is enqueued. We have a fixed size audio buffer and have no real control over how the audio is dequeued so this can happen often.
     FLambdaRunnable* UnrealThreadTask = nullptr;
 
@@ -96,8 +104,6 @@ protected:
     // These are both ThreadSafe shared pointers that are the main bridge between my code and unreal.
     FTexture2DRHIRef TextureRHI; // @todo: be careful with this it can become stale if you reinit the UTextureRenderTarget2D without updating this reference. Say if you were adding a feature to change games without reiniting the entire core. What I really need to do is probably implement my own dynamic texture subclass
     TSharedPtr<TCircularQueue<int32>, ESPMode::ThreadSafe> QueuedAudio;
-
-    FEvent* PauseEvent = nullptr;
 
     TArray<char, TInlineAllocator<512>> core_save_directory,
                                         core_system_directory;
