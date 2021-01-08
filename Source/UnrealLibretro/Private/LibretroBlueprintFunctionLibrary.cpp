@@ -4,8 +4,22 @@
 #include "GameFramework/Actor.h"
 
 #include "Components/ActorComponent.h"
-#include "Kismet/BlueprintMapLibrary.h"
+#include "Camera/CameraComponent.h"
 
+AActor* ULibretroBlueprintFunctionLibrary::LookingAtActor(UCameraComponent* CameraComponent, EBranchNames& Branch)
+{
+	UWorld* const World = GEngine->GetWorldFromContextObjectChecked(CameraComponent);
+	FVector const Start = CameraComponent->GetComponentLocation();
+	FVector const End = Start + 300 * CameraComponent->GetComponentRotation().Vector();
+	FHitResult    OutHit;
+	World->LineTraceSingleByChannel(OutHit,
+		Start,
+		End,
+		ECollisionChannel::ECC_Visibility);
+
+	Branch = OutHit.Actor.IsValid() ? EBranchNames::Yes : EBranchNames::No;
+	return   OutHit.Actor.Get();
+}
 
 UActorComponent* ULibretroBlueprintFunctionLibrary::HasComponent(AActor* Actor, TSubclassOf<UActorComponent> ComponentClass, EBranchNames& Branch)
 {
