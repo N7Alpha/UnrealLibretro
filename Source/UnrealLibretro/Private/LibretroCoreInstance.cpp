@@ -121,7 +121,8 @@ void ULibretroCoreInstance::Launch()
                     auto File = IPlatformFile::GetPlatformPhysical().OpenRead(*SRAMPath);
                     if (File && libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM))
                     {
-                        File->Read((uint8*)libretro_api.get_memory_data(RETRO_MEMORY_SAVE_RAM), libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM));
+                        File->Read((uint8*)libretro_api.get_memory_data(RETRO_MEMORY_SAVE_RAM), 
+                                           libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM));
                         File->~IFileHandle(); // must be called explicitly
                     }
                 });
@@ -132,7 +133,9 @@ void ULibretroCoreInstance::Launch()
 	            {
 	                if (weakThis.IsValid())
 	                {
-	                    weakThis->OnCoreIsReady.Broadcast(weakThis->RenderTarget, weakThis->AudioBuffer, bottom_left_origin);
+	                    weakThis->OnCoreIsReady.Broadcast(weakThis->RenderTarget, 
+                                                          weakThis->AudioBuffer,
+                                                          bottom_left_origin);
 	                }
 	            }, TStatId(), nullptr, ENamedThreads::GameThread);
 	    });

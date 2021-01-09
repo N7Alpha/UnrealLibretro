@@ -106,12 +106,27 @@ struct libretro_api_t {
 };
 
 struct LibretroContext {
-public:                                                                                                                                             // @todo: The UObjects shouldn't be parameters of this function, and the callback below should pass the audio buffer and framebuffer to the caller as well
+public:
+	/**
+	 * @brief analogous to new except asynchronous
+	 * @post The LoadedCallback is always called
+	 */
     static LibretroContext* Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, TUniqueFunction<void(libretro_api_t&, bool)> LoadedCallback);
-    static void             Shutdown(LibretroContext* Instance);
+	
+	/**
+	 * @brief analogous to delete except asynchronous
+	 */
+    static void Shutdown(LibretroContext* Instance);
 
-           void             Pause(bool ShouldPause);
-           void             EnqueueTask(TUniqueFunction<void(libretro_api_t&)> LibretroAPITask);
+	/**
+	 * Queued tasks will still execute even if paused
+	 */
+    void Pause(bool ShouldPause);
+	
+	/**
+	 * @post Everything queued before calling shutdown will be executed
+	 */
+    void EnqueueTask(TUniqueFunction<void(libretro_api_t&)> LibretroAPITask);
     
 protected:
     LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState);
