@@ -13,42 +13,6 @@
 
 thread_local LibretroContext* ThreadLocalLibretroContext = nullptr;
 
-#define ENUM_GL_PROCEDURES(EnumMacro) \
-        EnumMacro(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer) \
-        EnumMacro(PFNGLBINDRENDERBUFFERPROC, glBindRenderbuffer) \
-        EnumMacro(PFNGLBINDTEXTUREPROC, glBindTexture) \
-        EnumMacro(PFNGLCHECKFRAMEBUFFERSTATUSPROC, glCheckFramebufferStatus) \
-        EnumMacro(PFNGLCLEARPROC, glClear) \
-        EnumMacro(PFNGLCLEARCOLORPROC, glClearColor) \
-        EnumMacro(PFNGLDEBUGMESSAGECALLBACKPROC, glDebugMessageCallback) \
-        EnumMacro(PFNGLDEBUGMESSAGECONTROLPROC, glDebugMessageControl) \
-        EnumMacro(PFNGLDELETEBUFFERSPROC, glDeleteBuffers) \
-        EnumMacro(PFNGLDELETETEXTURESPROC, glDeleteTextures) \
-        EnumMacro(PFNGLENABLEPROC, glEnable) \
-        EnumMacro(PFNGLFRAMEBUFFERRENDERBUFFERPROC, glFramebufferRenderbuffer) \
-        EnumMacro(PFNGLFRAMEBUFFERTEXTURE2DPROC, glFramebufferTexture2D) \
-        EnumMacro(PFNGLGENFRAMEBUFFERSPROC, glGenFramebuffers) \
-        EnumMacro(PFNGLGENRENDERBUFFERSPROC, glGenRenderbuffers) \
-        EnumMacro(PFNGLGENTEXTURESPROC, glGenTextures) \
-        EnumMacro(PFNGLGETINTEGERVPROC, glGetIntegerv) \
-        EnumMacro(PFNGLGETSTRINGPROC, glGetString) \
-        EnumMacro(PFNGLGETTEXIMAGEPROC, glGetTexImage) \
-        EnumMacro(PFNGLPIXELSTOREIPROC, glPixelStorei) \
-        EnumMacro(PFNGLRENDERBUFFERSTORAGEPROC, glRenderbufferStorage) \
-        EnumMacro(PFNGLTEXIMAGE2DPROC, glTexImage2D) \
-        EnumMacro(PFNGLFENCESYNCPROC, glFenceSync) \
-        EnumMacro(PFNGLDELETESYNCPROC, glDeleteSync) \
-        EnumMacro(PFNGLCLIENTWAITSYNCPROC, glClientWaitSync) \
-        EnumMacro(PFNGLGENBUFFERSPROC, glGenBuffers) \
-        EnumMacro(PFNGLBINDBUFFERPROC, glBindBuffer) \
-        EnumMacro(PFNGLMAPBUFFERPROC, glMapBuffer) \
-        EnumMacro(PFNGLUNMAPBUFFERPROC, glUnmapBuffer) \
-        EnumMacro(PFNGLBUFFERDATAPROC, glBufferData) \
-
-// @todo These procedure pointer definitions should be instance based not static technically, but I'm pretty sure it doesn't really matter
-#define DEFINE_GL_PROCEDURES(Type,Func) static Type Func = NULL;
-ENUM_GL_PROCEDURES(DEFINE_GL_PROCEDURES);
-
 #define load_sym(V, S) do {\
     if (0 == ((*(void**)&V) = FPlatformProcess::GetDllExport(libretro_api.handle, TEXT(#S)))) \
         UE_LOG(Libretro, Fatal, TEXT("Failed to load symbol '" #S "'': %u"), FPlatformMisc::GetLastError()); \
@@ -175,8 +139,6 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 
 	g_video.pitch = geom->base_width * g_video.bpp;
 
-    [&geom, &g_video = this->g_video]
-    ()
     {
         glGenTextures(1, &g_video.tex_id);
 
@@ -234,7 +196,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
             }
             glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
         }
-    }();
+    }
 	
     g_video.hw.context_reset();
 }
@@ -711,14 +673,16 @@ void LibretroContext::load_game(const char* filename) {
         UE_LOG(Libretro, Fatal, TEXT("The core failed to load the content."));
 
     libretro_api.get_system_av_info(&av);
-    
-    // @todo: move this
-    
-    bgra_buffers[0] = (_8888_color*) FMemory::Malloc(av.geometry.base_width * av.geometry.base_height * sizeof(bgra_buffers[0][0]));
-    bgra_buffers[1] = (_8888_color*) FMemory::Malloc(av.geometry.base_width * av.geometry.base_height * sizeof(bgra_buffers[1][0]));
-
+ 	
     if (UsingOpenGL) {
         video_configure(&av.geometry);
+    } else {
+    	for (auto i : {0, 1})
+    	{
+            bgra_buffers[i] = (_8888_color*)FMemory::Malloc(  av.geometry.base_width 
+                                                            * av.geometry.base_height
+                                                            * sizeof(bgra_buffers[i][0]));
+    	}
     }
 
     { // Unreal Resource init
@@ -884,10 +848,10 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
         	
         	// This simplifies the logic in core_video_refresh
             if (l->UsingOpenGL) {
-                glBindBuffer(GL_PIXEL_PACK_BUFFER, l->g_video.pbo_ids[l->free_framebuffer_index]);
-                glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
-                l->g_video.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-                glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+                l->glBindBuffer(GL_PIXEL_PACK_BUFFER, l->g_video.pbo_ids[l->free_framebuffer_index]);
+                l->glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+                l->g_video.fence = l->glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+                l->glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
             }
 
             uint64 frames = 0;

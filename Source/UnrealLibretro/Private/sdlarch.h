@@ -45,6 +45,39 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 #endif
 
 DECLARE_STATS_GROUP(TEXT("UnrealLibretro"), STATGROUP_UnrealLibretro, STATCAT_Advanced);
+
+#define ENUM_GL_PROCEDURES(EnumMacro) \
+        EnumMacro(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer) \
+        EnumMacro(PFNGLBINDRENDERBUFFERPROC, glBindRenderbuffer) \
+        EnumMacro(PFNGLBINDTEXTUREPROC, glBindTexture) \
+        EnumMacro(PFNGLCHECKFRAMEBUFFERSTATUSPROC, glCheckFramebufferStatus) \
+        EnumMacro(PFNGLCLEARPROC, glClear) \
+        EnumMacro(PFNGLCLEARCOLORPROC, glClearColor) \
+        EnumMacro(PFNGLDEBUGMESSAGECALLBACKPROC, glDebugMessageCallback) \
+        EnumMacro(PFNGLDEBUGMESSAGECONTROLPROC, glDebugMessageControl) \
+        EnumMacro(PFNGLDELETEBUFFERSPROC, glDeleteBuffers) \
+        EnumMacro(PFNGLDELETETEXTURESPROC, glDeleteTextures) \
+        EnumMacro(PFNGLENABLEPROC, glEnable) \
+        EnumMacro(PFNGLFRAMEBUFFERRENDERBUFFERPROC, glFramebufferRenderbuffer) \
+        EnumMacro(PFNGLFRAMEBUFFERTEXTURE2DPROC, glFramebufferTexture2D) \
+        EnumMacro(PFNGLGENFRAMEBUFFERSPROC, glGenFramebuffers) \
+        EnumMacro(PFNGLGENRENDERBUFFERSPROC, glGenRenderbuffers) \
+        EnumMacro(PFNGLGENTEXTURESPROC, glGenTextures) \
+        EnumMacro(PFNGLGETINTEGERVPROC, glGetIntegerv) \
+        EnumMacro(PFNGLGETSTRINGPROC, glGetString) \
+        EnumMacro(PFNGLGETTEXIMAGEPROC, glGetTexImage) \
+        EnumMacro(PFNGLPIXELSTOREIPROC, glPixelStorei) \
+        EnumMacro(PFNGLRENDERBUFFERSTORAGEPROC, glRenderbufferStorage) \
+        EnumMacro(PFNGLTEXIMAGE2DPROC, glTexImage2D) \
+        EnumMacro(PFNGLFENCESYNCPROC, glFenceSync) \
+        EnumMacro(PFNGLDELETESYNCPROC, glDeleteSync) \
+        EnumMacro(PFNGLCLIENTWAITSYNCPROC, glClientWaitSync) \
+        EnumMacro(PFNGLGENBUFFERSPROC, glGenBuffers) \
+        EnumMacro(PFNGLBINDBUFFERPROC, glBindBuffer) \
+        EnumMacro(PFNGLMAPBUFFERPROC, glMapBuffer) \
+        EnumMacro(PFNGLUNMAPBUFFERPROC, glUnmapBuffer) \
+        EnumMacro(PFNGLBUFFERDATAPROC, glBufferData) \
+
 struct libretro_callbacks_t;
 
 struct libretro_api_t {
@@ -159,6 +192,8 @@ protected:
         struct retro_hw_render_callback hw;
     } g_video = { 0 };
 
+	#define DEFINE_GL_PROCEDURES(Type,Func) Type Func = NULL;
+    ENUM_GL_PROCEDURES(DEFINE_GL_PROCEDURES);
 	
     void create_window();
     void video_configure(const struct retro_game_geometry* geom);
