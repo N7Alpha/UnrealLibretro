@@ -105,6 +105,13 @@ struct libretro_api_t {
     size_t   (*get_memory_size)(unsigned id);
 };
 
+struct _8888_color {
+    uint32 B : 8;
+    uint32 G : 8;
+    uint32 R : 8;
+    uint32 A : 8;
+};
+
 struct LibretroContext {
 public:
 	/**
@@ -140,72 +147,62 @@ protected:
 	};
 	
     std::atomic<ECoreState> CoreState = ECoreState::Running;
-	
-    TAtomic<bool> shutdown_audio{false}; // @hack prevents hangs when destructing because some cores will call core_audio_write in an infinite loop until audio is enqueued. We have a fixed size audio buffer and have no real control over how the audio is dequeued so this can happen often.
-    FLambdaRunnable* UnrealThreadTask = nullptr;
 
-    // From all the crazy container types you can tell I had trouble with multithreading. However from what I understand my solution is threadsafe.
-    TWeakObjectPtr<UTextureRenderTarget2D> UnrealRenderTarget{nullptr};
-    TWeakObjectPtr<URawAudioSoundWave> UnrealSoundBuffer{nullptr};
-    TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> UnrealInputState;
-
-    // These are both ThreadSafe shared pointers that are the main bridge between my code and unreal.
-    FTexture2DRHIRef TextureRHI; // @todo: be careful with this it can become stale if you reinit the UTextureRenderTarget2D without updating this reference. Say if you were adding a feature to change games without reiniting the entire core. What I really need to do is probably implement my own dynamic texture subclass
-    TSharedPtr<TCircularQueue<int32>, ESPMode::ThreadSafe> QueuedAudio;
-
-    TArray<char, TInlineAllocator<512>> core_save_directory,
-                                        core_system_directory;
-
-    struct _8888_color {
-        uint32 B : 8;
-        uint32 G : 8;
-        uint32 R : 8;
-        uint32 A : 8;
-    };
-
-    bool free_framebuffer_index = false;
-    _8888_color *bgra_buffers[2] = { nullptr, nullptr };
-
-    libretro_api_t        libretro_api = {0};
+    libretro_api_t        libretro_api = { 0 };
     TQueue<TUniqueFunction<void(libretro_api_t&)>, EQueueMode::Spsc> LibretroAPITasks; // TQueue<T, EQueueMode::Spsc> has acquire-release semantics on Enqueue and Dequeue so this should be thread-safe
 
+    // @todo remove these and have the loaded callback handle these resources
+    TWeakObjectPtr<UTextureRenderTarget2D> UnrealRenderTarget{nullptr};
+    TWeakObjectPtr<URawAudioSoundWave> UnrealSoundBuffer{nullptr};
 
-    SDL_Window* g_win = nullptr;
-    SDL_GLContext g_ctx = nullptr;
-    struct retro_frame_time_callback runloop_frame_time = {0};
-    retro_usec_t runloop_frame_time_last = 0;
-    struct retro_audio_callback audio_callback = {0};
-    
-    bool UsingOpenGL = false;
-    struct retro_system_av_info av = {{0}, {0}};
-    std::unordered_map<std::string, std::string> settings;
-    const struct retro_hw_render_context_negotiation_interface* hw_render_context_negotiation = nullptr;
-    
-	struct
-	{
-        FCriticalSection CriticalSection;
-        _8888_color* ClientBuffer{nullptr};
-	} FrameUpload;
+    struct
+    {
+        // These are all ThreadSafe shared pointers that are the main bridge between and unreal
+        FTexture2DRHIRef TextureRHI;
+        TSharedPtr<TCircularQueue<int32>, ESPMode::ThreadSafe> AudioQueue;
+        TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState;
+    	
+        struct
+        {
+            FCriticalSection CriticalSection;
+            _8888_color* ClientBuffer{ nullptr };
+        } FrameUpload;
+    } Unreal = {0};
 
     struct {
-        GLuint tex_id;
-        GLuint fbo_id;
-        GLuint rbo_id;
+        bool using_opengl;
+    	
+    	struct {
+            SDL_Window* window;
+            SDL_GLContext context;
 
-        GLuint pbo_ids[2];
-        GLsync fence;
+            GLuint texture;
+            GLuint framebuffer;
+            GLuint renderbuffer;
 
-        int glmajor;
-        int glminor;
+            GLuint pixel_buffer_objects[2];
+            GLsync fence;
 
-        GLuint pitch;
+            GLuint pitch;
+            GLuint pixel_type;
+            GLuint pixel_format;
+            GLuint bits_per_pixel;
+    	} gl;
 
-        GLuint pixfmt;
-        GLuint pixtype;
-        GLuint bpp;
+    	struct {
+            _8888_color* bgra_buffers[2];
+    	} software;
 
+        bool free_framebuffer_index;
+
+        const struct retro_hw_render_context_negotiation_interface* hw_render_context_negotiation; // @todo
         struct retro_hw_render_callback hw;
-    } g_video = { 0 };
+        struct retro_system_av_info av;
+
+        TArray<char, TInlineAllocator<512>>   save_directory,
+                                            system_directory;
+        std::unordered_map<std::string, std::string> settings;
+    } core = { 0 };
 
 	#define DEFINE_GL_PROCEDURES(Type,Func) Type Func = NULL;
     ENUM_GL_PROCEDURES(DEFINE_GL_PROCEDURES);

@@ -3,9 +3,6 @@
 #include "ActiveSound.h"
 #include "UnrealLibretro.h"
 
-/* UMediaSoundWave structors
- *****************************************************************************/
-
 URawAudioSoundWave::URawAudioSoundWave( const FObjectInitializer& ObjectInitializer )
 	: Super(ObjectInitializer)
 {
@@ -19,13 +16,13 @@ URawAudioSoundWave::URawAudioSoundWave( const FObjectInitializer& ObjectInitiali
 
 int32 URawAudioSoundWave::GeneratePCMData( uint8* PCMData, const int32 SamplesNeeded )
 {
-	auto SamplesIWillGive = FMath::Min(200, SamplesNeeded);
+	auto SamplesIWillGive = FMath::Min(64, SamplesNeeded);
 
 	auto FramesDequeued = 0;
 	int32 AudioFrame;
-	while (FramesDequeued < SamplesIWillGive && QueuedAudio->Peek(AudioFrame)) {
+	while (FramesDequeued < SamplesIWillGive && AudioQueue->Peek(AudioFrame)) {
 		((int32*)PCMData)[FramesDequeued] = AudioFrame;
-		QueuedAudio->Dequeue();
+		AudioQueue->Dequeue();
 		FramesDequeued++;
 	}
 
@@ -33,8 +30,11 @@ int32 URawAudioSoundWave::GeneratePCMData( uint8* PCMData, const int32 SamplesNe
 		UE_LOG(Libretro, Warning, TEXT("Buffer overrun by %d bytes. Filling with 0 data"), 4 * (SamplesIWillGive - FramesDequeued));
 		FMemory::Memzero(PCMData+4*FramesDequeued, 4 * (SamplesIWillGive - FramesDequeued));
 	}
-
-	return 4 * SamplesIWillGive; // THIS FUNCTION EXPECTS BYTES READ TO BE RETURNED NOT SAMPLES READ I HAVE BEEN BURNED BY THIS TOO MANY TIMES
+	
+	return 4 * SamplesIWillGive; // Note: THIS FUNCTION EXPECTS BYTES READ TO BE RETURNED NOT SAMPLES READ I HAVE BEEN BURNED BY THIS TOO MANY TIMES
+                                 //       Also what we return here implicitly affects some things:
+                                 //           - returning 0 implies stop playing
+	                             //           - The smaller the number the higher the frequency we are polled at
 }
 
 

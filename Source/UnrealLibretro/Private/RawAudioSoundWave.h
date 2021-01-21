@@ -7,7 +7,6 @@
 
 #include "RawAudioSoundWave.generated.h"
 
-const unsigned UNREAL_LIBRETRO_AUDIO_BUFFER_SIZE = 2048;
 
 /**
  * Implements a playable sound asset for streams of raw pcm data.
@@ -45,7 +44,7 @@ public:
 
 	/** Holds queued audio samples. */
 	typedef uint32 libretro_frame;
-	TSharedPtr<TCircularQueue<int32>, ESPMode::ThreadSafe> QueuedAudio; // TCircularQueue is thread safe and lock free in single producer single consumer scenarios
+	TSharedPtr<TCircularQueue<int32>, ESPMode::ThreadSafe> AudioQueue; // TCircularQueue is thread safe and lock free in single producer single consumer scenarios
 
 	bool bSetupDelegates;
 };
