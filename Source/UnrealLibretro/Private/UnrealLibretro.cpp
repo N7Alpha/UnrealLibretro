@@ -1,5 +1,3 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
-
 #include "UnrealLibretro.h"
 #include "Core.h"
 #include "Modules/ModuleManager.h"
