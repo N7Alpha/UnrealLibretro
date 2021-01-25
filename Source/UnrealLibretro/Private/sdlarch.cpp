@@ -541,8 +541,8 @@ int16_t LibretroContext::core_input_state(unsigned port, unsigned device, unsign
     switch (device) {
         case RETRO_DEVICE_ANALOG:   
             check(index < 2); // "I haven't implemented Triggers and other analog controls yet"
-            return (*Unreal.InputState)[port].analog[id][index];
-        case RETRO_DEVICE_JOYPAD:   return (*Unreal.InputState)[port].digital[id];
+            return (*Unreal.InputState)[port].analog[id][index].load(std::memory_order_relaxed);
+        case RETRO_DEVICE_JOYPAD:   return (*Unreal.InputState)[port].digital[id].load(std::memory_order_relaxed);
         default:                    return 0;
     }
 }
