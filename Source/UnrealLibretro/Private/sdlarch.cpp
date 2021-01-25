@@ -856,12 +856,12 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
                     frames++;
 
                     double sleep = (frames / l->core.av.timing.fps) - (FDateTime::Now() - start).GetTotalSeconds();
-                    if (sleep < -(1 / l->core.av.timing.fps)) { // If over a frame behind don't try to catch up to the next frame
+                    if (sleep > 0.0) {
+                        FPlatformProcess::Sleep(sleep); // This always yields so only call it when we actually need to sleep
+                    } else if (sleep < -(1 / l->core.av.timing.fps)) { // If over a frame behind don't try to catch up to the next frame
                         start = FDateTime::Now();
                         frames = 0;
                     }
-
-                    FPlatformProcess::Sleep(FMath::Max(0.0, sleep));
                 }
             }
 
