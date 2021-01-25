@@ -1,7 +1,7 @@
-#include "libretro/libretro.h"
-
 #include "LibretroInputComponent.h"
 #include "LibretroCoreInstance.h"
+
+#include "libretro/libretro.h"
 
 void ULibretroInputComponent::Initialize(FLibretroInputState* InputState, TFunction<void()> Disconnect)
 {
