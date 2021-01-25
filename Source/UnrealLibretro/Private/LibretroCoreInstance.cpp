@@ -74,6 +74,16 @@ void ULibretroCoreInstance::DisconnectController(int Port)
 
     if (Controller[Port].IsValid())
     {
+        for (auto &input : InputState.Get()[Port].digital)
+        {
+            input.store(0, std::memory_order_relaxed);
+        }
+    	
+        InputState.Get()[Port].analog[0][0].store(0, std::memory_order_relaxed);
+        InputState.Get()[Port].analog[0][1].store(0, std::memory_order_relaxed);
+        InputState.Get()[Port].analog[1][0].store(0, std::memory_order_relaxed);
+        InputState.Get()[Port].analog[1][1].store(0, std::memory_order_relaxed);
+    	
         Controller[Port]->PopInputComponent(InputMap[Port]);
         Disconnected[Port].ExecuteIfBound(Controller[Port].Get(), Port);
     }
