@@ -1,9 +1,7 @@
-
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Components/InputComponent.h"
-#include "libretro/libretro.h"
 #include "LibretroInputDefinitions.h"
 
 #include "LibretroInputComponent.generated.h"

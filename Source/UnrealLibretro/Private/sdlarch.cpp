@@ -1,7 +1,9 @@
 
 #include "sdlarch.h"
+#include "UnrealLibretro.h" // For Libretro debug log category
 #include "LibretroSettings.h"
-#include "LibretroCoreInstance.h"
+#include "LibretroInputDefinitions.h"
+#include "LambdaRunnable.h"
 
 #include "HAL/FileManager.h"
 

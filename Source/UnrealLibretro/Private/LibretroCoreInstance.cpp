@@ -3,12 +3,11 @@
 
 #include "libretro/libretro.h"
 
-#include "HAL/PlatformFilemanager.h"
 #include "Misc/FileHelper.h"
 
+#include "UnrealLibretro.h"
 #include "LibretroInputComponent.h"
 #include "RawAudioSoundWave.h"
-#include "LambdaRunnable.h"
 #include "sdlarch.h"
 
 #define NOT_LAUNCHED_GUARD if (!CoreInstance.IsSet()) { UE_LOG(Libretro, Warning, TEXT("Called function '%hs' before Libretro Core '%s' was launched. This has no effect"), __func__, *CorePath) return; }

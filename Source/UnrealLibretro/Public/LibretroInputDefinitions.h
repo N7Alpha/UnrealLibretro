@@ -1,6 +1,6 @@
 #pragma once
 
-#include "atomic"
+#include <atomic>
 
 #include "libretro/libretro.h"
 

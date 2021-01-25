@@ -1,9 +1,5 @@
 #pragma once
 
-/*#pragma warning(push)
-#pragma warning(disable:4191)
-#pragma warning(pop)*/
-
 // Libretro API
 #include "libretro/libretro.h"
 static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
@@ -21,8 +17,6 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 
 #include "LibretroInputDefinitions.h"
 #include "RawAudioSoundWave.h"
-#include "UnrealLibretro.h" // For Libretro debug log category
-#include "LambdaRunnable.h"
 
 
 // Third party libraries
@@ -77,8 +71,6 @@ DECLARE_STATS_GROUP(TEXT("UnrealLibretro"), STATGROUP_UnrealLibretro, STATCAT_Ad
         EnumMacro(PFNGLMAPBUFFERPROC, glMapBuffer) \
         EnumMacro(PFNGLUNMAPBUFFERPROC, glUnmapBuffer) \
         EnumMacro(PFNGLBUFFERDATAPROC, glBufferData) \
-
-struct libretro_callbacks_t;
 
 struct libretro_api_t {
     void* handle;
@@ -204,6 +196,15 @@ protected:
         std::unordered_map<std::string, std::string> settings;
     } core = { 0 };
 
+    // This is where the callback implementation logic is for the callbacks from the Libretro Core.
+	// However technically the real callbacks are parameterized over a thread_local object.
+    void    core_video_refresh(const void* data, unsigned width, unsigned height, unsigned pitch);
+    void    core_audio_sample(int16_t left, int16_t right);
+    size_t  core_audio_write(const int16_t* buf, size_t frames);
+    int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id);
+    // void   core_input_poll(void);
+    bool    core_environment(unsigned cmd, void* data);
+	
 	#define DEFINE_GL_PROCEDURES(Type,Func) Type Func = NULL;
     ENUM_GL_PROCEDURES(DEFINE_GL_PROCEDURES);
 	
@@ -213,12 +214,4 @@ protected:
 
     void load(const char* sofile);
     void load_game(const char* filename);
-
-	// These are the callbacks the Libretro Core calls directly via C-function wrappers. This is where the callback implementation logic is.
-    void    core_video_refresh(const void* data, unsigned width, unsigned height, unsigned pitch);
-    void    core_audio_sample(int16_t left, int16_t right);
-    size_t  core_audio_write(const int16_t* buf, size_t frames);
-    int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id);
-    // void   core_input_poll(void);
-    bool    core_environment(unsigned cmd, void* data);
 };

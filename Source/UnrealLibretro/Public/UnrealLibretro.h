@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Modules/ModuleManager.h"
 #include "Interfaces/IPluginManager.h"
 
 UNREALLIBRETRO_API DECLARE_LOG_CATEGORY_EXTERN(Libretro, Log, All);

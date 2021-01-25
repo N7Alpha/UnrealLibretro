@@ -1,8 +1,6 @@
-
 #pragma once
 #include "CoreMinimal.h"
 #include "Sound/SoundWave.h"
-#include "Sound/SoundWaveProcedural.h"
 #include "Containers/CircularQueue.h"
 
 #include "RawAudioSoundWave.generated.h"

@@ -2,7 +2,6 @@
 #include "Core.h"
 #include "Modules/ModuleManager.h"
 #include "Interfaces/IPluginManager.h"
-#include "GameFramework/InputSettings.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/PreWindowsApi.h"
