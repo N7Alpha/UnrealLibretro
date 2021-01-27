@@ -205,7 +205,7 @@ void ULibretroCoreInstance::SaveState(const FString& FilePath)
 	FGraphEventArray Prerequisites{ LastIOTask.FindOrAdd(FUnrealLibretroModule::ResolveSaveStatePath(RomPath, FilePath)) };
 	
     // This async task is executed second
-	auto SaveStateToFileTask = TGraphTask<FFunctionGraphTask>::CreateTask(Prerequisites[0].IsValid() ? &Prerequisites : nullptr).ConstructAndHold
+	auto SaveStateToFileTask = TGraphTask<TFunctionGraphTaskImpl<void(), ESubsequentsMode::TrackSubsequents>>::CreateTask(Prerequisites[0].IsValid() ? &Prerequisites : nullptr).ConstructAndHold
 	(
 		[SaveStateBuffer, SaveStatePath = FUnrealLibretroModule::ResolveSaveStatePath(RomPath, FilePath)]() // @dynamic The capture here does a copy on the heap probably
 		{

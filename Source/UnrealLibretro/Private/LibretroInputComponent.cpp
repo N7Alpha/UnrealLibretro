@@ -95,7 +95,7 @@ void ULibretroInputComponent::BindKeys(const TMap<FKey, ERetroInput>& Controller
 	{
 		if (kv.Value != ERetroInput::DisconnectController)
 		{
-			if (kv.Key.IsFloatAxis())
+			if (kv.Key.IsAxis1D())
 			{
 				BindAxisKey(kv.Key, this, ULibretroInputComponent::ButtonAnalog[to_integral(kv.Value) - to_integral(ERetroInput::LeftX)]);
 			}

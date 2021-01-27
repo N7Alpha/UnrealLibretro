@@ -21,9 +21,11 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 
 // Third party libraries
 #if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
 #include "Windows/PreWindowsApi.h"
 #include "Windows/SDL2/SDL.h"
 #include "Windows/PostWindowsApi.h"
+#include "Windows/HideWindowsPlatformTypes.h"
 #elif PLATFORM_APPLE
 #include "Mac/SDL2/SDL.h"
 #endif

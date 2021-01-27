@@ -38,7 +38,8 @@ public class UnrealLibretro : ModuleRules
 				"Engine",
 				"InputCore",
 				"Slate",
-				"Projects"
+				"Projects",
+				"DeveloperSettings"
 			}
 			);
 	}
