@@ -1,16 +1,15 @@
 #include "UnrealLibretro.h"
-#include "Core.h"
+
 #include "Modules/ModuleManager.h"
-#include "Interfaces/IPluginManager.h"
+
+#if PLATFORM_APPLE
+#include <dispatch/dispatch.h>
+#endif
 
 #if PLATFORM_WINDOWS
 #include "Windows/PreWindowsApi.h"
 #include "Windows/SDL2/SDL.h"
 #include "Windows/PostWindowsApi.h"
-#endif
-
-#if PLATFORM_APPLE
-#include <dispatch/dispatch.h>
 #endif
 
 #include "LibretroSettings.h"
