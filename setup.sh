@@ -22,4 +22,4 @@ wget -c https://buildbot.libretro.com/nightly/windows/x86_64/RetroArch_update.7z
 cp /tmp/RetroArch-Win64/*.dll Binaries/Win64/ThirdParty/libretro
 
 # Acquire and move unversioned data from unversioned branch (Note this will break if you don't have a really new version of git)
-git restore --source origin/unversioned Content/ Binaries/ Source/UnrealLibretro/Private/Windows/SDL2 Source/UnrealLibretro/Private/Mac/SDL2
+git restore --source remotes/origin/unversioned Content/ Binaries/ Source/UnrealLibretro/Private/Windows/SDL2 Source/UnrealLibretro/Private/Mac/SDL2
