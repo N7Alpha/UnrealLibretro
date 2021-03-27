@@ -817,6 +817,9 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
             // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
             l->load_game(TCHAR_TO_ANSI(*IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*game)));
+		
+            // This is needed for some cores nestopia specifically is one example
+            l->libretro_api.set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
 
             LoadedCallback(l->libretro_api, l->core.hw.bottom_left_origin);
         	
