@@ -137,7 +137,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
         this->core_environment(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &data);
 	}
 		
-	core.gl.pitch = geom->base_width * core.gl.bits_per_pixel;
+	core.gl.pitch = geom->max_width * core.gl.bits_per_pixel;
 
     {
         glGenTextures(1, &core.gl.texture);
@@ -164,16 +164,16 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
             && core.hw.stencil) {
             glGenRenderbuffers(1, &core.gl.renderbuffer);
             glBindRenderbuffer(GL_RENDERBUFFER, core.gl.renderbuffer);
-            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, geom->base_width, 
-                                                                        geom->base_height);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, geom->max_width, 
+                                                                        geom->max_height);
 
             glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, core.gl.renderbuffer);
         }
         else if (core.hw.depth) {
             glGenRenderbuffers(1, &core.gl.renderbuffer);
             glBindRenderbuffer(GL_RENDERBUFFER, core.gl.renderbuffer);
-            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, geom->base_width, 
-                                                                         geom->base_height);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, geom->max_width, 
+                                                                         geom->max_height);
 
             glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, core.gl.renderbuffer);
         }  
@@ -213,7 +213,43 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 // Stripped down code for profiling purposes https://godbolt.org/z/c57esx
  void LibretroContext::core_video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
     DECLARE_SCOPE_CYCLE_COUNTER(TEXT("PrepareFrameBufferForRenderThread"), STAT_LibretroPrepareFrameBufferForRenderThread, STATGROUP_UnrealLibretro);
-    check(core.av.geometry.base_width == width && core.av.geometry.base_height == height); // @todo resize framebuffer appropriately
+
+    auto prepare_frame_for_upload_to_unreal_RHI = [&](_8888_color* const buffer)
+    {
+        _8888_color* old_buffer;
+        {
+            FScopeLock SwapPointer(&this->Unreal.FrameUpload.CriticalSection);
+            old_buffer = this->Unreal.FrameUpload.ClientBuffer;
+            this->Unreal.FrameUpload.ClientBuffer = buffer;
+        }
+
+        if (!old_buffer)
+        {
+            ENQUEUE_RENDER_COMMAND(CopyToUnrealFramebufferTask)( // @todo this triggers an assert on MacOS you can get around it by enqueuing through the TaskGraph instead no idea why this is the case
+                [this,
+                MipIndex = 0,
+                SrcPitch = 4 * width,
+                Region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height)]
+            (FRHICommandListImmediate& RHICmdList)
+            {
+                check(this->Unreal.TextureRHI.GetReference());
+
+                RHICmdList.EnqueueLambda([=](FRHICommandList&)
+                    {
+                        FScopeLock UploadTextureToRenderHardware(&this->Unreal.FrameUpload.CriticalSection);
+                        GDynamicRHI->RHIUpdateTexture2D(
+                            this->Unreal.TextureRHI.GetReference(),
+                            MipIndex,
+                            Region,
+                            SrcPitch,
+                            (uint8*)this->Unreal.FrameUpload.ClientBuffer);
+                        this->Unreal.FrameUpload.ClientBuffer = nullptr;
+                    }
+                );
+            }
+            );
+        }
+    };
     
     if (data && data != RETRO_HW_FRAME_BUFFER_VALID) {
         DECLARE_SCOPE_CYCLE_COUNTER(TEXT("CPUConvertAndCopyFramebuffer"), STAT_LibretroCPUConvertAndCopyFramebuffer, STATGROUP_UnrealLibretro);
@@ -270,7 +306,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
                 checkNoEntry();
         }
 
-        this->prepare_frame_for_upload_to_unreal_RHI(bgra_buffer);
+        prepare_frame_for_upload_to_unreal_RHI(bgra_buffer);
     }
     else if (data == RETRO_HW_FRAME_BUFFER_VALID) {
         // OpenGL is asynchronous and because of GPU driver reasons (work is executed FIFO for some drivers)
@@ -373,13 +409,18 @@ static void core_log(enum retro_log_level level, const char *fmt, ...) {
         UE_LOG(Libretro, Warning, TEXT("%s"), ANSI_TO_TCHAR(buffer));
         break;
     case RETRO_LOG_ERROR:
-        UE_LOG(Libretro, Fatal, TEXT("%s"), ANSI_TO_TCHAR(buffer));
+        UE_LOG(Libretro, Warning, TEXT("%s"), ANSI_TO_TCHAR(buffer));
         break;
     }
 
 }
 
 bool LibretroContext::core_environment(unsigned cmd, void *data) {
+    if (CoreEnvironmentCallback)
+    {
+        CoreEnvironmentCallback(cmd, data);
+    }
+    
 	switch (cmd) {
     case RETRO_ENVIRONMENT_GET_VARIABLE: {
         struct retro_variable* var = (struct retro_variable*)data;
@@ -477,6 +518,17 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
         core.using_opengl = true;
         return true;
     }
+    case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO: {
+        auto system_av_info = *(const struct retro_system_av_info*)data;
+
+        check(   system_av_info.geometry.max_height <= core.av.geometry.max_height  // @todo buffer reallocation. The libretro core can basically request to reallocate framebuffers atm this requires writing code to potentially reallocate 4 buffers
+              && system_av_info.geometry.max_width  <= core.av.geometry.max_width); // in the case of software rendering the client buffer in opengl the pbo and texture buffer and in both cases the unreal engine rhi buffer on top of this there are
+                                                                                    // annoying synchonization issues to deal with. We just assert here so we don't actually have to do that for now
+
+        this->core.av.timing = system_av_info.timing;
+
+        return true;
+    }
     case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: {
         const char** retro_path = (const char**)data;
         auto RAII = StringCast<TCHAR>(this->core.save_directory.GetData());
@@ -540,7 +592,7 @@ int16_t LibretroContext::core_input_state(unsigned port, unsigned device, unsign
 
     switch (device) {
         case RETRO_DEVICE_ANALOG:   
-            check(index < 2); // "I haven't implemented Triggers and other analog controls yet"
+            //check(index < 2); // "I haven't implemented Triggers and other analog controls yet"
             return (*Unreal.InputState)[port].analog[id][index].load(std::memory_order_relaxed);
         case RETRO_DEVICE_JOYPAD:   return (*Unreal.InputState)[port].digital[id].load(std::memory_order_relaxed);
         default:                    return 0;
@@ -667,8 +719,8 @@ void LibretroContext::load_game(const char* filename) {
     } else {
     	for (auto i : {0, 1})
     	{
-            core.software.bgra_buffers[i] = (_8888_color*)FMemory::Malloc(  core.av.geometry.base_width 
-                                                                          * core.av.geometry.base_height
+            core.software.bgra_buffers[i] = (_8888_color*)FMemory::Malloc(  core.av.geometry.max_width 
+                                                                          * core.av.geometry.max_height
                                                                           * sizeof(core.software.bgra_buffers[i][0]));
     	}
     }
@@ -688,20 +740,20 @@ void LibretroContext::load_game(const char* filename) {
                         ([this](FRHICommandListImmediate& RHICmdList)
                             {
                                 FRHIResourceCreateInfo Info{ TEXT("Dummy Texture for now") };
-                                this->Unreal.TextureRHI = RHICreateTexture2D(core.av.geometry.base_width,
-										                              core.av.geometry.base_height,
-										                              PF_B8G8R8A8,
-										                              1,
-										                              1,
-										                              TexCreate_CPUWritable | TexCreate_Dynamic,
-										                              Info);
+                                this->Unreal.TextureRHI = RHICreateTexture2D(core.av.geometry.max_width,
+										                                     core.av.geometry.max_height,
+										                                     PF_B8G8R8A8,
+										                                     1,
+										                                     1,
+										                                     TexCreate_CPUWritable | TexCreate_Dynamic,
+										                                     Info);
                             });
                 }
                 else
                 {
                     // Video Init
-                    UnrealRenderTarget->InitCustomFormat(core.av.geometry.base_width, 
-                                                         core.av.geometry.base_height,
+                    UnrealRenderTarget->InitCustomFormat(core.av.geometry.max_width, 
+                                                         core.av.geometry.max_height,
                                                          PF_B8G8R8A8,
                                                          false);
                     ENQUEUE_RENDER_COMMAND(LibretroInitRHIFramebuffer)
@@ -728,49 +780,9 @@ void LibretroContext::load_game(const char* filename) {
     
 }
 
-void LibretroContext::prepare_frame_for_upload_to_unreal_RHI(_8888_color* const buffer)
- {
-    _8888_color*  old_buffer;
-    {
-        FScopeLock SwapPointer(&this->Unreal.FrameUpload.CriticalSection);
-        old_buffer = this->Unreal.FrameUpload.ClientBuffer;
-        this->Unreal.FrameUpload.ClientBuffer = buffer;
-    }
-
-    if (!old_buffer)
-    {
-        ENQUEUE_RENDER_COMMAND(CopyToUnrealFramebufferTask)( // @todo this triggers an assert on MacOS you can get around it by enqueuing through the TaskGraph instead no idea why this is the case
-            [this, 
-             MipIndex   = 0,
-             SrcPitch   = 4 * this->core.av.geometry.base_width,
-             Region     = FUpdateTextureRegion2D(0, 0, 0, 0,
-								                 this->core.av.geometry.base_width,
-								                 this->core.av.geometry.base_height)]
-        (FRHICommandListImmediate& RHICmdList)
-        {
-            check(this->Unreal.TextureRHI.GetReference());
-
-            RHICmdList.EnqueueLambda([=](FRHICommandList&)
-                {
-                    FScopeLock UploadTextureToRenderHardware(&this->Unreal.FrameUpload.CriticalSection);
-                    GDynamicRHI->RHIUpdateTexture2D(
-                        this->Unreal.TextureRHI.GetReference(),
-                        MipIndex,
-                        Region,
-                        SrcPitch,
-                        (uint8*)this->Unreal.FrameUpload.ClientBuffer);
-                    this->Unreal.FrameUpload.ClientBuffer = nullptr;
-                }
-            );
-        }
-        );
-    }
- }
-
 LibretroContext::LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState) { Unreal.InputState = InputState; }
 
-LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, TUniqueFunction
-                                         <void(libretro_api_t&, bool)> LoadedCallback)
+LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, TUniqueFunction<void(LibretroContext*, libretro_api_t&)> LoadedCallback)
 {
 
     check(IsInGameThread()); // So static initialization is safe + UObject access
@@ -816,12 +828,12 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             l->load(TCHAR_TO_ANSI(*IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*InstancedCorePath)));
 
             // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
-            l->load_game(TCHAR_TO_ANSI(*IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*game)));
+            l->load_game(TCHAR_TO_ANSI(*IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*game).Replace(TEXT("/"), TEXT("\\"))));
 		
             // This is needed for some cores nestopia specifically is one example
             l->libretro_api.set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
 
-            LoadedCallback(l->libretro_api, l->core.hw.bottom_left_origin);
+            LoadedCallback(l, l->libretro_api);
         	
         	// This simplifies the logic in core_video_refresh
             if (l->core.using_opengl) {

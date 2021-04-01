@@ -1,6 +1,6 @@
 ## Core Compatibility
 
-Unfortunately the full Libretro API is quite complex so I have only partially implemented it.
+Unfortunately the full Libretro API is quite complex so I have only partially implemented it, so some cores might not work correctly. A non-exhaustive list is documented here.
 
 ### Known working cores
 
@@ -9,6 +9,10 @@ Unfortunately the full Libretro API is quite complex so I have only partially im
 * snes9x
 * mupen64plus_next
 * PPSSPP
+* fbalpha2012
+* vbam
+* desmume2015
+* mame
 
 ### Known broken cores
 

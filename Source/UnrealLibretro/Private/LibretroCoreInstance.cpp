@@ -4,6 +4,7 @@
 #include "libretro/libretro.h"
 
 #include "Misc/FileHelper.h"
+#include "Components/AudioComponent.h"
 
 #include "UnrealLibretro.h"
 #include "LibretroInputComponent.h"
@@ -107,19 +108,18 @@ void ULibretroCoreInstance::Launch()
         return;
     }
 
-    typedef URawAudioSoundWave AudioBufferInternal;
-    AudioBuffer = NewObject<AudioBufferInternal>();
-
     if (!RenderTarget)
     {
         RenderTarget = NewObject<UTextureRenderTarget2D>();
     }
 
+    AudioBuffer = NewObject<URawAudioSoundWave>();
+
     RenderTarget->Filter = TF_Nearest; // @todo remove this
 
-    this->CoreInstance = LibretroContext::Launch(_CorePath, _RomPath, RenderTarget, static_cast<AudioBufferInternal*>(AudioBuffer), InputState,
+    this->CoreInstance = LibretroContext::Launch(_CorePath, _RomPath, RenderTarget, static_cast<URawAudioSoundWave*>(AudioBuffer), InputState,
 	    [weakThis = MakeWeakObjectPtr(this), OrderedFileAccess = GameThread_PrepareBlockingOrderedOperation(FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath))]
-        (libretro_api_t &libretro_api, bool bottom_left_origin) 
+        (LibretroContext *CoreInstance, libretro_api_t &libretro_api) 
 	    {   // Core has loaded
             
 	        // Load save data into core
@@ -137,16 +137,63 @@ void ULibretroCoreInstance::Launch()
 	        
 	        // Notify delegate
 	        FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady(
-                [=]()
+                [weakThis, 
+                 bottom_left_origin = CoreInstance->LibretroThread_bottom_left_origin,
+                 geometry           = CoreInstance->LibretroThread_geometry]()
 	            {
 	                if (weakThis.IsValid())
 	                {
 	                    weakThis->OnCoreIsReady.Broadcast(weakThis->RenderTarget, 
-                                                          weakThis->AudioBuffer,
-                                                          bottom_left_origin);
+                                                          weakThis->AudioBuffer);
+
+                        float invert_y = bottom_left_origin ? -1 : 1;
+                        weakThis->OnCoreFrameBufferResize.Broadcast(           geometry.base_width  / (float) geometry.max_width,
+                                                                    invert_y * geometry.base_height / (float) geometry.max_height);
+                        if (weakThis->AudioComponent->IsPlaying()) // In UAudioComponent SetSound() implicitly calls Play() which implicitly calls Stop() if its currently playing... of course
+                        {
+
+                        }
+                        weakThis->AudioComponent->SetSound(weakThis->AudioBuffer);
+                        weakThis->AudioComponent->Play();
 	                }
 	            }, TStatId(), nullptr, ENamedThreads::GameThread);
 	    });
+    
+    // @todo theres a data race with how I assign this
+    this->CoreInstance.GetValue()->CoreEnvironmentCallback = [weakThis = MakeWeakObjectPtr(this), CoreInstance = this->CoreInstance.GetValue()](unsigned cmd, void* data)->bool
+    {
+        switch (cmd)
+        {
+            case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO: {
+                FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady(
+                    [weakThis,
+                     bottom_left_origin = CoreInstance->LibretroThread_bottom_left_origin,
+                     geometry = CoreInstance->LibretroThread_geometry,
+                     system_av_info = *(const struct retro_system_av_info*)data]()
+                    {
+                        if (weakThis.IsValid())
+                        {
+                            { // @hack to change audio playback sample-rate
+                                auto AudioQueue = static_cast<URawAudioSoundWave*>(weakThis->AudioBuffer)->AudioQueue;
+                                weakThis->AudioBuffer = NewObject<URawAudioSoundWave>();
+                                weakThis->AudioBuffer->SetSampleRate(system_av_info.timing.sample_rate);
+                                weakThis->AudioBuffer->NumChannels = 2;
+                                static_cast<URawAudioSoundWave*>(weakThis->AudioBuffer)->AudioQueue = AudioQueue;
+                                weakThis->AudioComponent->SetSound(weakThis->AudioBuffer);
+                            }
+                            
+                            float invert_y = bottom_left_origin ? -1 : 1;
+                            weakThis->OnCoreFrameBufferResize.Broadcast(           system_av_info.geometry.base_width  / (float) geometry.max_width,
+                                                                        invert_y * system_av_info.geometry.base_height / (float) geometry.max_height);
+                        }
+                    }, TStatId(), nullptr, ENamedThreads::GameThread);
+
+                return true;
+            }
+        }
+
+        return false;
+    };
 }
 
 void ULibretroCoreInstance::Pause(bool ShouldPause)

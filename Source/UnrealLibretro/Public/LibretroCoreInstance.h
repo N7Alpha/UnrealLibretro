@@ -5,7 +5,8 @@
 #include "LibretroInputDefinitions.h"
 #include "LibretroCoreInstance.generated.h"
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnCoreIsReady, const class UTextureRenderTarget2D*, LibretroFramebuffer, const class USoundWave*, AudioBuffer, const bool, BottomLeftOrigin);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCoreIsReady, const class UTextureRenderTarget2D*, LibretroFramebuffer, const class USoundWave*, AudioBuffer);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCoreFramebufferResize, float, ScaleFillU, float, ScaleFillV);
 
 DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnControllerDisconnected, const class APlayerController*, PlayerController, const int, Port);
 
@@ -30,6 +31,12 @@ public:
 	 */
 	UPROPERTY(BlueprintAssignable)
 	FOnCoreIsReady OnCoreIsReady;
+
+	/**
+	 * Issued initially whenever the core framebuffer is changes dimensions. The arguments provided will scale uv's appropriately to exactly fit the framebuffer
+	 */
+	UPROPERTY(BlueprintAssignable)
+	FOnCoreFramebufferResize OnCoreFrameBufferResize;
 
 								  
 	/** Blueprint Callable Functions */
@@ -103,11 +110,11 @@ public:
 
 
 	/** Blueprint Properties */
-	UPROPERTY(BlueprintReadOnly, Category = Libretro)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro)
 	UTextureRenderTarget2D* RenderTarget;
 
-	UPROPERTY(BlueprintReadOnly, Category = Libretro)
-	USoundWave* AudioBuffer;
+	UPROPERTY(BlueprintReadWrite, Category = Libretro)
+	UAudioComponent* AudioComponent;
 
 	/**
 	 * This is what the libretro core reads from when determining input. If you want to use your own input method you can modify this directly.
@@ -142,6 +149,8 @@ protected:
 
 	bool Paused = false;
 
+	UPROPERTY()
+	USoundWave* AudioBuffer;
 	
 	UPROPERTY()
 	TArray<class ULibretroInputComponent*> InputMap;

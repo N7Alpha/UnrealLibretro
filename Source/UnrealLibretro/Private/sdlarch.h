@@ -112,7 +112,7 @@ public:
 	 * @brief analogous to new except asynchronous
 	 * @post The LoadedCallback is always called
 	 */
-    static LibretroContext* Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, TUniqueFunction<void(libretro_api_t&, bool)> LoadedCallback);
+    static LibretroContext* Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, TUniqueFunction<void(LibretroContext*, libretro_api_t&)> LoadedCallback);
 	
 	/**
 	 * @brief analogous to delete except asynchronous
@@ -129,6 +129,7 @@ public:
 	 */
     void EnqueueTask(TUniqueFunction<void(libretro_api_t&)> LibretroAPITask);
     
+    TUniqueFunction<TRemovePointer<retro_environment_t>::Type> CoreEnvironmentCallback;
 protected:
     LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState);
     ~LibretroContext() {}
@@ -198,6 +199,11 @@ protected:
         std::unordered_map<std::string, std::string> settings;
     } core = { 0 };
 
+public:
+    bool &LibretroThread_bottom_left_origin = core.hw.bottom_left_origin;
+    struct retro_game_geometry &LibretroThread_geometry = core.av.geometry;
+
+protected:
     // This is where the callback implementation logic is for the callbacks from the Libretro Core.
 	// However technically the real callbacks are parameterized over a thread_local object.
     void    core_video_refresh(const void* data, unsigned width, unsigned height, unsigned pitch);
@@ -212,7 +218,6 @@ protected:
 	
     void create_window();
     void video_configure(const struct retro_game_geometry* geom);
-    void prepare_frame_for_upload_to_unreal_RHI(_8888_color* const buffer);
 
     void load(const char* sofile);
     void load_game(const char* filename);
