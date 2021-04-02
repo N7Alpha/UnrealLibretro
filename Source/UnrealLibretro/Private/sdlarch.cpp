@@ -1,5 +1,10 @@
 
 #include "sdlarch.h"
+extern "C"
+{
+#include "gfx/scaler/pixconv.h"
+}
+
 #include "UnrealLibretro.h" // For Libretro debug log category
 #include "LibretroSettings.h"
 #include "LibretroInputDefinitions.h"
@@ -201,22 +206,15 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
     core.hw.context_reset();
 }
 
-
- struct _1555_color
- {
-     uint16 R : 5;
-     uint16 G : 5;
-     uint16 B : 5;
-     uint16 A : 1;
- };
-
 // Stripped down code for profiling purposes https://godbolt.org/z/c57esx
  void LibretroContext::core_video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
     DECLARE_SCOPE_CYCLE_COUNTER(TEXT("PrepareFrameBufferForRenderThread"), STAT_LibretroPrepareFrameBufferForRenderThread, STATGROUP_UnrealLibretro);
 
-    auto prepare_frame_for_upload_to_unreal_RHI = [&](_8888_color* const buffer)
+    unsigned SrcPitch = 4 * width;
+	
+    auto prepare_frame_for_upload_to_unreal_RHI = [&](void* const buffer)
     {
-        _8888_color* old_buffer;
+        void* old_buffer;
         {
             FScopeLock SwapPointer(&this->Unreal.FrameUpload.CriticalSection);
             old_buffer = this->Unreal.FrameUpload.ClientBuffer;
@@ -228,7 +226,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
             ENQUEUE_RENDER_COMMAND(CopyToUnrealFramebufferTask)( // @todo this triggers an assert on MacOS you can get around it by enqueuing through the TaskGraph instead no idea why this is the case
                 [this,
                 MipIndex = 0,
-                SrcPitch = 4 * width,
+                SrcPitch,
                 Region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height)]
             (FRHICommandListImmediate& RHICmdList)
             {
@@ -255,51 +253,24 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
         DECLARE_SCOPE_CYCLE_COUNTER(TEXT("CPUConvertAndCopyFramebuffer"), STAT_LibretroCPUConvertAndCopyFramebuffer, STATGROUP_UnrealLibretro);
     	
         auto bgra_buffer = core.software.bgra_buffers[core.free_framebuffer_index = !core.free_framebuffer_index];
-        
-        const auto& _5_to_8_bit = [](uint8 pixel_channel)->uint8 { return (pixel_channel << 3) | (pixel_channel >> 2); };
-        const auto& _6_to_8_bit = [](uint8 pixel_channel)->uint8 { return (pixel_channel << 2) | (pixel_channel >> 4); };
 
         switch (core.gl.pixel_type) {
             case GL_UNSIGNED_SHORT_5_6_5: {
-                auto* rgb565_buffer = (FDXTColor565*)data;
-                pitch = pitch / sizeof(rgb565_buffer[0]);
-
-                for (unsigned int y = 0; y < height; y++) {
-                    for (unsigned int x = 0; x < width; x++) {
-                        bgra_buffer[x + y * width].B = _5_to_8_bit(rgb565_buffer[x + pitch * y].B);
-                        bgra_buffer[x + y * width].G = _6_to_8_bit(rgb565_buffer[x + pitch * y].G);
-                        bgra_buffer[x + y * width].R = _5_to_8_bit(rgb565_buffer[x + pitch * y].R);
-                        bgra_buffer[x + y * width].A = 255;
-                    }
-                }
+                conv_rgb565_argb8888(bgra_buffer, data,
+                    width, height,
+                    SrcPitch, pitch);
             }
             break;
             case GL_UNSIGNED_SHORT_5_5_5_1: {
-                auto* rgba5551_buffer = (_1555_color*)data;
-                pitch = pitch / sizeof(rgba5551_buffer[0]);
-
-                for (unsigned int y = 0; y < height; y++) {
-                    for (unsigned int x = 0; x < width; x++) {
-                        bgra_buffer[x + y * width].B = _5_to_8_bit(rgba5551_buffer[x + pitch * y].B);
-                        bgra_buffer[x + y * width].G = _5_to_8_bit(rgba5551_buffer[x + pitch * y].G);
-                        bgra_buffer[x + y * width].R = _5_to_8_bit(rgba5551_buffer[x + pitch * y].R);
-                        bgra_buffer[x + y * width].A = 255;
-                    }
-                }
+                conv_0rgb1555_argb8888(bgra_buffer, data,
+                    width, height,
+                    SrcPitch, pitch);
             }
             break;
             case GL_UNSIGNED_INT_8_8_8_8_REV: {
-                auto* bgra8888_buffer = (_8888_color*)data;
-                pitch = pitch / sizeof(bgra8888_buffer[0]);
-
-                for (unsigned int y = 0; y < height; y++) {
-                    for (unsigned int x = 0; x < width; x++) {
-                        bgra_buffer[x + y * width].B = bgra8888_buffer[x + pitch * y].B;
-                        bgra_buffer[x + y * width].G = bgra8888_buffer[x + pitch * y].G;
-                        bgra_buffer[x + y * width].R = bgra8888_buffer[x + pitch * y].R;
-                        bgra_buffer[x + y * width].A = 255;
-                    }
-                }
+                conv_copy(bgra_buffer, data,
+                    width, height,
+                    SrcPitch, pitch);
             }
             break;
             default:
@@ -334,7 +305,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 
                     void* frame_buffer = glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
                     check(frame_buffer);
-                    prepare_frame_for_upload_to_unreal_RHI((_8888_color*)frame_buffer);
+                    prepare_frame_for_upload_to_unreal_RHI(frame_buffer);
                 }
 
                 { // Download Libretro Core frame from OpenGL asynchronously
@@ -719,9 +690,9 @@ void LibretroContext::load_game(const char* filename) {
     } else {
     	for (auto i : {0, 1})
     	{
-            core.software.bgra_buffers[i] = (_8888_color*)FMemory::Malloc(  core.av.geometry.max_width 
-                                                                          * core.av.geometry.max_height
-                                                                          * sizeof(core.software.bgra_buffers[i][0]));
+            core.software.bgra_buffers[i] = FMemory::Malloc(  core.av.geometry.max_width 
+                                                            * core.av.geometry.max_height
+                                                            * 4);
     	}
     }
 

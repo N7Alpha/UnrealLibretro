@@ -9,6 +9,8 @@ public class UnrealLibretro : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
+		PrivateIncludePaths.Add("UnrealLibretro/Private/libretro/include");
+
 		RuntimeDependencies.Add("$(PluginDir)/MyCores/*");
 		RuntimeDependencies.Add("$(PluginDir)/MyRoms/*"	);
 		RuntimeDependencies.Add("$(PluginDir)/Saves/*"	);

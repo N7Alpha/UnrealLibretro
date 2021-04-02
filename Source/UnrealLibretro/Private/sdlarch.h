@@ -99,13 +99,6 @@ struct libretro_api_t {
     size_t   (*get_memory_size)(unsigned id);
 };
 
-struct _8888_color {
-    uint32 B : 8;
-    uint32 G : 8;
-    uint32 R : 8;
-    uint32 A : 8;
-};
-
 struct LibretroContext {
 public:
 	/**
@@ -160,7 +153,7 @@ protected:
         struct
         {
             FCriticalSection CriticalSection;
-            _8888_color* ClientBuffer{ nullptr };
+            void* ClientBuffer{ nullptr };
         } FrameUpload;
     } Unreal = {0};
 
@@ -185,7 +178,7 @@ protected:
     	} gl;
 
     	struct {
-            _8888_color* bgra_buffers[2];
+            void* bgra_buffers[2];
     	} software;
 
         bool free_framebuffer_index;
