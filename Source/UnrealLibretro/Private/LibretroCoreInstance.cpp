@@ -146,13 +146,12 @@ void ULibretroCoreInstance::Launch()
 	                    weakThis->OnCoreIsReady.Broadcast(weakThis->RenderTarget, 
                                                           weakThis->AudioBuffer);
 
-                        float invert_y = bottom_left_origin ? -1 : 1;
-                        weakThis->OnCoreFrameBufferResize.Broadcast(           geometry.base_width  / (float) geometry.max_width,
-                                                                    invert_y * geometry.base_height / (float) geometry.max_height);
-                        if (weakThis->AudioComponent->IsPlaying()) // In UAudioComponent SetSound() implicitly calls Play() which implicitly calls Stop() if its currently playing... of course
-                        {
-
-                        }
+                        weakThis->bottom_left_origin = bottom_left_origin;
+                        weakThis->base_width = geometry.base_width;
+                        weakThis->base_height = geometry.base_height;
+                        
+                        weakThis->NotifyOnFramebufferResizeDelegate();
+	                	
                         weakThis->AudioComponent->SetSound(weakThis->AudioBuffer);
                         weakThis->AudioComponent->Play();
 	                }
@@ -165,10 +164,8 @@ void ULibretroCoreInstance::Launch()
         switch (cmd)
         {
             case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO: {
-                FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady(
+                FFunctionGraphTask::CreateAndDispatchWhenReady(
                     [weakThis,
-                     bottom_left_origin = CoreInstance->LibretroThread_bottom_left_origin,
-                     geometry = CoreInstance->LibretroThread_geometry,
                      system_av_info = *(const struct retro_system_av_info*)data]()
                     {
                         if (weakThis.IsValid())
@@ -181,15 +178,44 @@ void ULibretroCoreInstance::Launch()
                                 static_cast<URawAudioSoundWave*>(weakThis->AudioBuffer)->AudioQueue = AudioQueue;
                                 weakThis->AudioComponent->SetSound(weakThis->AudioBuffer);
                             }
-                            
-                            float invert_y = bottom_left_origin ? -1 : 1;
-                            weakThis->OnCoreFrameBufferResize.Broadcast(           system_av_info.geometry.base_width  / (float) geometry.max_width,
-                                                                        invert_y * system_av_info.geometry.base_height / (float) geometry.max_height);
+
+                            weakThis->base_width  = system_av_info.geometry.base_width;
+                            weakThis->base_height = system_av_info.geometry.base_height;
+                            weakThis->NotifyOnFramebufferResizeDelegate();
                         }
                     }, TStatId(), nullptr, ENamedThreads::GameThread);
 
                 return true;
             }
+            case RETRO_ENVIRONMENT_SET_ROTATION: {
+                FFunctionGraphTask::CreateAndDispatchWhenReady(
+                    [weakThis,
+                     rotation = *(const unsigned*)data]()
+                {
+                    if (weakThis.IsValid())
+                    {
+                        weakThis->rotation_hertz = rotation / 4.f;
+                        weakThis->NotifyOnFramebufferResizeDelegate();
+                    }
+                }, TStatId(), nullptr, ENamedThreads::GameThread);
+                
+            }
+            case RETRO_ENVIRONMENT_SET_GEOMETRY: {
+                auto geometry = (const struct retro_game_geometry*) data;
+            		
+                FFunctionGraphTask::CreateAndDispatchWhenReady(
+                    [weakThis,
+                     geometry = *(const struct retro_game_geometry*)data]()
+                {
+                    if (weakThis.IsValid())
+                    {
+                        weakThis->base_width  = geometry.base_width;
+                        weakThis->base_height = geometry.base_height;
+                        weakThis->NotifyOnFramebufferResizeDelegate();
+                    }
+                }, TStatId(), nullptr, ENamedThreads::GameThread);
+                
+	        }
         }
 
         return false;

@@ -3,10 +3,12 @@
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
 #include "LibretroInputDefinitions.h"
+#include "Engine/TextureRenderTarget2D.h"
+
 #include "LibretroCoreInstance.generated.h"
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCoreIsReady, const class UTextureRenderTarget2D*, LibretroFramebuffer, const class USoundWave*, AudioBuffer);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCoreFramebufferResize, float, ScaleFillU, float, ScaleFillV);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnCoreFramebufferResize, float, ScaleFillU, float, ScaleFillV, float, RotationHertz);
 
 DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnControllerDisconnected, const class APlayerController*, PlayerController, const int, Port);
 
@@ -144,6 +146,19 @@ public:
 	FString SRAMPath = "Default.srm";
 
 protected:
+	float rotation_hertz;
+	unsigned base_width;
+	unsigned base_height;
+	unsigned bottom_left_origin;
+
+	void NotifyOnFramebufferResizeDelegate()
+	{
+		check(RenderTarget->IsValidLowLevel());
+		float invert_y = bottom_left_origin ? -1 : 1;
+		OnCoreFrameBufferResize.Broadcast(           base_width  / (float) RenderTarget->SizeX,
+			                              invert_y * base_height / (float) RenderTarget->SizeY,
+			                              rotation_hertz);
+	}
 	// @todo: It'd be nice if I could use something like std::wrapped_reference however Unreal doesn't offer an equivalent for now
 	TOptional<struct LibretroContext*> CoreInstance;
 
