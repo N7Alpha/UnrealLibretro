@@ -11,7 +11,7 @@ class UNREALLIBRETRO_API ULibretroInputComponent : public UInputComponent
 {
 	GENERATED_BODY()
 public:
-	void Initialize(FLibretroInputState* InputState, TFunction<void()> Disconnect);
+	FLibretroInputState* InputStatePort;
 
 	void BindKeys(const TMap<FKey, ERetroInput> &ControllerBindings);
 
@@ -32,10 +32,4 @@ protected:
 	static TArray<void (ULibretroInputComponent::*)(), TFixedAllocator<(uint32)ERetroInput::DigitalCount>>      ButtonReleasedFunctions;
 
 	static TArray<void (ULibretroInputComponent::*)(float), TFixedAllocator<(uint32)ERetroInput::AnalogCount>>  ButtonAnalog;
-
-	FLibretroInputState* InputStatePort;
-	TFunction<void()> DisconnectPort;
-	void DisconnectController();
-
-
 };

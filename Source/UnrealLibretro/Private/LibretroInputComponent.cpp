@@ -3,12 +3,6 @@
 
 #include "libretro/libretro.h"
 
-void ULibretroInputComponent::Initialize(FLibretroInputState* InputState, TFunction<void()> Disconnect)
-{
-	InputStatePort = InputState;
-	DisconnectPort = Disconnect;
-}
-
 template<unsigned RetroButton>
 void ULibretroInputComponent::ButtonPressed()
 {
@@ -26,11 +20,6 @@ void ULibretroInputComponent::AxisChanged(float Value)
 {
 	float coff = RetroAxis == RETRO_DEVICE_ID_ANALOG_Y && RetroStick == RETRO_DEVICE_INDEX_ANALOG_LEFT ? -1 : 1; // Both Y-Axes should be inverted because of Libretro convention however Unreal has a quirk where the Y-Axis of the right stick is inverted by default for some reason
 	InputStatePort->analog[RetroAxis][RetroStick].store((int16_t)FMath::RoundHalfToEven(coff * 0x7FFF * Value), std::memory_order_relaxed); // Some cores support 0x7FFF to -0x7FFF others to -0x8000. However I support only 0x7FFF to -0x7FFF
-}
-
-void ULibretroInputComponent::DisconnectController()
-{
-	DisconnectPort();
 }
 
 TArray<void (ULibretroInputComponent::*)(), TFixedAllocator<(uint32)ERetroInput::DigitalCount>> ULibretroInputComponent::ButtonReleasedFunctions = 
@@ -93,21 +82,14 @@ void ULibretroInputComponent::BindKeys(const TMap<FKey, ERetroInput>& Controller
 {
 	for (auto& kv : ControllerBindings) 
 	{
-		if (kv.Value != ERetroInput::DisconnectController)
+		if (kv.Key.IsAxis1D())
 		{
-			if (kv.Key.IsAxis1D())
-			{
-				BindAxisKey(kv.Key, this, ULibretroInputComponent::ButtonAnalog[to_integral(kv.Value) - to_integral(ERetroInput::LeftX)]);
-			}
-			else
-			{
-				BindKey(kv.Key, IE_Pressed, this, ULibretroInputComponent::ButtonPressedFunctions[to_integral(kv.Value)]);
-				BindKey(kv.Key, IE_Released, this, ULibretroInputComponent::ButtonReleasedFunctions[to_integral(kv.Value)]);
-			}
+			BindAxisKey(kv.Key, this, ULibretroInputComponent::ButtonAnalog[to_integral(kv.Value) - to_integral(ERetroInput::LeftX)]);
 		}
-		else 
+		else
 		{
-			BindKey(kv.Key, IE_Pressed, this, &ULibretroInputComponent::DisconnectController);
+			BindKey(kv.Key, IE_Pressed, this, ULibretroInputComponent::ButtonPressedFunctions[to_integral(kv.Value)]);
+			BindKey(kv.Key, IE_Released, this, ULibretroInputComponent::ButtonReleasedFunctions[to_integral(kv.Value)]);
 		}
 	}
 }

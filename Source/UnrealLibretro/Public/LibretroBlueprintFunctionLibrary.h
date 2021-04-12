@@ -32,10 +32,4 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Libretro|Util|Map", meta = (BlueprintThreadSafe))
 	static TMap<FKey, ERetroInput> CombineInputMaps(const TMap<FKey, ERetroInput> &InMap1, const TMap<FKey, ERetroInput> &InMap2);
-	
-	UFUNCTION(BlueprintCallable, Category = "Libretro|Util|PlayerController")
-	static void SetAutoManageActiveCameraTarget(APlayerController* PlayerController, bool AutoManageActiveCameraTarget)
-	{
-		PlayerController->bAutoManageActiveCameraTarget = AutoManageActiveCameraTarget;
-	}
 };

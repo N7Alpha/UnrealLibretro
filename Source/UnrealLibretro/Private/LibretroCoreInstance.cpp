@@ -312,7 +312,7 @@ void ULibretroCoreInstance::InitializeComponent() {
     for (int Port = 0; Port < PortCount; Port++)
     {
         InputMap[Port] = NewObject<ULibretroInputComponent>();
-        InputMap[Port]->Initialize(&(*InputState)[Port], [Port, this]() { this->DisconnectController(Port); });
+        InputMap[Port]->InputStatePort = &(*InputState)[Port];
     }
 }
 
