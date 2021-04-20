@@ -421,7 +421,8 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
             // Parse and initialize default setting, First delimited setting is default by Libretro convention
             auto advance_past_space = [](const char* x) { while (*x == ' ') { x++; } return x; };
             auto past_comment = advance_past_space(strchr(arr_var->value, ';') + 1);
-            auto delimiter_ptr = strchr(arr_var->value, '|');
+            const char *delimiter_ptr = strchr(arr_var->value, '|');
+            if (delimiter_ptr == nullptr) delimiter_ptr = strchr(arr_var->value, '\0');
             std::string default_setting(past_comment, delimiter_ptr - past_comment);
             
             // Write setting to table
