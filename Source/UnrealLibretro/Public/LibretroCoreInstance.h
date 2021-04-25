@@ -23,6 +23,7 @@ public:
 	ULibretroCoreInstance();
 	virtual void InitializeComponent() override;
 	virtual void BeginPlay() override;
+	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	virtual void BeginDestroy();
 	
 
@@ -98,7 +99,11 @@ public:
 	 * @param OnControllerDisconnected - Called when DisconnectController(Port) is called and is called automatically if the LibretroComponent is destroyed.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Libretro")
-	void ConnectController(APlayerController* PlayerController, int Port, TMap<FKey, ERetroInput> ControllerBindings, FOnControllerDisconnected OnControllerDisconnected);
+	void ConnectController(APlayerController*        PlayerController,
+		                   int                       Port,
+		                   TMap<FKey, ERetroInput>   ControllerBindings,
+		                   FOnControllerDisconnected OnControllerDisconnected,
+		                   bool                      ForwardAllKeyboardInputToCoreIfPossible);
 
 	/**
 	 * @brief Stops user attached to the port from controlling the game.
@@ -171,6 +176,6 @@ protected:
 	TArray<class ULibretroInputComponent*> InputMap;
 
 	TStaticArray<TWeakObjectPtr<APlayerController>, PortCount> Controller{ nullptr };
-
-	TStaticArray<FOnControllerDisconnected, PortCount> Disconnected{ FOnControllerDisconnected() };
+	TStaticArray<bool,                              PortCount> ForwardKeyboardInput{ false };
+	TStaticArray<FOnControllerDisconnected,         PortCount> Disconnected{ FOnControllerDisconnected() };
 };

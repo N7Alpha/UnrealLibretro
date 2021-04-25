@@ -5,13 +5,14 @@
 
 #include "Misc/FileHelper.h"
 #include "Components/AudioComponent.h"
+#include "GameFramework/PlayerInput.h"
 
 #include "UnrealLibretro.h"
 #include "LibretroInputComponent.h"
 #include "RawAudioSoundWave.h"
 #include "sdlarch.h"
 
-#define NOT_LAUNCHED_GUARD if (!CoreInstance.IsSet()) { UE_LOG(Libretro, Warning, TEXT("Called function '%hs' before Libretro Core '%s' was launched. This has no effect"), __func__, *CorePath) return; }
+#define NOT_LAUNCHED_GUARD if (!CoreInstance.IsSet()) return;
 
 template<typename T>
 TRefCountPtr<T>&& Replace(TRefCountPtr<T> & a, TRefCountPtr<T> && b)
@@ -50,12 +51,17 @@ TUniqueFunction<void(TUniqueFunction<void(const FString&)>)> GameThread_PrepareB
 ULibretroCoreInstance::ULibretroCoreInstance()
     : InputState(MakeShared<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe>())
 {
-    PrimaryComponentTick.bCanEverTick = false;
+    PrimaryComponentTick.bCanEverTick = true;
     bWantsInitializeComponent = true;
     InputMap.AddZeroed(PortCount);
 }
+
  
-void ULibretroCoreInstance::ConnectController(APlayerController* PlayerController, int Port, TMap<FKey, ERetroInput> ControllerBindings, FOnControllerDisconnected OnControllerDisconnected)
+void ULibretroCoreInstance::ConnectController(APlayerController*       PlayerController,
+                                             int                       Port,
+                                             TMap<FKey, ERetroInput>   ControllerBindings,
+                                             FOnControllerDisconnected OnControllerDisconnected,
+                                             bool                      ForwardAllKeyboardInputToCoreIfPossible)
 {
     check(Port >= 0 && Port < PortCount);
 
@@ -67,6 +73,8 @@ void ULibretroCoreInstance::ConnectController(APlayerController* PlayerControlle
     InputMap[Port]->KeyBindings.Empty();
     InputMap[Port]->BindKeys(ControllerBindings);
     PlayerController->PushInputComponent(InputMap[Port]);
+
+    ForwardKeyboardInput[Port] = ForwardAllKeyboardInputToCoreIfPossible;
 }
 
 void ULibretroCoreInstance::DisconnectController(int Port)
@@ -87,6 +95,7 @@ void ULibretroCoreInstance::DisconnectController(int Port)
     	
         Controller[Port]->PopInputComponent(InputMap[Port]);
         Disconnected[Port].ExecuteIfBound(Controller[Port].Get(), Port);
+        Controller[Port] = nullptr;
     }
 }
 
@@ -199,6 +208,7 @@ void ULibretroCoreInstance::Launch()
                     }
                 }, TStatId(), nullptr, ENamedThreads::GameThread);
                 
+                return true;
             }
             case RETRO_ENVIRONMENT_SET_GEOMETRY: {
                 auto geometry = (const struct retro_game_geometry*) data;
@@ -215,6 +225,7 @@ void ULibretroCoreInstance::Launch()
                     }
                 }, TStatId(), nullptr, ENamedThreads::GameThread);
                 
+                return true;
 	        }
         }
 
@@ -325,13 +336,39 @@ void ULibretroCoreInstance::BeginPlay()
     }*/
 }
 
+void ULibretroCoreInstance::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+    for (int Port = 0; Port < PortCount; Port++)
+    {
+        if (ForwardKeyboardInput[Port] && Controller[Port].IsValid() && CoreInstance.IsSet())
+        {
+            for (int i = 0; i < count_key_bindings; i++)
+            {
+                if (Controller[Port]->PlayerInput->WasJustPressed(key_bindings[i].Unreal)
+                    || Controller[Port]->PlayerInput->WasJustReleased(key_bindings[i].Unreal))
+                {
+                    this->CoreInstance.GetValue()->EnqueueTask(
+                        [=, down = Controller[Port]->PlayerInput->WasJustPressed(key_bindings[i].Unreal)]
+                    (libretro_api_t libretro_api)
+                    {
+                        if (libretro_api.keyboard_event)
+                        {
+                            libretro_api.keyboard_event(down, key_bindings[i].libretro, 0, RETROKMOD_NONE);
+                        }
+                    });
+                }
+            }
+        }
+    }
+}
+
 void ULibretroCoreInstance::BeginDestroy()
 {
     for (int Port = 0; Port < PortCount; Port++)
     {
         DisconnectController(Port);
     }
-
+    
     if (this->CoreInstance.IsSet())
     {
         // Save SRam
