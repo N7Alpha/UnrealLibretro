@@ -35,7 +35,7 @@ You can download a Libretro Core from [here](https://buildbot.libretro.com/night
 You know and I know you know where to get these. Once you have the one you want place it into your MyROMs folder.
 
 ### (Sometimes required) Download content folder
-Some cores require that you also provide a content folder. PPSSPP is [one example](https://docs.libretro.com/library/ppsspp/#bios). Mainly this just involves taking a folder from a release of the emulator and moving it into the ```UnrealLibretro/system``` directory. There might be weirder ones. You can probably just find them by googling or searching the [Libretro docs](https://docs.libretro.com/).
+Some cores require that you also provide a content folder. PPSSPP is [one example](https://docs.libretro.com/library/ppsspp/#bios). Mainly this just involves taking a folder from a release of the emulator and moving it into the `UnrealLibretro/System` directory. There might be weirder ones. You can probably just find them by googling or searching the [Libretro docs](https://docs.libretro.com/).
 
 ### In the Unreal Editor
 Restart your project if you performed the setup while the Unreal Editor was running.
