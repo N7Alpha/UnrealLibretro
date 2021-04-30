@@ -388,9 +388,10 @@ static void core_log(enum retro_log_level level, const char *fmt, ...) {
 }
 
 bool LibretroContext::core_environment(unsigned cmd, void *data) {
+    bool delegate_status;
     if (CoreEnvironmentCallback)
     {
-        CoreEnvironmentCallback(cmd, data);
+        delegate_status = CoreEnvironmentCallback(cmd, data);
     }
     
 	switch (cmd) {
@@ -430,11 +431,6 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
             core.settings[key] = default_setting;
 
         } while ((++arr_var)->key);
-
-        return true;
-    }
-    case RETRO_ENVIRONMENT_SET_CORE_OPTIONS: {
-        checkNoEntry();
 
         return true;
     }
@@ -537,13 +533,25 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
         } while ((++input_descriptor)->description);
 
         return true;
-    } 
+    }
+    case RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK: {
+        auto keyboard_callback = (const struct retro_keyboard_callback*)data;
+
+        libretro_api.keyboard_event = keyboard_callback->callback;
+
+        return true;
+    }
+    case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO: {
+        auto controller_info = (const struct retro_controller_info*)data;
+        for (unsigned i = 0; i < controller_info->num_types; i++) {
+            UE_LOG(LogTemp, Verbose, TEXT("Supported Controllers: %s"), ANSI_TO_TCHAR(controller_info->types[i].desc));
+        }
+
+        return true;
+    }
     case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER: {
         unsigned* library = (unsigned*)data;
         *library = RETRO_HW_CONTEXT_OPENGL_CORE;
-        return true;
-    }
-    case RETRO_ENVIRONMENT_SET_HW_SHARED_CONTEXT: {
         return true;
     }
     case RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE: {
@@ -558,7 +566,7 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
 		return false;
 	}
 
-    return false;
+    return delegate_status;
 }
 
 int16_t LibretroContext::core_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {

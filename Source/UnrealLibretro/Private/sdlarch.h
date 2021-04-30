@@ -14,6 +14,7 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 #include "CoreMinimal.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "UObject/WeakObjectPtrTemplates.h"
+#include "Containers/CircularQueue.h"
 
 #include "LibretroInputDefinitions.h"
 #include "RawAudioSoundWave.h"
@@ -98,6 +99,8 @@ struct libretro_api_t {
     void*    (*get_memory_data)(unsigned id);
     size_t   (*get_memory_size)(unsigned id);
     void (*invalidate_r4300_cached_code)(struct r4300_core* r4300, uint32_t address, size_t size);
+
+    retro_keyboard_event_t keyboard_event;
 };
 
 struct LibretroContext {
@@ -122,7 +125,7 @@ public:
 	 * @post Everything queued before calling shutdown will be executed
 	 */
     void EnqueueTask(TUniqueFunction<void(libretro_api_t&)> LibretroAPITask);
-    
+
     TUniqueFunction<TRemovePointer<retro_environment_t>::Type> CoreEnvironmentCallback;
     TWeakObjectPtr<class ULibretroCoreInstance> UnrealLibretroCoreInstance;
 protected:
