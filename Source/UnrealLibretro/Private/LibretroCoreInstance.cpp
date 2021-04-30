@@ -159,6 +159,7 @@ void ULibretroCoreInstance::Launch()
 	    });
     
     // @todo theres a data race with how I assign this
+    this->CoreInstance.GetValue()->UnrealLibretroCoreInstance = this;
     this->CoreInstance.GetValue()->CoreEnvironmentCallback = [weakThis = MakeWeakObjectPtr(this), CoreInstance = this->CoreInstance.GetValue()](unsigned cmd, void* data)->bool
     {
         switch (cmd)

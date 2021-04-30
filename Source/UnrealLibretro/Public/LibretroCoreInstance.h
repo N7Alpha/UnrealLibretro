@@ -7,6 +7,8 @@
 
 #include "LibretroCoreInstance.generated.h"
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FJRMarioExitViewport, FVector2D, ScreenPosition, FVector, SM64ModelViewVelocity);
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCoreIsReady, const class UTextureRenderTarget2D*, LibretroFramebuffer, const class USoundWave*, AudioBuffer);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnCoreFramebufferResize, float, ScaleFillU, float, ScaleFillV, float, RotationHertz);
 
@@ -40,6 +42,8 @@ public:
 	UPROPERTY(BlueprintAssignable)
 	FOnCoreFramebufferResize OnCoreFrameBufferResize;
 
+	UPROPERTY(BlueprintAssignable)
+	FJRMarioExitViewport JRMarioExitViewport;
 								  
 	/** Blueprint Callable Functions */
 	/**

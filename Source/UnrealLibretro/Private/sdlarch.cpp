@@ -6,6 +6,7 @@ extern "C"
 }
 
 #include "UnrealLibretro.h" // For Libretro debug log category
+#include "LibretroCoreInstance.h"
 #include "LibretroSettings.h"
 #include "LibretroInputDefinitions.h"
 #include "LambdaRunnable.h"
@@ -606,6 +607,9 @@ void LibretroContext::load(const char *sofile) {
     load_retro_sym(serialize_size);
     load_retro_sym(serialize);
     load_retro_sym(unserialize);
+    load_retro_sym(cheat_set);
+
+    //load_sym(libretro_api.invalidate_r4300_cached_code, invalidate_r4300_cached_code);
 
 	load_sym(set_environment, retro_set_environment);
 	load_sym(set_video_refresh, retro_set_video_refresh);
@@ -850,6 +854,21 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
                         frames = 0;
                     }
                 }
+
+                uint8 *exited_viewport_address = ((uint8*)l->libretro_api.get_memory_data(RETRO_MEMORY_SYSTEM_RAM) + ((0x803622fc & 0xFFFFFF) ^ 3));
+                if (*exited_viewport_address)
+                {
+                    *exited_viewport_address = 0x0;
+                    FFunctionGraphTask::CreateAndDispatchWhenReady([l]()
+                        {
+                            if (!l->UnrealLibretroCoreInstance.IsValid()) return;
+
+                            l->UnrealLibretroCoreInstance->JRMarioExitViewport.Broadcast({ 0, 0 }, { 0, 0, 0 });
+                        }, TStatId(), nullptr, ENamedThreads::GameThread);
+                }
+               
+                
+                //UE_LOG(Libretro, Fatal, TEXT("Mario's Lives?: %d"), );
             }
 
             // Explicit Cleanup
