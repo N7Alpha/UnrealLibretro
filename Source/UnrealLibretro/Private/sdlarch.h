@@ -128,6 +128,9 @@ public:
 
     TUniqueFunction<TRemovePointer<retro_environment_t>::Type> CoreEnvironmentCallback;
     TWeakObjectPtr<class ULibretroCoreInstance> UnrealLibretroCoreInstance;
+
+    std::atomic<FVector> CameraPositionFromViewportTopLeftCorner;
+    std::atomic<float>   ViewportLeftEdgeHeight;
 protected:
     LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState);
     ~LibretroContext() {}

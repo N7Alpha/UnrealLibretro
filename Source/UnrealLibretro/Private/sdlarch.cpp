@@ -17,6 +17,8 @@ extern "C"
 #include <dispatch/dispatch.h>
 #endif
 
+#include "sm64_helper.h"
+
 #define DEBUG_OPENGL 0
 
 thread_local LibretroContext* ThreadLocalLibretroContext = nullptr;
@@ -795,6 +797,12 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     // The Runnable system is the standard way for spawning and managing threads in Unreal. FThread looks enticing, but they removed any way to detach threads since "it doesn't work as expected"
     FLambdaRunnable::RunLambdaOnBackGroundThread(FPaths::GetCleanFilename(core) + FPaths::GetCleanFilename(game),
         [=, LoadedCallback = MoveTemp(LoadedCallback)]() {
+            std::string symbol_map_text;
+            if (FPaths::GetCleanFilename(game) == "sm64.us.z64")
+            {
+                symbol_map_text = read_file_to_string(TCHAR_TO_ANSI(*FPaths::Combine(FPaths::GetPath(game), "sm64.us.map")));
+            }
+
 			ThreadLocalLibretroContext = l;
         	
             // Here I load a copy of the dll instead of the original. If you load the same dll multiple times you won't obtain a new instance of the dll loaded into memory,
@@ -826,6 +834,10 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
                 l->core.gl.fence = l->glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
                 l->glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
             }
+
+            size_t offset_exited_viewport = (get_address(symbol_map_text, "jr_gMarioExitedViewport") & 0xFFFFFF) ^ 3;
+            size_t offset_jr_gUnrealCameraPositionFromViewportTopLeftCorner =  get_address(symbol_map_text, "jr_gUnrealCameraPositionFromViewportTopLeftCorner") & 0xFFFFFF;
+            size_t offset_jr_gUnrealViewportLeftEdgeHeight                  =  get_address(symbol_map_text, "jr_gUnrealViewportLeftEdgeHeight") & 0xFFFFFF;
 
             uint64 frames = 0;
             auto   start = FDateTime::Now();
@@ -862,8 +874,9 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
                         frames = 0;
                     }
                 }
-
-                uint8 *exited_viewport_address = ((uint8*)l->libretro_api.get_memory_data(RETRO_MEMORY_SYSTEM_RAM) + ((0x803622fc & 0xFFFFFF) ^ 3));
+                
+                auto n64_ram = (uint8*)l->libretro_api.get_memory_data(RETRO_MEMORY_SYSTEM_RAM);
+                uint8* exited_viewport_address = n64_ram + offset_exited_viewport;
                 if (*exited_viewport_address)
                 {
                     *exited_viewport_address = 0x0;
@@ -875,8 +888,13 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
                         }, TStatId(), nullptr, ENamedThreads::GameThread);
                 }
                
-                
-                //UE_LOG(Libretro, Fatal, TEXT("Mario's Lives?: %d"), );
+                auto x = (float *) (n64_ram + offset_jr_gUnrealCameraPositionFromViewportTopLeftCorner);
+                x[0] = l->CameraPositionFromViewportTopLeftCorner.load()[0];
+                x[1] = l->CameraPositionFromViewportTopLeftCorner.load()[1];
+                x[2] = l->CameraPositionFromViewportTopLeftCorner.load()[2];
+
+                auto y = (float *)(n64_ram + offset_jr_gUnrealViewportLeftEdgeHeight);
+                *y = l->ViewportLeftEdgeHeight;
             }
 
             // Explicit Cleanup

@@ -4,6 +4,8 @@
 #include "GameFramework/PlayerController.h"
 #include "LibretroInputDefinitions.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "sdlarch.h"
+#include "sm64_helper.h"
 
 #include "LibretroCoreInstance.generated.h"
 
@@ -153,6 +155,17 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro, AdvancedDisplay)
 	FString SRAMPath = "Default.srm";
+
+	UFUNCTION(BlueprintCallable, Category = "Libretro")
+	void JRSM64UpdateViewportInfo(FVector CameraPositionFromViewportTopLeftCorner, float ViewportLeftEdgeHeight)
+	{
+		if (CoreInstance.IsSet())
+		{
+			CoreInstance.GetValue()->CameraPositionFromViewportTopLeftCorner = CameraPositionFromViewportTopLeftCorner;
+			CoreInstance.GetValue()->ViewportLeftEdgeHeight = ViewportLeftEdgeHeight;
+		}
+
+	};
 
 protected:
 	float rotation_hertz;
