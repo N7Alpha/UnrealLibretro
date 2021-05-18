@@ -2,7 +2,7 @@
 
 # UnrealLibretro
 
-[Discord](https://discord.gg/ukf4Fht8Dt)
+[Discord](https://discord.gg/nSTy2jyJmh)
 
 UnrealLibretro is a Libretro Frontend for Unreal Engine. It is a Blueprint compatible library that lets you run emulators within Unreal Engine. More Technically it allows you to run [Libretro Cores](https://docs.libretro.com/meta/core-list/).
 
