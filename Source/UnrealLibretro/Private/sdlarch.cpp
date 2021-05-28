@@ -27,7 +27,42 @@ extern "C"
 
 #define DEBUG_OPENGL 0
 
-thread_local LibretroContext* ThreadLocalLibretroContext = nullptr;
+// MY EYEEEEESSS.... Even though this looks heavily obfuscated what this actually accomplishes is relatively simple. It allows us to run multiple libretro cores at once. 
+// We have to do it this way because when libretro calls a callback we implemented there really isn't any suitable way to tell which core the call came from.
+// So we just statically generate a bunch of callback functions with macros and write their function pointers into an array of libretro_callbacks_t's and issue them at runtime.
+// These generated callbacks call std::functions which can capture arguments. So we capture this and now it calls our callbacks on a per instance basis.
+#define REP10(P, M)  M(P##0) M(P##1) M(P##2) M(P##3) M(P##4) M(P##5) M(P##6) M(P##7) M(P##8) M(P##9)
+#define REP100(M) REP10(,M) REP10(1,M) REP10(2,M) REP10(3,M) REP10(4,M) REP10(5,M) REP10(6,M) REP10(7,M) REP10(8,M) REP10(9,M)
+
+struct libretro_callbacks_t {
+    retro_audio_sample_batch_t                                                c_audio_write;
+    retro_video_refresh_t                                                     c_video_refresh;
+    retro_audio_sample_t                                                      c_audio_sample;
+    retro_environment_t                                                       c_environment;
+    retro_input_poll_t                                                        c_input_poll;
+    retro_input_state_t                                                       c_input_state;
+    retro_hw_get_current_framebuffer_t                                        c_get_current_framebuffer;
+    TUniqueFunction<TRemovePointer<retro_audio_sample_batch_t        >::Type>   audio_write; // Changed these to TUniqueFunction because std::function throws exceptions even with -O3 and -fno-exceptions surprisingly https://godbolt.org/z/oqP3vT
+    TUniqueFunction<TRemovePointer<retro_video_refresh_t             >::Type>   video_refresh;
+    TUniqueFunction<TRemovePointer<retro_audio_sample_t              >::Type>   audio_sample;
+    TUniqueFunction<TRemovePointer<retro_environment_t               >::Type>   environment;
+    TUniqueFunction<TRemovePointer<retro_input_poll_t                >::Type>   input_poll;
+    TUniqueFunction<TRemovePointer<retro_input_state_t               >::Type>   input_state;
+    TUniqueFunction<TRemovePointer<retro_hw_get_current_framebuffer_t>::Type>   get_current_framebuffer;
+} libretro_callbacks_table[];
+
+#define FUNC_WRAP_INIT(M) {      func_wrap_audio_write##M, func_wrap_video_refresh##M, func_wrap_audio_sample##M, func_wrap_environment##M, func_wrap_input_poll##M, func_wrap_input_state##M, func_wrap_get_current_framebuffer##M },
+#define FUNC_WRAP_DEF(M) size_t  func_wrap_audio_write##M(const int16_t *data, size_t frames) { return libretro_callbacks_table[M].audio_write(data, frames); } \
+                         void    func_wrap_video_refresh##M(const void *data, unsigned width, unsigned height, size_t pitch) { return libretro_callbacks_table[M].video_refresh(data, width, height, pitch); } \
+                         void    func_wrap_audio_sample##M(int16_t left, int16_t right) { return libretro_callbacks_table[M].audio_sample(left, right); } \
+                         bool    func_wrap_environment##M(unsigned cmd, void *data) { return libretro_callbacks_table[M].environment(cmd, data); } \
+                         void    func_wrap_input_poll##M() { return libretro_callbacks_table[M].input_poll(); } \
+                         int16_t func_wrap_input_state##M(unsigned port, unsigned device, unsigned index, unsigned id) { return libretro_callbacks_table[M].input_state(port, device, index, id); } \
+                         uintptr_t func_wrap_get_current_framebuffer##M() { return libretro_callbacks_table[M].get_current_framebuffer(); }
+
+
+REP100(FUNC_WRAP_DEF)
+libretro_callbacks_t libretro_callbacks_table[] = { REP100(FUNC_WRAP_INIT) };
 
 #define load_sym(V, S) do {\
     if (0 == ((*(void**)&V) = FPlatformProcess::GetDllExport(libretro_api.handle, TEXT(#S)))) \
@@ -185,24 +220,26 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
                                 const auto Resource = static_cast<FTextureRenderTarget2DResource*>(UnrealRenderTarget->GetRenderTargetResource());
                                 this->Unreal.TextureRHI = Resource->GetTextureRHI();
 
-#if PLATFORM_WINDOWS
-                                if ((FString)GDynamicRHI->GetName() == TEXT("D3D12"))
+                                if (gl_win32_interop_supported_by_driver)
                                 {
-                                    auto UE4D3DDevice = static_cast<ID3D12Device*>(GDynamicRHI->RHIGetNativeDevice());
-                                    static FThreadSafeCounter NamingIdx;
-                                    ID3D12Resource* ResolvedTexture = (ID3D12Resource*)this->Unreal.TextureRHI->GetTexture2D()->GetNativeResource();
-                                    D3D12_RESOURCE_DESC TextureAttributes = ResolvedTexture->GetDesc();
-                                    D3D12_RESOURCE_ALLOCATION_INFO TextureMemoryUsage = UE4D3DDevice->GetResourceAllocationInfo(0b0, 1, &TextureAttributes);
-                                    check(!FAILED(UE4D3DDevice->CreateSharedHandle(ResolvedTexture, NULL, GENERIC_ALL, *FString::Printf(TEXT("OpenGLSharedFramebuffer_UnrealLibretro_%u"), NamingIdx.Increment()), &SharedHandle)));
-                                    check(SharedHandle);
+#if PLATFORM_WINDOWS
+                                    if ((FString)GDynamicRHI->GetName() == TEXT("D3D12"))
+                                    {
+                                        auto UE4D3DDevice = static_cast<ID3D12Device*>(GDynamicRHI->RHIGetNativeDevice());
+                                        static FThreadSafeCounter NamingIdx;
+                                        ID3D12Resource* ResolvedTexture = (ID3D12Resource*)this->Unreal.TextureRHI->GetTexture2D()->GetNativeResource();
+                                        D3D12_RESOURCE_DESC TextureAttributes = ResolvedTexture->GetDesc();
+                                        D3D12_RESOURCE_ALLOCATION_INFO TextureMemoryUsage = UE4D3DDevice->GetResourceAllocationInfo(0b0, 1, &TextureAttributes);
+                                        check(!FAILED(UE4D3DDevice->CreateSharedHandle(ResolvedTexture, NULL, GENERIC_ALL, *FString::Printf(TEXT("OpenGLSharedFramebuffer_UnrealLibretro_%u"), NamingIdx.Increment()), &SharedHandle)));
+                                        check(SharedHandle);
 
-                                    MipLevels = TextureAttributes.MipLevels;
-                                    SizeInBytes = TextureMemoryUsage.SizeInBytes;
-                                    handleType = GL_HANDLE_TYPE_D3D12_RESOURCE_EXT;
-                                }
+                                        MipLevels = TextureAttributes.MipLevels;
+                                        SizeInBytes = TextureMemoryUsage.SizeInBytes;
+                                        handleType = GL_HANDLE_TYPE_D3D12_RESOURCE_EXT;
+                                    }
 #endif
-    }
-                    );
+                                }
+                            });
                     FlushRenderingCommands();
 
                     // Audio init
@@ -357,7 +394,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
             }
             break;
             case GL_UNSIGNED_INT_8_8_8_8_REV: {
-                conv_copy(bgra_buffer, data,
+                conv_argb8888_abgr8888(bgra_buffer, data,
                     width, height,
                     SrcPitch, pitch);
             }
@@ -373,7 +410,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 
     	if (core.gl.rhi_interop_memory) {
             // @todo I make no attempt to synchronize the core's drawing operations with RHI reads, some cores will work but others have synchronization issues
-            //       It seems like a good reference resource on how to do this is either Engine/Source/Programs/TextureShare/TextureShareSDK
+            //       It seems like a good reference resource on how to do this is either ITextureShareItem Engine/Source/Programs/TextureShare/TextureShareSDK
         } else {
         // OpenGL is asynchronous and because of GPU driver reasons (work is executed FIFO for some drivers)
         // if we try reading the framebuffer we'll block here and consequently the framerate will be capped by Unreal Engines framerate
@@ -571,7 +608,7 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
 	}
     case RETRO_ENVIRONMENT_SET_HW_RENDER: {
         struct retro_hw_render_callback *hw = (struct retro_hw_render_callback*)data;
-        hw->get_current_framebuffer = []()->uintptr_t { return ThreadLocalLibretroContext->core.gl.framebuffer; };
+        hw->get_current_framebuffer = libretro_callbacks->c_get_current_framebuffer;
 #pragma warning(push)
 #pragma warning(disable:4191)
         hw->get_proc_address = (retro_hw_get_proc_address_t)SDL_GL_GetProcAddress;
@@ -716,41 +753,20 @@ void LibretroContext::load(const char *sofile) {
 	load_sym(set_audio_sample, retro_set_audio_sample);
 	load_sym(set_audio_sample_batch, retro_set_audio_sample_batch);
 
-    set_environment(
-	    [](unsigned cmd, void* data)
-	    {
-		    return ThreadLocalLibretroContext->core_environment(cmd, data);
-	    });
- 	
-    set_video_refresh(
-        [](const void* data, unsigned width, unsigned height, size_t pitch) 
-        {
-        	return ThreadLocalLibretroContext->core_video_refresh(data, width, height, pitch);
-        });
- 	
-    set_input_poll(
-        []()
-	    {
-            return;
-	    });
- 	
-    set_input_state(
-        [](unsigned port, unsigned device, unsigned index, unsigned id)
-        {
-	        return ThreadLocalLibretroContext->core_input_state(port, device, index, id);
-        });
- 	
-    set_audio_sample(
-        [](int16_t left, int16_t right)
-        {
-	        return ThreadLocalLibretroContext->core_audio_sample(left, right);
-        });
- 	
-    set_audio_sample_batch(
-        [](const int16_t* data, size_t frames) 
-        {
-			return ThreadLocalLibretroContext->core_audio_write(data, frames);
-        });
+    libretro_callbacks->video_refresh = [=](const void* data, unsigned width, unsigned height, size_t pitch) { return core_video_refresh(data, width, height, pitch); };
+    libretro_callbacks->audio_write = [=](const int16_t *data, size_t frames) { return core_audio_write(data, frames); };
+    libretro_callbacks->audio_sample = [=](int16_t left, int16_t right) { return core_audio_sample(left, right); };
+    libretro_callbacks->input_state = [=](unsigned port, unsigned device, unsigned index, unsigned id) { return core_input_state(port, device, index, id); };
+    libretro_callbacks->input_poll = [=]() { };
+    libretro_callbacks->environment = [=](unsigned cmd, void* data) { return core_environment(cmd, data); };
+ 	libretro_callbacks->get_current_framebuffer = [=]() { return core.gl.framebuffer; };
+
+    set_environment(libretro_callbacks->c_environment);
+    set_video_refresh(libretro_callbacks->c_video_refresh);
+    set_input_poll(libretro_callbacks->c_input_poll);
+    set_input_state(libretro_callbacks->c_input_state);
+    set_audio_sample(libretro_callbacks->c_audio_sample);
+    set_audio_sample_batch(libretro_callbacks->c_audio_write);
 
 	libretro_api.init();
 	libretro_api.initialized = true;
@@ -819,6 +835,10 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
     check(IsInGameThread()); // So static initialization is safe + UObject access
 
+    static const uint32 MAX_INSTANCES = sizeof(libretro_callbacks_table) / sizeof(libretro_callbacks_table[0]);
+    static FCriticalSection CallbacksLock;
+    static TBitArray<TInlineAllocator<(MAX_INSTANCES / 8) + 1>> AllocatedInstances(false, MAX_INSTANCES);
+
     LibretroContext *l = new LibretroContext(InputState.ToSharedRef());
 
     auto ConvertPath = [](auto &core_directory, const FString& CoreDirectory)
@@ -843,7 +863,16 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     // The Runnable system is the standard way for spawning and managing threads in Unreal. FThread looks enticing, but they removed any way to detach threads since "it doesn't work as expected"
     FLambdaRunnable::RunLambdaOnBackGroundThread(FPaths::GetCleanFilename(core) + FPaths::GetCleanFilename(game),
         [=, LoadedCallback = MoveTemp(LoadedCallback)]() {
-			ThreadLocalLibretroContext = l;
+
+            // Grab a statically generated callback structure
+            int32 InstanceNumber;
+            {
+                FScopeLock ScopeLock(&CallbacksLock);
+
+                InstanceNumber = AllocatedInstances.FindAndSetFirstZeroBit();
+                check(InstanceNumber != INDEX_NONE);
+                l->libretro_callbacks = libretro_callbacks_table + InstanceNumber;
+            }
         	
             // Here I load a copy of the dll instead of the original. If you load the same dll multiple times you won't obtain a new instance of the dll loaded into memory,
             // instead all variables and function pointers will point to the original loaded dll
@@ -926,6 +955,12 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             IPlatformFile::GetPlatformPhysical().DeleteFile(*InstancedCorePath);
 
             l->Unreal.AudioQueue.Reset();
+        	
+            {
+                FScopeLock ScopedLock(&CallbacksLock);
+
+                AllocatedInstances[InstanceNumber] = false;
+            }
         	
             {
                 if (l->core.gl.window)

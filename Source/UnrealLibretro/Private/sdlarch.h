@@ -148,6 +148,7 @@ protected:
     std::atomic<ECoreState> CoreState = ECoreState::Running;
 
     libretro_api_t        libretro_api = { 0 };
+    struct libretro_callbacks_t* libretro_callbacks = nullptr;
     TQueue<TUniqueFunction<void(libretro_api_t&)>, EQueueMode::Spsc> LibretroAPITasks; // TQueue<T, EQueueMode::Spsc> has acquire-release semantics on Enqueue and Dequeue so this should be thread-safe
 
     // @todo remove these and have the loaded callback handle these resources
@@ -209,8 +210,7 @@ public:
     struct retro_game_geometry &LibretroThread_geometry = core.av.geometry;
 
 protected:
-    // This is where the callback implementation logic is for the callbacks from the Libretro Core.
-	// However technically the real callbacks are parameterized over a thread_local object.
+    // This is where the callback implementation logic is for the callbacks from the Libretro Core
     void    core_video_refresh(const void* data, unsigned width, unsigned height, unsigned pitch);
     void    core_audio_sample(int16_t left, int16_t right);
     size_t  core_audio_write(const int16_t* buf, size_t frames);

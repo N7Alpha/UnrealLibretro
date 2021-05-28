@@ -19,7 +19,6 @@ Unfortunately the full Libretro API is quite complex so I have only partially im
 
 * `dolphin         `
 * `sameboy         `
-* `dosbox_core     ` (This one calls a callback from another thread which I think is a bug on their end)
 * `dosbox_pure     ` (This one fails when loading the content)
 
 # Platform Compatibility
