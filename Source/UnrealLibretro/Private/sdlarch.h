@@ -36,12 +36,20 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 #endif
 
 #include "ThirdParty/OpenGL/GL/glcorearb.h"
+#include "GL/extension_definitions.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/PostWindowsApi.h"
 #endif
 
 DECLARE_STATS_GROUP(TEXT("UnrealLibretro"), STATGROUP_UnrealLibretro, STATCAT_Advanced);
+
+#define ENUM_GL_WIN32_INTEROP_PROCEDURES(EnumMacro) \
+        EnumMacro(PFNGLIMPORTMEMORYWIN32HANDLEEXTPROC, glImportMemoryWin32HandleEXT) \
+        EnumMacro(PFNGLCREATEMEMORYOBJECTSEXTPROC, glCreateMemoryObjectsEXT) \
+        EnumMacro(PFNGLDELETEMEMORYOBJECTSEXTPROC, glDeleteMemoryObjectsEXT) \
+        EnumMacro(PFNGLTEXTURESTORAGEMEM2DEXTPROC, glTextureStorageMem2DEXT) \
+        EnumMacro(PFNGLCREATETEXTURESPROC, glCreateTextures) \
 
 #define ENUM_GL_PROCEDURES(EnumMacro) \
         EnumMacro(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer) \
@@ -170,6 +178,7 @@ protected:
             GLuint texture;
             GLuint framebuffer;
             GLuint renderbuffer;
+            GLuint rhi_interop_memory;
 
             GLuint pixel_buffer_objects[2];
             GLsync fence;
@@ -211,6 +220,8 @@ protected:
 	
 	#define DEFINE_GL_PROCEDURES(Type,Func) Type Func = NULL;
     ENUM_GL_PROCEDURES(DEFINE_GL_PROCEDURES);
+    ENUM_GL_WIN32_INTEROP_PROCEDURES(DEFINE_GL_PROCEDURES)
+    bool gl_win32_interop_supported_by_driver;
 	
     void create_window();
     void video_configure(const struct retro_game_geometry* geom);

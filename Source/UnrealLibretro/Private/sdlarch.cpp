@@ -16,6 +16,15 @@ extern "C"
 #include <dispatch/dispatch.h>
 #endif
 
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include "Windows/PreWindowsApi.h"
+#include <windows.h>
+#include <d3d12.h>
+#include "Windows/PostWindowsApi.h"
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
+
 #define DEBUG_OPENGL 0
 
 thread_local LibretroContext* ThreadLocalLibretroContext = nullptr;
@@ -91,6 +100,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
     // Initialize all entry points.
     #define GET_GL_PROCEDURES(Type,Func) Func = (Type)SDL_GL_GetProcAddress(#Func);
     ENUM_GL_PROCEDURES(GET_GL_PROCEDURES);
+    ENUM_GL_WIN32_INTEROP_PROCEDURES(GET_GL_PROCEDURES);
 
     // Check that all of the entry points have been initialized.
     bool bFoundAllEntryPoints = true;
@@ -98,6 +108,9 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
     ENUM_GL_PROCEDURES(CHECK_GL_PROCEDURES);
     checkf(bFoundAllEntryPoints, TEXT("Failed to find all OpenGL entry points."));
 
+    ENUM_GL_WIN32_INTEROP_PROCEDURES(CHECK_GL_PROCEDURES);
+    this->gl_win32_interop_supported_by_driver = false; // bFoundAllEntryPoints; Not ready
+    
     // Restore warning C4191.
     #pragma warning(pop)
 
@@ -122,42 +135,115 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 }
 
  void LibretroContext::video_configure(const struct retro_game_geometry *geom) {
-
-    { // Create window
-        // SDL State isn't threadlocal like OpenGL so we have to synchronize here when we create a window
-        #if PLATFORM_APPLE
-            dispatch_sync(dispatch_get_main_queue(),
-            ^{
-                create_window();
-            });
-        #else
-            static FCriticalSection WindowLock; // Threadsafe initializatation as of c++11
-            FScopeLock scoped_lock(&WindowLock);
-            create_window();
-        #endif
-    }
-
 	if (!core.gl.pixel_format) {
         auto data = RETRO_PIXEL_FORMAT_0RGB1555;
         this->core_environment(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &data);
 	}
+
+    core.gl.pitch = geom->max_width * core.gl.bits_per_pixel;
+	
+    // Unreal Resource init
+#if PLATFORM_WINDOWS
+    HANDLE SharedHandle = nullptr;
+#endif
+    uint64_t SizeInBytes, MipLevels;
+    GLenum handleType;
+    FTaskGraphInterface::Get().WaitUntilTaskCompletes(
+        FFunctionGraphTask::CreateAndDispatchWhenReady([&]
+            {
+                const unsigned CapacityMilliseconds = 50;
+                const unsigned CapacityFrames = CapacityMilliseconds * (core.av.timing.sample_rate / 1000.0);
+                Unreal.AudioQueue = MakeShared<TCircularQueue<int32>, ESPMode::ThreadSafe>(CapacityFrames); // @todo move to audio init when the hack below is removed
+
+                // Make sure the game objects haven't been GCed
+                if (!UnrealSoundBuffer.IsValid() || !UnrealRenderTarget.IsValid())
+                {   // @hack until we acquire our own resources and don't rely on getting them by proxy through a UObject
+                    ENQUEUE_RENDER_COMMAND(LibretroInitDummyRHIFramebuffer)
+                        ([this](FRHICommandListImmediate& RHICmdList)
+                            {
+                                FRHIResourceCreateInfo Info{ TEXT("Dummy Texture for now") };
+                                this->Unreal.TextureRHI = RHICreateTexture2D(core.av.geometry.max_width,
+                                                                             core.av.geometry.max_height,
+                                                                             PF_R8G8B8A8,
+                                                                             1,
+                                                                             1,
+                                                                             TexCreate_CPUWritable | TexCreate_Dynamic,
+                                                                             Info);
+                            });
+                }
+                else
+                {
+                    // Video Init
+                    UnrealRenderTarget->bGPUSharedFlag = true; // Allows us to share this rendertarget with other applications and APIs in this case OpenGL
+                    UnrealRenderTarget->InitCustomFormat(core.av.geometry.max_width,
+                                                         core.av.geometry.max_height,
+                                                         PF_R8G8B8A8,
+                                                         false);
+                    ENQUEUE_RENDER_COMMAND(LibretroInitRHIFramebuffer)
+                        ([&](FRHICommandListImmediate& RHICmdList)
+                            {
+                                const auto Resource = static_cast<FTextureRenderTarget2DResource*>(UnrealRenderTarget->GetRenderTargetResource());
+                                this->Unreal.TextureRHI = Resource->GetTextureRHI();
+
+#if PLATFORM_WINDOWS
+                                if ((FString)GDynamicRHI->GetName() == TEXT("D3D12"))
+                                {
+                                    auto UE4D3DDevice = static_cast<ID3D12Device*>(GDynamicRHI->RHIGetNativeDevice());
+                                    static FThreadSafeCounter NamingIdx;
+                                    ID3D12Resource* ResolvedTexture = (ID3D12Resource*)this->Unreal.TextureRHI->GetTexture2D()->GetNativeResource();
+                                    D3D12_RESOURCE_DESC TextureAttributes = ResolvedTexture->GetDesc();
+                                    D3D12_RESOURCE_ALLOCATION_INFO TextureMemoryUsage = UE4D3DDevice->GetResourceAllocationInfo(0b0, 1, &TextureAttributes);
+                                    check(!FAILED(UE4D3DDevice->CreateSharedHandle(ResolvedTexture, NULL, GENERIC_ALL, *FString::Printf(TEXT("OpenGLSharedFramebuffer_UnrealLibretro_%u"), NamingIdx.Increment()), &SharedHandle)));
+                                    check(SharedHandle);
+
+                                    MipLevels = TextureAttributes.MipLevels;
+                                    SizeInBytes = TextureMemoryUsage.SizeInBytes;
+                                    handleType = GL_HANDLE_TYPE_D3D12_RESOURCE_EXT;
+                                }
+#endif
+    }
+                    );
+                    FlushRenderingCommands();
+
+                    // Audio init
+                    UnrealSoundBuffer->SetSampleRate(core.av.timing.sample_rate);
+                    UnrealSoundBuffer->NumChannels = 2;
+                    UnrealSoundBuffer->AudioQueue = Unreal.AudioQueue;
+	}
 		
-	core.gl.pitch = geom->max_width * core.gl.bits_per_pixel;
+            }, TStatId(), nullptr, ENamedThreads::GameThread)
+    ); // mfence
 
-    {
-        glGenTextures(1, &core.gl.texture);
+    // Libretro Core resource init
+    if (core.using_opengl) { 
+        if (gl_win32_interop_supported_by_driver && SharedHandle != nullptr) {
+#if PLATFORM_WINDOWS
+            UE_LOG(Libretro, Log, TEXT("Sharing RHI RenderTarget memory with OpenGL"))
+            glCreateMemoryObjectsEXT(1, &core.gl.rhi_interop_memory);
+            glImportMemoryWin32HandleEXT(core.gl.rhi_interop_memory, SizeInBytes, handleType, SharedHandle);
+            glCreateTextures(GL_TEXTURE_2D, 1, &core.gl.texture);
+            glTextureStorageMem2DEXT(core.gl.texture, MipLevels, GL_RGBA8, core.av.geometry.max_width, 
+                                                                           core.av.geometry.max_height, 
+                                                                           core.gl.rhi_interop_memory, 0);
 
-        if (!core.gl.texture)
-            UE_LOG(Libretro, Fatal, TEXT("Failed to create the video texture"));
+            // NOTE: ID3D12Device::CreateSharedHandle gives as an NT Handle, and so we need to call CloseHandle on it
+            if ((FString)GDynamicRHI->GetName() == TEXT("D3D12"))
+            {
+                verify(CloseHandle(SharedHandle));
+            }
+#endif
+        } else { // RHI Interop not supported fallback to creating OpenGL framebuffer
+            glGenTextures(1, &core.gl.texture);
 
-        glBindTexture(GL_TEXTURE_2D, core.gl.texture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, geom->max_width, 
-                                                 geom->max_height,
-                                                 0,
-                                                 core.gl.pixel_format, 
-                                                 core.gl.pixel_type,
-                                                 NULL);
-        glBindTexture(GL_TEXTURE_2D, 0);
+            glBindTexture(GL_TEXTURE_2D, core.gl.texture);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, geom->max_width, 
+                                                    geom->max_height,
+                                                    0,
+                                                    core.gl.pixel_format, 
+                                                    core.gl.pixel_type,
+                                                    NULL);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
 
 
         glGenFramebuffers(1, &core.gl.framebuffer);
@@ -200,6 +286,11 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
                 glBufferData(GL_PIXEL_PACK_BUFFER, 4 * geom->max_width * geom->max_height, 0, GL_DYNAMIC_READ);
             }
             glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        }
+    } else {
+        for (auto i : { 0, 1 }) {
+            core.software.bgra_buffers[i] = FMemory::Malloc(4 * core.av.geometry.max_width
+                                                              * core.av.geometry.max_height);
         }
     }
 	
@@ -256,15 +347,13 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 
         switch (core.gl.pixel_type) {
             case GL_UNSIGNED_SHORT_5_6_5: {
-                conv_rgb565_argb8888(bgra_buffer, data,
+                conv_rgb565_abgr8888(bgra_buffer, data,
                     width, height,
                     SrcPitch, pitch);
             }
             break;
             case GL_UNSIGNED_SHORT_5_5_5_1: {
-                conv_0rgb1555_argb8888(bgra_buffer, data,
-                    width, height,
-                    SrcPitch, pitch);
+                checkNoEntry();
             }
             break;
             case GL_UNSIGNED_INT_8_8_8_8_REV: {
@@ -280,63 +369,68 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
         prepare_frame_for_upload_to_unreal_RHI(bgra_buffer);
     }
     else if (data == RETRO_HW_FRAME_BUFFER_VALID) {
+        check(core.using_opengl && core.gl.pixel_type == GL_UNSIGNED_INT_8_8_8_8_REV);
+
+    	if (core.gl.rhi_interop_memory) {
+            // @todo I make no attempt to synchronize the core's drawing operations with RHI reads, some cores will work but others have synchronization issues
+            //       It seems like a good reference resource on how to do this is either Engine/Source/Programs/TextureShare/TextureShareSDK
+        } else {
         // OpenGL is asynchronous and because of GPU driver reasons (work is executed FIFO for some drivers)
         // if we try reading the framebuffer we'll block here and consequently the framerate will be capped by Unreal Engines framerate
         // which will cause stuttering if its too low since most emulated games logic is tied to the framerate so we async copy the framebuffer and check a fence later
-        check(core.using_opengl && core.gl.pixel_type == GL_UNSIGNED_INT_8_8_8_8_REV);
-    	
-        if UNLIKELY(pitch != core.gl.pitch) {
-            glBindTexture(GL_TEXTURE_2D, core.gl.texture);
-            core.gl.pitch = pitch;
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, core.gl.pitch / core.gl.bits_per_pixel);
-            glBindTexture(GL_TEXTURE_2D, 0);
-        }
-
-        switch (glClientWaitSync(core.gl.fence, GL_SYNC_FLUSH_COMMANDS_BIT, 0)) {
-            case GL_TIMEOUT_EXPIRED:
-                UE_LOG(Libretro, Verbose, TEXT("Frame didn't render in time will try copying next time..."))
-                    break;
-            case GL_ALREADY_SIGNALED:
-            case GL_CONDITION_SATISFIED:
-            {
-                DECLARE_SCOPE_CYCLE_COUNTER(TEXT("GPUAsyncCopy"), STAT_LibretroGPUAsyncCopy, STATGROUP_UnrealLibretro);
-                { // Hand off previously copied frame to Unreal
-                    glBindBuffer(GL_PIXEL_PACK_BUFFER, core.gl.pixel_buffer_objects[!core.free_framebuffer_index]);
-
-                    void* frame_buffer = glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
-                    check(frame_buffer);
-                    prepare_frame_for_upload_to_unreal_RHI(frame_buffer);
-                }
-
-                { // Download Libretro Core frame from OpenGL asynchronously
-                    glBindTexture(GL_TEXTURE_2D, core.gl.texture);
-                    glBindBuffer(GL_PIXEL_PACK_BUFFER, core.gl.pixel_buffer_objects[core.free_framebuffer_index]);
-                    verify(glUnmapBuffer(GL_PIXEL_PACK_BUFFER) == GL_TRUE);
-                    auto async_read_bound_texture_into_bound_pbo = [&]()
-                    {
-                        GLint mip_level = 0;
-                        void* offset_into_pbo_where_data_is_written = 0x0;
-                        // This call is async always and a DMA transfer on most platforms
-                        glGetTexImage(GL_TEXTURE_2D,
-                            mip_level,
-                            core.gl.pixel_format,
-                            core.gl.pixel_type,
-                            offset_into_pbo_where_data_is_written);
-                    };
-                    async_read_bound_texture_into_bound_pbo();
-                    glDeleteSync(core.gl.fence);
-                    core.gl.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-                }
-
-                core.free_framebuffer_index = !core.free_framebuffer_index;
-
-                glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+            if UNLIKELY(pitch != core.gl.pitch) {
+                glBindTexture(GL_TEXTURE_2D, core.gl.texture);
+                core.gl.pitch = pitch;
+                glPixelStorei(GL_UNPACK_ROW_LENGTH, core.gl.pitch / core.gl.bits_per_pixel);
                 glBindTexture(GL_TEXTURE_2D, 0);
-                break;
             }
-            case GL_WAIT_FAILED:
-            default:
-                checkNoEntry();
+
+            switch (glClientWaitSync(core.gl.fence, GL_SYNC_FLUSH_COMMANDS_BIT, 0)) {
+                case GL_TIMEOUT_EXPIRED:
+                    UE_LOG(Libretro, Verbose, TEXT("Frame didn't render in time will try copying next time..."))
+                        break;
+                case GL_ALREADY_SIGNALED:
+                case GL_CONDITION_SATISFIED:
+                {
+                    DECLARE_SCOPE_CYCLE_COUNTER(TEXT("GPUAsyncCopy"), STAT_LibretroGPUAsyncCopy, STATGROUP_UnrealLibretro);
+                    { // Hand off previously copied frame to Unreal
+                        glBindBuffer(GL_PIXEL_PACK_BUFFER, core.gl.pixel_buffer_objects[!core.free_framebuffer_index]);
+
+                        void* frame_buffer = glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+                        check(frame_buffer);
+                        prepare_frame_for_upload_to_unreal_RHI(frame_buffer);
+                    }
+
+                    { // Download Libretro Core frame from OpenGL asynchronously
+                        glBindTexture(GL_TEXTURE_2D, core.gl.texture);
+                        glBindBuffer(GL_PIXEL_PACK_BUFFER, core.gl.pixel_buffer_objects[core.free_framebuffer_index]);
+                        verify(glUnmapBuffer(GL_PIXEL_PACK_BUFFER) == GL_TRUE);
+                        auto async_read_bound_texture_into_bound_pbo = [&]()
+                        {
+                            GLint mip_level = 0;
+                            void* offset_into_pbo_where_data_is_written = 0x0;
+                            // This call is async always and a DMA transfer on most platforms
+                            glGetTexImage(GL_TEXTURE_2D,
+                                mip_level,
+                                core.gl.pixel_format,
+                                core.gl.pixel_type,
+                                offset_into_pbo_where_data_is_written);
+                        };
+                        async_read_bound_texture_into_bound_pbo();
+                        glDeleteSync(core.gl.fence);
+                        core.gl.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+                    }
+
+                    core.free_framebuffer_index = !core.free_framebuffer_index;
+
+                    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+                    glBindTexture(GL_TEXTURE_2D, 0);
+                    break;
+                }
+                case GL_WAIT_FAILED:
+                default:
+                    checkNoEntry();
+            }
         }
     }
     else {
@@ -461,7 +555,7 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
 	            break;
 	        case RETRO_PIXEL_FORMAT_XRGB8888:
 	            core.gl.pixel_type = GL_UNSIGNED_INT_8_8_8_8_REV;
-	            core.gl.pixel_format = GL_BGRA;
+	            core.gl.pixel_format = GL_RGBA;
 	            core.gl.bits_per_pixel = sizeof(uint32_t);
 	            break;
 	        case RETRO_PIXEL_FORMAT_RGB565:
@@ -695,63 +789,21 @@ void LibretroContext::load_game(const char* filename) {
     libretro_api.get_system_av_info(&core.av);
  	
     if (core.using_opengl) {
-        video_configure(&core.av.geometry);
-    } else {
-    	for (auto i : {0, 1})
-    	{
-            core.software.bgra_buffers[i] = FMemory::Malloc(  core.av.geometry.max_width 
-                                                            * core.av.geometry.max_height
-                                                            * 4);
-    	}
+// SDL State isn't threadlocal like OpenGL so we have to synchronize here when we create a window
+#if PLATFORM_APPLE
+        // Apple OS's impose an additional requirement that 'all' rendering operations are done on the main thread
+        dispatch_sync(dispatch_get_main_queue(),
+            ^{
+                create_window();
+             });
+#else
+        static FCriticalSection WindowLock; // Threadsafe initializatation as of c++11
+        FScopeLock scoped_lock(&WindowLock);
+        create_window();
+#endif
     }
 
- 	// Unreal Resource init
-    FTaskGraphInterface::Get().WaitUntilTaskCompletes(
-        FFunctionGraphTask::CreateAndDispatchWhenReady([=]
-            {
-                const unsigned CapacityMilliseconds = 50;
-                const unsigned CapacityFrames       = CapacityMilliseconds * (core.av.timing.sample_rate / 1000.0);
-                Unreal.AudioQueue = MakeShared<TCircularQueue<int32>, ESPMode::ThreadSafe>(CapacityFrames); // @todo move to audio init when the hack below is removed
-
-                // Make sure the game objects haven't been GCed
-                if (!UnrealSoundBuffer.IsValid() || !UnrealRenderTarget.IsValid())
-                {   // @hack until we acquire our own resources and don't rely on getting them by proxy through a UObject
-                    ENQUEUE_RENDER_COMMAND(LibretroInitDummyRHIFramebuffer)
-                        ([this](FRHICommandListImmediate& RHICmdList)
-                            {
-                                FRHIResourceCreateInfo Info{ TEXT("Dummy Texture for now") };
-                                this->Unreal.TextureRHI = RHICreateTexture2D(core.av.geometry.max_width,
-										                                     core.av.geometry.max_height,
-										                                     PF_B8G8R8A8,
-										                                     1,
-										                                     1,
-										                                     TexCreate_CPUWritable | TexCreate_Dynamic,
-										                                     Info);
-                            });
-                }
-                else
-                {
-                    // Video Init
-                    UnrealRenderTarget->InitCustomFormat(core.av.geometry.max_width, 
-                                                         core.av.geometry.max_height,
-                                                         PF_B8G8R8A8,
-                                                         false);
-                    ENQUEUE_RENDER_COMMAND(LibretroInitRHIFramebuffer)
-                        ([this](FRHICommandListImmediate& RHICmdList)
-                            {
-                                const auto Resource = static_cast<FTextureRenderTarget2DResource*>(UnrealRenderTarget->GetRenderTargetResource());
-                                this->Unreal.TextureRHI = Resource->GetTextureRHI();
-                            }
-                    );
-
-                    // Audio init
-                    UnrealSoundBuffer->SetSampleRate(core.av.timing.sample_rate);
-                    UnrealSoundBuffer->NumChannels = 2;
-                    UnrealSoundBuffer->AudioQueue = Unreal.AudioQueue;
-                }
-
-            }, TStatId(), nullptr, ENamedThreads::GameThread)
-    ); // mfence
+    video_configure(&core.av.geometry);
  	
     if (info.data)
         SDL_free((void*)info.data);
