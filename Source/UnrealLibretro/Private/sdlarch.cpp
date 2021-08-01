@@ -75,17 +75,17 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 
     switch (severity) {
     case GL_DEBUG_SEVERITY_HIGH:
-        UE_LOG(LogTemp, Fatal, TEXT("%s"), ANSI_TO_TCHAR(message));
+        UE_LOG(Libretro, Error, TEXT("OpenGL Debug: %s"), ANSI_TO_TCHAR(message));
         break;
     case GL_DEBUG_SEVERITY_MEDIUM:
-        UE_LOG(LogTemp, Warning, TEXT("%s"), ANSI_TO_TCHAR(message));
+        UE_LOG(Libretro, Warning, TEXT("OpenGL Debug: %s"), ANSI_TO_TCHAR(message));
         break;
     case GL_DEBUG_SEVERITY_LOW:
-        UE_LOG(LogTemp, Warning, TEXT("%s"), ANSI_TO_TCHAR(message));
+        UE_LOG(Libretro, Log, TEXT("OpenGL Debug: %s"), ANSI_TO_TCHAR(message));
         break;
     case GL_DEBUG_SEVERITY_NOTIFICATION:
     default:
-        UE_LOG(LogTemp, Verbose, TEXT("%s"), ANSI_TO_TCHAR(message));
+        UE_LOG(Libretro, Verbose, TEXT("OpenGL Debug: %s"), ANSI_TO_TCHAR(message));
         break;
     }
 
@@ -165,8 +165,8 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
     }
 #endif
 
-    UE_LOG(Libretro, Verbose, TEXT("GL_SHADING_LANGUAGE_VERSION: %s\n"), glGetString(GL_SHADING_LANGUAGE_VERSION));
-    UE_LOG(Libretro, Verbose, TEXT("GL_VERSION: %s\n"), glGetString(GL_VERSION));
+    UE_LOG(Libretro, Log, TEXT("GL_SHADING_LANGUAGE_VERSION: %s\n"), ANSI_TO_TCHAR((char*)glGetString(GL_SHADING_LANGUAGE_VERSION)));
+    UE_LOG(Libretro, Log, TEXT("GL_VERSION: %s\n"), ANSI_TO_TCHAR((char*)glGetString(GL_VERSION)));
 }
 
  void LibretroContext::video_configure(const struct retro_game_geometry *geom) {
@@ -288,7 +288,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, core.gl.texture, 0);
 
-        if (   core.hw.depth  // @todo something seems off in these conditionals
+        if (   core.hw.depth  
             && core.hw.stencil) {
             glGenRenderbuffers(1, &core.gl.renderbuffer);
             glBindRenderbuffer(GL_RENDERBUFFER, core.gl.renderbuffer);
@@ -483,7 +483,7 @@ size_t LibretroContext::core_audio_write(const int16_t *buf, size_t frames) {
     }
 
     if (FramesEnqueued != frames) {
-        UE_LOG(Libretro, Warning, TEXT("Buffer underrun: %u"), frames - FramesEnqueued);
+        UE_LOG(Libretro, Verbose, TEXT("Buffer underrun: %u"), frames - FramesEnqueued);
     }
 
     return frames;
@@ -502,7 +502,7 @@ static void core_log(enum retro_log_level level, const char *fmt, ...) {
 
     switch (level) {
     case RETRO_LOG_DEBUG:
-        UE_LOG(Libretro, Verbose, TEXT("%s"), ANSI_TO_TCHAR(buffer));
+        UE_LOG(Libretro, Log, TEXT("%s"), ANSI_TO_TCHAR(buffer));
         break;
     case RETRO_LOG_INFO:
         UE_LOG(Libretro, Log, TEXT("%s"), ANSI_TO_TCHAR(buffer));
@@ -608,6 +608,7 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
 	}
     case RETRO_ENVIRONMENT_SET_HW_RENDER: {
         struct retro_hw_render_callback *hw = (struct retro_hw_render_callback*)data;
+        check(hw->context_type < RETRO_HW_CONTEXT_VULKAN);
         hw->get_current_framebuffer = libretro_callbacks->c_get_current_framebuffer;
 #pragma warning(push)
 #pragma warning(disable:4191)
@@ -636,6 +637,7 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
 
         return true;
     }
+    case RETRO_ENVIRONMENT_GET_CORE_ASSETS_DIRECTORY:
     case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY: {
         const char** retro_path = (const char**)data;
         auto RAII = StringCast<TCHAR>(this->core.system_directory.GetData());
@@ -659,7 +661,7 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
         auto input_descriptor = (const struct retro_input_descriptor*)data;
 
         do {
-            UE_LOG(LogTemp, Warning, TEXT("Button Found: %s"), ANSI_TO_TCHAR(input_descriptor->description));
+            UE_LOG(Libretro, Verbose, TEXT("Button Found: %s"), ANSI_TO_TCHAR(input_descriptor->description));
         } while ((++input_descriptor)->description);
 
         return true;
@@ -674,7 +676,7 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
     case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO: {
         auto controller_info = (const struct retro_controller_info*)data;
         for (unsigned i = 0; i < controller_info->num_types; i++) {
-            UE_LOG(LogTemp, Verbose, TEXT("Supported Controllers: %s"), ANSI_TO_TCHAR(controller_info->types[i].desc));
+            UE_LOG(Libretro, Verbose, TEXT("Supported Controllers: %s"), ANSI_TO_TCHAR(controller_info->types[i].desc));
         }
 
         return true;
@@ -689,7 +691,7 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
             (const struct retro_hw_render_context_negotiation_interface*)data;
 
         core.hw_render_context_negotiation = iface;
-        return true;
+        return false;
     }
 	default:
 		core_log(RETRO_LOG_WARN, "Unhandled env #%u", cmd);
