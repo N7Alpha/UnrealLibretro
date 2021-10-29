@@ -693,6 +693,15 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
         core.hw_render_context_negotiation = iface;
         return false;
     }
+    case RETRO_ENVIRONMENT_GET_LED_INTERFACE: {
+        auto led_interface = (struct retro_led_interface *) data;
+        // UAE expects this to not be null even if you don't implement it
+        led_interface->set_led_state = [](int led, int state) {
+            // noop
+        };
+
+        return false;
+    }
 	default:
 		core_log(RETRO_LOG_WARN, "Unhandled env #%u", cmd);
 		return false;
