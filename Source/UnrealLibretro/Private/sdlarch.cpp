@@ -715,8 +715,8 @@ int16_t LibretroContext::core_input_state(unsigned port, unsigned device, unsign
     switch (device) {
         case RETRO_DEVICE_ANALOG:   
             //check(index < 2); // "I haven't implemented Triggers and other analog controls yet"
-            return (*Unreal.InputState)[port].analog[id][index].load(std::memory_order_relaxed);
-        case RETRO_DEVICE_JOYPAD:   return (*Unreal.InputState)[port].digital[id].load(std::memory_order_relaxed);
+            return InputState[port].analog[id][index];
+        case RETRO_DEVICE_JOYPAD:   return InputState[port].digital[id];
         default:                    return 0;
     }
 }
@@ -839,9 +839,7 @@ void LibretroContext::load_game(const char* filename) {
     
 }
 
-LibretroContext::LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState) { Unreal.InputState = InputState; }
-
-LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, TUniqueFunction<void(LibretroContext*, libretro_api_t&)> LoadedCallback)
+LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TUniqueFunction<void(LibretroContext*, libretro_api_t&)> LoadedCallback)
 {
 
     check(IsInGameThread()); // So static initialization is safe + UObject access
@@ -850,7 +848,7 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     static FCriticalSection CallbacksLock;
     static TBitArray<TInlineAllocator<(MAX_INSTANCES / 8) + 1>> AllocatedInstances(false, MAX_INSTANCES);
 
-    LibretroContext *l = new LibretroContext(InputState.ToSharedRef());
+    LibretroContext *l = new LibretroContext();
 
     auto ConvertPath = [](auto &core_directory, const FString& CoreDirectory)
     {

@@ -21,7 +21,6 @@ class UNREALLIBRETRO_API ULibretroCoreInstance : public UActorComponent
 public:
 	/** Lifetime */
 	ULibretroCoreInstance();
-	virtual void InitializeComponent() override;
 	virtual void BeginPlay() override;
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	virtual void BeginDestroy();
@@ -124,11 +123,6 @@ public:
 	UAudioComponent* AudioComponent;
 
 	/**
-	 * This is what the libretro core reads from when determining input. If you want to use your own input method you can modify this directly.
-	 */
-	TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState;
-
-	/**
 	 * You should provide a path to your ROM relative to the MyROMs directory in the UnrealLibretro directory in your project's Plugins directory.
 	 * So if your ROM is at [MyProjectName]/Plugins/UnrealLibretro/MyROMs/myrom.rom this should be set to myrom.rom
 	 */
@@ -172,9 +166,7 @@ protected:
 	UPROPERTY()
 	USoundWave* AudioBuffer;
 	
-	UPROPERTY()
-	TArray<class ULibretroInputComponent*> InputMap;
-
+	TStaticArray<TMap<FKey, ERetroInput>,           PortCount> Bindings;
 	TStaticArray<TWeakObjectPtr<APlayerController>, PortCount> Controller{ nullptr };
 	TStaticArray<bool,                              PortCount> ForwardKeyboardInput{ false };
 	TStaticArray<FOnControllerDisconnected,         PortCount> Disconnected{ FOnControllerDisconnected() };

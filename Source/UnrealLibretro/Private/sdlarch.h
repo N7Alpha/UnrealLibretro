@@ -116,7 +116,7 @@ public:
 	 * @brief analogous to new except asynchronous
 	 * @post The LoadedCallback is always called
 	 */
-    static LibretroContext* Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState, TUniqueFunction<void(LibretroContext*, libretro_api_t&)> LoadedCallback);
+    static LibretroContext* Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TUniqueFunction<void(LibretroContext*, libretro_api_t&)> LoadedCallback);
 	
 	/**
 	 * @brief analogous to delete except asynchronous
@@ -133,9 +133,14 @@ public:
 	 */
     void EnqueueTask(TUniqueFunction<void(libretro_api_t&)> LibretroAPITask);
 
+    /**
+     * This is what the libretro core reads from when determining input. If you want to use your own input method you can modify this directly.
+     */
+    FLibretroInputState InputState[PortCount];
+
     TUniqueFunction<TRemovePointer<retro_environment_t>::Type> CoreEnvironmentCallback;
 protected:
-    LibretroContext(TSharedRef<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState);
+    LibretroContext() {}
     ~LibretroContext() {}
 
     enum class ECoreState : int8
@@ -160,7 +165,6 @@ protected:
         // These are all ThreadSafe shared pointers that are the main bridge between and unreal
         FTexture2DRHIRef TextureRHI;
         TSharedPtr<TCircularQueue<int32>, ESPMode::ThreadSafe> AudioQueue;
-        TSharedPtr<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe> InputState;
     	
         struct
         {

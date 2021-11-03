@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
-#include "LibretroInputComponent.h"
+#include "LibretroInputDefinitions.h"
 
 #include "LibretroBlueprintFunctionLibrary.generated.h"
 

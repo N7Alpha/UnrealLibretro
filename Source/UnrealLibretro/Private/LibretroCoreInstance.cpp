@@ -8,7 +8,7 @@
 #include "GameFramework/PlayerInput.h"
 
 #include "UnrealLibretro.h"
-#include "LibretroInputComponent.h"
+#include "LibretroInputDefinitions.h"
 #include "RawAudioSoundWave.h"
 #include "sdlarch.h"
 
@@ -49,11 +49,8 @@ TUniqueFunction<void(TUniqueFunction<void(const FString&)>)> GameThread_PrepareB
 }
 
 ULibretroCoreInstance::ULibretroCoreInstance()
-    : InputState(MakeShared<TStaticArray<FLibretroInputState, PortCount>, ESPMode::ThreadSafe>())
 {
     PrimaryComponentTick.bCanEverTick = true;
-    bWantsInitializeComponent = true;
-    InputMap.AddZeroed(PortCount);
 }
 
  
@@ -67,12 +64,9 @@ void ULibretroCoreInstance::ConnectController(APlayerController*       PlayerCon
 
     DisconnectController(Port);
 
+    Bindings[Port] = ControllerBindings;
     Controller[Port] = MakeWeakObjectPtr(PlayerController);
     Disconnected[Port] = OnControllerDisconnected;
-
-    InputMap[Port]->KeyBindings.Empty();
-    InputMap[Port]->BindKeys(ControllerBindings);
-    PlayerController->PushInputComponent(InputMap[Port]);
 
     ForwardKeyboardInput[Port] = ForwardAllKeyboardInputToCoreIfPossible;
 }
@@ -83,17 +77,22 @@ void ULibretroCoreInstance::DisconnectController(int Port)
 
     if (Controller[Port].IsValid())
     {
-        for (auto &input : InputState.Get()[Port].digital)
+        if (CoreInstance.IsSet())
         {
-            input.store(0, std::memory_order_relaxed);
+            CoreInstance.GetValue()->EnqueueTask([&InputStatePort = this->CoreInstance.GetValue()->InputState[Port]](libretro_api_t& libretro_api)
+            {
+                InputStatePort = { 0 };
+
+                if (libretro_api.keyboard_event)
+                {
+                    for (int k = RETROK_FIRST; k < RETROK_LAST; k++)
+                    {
+                        libretro_api.keyboard_event(false, k, 0, RETROKMOD_NONE);
+                    }
+                }
+            });
         }
     	
-        InputState.Get()[Port].analog[0][0].store(0, std::memory_order_relaxed);
-        InputState.Get()[Port].analog[0][1].store(0, std::memory_order_relaxed);
-        InputState.Get()[Port].analog[1][0].store(0, std::memory_order_relaxed);
-        InputState.Get()[Port].analog[1][1].store(0, std::memory_order_relaxed);
-    	
-        Controller[Port]->PopInputComponent(InputMap[Port]);
         Disconnected[Port].ExecuteIfBound(Controller[Port].Get(), Port);
         Controller[Port] = nullptr;
     }
@@ -126,7 +125,7 @@ void ULibretroCoreInstance::Launch()
 
     RenderTarget->Filter = TF_Nearest; // @todo remove this
 
-    this->CoreInstance = LibretroContext::Launch(_CorePath, _RomPath, RenderTarget, static_cast<URawAudioSoundWave*>(AudioBuffer), InputState,
+    this->CoreInstance = LibretroContext::Launch(_CorePath, _RomPath, RenderTarget, static_cast<URawAudioSoundWave*>(AudioBuffer),
 	    [weakThis = MakeWeakObjectPtr(this), OrderedFileAccess = GameThread_PrepareBlockingOrderedOperation(FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath))]
         (LibretroContext *CoreInstance, libretro_api_t &libretro_api) 
 	    {   // Core has loaded
@@ -318,15 +317,6 @@ void ULibretroCoreInstance::SaveState(const FString& FilePath)
 
 #include "Scalability.h"
 
-void ULibretroCoreInstance::InitializeComponent() {
-
-    for (int Port = 0; Port < PortCount; Port++)
-    {
-        InputMap[Port] = NewObject<ULibretroInputComponent>();
-        InputMap[Port]->InputStatePort = &(*InputState)[Port];
-    }
-}
-
 void ULibretroCoreInstance::BeginPlay()
 {
     Super::BeginPlay();
@@ -336,26 +326,63 @@ void ULibretroCoreInstance::BeginPlay()
     }*/
 }
 
+#include <type_traits>
+
+template<typename E>
+static constexpr auto to_integral(E e) -> typename std::underlying_type<E>::type
+{
+    return static_cast<typename std::underlying_type<E>::type>(e);
+}
+
 void ULibretroCoreInstance::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
-    for (int Port = 0; Port < PortCount; Port++)
+    if (CoreInstance.IsSet()) 
     {
-        if (ForwardKeyboardInput[Port] && Controller[Port].IsValid() && CoreInstance.IsSet())
+        for (int Port = 0; Port < PortCount; Port++)
         {
-            for (int i = 0; i < count_key_bindings; i++)
+            if (!Controller[Port].IsValid()) continue;
+
+            FLibretroInputState NextInputState = {0};
+            for (auto ControllerBinding : Bindings[Port])
             {
-                if (Controller[Port]->PlayerInput->WasJustPressed(key_bindings[i].Unreal)
-                    || Controller[Port]->PlayerInput->WasJustReleased(key_bindings[i].Unreal))
+                if (ControllerBinding.Key.IsAxis1D()) 
                 {
-                    this->CoreInstance.GetValue()->EnqueueTask(
-                        [=, down = Controller[Port]->PlayerInput->WasJustPressed(key_bindings[i].Unreal)]
-                    (libretro_api_t libretro_api)
+                    // Both Y-Axes should be inverted because of Libretro convention however Unreal has a quirk where the Y-Axis of the right stick is inverted by default for some reason
+                    //                         LX  RX  LY  RY
+                    float StickAxisInvert[] = { 1,  1, -1,  1 };
+                    int StickAxisIndex = to_integral(ControllerBinding.Value) - to_integral(ERetroInput::LeftX);
+                    // Some cores support 0x7FFF to -0x7FFF others to -0x8000. However I support only 0x7FFF to -0x7FFF
+                    auto retro_value = (int16_t)FMath::RoundHalfToEven(StickAxisInvert[StickAxisIndex] * 0x7FFF * Controller[Port]->PlayerInput->GetKeyValue(ControllerBinding.Key)); 
+                    reinterpret_cast<int16_t*>(NextInputState.analog)[StickAxisIndex] = int16_t(FMath::Clamp(reinterpret_cast<int16_t*>(NextInputState.analog)[StickAxisIndex] + retro_value, -0x7FFF, 0x7FFF));
+                }
+                else
+                {
+                    NextInputState.digital[to_integral(ControllerBinding.Value)] |= static_cast<unsigned>(Controller[Port]->PlayerInput->IsPressed(ControllerBinding.Key));
+                }
+            }
+
+            CoreInstance.GetValue()->EnqueueTask([&InputStatePort = this->CoreInstance.GetValue()->InputState[Port], NextInputState](auto)
+            {
+                InputStatePort = NextInputState;
+            });
+
+            if (ForwardKeyboardInput[Port])
+            {
+                for (int i = 0; i < count_key_bindings; i++)
+                {
+                    if (   Controller[Port]->PlayerInput->WasJustPressed(key_bindings[i].Unreal)
+                        || Controller[Port]->PlayerInput->WasJustReleased(key_bindings[i].Unreal))
                     {
-                        if (libretro_api.keyboard_event)
+                        this->CoreInstance.GetValue()->EnqueueTask(
+                            [=, down = Controller[Port]->PlayerInput->WasJustPressed(key_bindings[i].Unreal)]
+                        (libretro_api_t libretro_api)
                         {
-                            libretro_api.keyboard_event(down, key_bindings[i].libretro, 0, RETROKMOD_NONE);
-                        }
-                    });
+                            if (libretro_api.keyboard_event)
+                            {
+                                libretro_api.keyboard_event(down, key_bindings[i].libretro, 0, RETROKMOD_NONE);
+                            }
+                        });
+                    }
                 }
             }
         }

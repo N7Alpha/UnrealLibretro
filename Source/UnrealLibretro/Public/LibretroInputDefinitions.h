@@ -1,7 +1,5 @@
 #pragma once
 
-#include <atomic>
-
 #include "libretro/libretro.h"
 
 #include "CoreMinimal.h"
@@ -9,8 +7,8 @@
 constexpr int PortCount = 4;
 struct FLibretroInputState
 {
-	std::atomic<unsigned> digital[RETRO_DEVICE_ID_JOYPAD_R3 + 1]{};
-	std::atomic<int16_t>  analog[RETRO_DEVICE_INDEX_ANALOG_RIGHT + 1][RETRO_DEVICE_ID_ANALOG_Y + 1]{};
+	unsigned digital[RETRO_DEVICE_ID_JOYPAD_R3 + 1]{};
+    int16_t  analog[RETRO_DEVICE_INDEX_ANALOG_RIGHT + 1][RETRO_DEVICE_ID_ANALOG_Y + 1]{};
 };
 
 // DO NOT REORDER THESE
@@ -34,8 +32,8 @@ enum  class ERetroInput : uint8
 	L3,
 	R3,
 	LeftX,
+    RightX,
 	LeftY,
-	RightX,
 	RightY,
 	DisconnectController,
 
