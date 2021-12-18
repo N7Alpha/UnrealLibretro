@@ -844,9 +844,9 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
     check(IsInGameThread()); // So static initialization is safe + UObject access
 
-    static const uint32 MAX_INSTANCES = sizeof(libretro_callbacks_table) / sizeof(libretro_callbacks_table[0]);
+    static const uint32 max_instances = sizeof(libretro_callbacks_table) / sizeof(libretro_callbacks_table[0]);
     static FCriticalSection CallbacksLock;
-    static TBitArray<TInlineAllocator<(MAX_INSTANCES / 8) + 1>> AllocatedInstances(false, MAX_INSTANCES);
+    static TBitArray<TInlineAllocator<(max_instances / 8) + 1>> AllocatedInstances(false, max_instances);
 
     LibretroContext *l = new LibretroContext();
 

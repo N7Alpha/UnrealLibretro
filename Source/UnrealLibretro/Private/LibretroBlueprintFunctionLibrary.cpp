@@ -15,9 +15,9 @@ AActor* ULibretroBlueprintFunctionLibrary::LookingAtActor(UCameraComponent* Came
 		Start,
 		End,
 		ECollisionChannel::ECC_Visibility);
-
-	Branch = OutHit.Actor.IsValid() ? EBranchNames::Yes : EBranchNames::No;
-	return   OutHit.Actor.Get();
+	
+	Branch = OutHit.GetActor() ? EBranchNames::Yes : EBranchNames::No;
+	return   OutHit.GetActor();
 }
 
 UActorComponent* ULibretroBlueprintFunctionLibrary::HasComponent(AActor* Actor, TSubclassOf<UActorComponent> ComponentClass, EBranchNames& Branch)
