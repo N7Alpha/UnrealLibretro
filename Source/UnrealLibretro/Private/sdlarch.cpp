@@ -845,10 +845,17 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     check(IsInGameThread()); // So static initialization is safe + UObject access
 
     static const uint32 max_instances = sizeof(libretro_callbacks_table) / sizeof(libretro_callbacks_table[0]);
-    static FCriticalSection CallbacksLock;
     static TBitArray<TInlineAllocator<(max_instances / 8) + 1>> AllocatedInstances(false, max_instances);
 
     LibretroContext *l = new LibretroContext();
+
+    // Grab a statically generated callback structure
+    int32 InstanceNumber;
+    {
+        InstanceNumber = AllocatedInstances.FindAndSetFirstZeroBit();
+        check(InstanceNumber != INDEX_NONE);
+        l->libretro_callbacks = libretro_callbacks_table + InstanceNumber;
+    }
 
     auto ConvertPath = [](auto &core_directory, const FString& CoreDirectory)
     {
@@ -873,16 +880,6 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     FLambdaRunnable::RunLambdaOnBackGroundThread(FPaths::GetCleanFilename(core) + FPaths::GetCleanFilename(game),
         [=, LoadedCallback = MoveTemp(LoadedCallback)]() {
 
-            // Grab a statically generated callback structure
-            int32 InstanceNumber;
-            {
-                FScopeLock ScopeLock(&CallbacksLock);
-
-                InstanceNumber = AllocatedInstances.FindAndSetFirstZeroBit();
-                check(InstanceNumber != INDEX_NONE);
-                l->libretro_callbacks = libretro_callbacks_table + InstanceNumber;
-            }
-        	
             // Here I load a copy of the dll instead of the original. If you load the same dll multiple times you won't obtain a new instance of the dll loaded into memory,
             // instead all variables and function pointers will point to the original loaded dll
             const FString InstancedCorePath = FString::Printf(TEXT("%s.%s"), *FGuid::NewGuid().ToString(), *FPaths::GetExtension(*core));
@@ -965,11 +962,10 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
             l->Unreal.AudioQueue.Reset();
         	
+            FFunctionGraphTask::CreateAndDispatchWhenReady([=]
             {
-                FScopeLock ScopedLock(&CallbacksLock);
-
                 AllocatedInstances[InstanceNumber] = false;
-            }
+            }, TStatId(), nullptr, ENamedThreads::GameThread);
         	
             {
                 if (l->core.gl.window)
