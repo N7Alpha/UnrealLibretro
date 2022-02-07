@@ -70,7 +70,7 @@ DECLARE_STATS_GROUP(TEXT("UnrealLibretro"), STATGROUP_UnrealLibretro, STATCAT_Ad
         EnumMacro(PFNGLGENTEXTURESPROC, glGenTextures) \
         EnumMacro(PFNGLGETINTEGERVPROC, glGetIntegerv) \
         EnumMacro(PFNGLGETSTRINGPROC, glGetString) \
-        EnumMacro(PFNGLGETTEXIMAGEPROC, glGetTexImage) \
+        EnumMacro(PFNGLREADPIXELSPROC, glReadPixels) \
         EnumMacro(PFNGLPIXELSTOREIPROC, glPixelStorei) \
         EnumMacro(PFNGLRENDERBUFFERSTORAGEPROC, glRenderbufferStorage) \
         EnumMacro(PFNGLTEXIMAGE2DPROC, glTexImage2D) \
@@ -79,9 +79,10 @@ DECLARE_STATS_GROUP(TEXT("UnrealLibretro"), STATGROUP_UnrealLibretro, STATCAT_Ad
         EnumMacro(PFNGLCLIENTWAITSYNCPROC, glClientWaitSync) \
         EnumMacro(PFNGLGENBUFFERSPROC, glGenBuffers) \
         EnumMacro(PFNGLBINDBUFFERPROC, glBindBuffer) \
-        EnumMacro(PFNGLMAPBUFFERPROC, glMapBuffer) \
+        EnumMacro(PFNGLMAPBUFFERRANGEPROC, glMapBufferRange) \
         EnumMacro(PFNGLUNMAPBUFFERPROC, glUnmapBuffer) \
         EnumMacro(PFNGLBUFFERDATAPROC, glBufferData) \
+        EnumMacro(PFNGLREADBUFFERPROC, glReadBuffer) \
 
 struct libretro_api_t {
     void* handle;
@@ -150,7 +151,7 @@ protected:
     	Shutdown
 	};
 	
-    std::atomic<ECoreState> CoreState = ECoreState::Running;
+    std::atomic<ECoreState> CoreState{ ECoreState::Running };
 
     libretro_api_t        libretro_api = { 0 };
     struct libretro_callbacks_t* libretro_callbacks = nullptr;
@@ -177,8 +178,13 @@ protected:
         bool using_opengl;
     	
     	struct {
+#if PLATFORM_ANDROID
+            void* egl_context;
+            void* egl_display;
+#else
             SDL_Window* window;
             SDL_GLContext context;
+#endif
 
             GLuint texture;
             GLuint framebuffer;

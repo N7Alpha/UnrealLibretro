@@ -47,7 +47,7 @@ void ULibretroCoreInstance::DisconnectController(int Port)
         {
             CoreInstance.GetValue()->EnqueueTask([&InputStatePort = this->CoreInstance.GetValue()->InputState[Port]](libretro_api_t& libretro_api)
             {
-                InputStatePort = { 0 };
+                InputStatePort = { { 0 } };
 
                 if (libretro_api.keyboard_event)
                 {
@@ -68,8 +68,8 @@ void ULibretroCoreInstance::Launch()
 {
     Shutdown();
     
-    auto _CorePath = FUnrealLibretroModule::ResolveCorePath(this->CorePath);
-    auto _RomPath  = FUnrealLibretroModule::ResolveROMPath (this->RomPath);
+    auto _CorePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::ResolveCorePath(this->CorePath));
+    auto _RomPath  = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::ResolveROMPath (this->RomPath));
 
     if (!IPlatformFile::GetPlatformPhysical().FileExists(*_CorePath))
     {
@@ -93,7 +93,7 @@ void ULibretroCoreInstance::Launch()
 
     this->CoreInstance = LibretroContext::Launch(_CorePath, _RomPath, RenderTarget, static_cast<URawAudioSoundWave*>(AudioBuffer),
 	    [weakThis = MakeWeakObjectPtr(this), SRAMPath = FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath)]
-        (LibretroContext *CoreInstance, libretro_api_t &libretro_api) 
+        (LibretroContext *_CoreInstance, libretro_api_t &libretro_api) 
 	    {   // Core has loaded
             
 	        // Load save data into core @todo this is just a weird place to hook this in
@@ -108,8 +108,8 @@ void ULibretroCoreInstance::Launch()
 	        // Notify delegate
 	        FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady(
                 [weakThis, 
-                 bottom_left_origin = CoreInstance->LibretroThread_bottom_left_origin,
-                 geometry           = CoreInstance->LibretroThread_geometry]()
+                 bottom_left_origin = _CoreInstance->LibretroThread_bottom_left_origin,
+                 geometry           = _CoreInstance->LibretroThread_geometry]()
 	            {
 	                if (weakThis.IsValid())
 	                {
@@ -278,7 +278,7 @@ void ULibretroCoreInstance::TickComponent(float DeltaTime, enum ELevelTick TickT
         {
             if (!Controller[Port].IsValid()) continue;
 
-            FLibretroInputState NextInputState = {0};
+            FLibretroInputState NextInputState = {{0}};
             for (auto ControllerBinding : Bindings[Port])
             {
                 if (ControllerBinding.Key.IsAxis1D()) 

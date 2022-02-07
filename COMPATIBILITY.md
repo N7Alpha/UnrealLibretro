@@ -1,7 +1,9 @@
-# Core Compatibility
 
 Unfortunately the full Libretro API is quite complex so I have only partially implemented it, so some cores might not work correctly. A non-exhaustive list is documented here.
 
+# Platform Compatibility
+
+# Windows
 ## Known working cores
 
 * `nestopia        `
@@ -21,8 +23,34 @@ Unfortunately the full Libretro API is quite complex so I have only partially im
 * `sameboy         `
 * `dosbox_pure     ` (This one fails when loading the content)
 
-# Platform Compatibility
+# Android
+I know for certain `gearboy` and `mupen64plus_next` work so I'd try testing those first. I'll probably try to set up automated regression tests in the future so a list can be automatically maintained.
 
-For now UnrealLibretro only works for Windows. Most of the external libraries I use are cross platform so it shouldn't be too hard to get it working on other platforms. I'm using SDL2 to handle obtaining OpenGL contexts and windows (necessary for OpenGL contexts) in a cross platform way. I know theres some platform specific quirks I'm missing since I haven't tested it. For example, I obtain the window on a background thread, but on MacOS this will only work on the main thread and in Linux this will only work on a background thread if you set some special flag. If you want to fix compatibility with other platforms contributions are welcome.
+# How to run the right cores for the right platform
+You could manually come up with a way to do this, but the way I provide will package the right cores for the right platform as well. Also I'm pretty sure this would be kind of nasty to do in Blueprints.
+```
+📦UnrealLibretro
+ ┣ 📂MyCores
+ ┃ ┣ 📂Android
+ ┃ ┃ ┣ 📂arm64-v8a
+ ┃ ┃ ┃ ┣ 📜gearboy_libretro_android.so
+ ┃ ┃ ┃ ┗ 📜mupen64plus_next_gles3_libretro_android.so
+ ┃ ┃ ┗ 📂armeabi-v7a
+ ┃ ┃   ┣ 📜gearboy_libretro_android.so
+ ┃ ┃   ┗ 📜mupen64plus_next_gles3_libretro_android.so
+ ┃ ┗ 📂Win64
+ ┃   ┣ 📜gearboy_libretro_android.dll
+ ┃   ┗ 📜mupen64plus_next_gles3_libretro_android.dll
+ ┃
+ ┗ 📂MyROMs
+   ┣ 📜baserom.us.z64
+   ┗ 📜Legend of Zelda, The - Link's Awakening DX (USA, Europe) (SGB Enhanced).gbc
+ ```
+
+ If the directory structure of `MyCores` and `MyROMs` looks like this then if you specify *Core Path* as the name of the core without the extension as is done in this image
+
+ ![](Resources/PathExample.png)
+
+ Then it should load the right Libretro Core for the corresponding platform i.e. on an x86_64 Windows machine it loads `MyCores/Win64/gearboy_libretro_android.dll` (Ignore the fact it says Android I just changed it so the name was the same)
 
 [1]: README.md#sometimes-required-download-content-folder

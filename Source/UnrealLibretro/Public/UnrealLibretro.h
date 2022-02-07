@@ -25,8 +25,22 @@ public:
 		return FPaths::Combine(UnrealLibretro->GetBaseDir(), InPaths..., Path);
 	}
 
-	static FString ResolveCorePath(const FString& UnresolvedCorePath)
+	static FString ResolveCorePath(FString UnresolvedCorePath)
 	{
+		if (FPaths::GetExtension(UnresolvedCorePath).IsEmpty()) {
+			UnresolvedCorePath = FString::Printf(
+#if PLATFORM_ANDROID_ARM
+				TEXT("Android/armeabi-v7a/%s.so")
+#elif PLATFORM_ANDROID_ARM64
+				TEXT("Android/arm64-v8a/%s.so")
+#elif PLATFORM_MAC
+				TEXT("Mac/%s.dylib")
+#elif PLATFORM_WINDOWS && PLATFORM_64BITS
+				TEXT("Win64\\%s.dll")
+#endif
+			, *UnresolvedCorePath);
+		}
+
 		return IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(UnresolvedCorePath, TEXT("MyCores"));
 	}
 

@@ -15,3 +15,10 @@ The pdb is produced in the same directory as the DLL. Copy both of them over to 
 Q: Visual Studio loads the source files for the wrong core when debugging 
 
 A: Remove other pdbs AND source files and clean the build and rerun
+
+### Android
+OBB files must be less than 100 MB?
+
+.so libraries are packaged in `/data/data/[Java Package]/lib` there are files named `_APL.xml` in the Unreal Engine soure that cover how to do this
+
+Android studio device explorer will show files without needing to be root

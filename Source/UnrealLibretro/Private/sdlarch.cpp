@@ -25,7 +25,17 @@ extern "C"
 #include "Windows/HideWindowsPlatformTypes.h"
 #endif
 
-#define DEBUG_OPENGL 0
+#if PLATFORM_ANDROID
+#define SDL_GL_GetProcAddress eglGetProcAddress
+
+#include <android/native_window.h> // requires ndk r5 or newer
+#include <EGL/egl.h> // requires ndk r5 or newer
+#endif
+
+// Android errors trying to use debug context for some reason even with EGL 1.5
+#if defined(DEBUG_OPENGL) && !PLATFORM_ANDROID
+#define DEBUG_OPENGL_CALLBACK
+#endif
 
 // MY EYEEEEESSS.... Even though this looks heavily obfuscated what this actually accomplishes is relatively simple. It allows us to run multiple libretro cores at once. 
 // We have to do it this way because when libretro calls a callback we implemented there really isn't any suitable way to tell which core the call came from.
@@ -34,7 +44,7 @@ extern "C"
 #define REP10(P, M)  M(P##0) M(P##1) M(P##2) M(P##3) M(P##4) M(P##5) M(P##6) M(P##7) M(P##8) M(P##9)
 #define REP100(M) REP10(,M) REP10(1,M) REP10(2,M) REP10(3,M) REP10(4,M) REP10(5,M) REP10(6,M) REP10(7,M) REP10(8,M) REP10(9,M)
 
-struct libretro_callbacks_t {
+extern struct libretro_callbacks_t {
     retro_audio_sample_batch_t                                                c_audio_write;
     retro_video_refresh_t                                                     c_video_refresh;
     retro_audio_sample_t                                                      c_audio_sample;
@@ -91,7 +101,77 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 
 }
 
+static PFNGLGETERRORPROC glGetError;
+
+#if defined(DEBUG_OPENGL) && !defined(DEBUG_OPENGL_CALLBACK)
+#define LogGLErrors(x) GLClearErrors();\
+    x;\
+    GLLogCall(#x, __FILE__, __LINE__)
+#else
+#define LogGLErrors(x) x
+#endif
+
+static void GLClearErrors()
+{
+    /* loop while there are errors and until GL_NO_ERROR is returned */
+    while (glGetError() != GL_NO_ERROR);
+}
+
+static bool GLLogCall(const char* function, const char* file, int line)
+{
+    while (GLenum error = glGetError())
+    {
+        UE_LOG(Libretro, Error, TEXT("OpenGL: %s:%s:%d: GLenum (%d)"), ANSI_TO_TCHAR(function), ANSI_TO_TCHAR(file), line, error);
+        return false;
+    }
+
+    return true;
+}
+
  void LibretroContext::create_window() {
+#if PLATFORM_ANDROID
+    // Get an OpenGL context via EGL
+    const EGLint attribs[] = {
+    EGL_BLUE_SIZE, 8,
+    EGL_GREEN_SIZE, 8,
+    EGL_RED_SIZE, 8,
+    EGL_NONE
+    };
+
+    EGLConfig config;
+    EGLint numConfigs;
+
+    if ((core.gl.egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY)) == EGL_NO_DISPLAY) {
+        UE_LOG(Libretro, Fatal, TEXT("eglGetDisplay() returned error %d"), eglGetError());
+    }
+
+    if (!eglInitialize(core.gl.egl_display, 0, 0)) {
+        UE_LOG(Libretro, Fatal, TEXT("eglInitialize() returned error %d"), eglGetError());
+    }
+
+    if (!eglChooseConfig(core.gl.egl_display, attribs, &config, 1, &numConfigs)) {
+        UE_LOG(Libretro, Fatal, TEXT("eglChooseConfig() returned error %d"), eglGetError());
+    }
+
+    const EGLint attrib_list[] = {
+        EGL_CONTEXT_MAJOR_VERSION, (EGLint) core.hw.version_major,
+        EGL_CONTEXT_MINOR_VERSION, (EGLint) core.hw.version_minor,
+#if defined(DEBUG_OPENGL_CALLBACK)
+        EGL_CONTEXT_OPENGL_DEBUG, EGL_TRUE,
+#endif
+        EGL_NONE
+    };
+
+    UE_LOG(Libretro, Log, TEXT("EGL: Trying to load OpenGL ES version %d.%d"), core.hw.version_major, core.hw.version_minor);
+    if (!(core.gl.egl_context = eglCreateContext(core.gl.egl_display, config, 0, attrib_list))) {
+        UE_LOG(Libretro, Fatal, TEXT("eglCreateContext() returned error %d"), eglGetError());
+    }
+
+    //static_assert(EGL_KHR_surfaceless_context, TEXT("This check may break as a false positive. ndk r21 defines this as a macro might need to be queried at runtime on other platforms"));
+    if (!eglMakeCurrent(core.gl.egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, core.gl.egl_context)) {
+        UE_LOG(Libretro, Fatal, TEXT("eglMakeCurrent() returned error %d"), eglGetError());
+    }
+#else
     SDL_GL_ResetAttributes(); // SDL state isn't thread local unlike OpenGL. So Libretro Cores could potentially interfere with eachother's Attributes since you're setting globals.
 
     if (core.hw.context_type == RETRO_HW_CONTEXT_OPENGL_CORE || core.hw.version_major >= 3) {
@@ -120,7 +200,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 	if (!core.gl.window)
         UE_LOG(Libretro, Fatal, TEXT("Failed to create window: %s"), SDL_GetError());
 
-#if DEBUG_OPENGL
+#if defined(DEBUG_OPENGL_CALLBACK)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
 #endif
     core.gl.context = SDL_GL_CreateContext(core.gl.window);
@@ -128,6 +208,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 
     if (!core.gl.context)
         UE_LOG(Libretro, Fatal, TEXT("Failed to create OpenGL context: %s"), SDL_GetError());
+#endif
 
     #pragma warning(push)
     #pragma warning(disable:4191)
@@ -146,16 +227,21 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
     ENUM_GL_WIN32_INTEROP_PROCEDURES(CHECK_GL_PROCEDURES);
     this->gl_win32_interop_supported_by_driver = false; // bFoundAllEntryPoints; Not ready
     
+    glGetError = (PFNGLGETERRORPROC) SDL_GL_GetProcAddress("glGetError");
+    check(glGetError);
+
     // Restore warning C4191.
     #pragma warning(pop)
-
-#if DEBUG_OPENGL
-    GLint opengl_flags, 
-          major_version, minor_version; 
+#if defined(DEBUG_OPENGL_CALLBACK)
+    GLint opengl_flags;
+    GLint major_version;
+    GLint minor_version;
+    bool is_OpenGL_ES = strncmp("OpenGL ES", (char *)glGetString(GL_SHADING_LANGUAGE_VERSION), strlen("OpenGL ES")) == 0;
     glGetIntegerv(GL_CONTEXT_FLAGS, &opengl_flags);
     glGetIntegerv(GL_MAJOR_VERSION, &major_version);
     glGetIntegerv(GL_MINOR_VERSION, &minor_version);
-    if (   major_version >= 4 && minor_version >= 3 
+    if (   major_version >= 4 && minor_version >= 3 && !is_OpenGL_ES
+        || major_version >= 3 && minor_version >= 2 &&  is_OpenGL_ES
         && (opengl_flags & GL_CONTEXT_FLAG_DEBUG_BIT))
     {
         glEnable(GL_DEBUG_OUTPUT);
@@ -178,9 +264,8 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
     core.gl.pitch = geom->max_width * core.gl.bits_per_pixel;
 	
     // Unreal Resource init
-#if PLATFORM_WINDOWS
-    HANDLE SharedHandle = nullptr;
-#endif
+    void *SharedHandle = nullptr;
+
     uint64_t SizeInBytes, MipLevels;
     GLenum handleType;
     FTaskGraphInterface::Get().WaitUntilTaskCompletes(
@@ -273,12 +358,12 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
             glGenTextures(1, &core.gl.texture);
 
             glBindTexture(GL_TEXTURE_2D, core.gl.texture);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, geom->max_width, 
-                                                    geom->max_height,
-                                                    0,
-                                                    core.gl.pixel_format, 
-                                                    core.gl.pixel_type,
-                                                    NULL);
+            LogGLErrors(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, geom->max_width, 
+                                                                 geom->max_height,
+                                                                 0,
+                                                                 core.gl.pixel_format, 
+                                                                 core.gl.pixel_type,
+                                                                 NULL));
             glBindTexture(GL_TEXTURE_2D, 0);
         }
 
@@ -308,7 +393,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
 
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
 
-        SDL_assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+        check(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
 
         glClearColor(0, 0, 0, 1);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -393,7 +478,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
                 checkNoEntry();
             }
             break;
-            case GL_UNSIGNED_INT_8_8_8_8_REV: {
+            case GL_UNSIGNED_BYTE: {
                 conv_argb8888_abgr8888(bgra_buffer, data,
                     width, height,
                     SrcPitch, pitch);
@@ -406,7 +491,7 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
         prepare_frame_for_upload_to_unreal_RHI(bgra_buffer);
     }
     else if (data == RETRO_HW_FRAME_BUFFER_VALID) {
-        check(core.using_opengl && core.gl.pixel_type == GL_UNSIGNED_INT_8_8_8_8_REV);
+        check(core.using_opengl && core.gl.pixel_type == GL_UNSIGNED_BYTE);
 
     	if (core.gl.rhi_interop_memory) {
             // @todo I make no attempt to synchronize the core's drawing operations with RHI reads, some cores will work but others have synchronization issues
@@ -433,35 +518,38 @@ void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsiz
                     { // Hand off previously copied frame to Unreal
                         glBindBuffer(GL_PIXEL_PACK_BUFFER, core.gl.pixel_buffer_objects[!core.free_framebuffer_index]);
 
-                        void* frame_buffer = glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+                        void* frame_buffer = glMapBufferRange(GL_PIXEL_PACK_BUFFER,
+                                                              0, // Offset
+                                                              4 * core.av.geometry.max_width * core.av.geometry.max_height,
+                                                              GL_MAP_READ_BIT);
                         check(frame_buffer);
                         prepare_frame_for_upload_to_unreal_RHI(frame_buffer);
                     }
 
                     { // Download Libretro Core frame from OpenGL asynchronously
-                        glBindTexture(GL_TEXTURE_2D, core.gl.texture);
-                        glBindBuffer(GL_PIXEL_PACK_BUFFER, core.gl.pixel_buffer_objects[core.free_framebuffer_index]);
+                        LogGLErrors(glBindFramebuffer(GL_READ_FRAMEBUFFER, core.gl.framebuffer));
+                        LogGLErrors(glBindBuffer(GL_PIXEL_PACK_BUFFER, core.gl.pixel_buffer_objects[core.free_framebuffer_index]));
+                        LogGLErrors(glReadBuffer(GL_COLOR_ATTACHMENT0));
                         verify(glUnmapBuffer(GL_PIXEL_PACK_BUFFER) == GL_TRUE);
-                        auto async_read_bound_texture_into_bound_pbo = [&]()
-                        {
+                        { // Async copy bound framebuffer color component into bound pbo
                             GLint mip_level = 0;
                             void* offset_into_pbo_where_data_is_written = 0x0;
                             // This call is async always and a DMA transfer on most platforms
-                            glGetTexImage(GL_TEXTURE_2D,
-                                mip_level,
-                                core.gl.pixel_format,
-                                core.gl.pixel_type,
-                                offset_into_pbo_where_data_is_written);
-                        };
-                        async_read_bound_texture_into_bound_pbo();
+                            LogGLErrors(glReadPixels(0, 0,
+                                core.av.geometry.max_width, // @enhancement Only copy the portion of the buffer we need rather than the max possible potential size
+                                core.av.geometry.max_height,
+                                GL_RGBA,
+                                GL_UNSIGNED_BYTE,
+                                offset_into_pbo_where_data_is_written));
+                        }
                         glDeleteSync(core.gl.fence);
                         core.gl.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
                     }
 
                     core.free_framebuffer_index = !core.free_framebuffer_index;
 
-                    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-                    glBindTexture(GL_TEXTURE_2D, 0);
+                    LogGLErrors(glBindFramebuffer(GL_FRAMEBUFFER, 0));
+                    LogGLErrors(glBindBuffer(GL_PIXEL_PACK_BUFFER, 0));
                     break;
                 }
                 case GL_WAIT_FAILED:
@@ -591,7 +679,7 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
 	            core.gl.bits_per_pixel = sizeof(uint16_t);
 	            break;
 	        case RETRO_PIXEL_FORMAT_XRGB8888:
-	            core.gl.pixel_type = GL_UNSIGNED_INT_8_8_8_8_REV;
+	            core.gl.pixel_type = GL_UNSIGNED_BYTE;
 	            core.gl.pixel_format = GL_RGBA;
 	            core.gl.bits_per_pixel = sizeof(uint32_t);
 	            break;
@@ -616,6 +704,10 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
 #pragma warning(pop)
         core.hw = *hw;
         core.using_opengl = true;
+
+        if (core.hw.context_type == RETRO_HW_CONTEXT_OPENGLES2) { core.hw.version_major = 2; core.hw.version_minor = 0; }
+        if (core.hw.context_type == RETRO_HW_CONTEXT_OPENGLES3) { core.hw.version_major = 3; core.hw.version_minor = 0; }
+
         return true;
     }
     case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO: {
@@ -683,7 +775,11 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
     }
     case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER: {
         unsigned* library = (unsigned*)data;
+#if PLATFORM_ANDROID | PLATFORM_IOS
+        *library = RETRO_HW_CONTEXT_OPENGLES3; // Unreal Engine minimum spec requires OpenGL ES 3.1
+#else
         *library = RETRO_HW_CONTEXT_OPENGL_CORE;
+#endif
         return true;
     }
     case RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE: {
@@ -786,28 +882,16 @@ void LibretroContext::load(const char *sofile) {
 
 void LibretroContext::load_game(const char* filename) {
     struct retro_system_info system = { 0 };
-    struct retro_game_info info = { filename, 0 };
-
-    SDL_RWops* file = SDL_RWFromFile(filename, "rb");
-
-    if (!file)
-        UE_LOG(Libretro, Fatal, TEXT("Failed to load %hs: %hs"), filename, SDL_GetError());
-
-    info.path = filename;
-    info.meta = "";
-    info.data = NULL;
-    info.size = SDL_RWsize(file);
-
+    struct retro_game_info info = { filename , nullptr, (size_t)0, "" };
+    TArray<uint8> gameBinary;
+    
     libretro_api.get_system_info(&system);
 
     if (!system.need_fullpath) {
-        info.data = SDL_malloc(info.size);
+        verify(FFileHelper::LoadFileToArray(gameBinary, ANSI_TO_TCHAR(filename)));
 
-        if (!info.data)
-            UE_LOG(Libretro, Fatal, TEXT("Failed to allocate memory for the content"));
-
-        if (!SDL_RWread(file, (void*)info.data, info.size, 1))
-            UE_LOG(Libretro, Fatal, TEXT("Failed to read file data: %hs"), SDL_GetError());
+        info.data = gameBinary.GetData();
+        info.size = gameBinary.Num();
     }
 
     if (!libretro_api.load_game(&info))
@@ -831,12 +915,6 @@ void LibretroContext::load_game(const char* filename) {
     }
 
     video_configure(&core.av.geometry);
- 	
-    if (info.data)
-        SDL_free((void*)info.data);
-
-    SDL_RWclose(file);
-    
 }
 
 LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TUniqueFunction<void(LibretroContext*, libretro_api_t&)> LoadedCallback)
@@ -844,7 +922,7 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
     check(IsInGameThread()); // So static initialization is safe + UObject access
 
-    static const uint32 max_instances = sizeof(libretro_callbacks_table) / sizeof(libretro_callbacks_table[0]);
+    static constexpr uint32 max_instances = sizeof(libretro_callbacks_table) / sizeof(libretro_callbacks_table[0]);
     static TBitArray<TInlineAllocator<(max_instances / 8) + 1>> AllocatedInstances(false, max_instances);
 
     LibretroContext *l = new LibretroContext();
@@ -882,7 +960,17 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
             // Here I load a copy of the dll instead of the original. If you load the same dll multiple times you won't obtain a new instance of the dll loaded into memory,
             // instead all variables and function pointers will point to the original loaded dll
-            const FString InstancedCorePath = FString::Printf(TEXT("%s.%s"), *FGuid::NewGuid().ToString(), *FPaths::GetExtension(*core));
+            const FString InstancedCorePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(
+#if PLATFORM_ANDROID
+                // On Android .so's have to be copied to your private application directory before they are loaded
+                // @enhancement Use dlmopen and package files in private application directory then you wouldn't have to copy the dll every time https://man.archlinux.org/man/dlmopen.3.en#:~:text=LM_ID_NEWLM,is%20initially%0A%20%20%20%20%20%20empty
+                //              Although this solution would be limited to 16 'namespaces' which is probably enough for practical purposes but not great
+                *FString::Printf(TEXT("/data/data/%s/files/%s.%s"), *FAndroidPlatformProcess::GetGameBundleId(), *FGuid::NewGuid().ToString(), *FPaths::GetExtension(*core))
+#else
+                *FString::Printf(TEXT("%s.%s"), *FGuid::NewGuid().ToString(), *FPaths::GetExtension(*core))
+#endif
+            );
+
             verify(IPlatformFile::GetPlatformPhysical().CopyFile(*InstancedCorePath, *core));
 
             l->core.hw.version_major = 4;
@@ -892,20 +980,24 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             l->core.hw.context_destroy = []() {};
 
             // Loads the dll and its function pointers into libretro_api
-            l->load(TCHAR_TO_ANSI(*IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*InstancedCorePath)));
+            l->load(TCHAR_TO_ANSI(*InstancedCorePath));
 
             // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
-            l->load_game(TCHAR_TO_ANSI(*IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*game).Replace(TEXT("/"), TEXT("\\"))));
+            l->load_game(TCHAR_TO_ANSI(*game));
 		
             // This is needed for some cores nestopia specifically is one example
             l->libretro_api.set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
 
             LoadedCallback(l, l->libretro_api);
         	
-        	// This simplifies the logic in core_video_refresh
+        	// This simplifies the logic in core_video_refresh, It stops us from erroring it doesn't error when we try to unmap this pixel buffer in core_video_refresh
+            // You could just move this to the beginning of core_video_refresh and surround it with an if statement that does this the first time through
             if (l->core.using_opengl) {
                 l->glBindBuffer(GL_PIXEL_PACK_BUFFER, l->core.gl.pixel_buffer_objects[l->core.free_framebuffer_index]);
-                l->glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+                l->glMapBufferRange(GL_PIXEL_PACK_BUFFER,
+                                    0, // Offset
+                                    1, // Size... 
+                                    GL_MAP_READ_BIT);
                 l->core.gl.fence = l->glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
                 l->glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
             }
@@ -968,11 +1060,13 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             }, TStatId(), nullptr, ENamedThreads::GameThread);
         	
             {
+#if !PLATFORM_ANDROID
                 if (l->core.gl.window)
                 {
                     verify(SDL_GL_MakeCurrent(l->core.gl.window, NULL) == 0);
                     SDL_DestroyWindow(l->core.gl.window);  // @todo: In SDLarch's code SDL_Quit was here and that implicitly destroyed some things like windows. So I'm not sure if I'm exhaustively destroying everything that it destroyed yet. In order to fix this you could probably just run SDL_Quit here and step with the debugger to see all the stuff it destroys.
                 }
+#endif
             	
                 ENQUEUE_RENDER_COMMAND(LibretroCleanupResourcesSharedWithRenderThread)([l](FRHICommandListImmediate& RHICmdList)
                     {
@@ -985,11 +1079,18 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
                                         FMemory::Free(l->core.software.bgra_buffers[i]);
                                     }
                                 }
-
+#if !PLATFORM_ANDROID
                                 if (l->core.gl.context)
                                 {
                                     SDL_GL_DeleteContext(l->core.gl.context); /** implicitly releases resources like fbos, pbos, and textures */
                                 }
+#else
+                                if (l->core.gl.egl_context) 
+                                {
+                                    verify(eglDestroyContext(l->core.gl.egl_display, 
+                                                             l->core.gl.egl_context));
+                                }
+#endif
 
                                 l->Unreal.TextureRHI.SafeRelease();
                         	

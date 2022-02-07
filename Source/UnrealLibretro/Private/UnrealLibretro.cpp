@@ -24,39 +24,26 @@ void FUnrealLibretroModule::StartupModule()
 
 	FString BaseDir = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
 
-	FString LibraryPath;
-#if PLATFORM_WINDOWS
-	LibraryPath      = FPaths::Combine(*BaseDir, TEXT("Binaries/Win64/ThirdParty/SDL2.dll"));
-	RedistDirectory  = FPaths::Combine(*BaseDir, TEXT("Binaries/Win64/ThirdParty/libretro/"));
-#elif PLATFORM_MAC
-	LibraryPath = FPaths::Combine(*BaseDir, TEXT("Binaries/Mac/ThirdParty/libSDL2.dylib"));
-#endif // PLATFORM_WINDOWS
-
 #define LIBRETRO_NOTE " Note: disable UnrealLibretro or delete the UnrealLibretro plugin to make this error go away." \
 						" You can also post an issue to github."
 #define LIBRETRO_MODULE_LOAD_ERROR(msg) FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("LibretroError", msg LIBRETRO_NOTE)); \
 										UE_LOG(Libretro, Fatal, TEXT(msg LIBRETRO_NOTE));
 
-	// SDL is needed to get OpenGL contexts and windows from the OS in a sane way. I tried looking for an official Unreal way to do it, but I couldn't really find one SDL is so portable though it shouldn't matter
-	SDLHandle = !LibraryPath.IsEmpty() ? FPlatformProcess::GetDllHandle(*LibraryPath) : nullptr;
-
-	if (!SDLHandle)
-	{
-		LIBRETRO_MODULE_LOAD_ERROR("Failed to load SDL2.dll");
-	}
-
+#if !PLATFORM_ANDROID
 #if PLATFORM_APPLE
 	dispatch_sync(dispatch_get_main_queue(), ^ {
 #endif
+	SDL_SetMainReady(); // Hackery I had to patch SDL source so that setting this doesn't segfault. This is needed for Android
 	int load_sdl_error = SDL_Init(SDL_INIT_VIDEO);
 #if PLATFORM_APPLE
 	});
 #endif
 
-	if (load_sdl_error) 
+	if (load_sdl_error)
 	{
-		LIBRETRO_MODULE_LOAD_ERROR("Failed to initialize SDL2");
+		UE_LOG(Libretro, Fatal, TEXT("Failed to initialize SDL2: (error code %d) %s"), load_sdl_error, ANSI_TO_TCHAR(SDL_GetError()));
 	}
+#endif
 
 #if PLATFORM_WINDOWS
 	FPlatformProcess::AddDllDirectory(*RedistDirectory);
