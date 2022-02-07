@@ -228,6 +228,9 @@ protected:
     // void   core_input_poll(void);
     bool    core_environment(unsigned cmd, void* data);
 	
+    // I read somewhere online that you technically have to load OpenGL procedures per context you make on Windows
+    // I don't think it actually matters unless you're using multiple rendering devices, and even in that case it might
+    // not matter. I still load them per instance anyway to be on the safe side.
 	#define DEFINE_GL_PROCEDURES(Type,Func) Type Func = NULL;
     ENUM_GL_PROCEDURES(DEFINE_GL_PROCEDURES);
     ENUM_GL_WIN32_INTEROP_PROCEDURES(DEFINE_GL_PROCEDURES)

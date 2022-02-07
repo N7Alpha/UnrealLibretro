@@ -198,7 +198,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
     core.gl.window = SDL_CreateWindow("sdlarch", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 0, 0, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN); // @todo This is fine on windows, but creating a window from a background thread will crash on some versions Linux if you don't enable a special flag and everytime on MacOS
 
 	if (!core.gl.window)
-        UE_LOG(Libretro, Fatal, TEXT("Failed to create window: %s"), SDL_GetError());
+        UE_LOG(Libretro, Fatal, TEXT("Failed to create window: %s"), ANSI_TO_TCHAR(SDL_GetError()));
 
 #if defined(DEBUG_OPENGL_CALLBACK)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
@@ -207,7 +207,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
 
 
     if (!core.gl.context)
-        UE_LOG(Libretro, Fatal, TEXT("Failed to create OpenGL context: %s"), SDL_GetError());
+        UE_LOG(Libretro, Fatal, TEXT("Failed to create OpenGL context: %s"), ANSI_TO_TCHAR(SDL_GetError()));
 #endif
 
     #pragma warning(push)
