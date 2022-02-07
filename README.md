@@ -8,7 +8,7 @@ UnrealLibretro is a Libretro Frontend for Unreal Engine. It is a Blueprint compa
 
 ## Compatibility
 
-**Windows only for now.** More information about platform and  Libretro Core compatibility can be found [here](COMPATIBILITY.md).
+Information about platform and Libretro Core compatibility can be found [here](COMPATIBILITY.md).
 
 ## Installing in your Project
 
