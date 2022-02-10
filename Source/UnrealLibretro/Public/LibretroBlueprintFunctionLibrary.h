@@ -3,11 +3,12 @@
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "LibretroInputDefinitions.h"
+#include "Templates/SubclassOf.h"
+#include "Components/ActorComponent.h"
 
 #include "LibretroBlueprintFunctionLibrary.generated.h"
 
 class AActor;
-class UActorComponent;
 class UCameraComponent;
 
 UENUM(BlueprintType)

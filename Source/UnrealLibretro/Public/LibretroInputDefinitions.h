@@ -2,6 +2,7 @@
 
 #include "libretro/libretro.h"
 
+#include "InputCoreTypes.h"
 #include "CoreMinimal.h"
 
 constexpr int PortCount = 4;
@@ -41,6 +42,7 @@ enum  class ERetroInput : uint8
 	AnalogCount = DisconnectController - DigitalCount UMETA(Hidden)
 };
 
+// const for a reason if you make this non-const make sure you don't cause a data race also make it non static too
 static const struct { FKey Unreal; retro_key libretro; } key_bindings[] = {
     { EKeys::BackSpace,        RETROK_BACKSPACE    },
     { EKeys::Tab,              RETROK_TAB          },

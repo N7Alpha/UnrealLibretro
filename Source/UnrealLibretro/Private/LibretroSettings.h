@@ -1,5 +1,5 @@
 #pragma once
-#include "CoreMinimal.h"
+#include "Engine/DeveloperSettings.h"
 
 #include "LibretroSettings.generated.h"
 

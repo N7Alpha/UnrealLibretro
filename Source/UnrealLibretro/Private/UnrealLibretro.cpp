@@ -1,5 +1,6 @@
 #include "UnrealLibretro.h"
 
+#include "Misc/MessageDialog.h"
 #include "Modules/ModuleManager.h"
 
 #if PLATFORM_APPLE

@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "Components/AudioComponent.h"
 #include "LibretroInputDefinitions.h"
 #include "Engine/TextureRenderTarget2D.h"
 

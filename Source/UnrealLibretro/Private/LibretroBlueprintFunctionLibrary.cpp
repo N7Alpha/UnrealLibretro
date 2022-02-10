@@ -2,7 +2,7 @@
 
 #include "GameFramework/Actor.h"
 
-#include "Components/ActorComponent.h"
+#include "Engine/Engine.h"
 #include "Camera/CameraComponent.h"
 
 AActor* ULibretroBlueprintFunctionLibrary::LookingAtActor(UCameraComponent* CameraComponent, EBranchNames& Branch)
