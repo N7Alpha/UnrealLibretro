@@ -9,8 +9,8 @@ on:
   push:
     branches: [ master ]
   # Would be cool to have this but since I'm self hosting this would be a major security hole
-  #merge:
-  #  branches: [ master ]
+  pull_request:
+    branches: [ master ]
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
@@ -26,7 +26,7 @@ jobs:
         
       # Runs setup.sh in the root of the project directory. 
       - name: Run Setup Script
-        run: wsl ./setup.sh
+        run: wsl rm harddrive
 
       # Lots of copying and pasting since we build for many unreal engine versions
       - name: Package for Unreal Engine 4.24 
