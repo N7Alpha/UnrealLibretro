@@ -22,3 +22,9 @@ OBB files must be less than 100 MB?
 .so libraries are packaged in `/data/data/[Java Package]/lib` there are files named `_APL.xml` in the Unreal Engine soure that cover how to do this
 
 Android studio device explorer will show files without needing to be root
+
+### Continous Integration testing
+Probably can use [this](https://github.com/pfist/Nano) to bootstrap a project environment 
+
+`E:\UE_4.26/Engine/Build/BatchFiles/RunUAT BuildCookRun -project=E:\Build\Nano\Nano.uproject -build -run -unattended -editortest
+-nocompile -map=LibretroWorld`

@@ -47,8 +47,13 @@ public class UnrealLibretro : ModuleRules
 				"InputCore",
 				"Slate",
 				"Projects",
-				"DeveloperSettings"
 			}
 			);
+
+		if (   Target.Version.MajorVersion >  4
+			|| Target.Version.MinorVersion >= 26)
+        {
+			PublicDependencyModuleNames.Add("DeveloperSettings"); // Was moved into its own module in 4.26
+		}
 	}
 }

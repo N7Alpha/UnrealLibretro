@@ -272,6 +272,10 @@ static constexpr auto to_integral(E e) -> typename std::underlying_type<E>::type
 
 void ULibretroCoreInstance::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
+#if ENGINE_MAJOR_VERSION <= 4 && ENGINE_MINOR_VERSION <= 25
+    #define IsAxis1D IsFloatAxis
+#endif
+
     if (CoreInstance.IsSet()) 
     {
         for (int Port = 0; Port < PortCount; Port++)
