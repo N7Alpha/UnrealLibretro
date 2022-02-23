@@ -219,6 +219,7 @@ public:
     bool &LibretroThread_bottom_left_origin = core.hw.bottom_left_origin;
     struct retro_game_geometry &LibretroThread_geometry = core.av.geometry;
 
+    class FLambdaRunnable* LambdaRunnable{nullptr};
 protected:
     // This is where the callback implementation logic is for the callbacks from the Libretro Core
     void    core_video_refresh(const void* data, unsigned width, unsigned height, unsigned pitch);

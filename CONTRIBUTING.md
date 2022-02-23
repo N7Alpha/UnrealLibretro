@@ -16,6 +16,9 @@ Q: Visual Studio loads the source files for the wrong core when debugging
 
 A: Remove other pdbs AND source files and clean the build and rerun
 
+Stage changes that aren't line ending changes in git
+`git diff -U0 -w --no-color | git apply --cached --ignore-whitespace --unidiff-zero -`
+
 ### Android
 OBB files must be less than 100 MB?
 

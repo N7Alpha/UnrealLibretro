@@ -955,7 +955,7 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
     // Kick the initialization process off to another thread. It shouldn't be added to the Unreal task pool because those are too slow and my code relies on OpenGL state being thread local.
     // The Runnable system is the standard way for spawning and managing threads in Unreal. FThread looks enticing, but they removed any way to detach threads since "it doesn't work as expected"
-    FLambdaRunnable::RunLambdaOnBackGroundThread(FPaths::GetCleanFilename(core) + FPaths::GetCleanFilename(game),
+    l->LambdaRunnable = FLambdaRunnable::RunLambdaOnBackGroundThread(FPaths::GetCleanFilename(core) + FPaths::GetCleanFilename(game),
         [=, LoadedCallback = MoveTemp(LoadedCallback)]() {
 
             // Here I load a copy of the dll instead of the original. If you load the same dll multiple times you won't obtain a new instance of the dll loaded into memory,
@@ -1093,6 +1093,11 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 #endif
 
                                 l->Unreal.TextureRHI.SafeRelease();
+                        	
+                                if (l->LambdaRunnable)
+                                {
+                                    delete l->LambdaRunnable; /** This will block the render thread if for some reason the thread we were running on hasn't exited yet */
+                                }
                         	
                                 delete l; /** Task queue released */
                             });

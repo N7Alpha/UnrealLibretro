@@ -10,7 +10,6 @@ FThreadSafeCounter FLambdaRunnable::ThreadNumber{0};
 FLambdaRunnable::FLambdaRunnable(FString ThreadName, TUniqueFunction< void()> InFunction)
 {
 	FunctionPointer = MoveTemp(InFunction);
-	Finished = false;
 	Number = ThreadNumber.Increment();
 	
 	FString threadStatGroup = FString::Printf(TEXT("%s%d"), *ThreadName, Number);
@@ -20,15 +19,9 @@ FLambdaRunnable::FLambdaRunnable(FString ThreadName, TUniqueFunction< void()> In
 
 FLambdaRunnable::~FLambdaRunnable()
 {
-	EnsureCompletion();
+	Thread->Suspend(false);
+	Thread->WaitForCompletion();
 	delete Thread;
-}
-
-//Init
-bool FLambdaRunnable::Init()
-{
-	//UE_LOG(LogClass, Log, TEXT("FLambdaRunnable %d Init"), Number);
-	return true;
 }
 
 //Run
@@ -37,33 +30,12 @@ uint32 FLambdaRunnable::Run()
 	if (FunctionPointer)
 		FunctionPointer();
 
-	//UE_LOG(LogClass, Log, TEXT("FLambdaRunnable %d Run complete"), Number);
 	return 0;
-}
-
-//stop
-void FLambdaRunnable::Stop()
-{
-	Finished = true;
-}
-
-void FLambdaRunnable::Exit()
-{
-	delete this;
-}
-
-void FLambdaRunnable::EnsureCompletion() // @todo: the timing error might be here also this will leak memory
-{
-	Stop();
-	Thread->Suspend(false);
-	Thread->WaitForCompletion();
-
 }
 
 FLambdaRunnable* FLambdaRunnable::RunLambdaOnBackGroundThread(FString ThreadName, TUniqueFunction< void()> InFunction)
 {
 	FLambdaRunnable* Runnable;
 	Runnable = new FLambdaRunnable(ThreadName, MoveTemp(InFunction));
-	//UE_LOG(LogClass, Log, TEXT("FLambdaRunnable RunLambdaBackGroundThread"));
 	return Runnable;
 }
