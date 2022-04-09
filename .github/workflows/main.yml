@@ -68,3 +68,13 @@ jobs:
           name: UnrealLibretro-4.27
           path: UE_4.27
           if-no-files-found: error
+
+      - name: Package for Unreal Engine 5.0
+        run: python package.py "$env:UE_5_0"
+          
+      - name: Upload Build-Artifact
+        uses: actions/upload-artifact@v2.3.1
+        with:
+          name: UnrealLibretro-5.0
+          path: UE_5.0
+          if-no-files-found: error
