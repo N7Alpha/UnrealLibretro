@@ -71,6 +71,10 @@ void ULibretroCoreInstance::Launch()
     auto _CorePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::ResolveCorePath(this->CorePath));
     auto _RomPath  = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::ResolveROMPath (this->RomPath));
 
+#if PLATFORM_WINDOWS
+    _RomPath.ReplaceCharInline('/', '\\');
+#endif
+
     if (!IPlatformFile::GetPlatformPhysical().FileExists(*_CorePath))
     {
         UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Couldn't find core at path '%s'"), *_CorePath, *_CorePath);

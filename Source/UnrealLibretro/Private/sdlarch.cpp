@@ -880,7 +880,7 @@ void LibretroContext::load_game(const char* filename) {
     libretro_api.get_system_info(&system);
 
     if (!system.need_fullpath) {
-        verify(FFileHelper::LoadFileToArray(gameBinary, ANSI_TO_TCHAR(filename)));
+        verify(FFileHelper::LoadFileToArray(gameBinary, UTF8_TO_TCHAR(filename)));
 
         info.data = gameBinary.GetData();
         info.size = gameBinary.Num();
@@ -975,7 +975,7 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             l->load(TCHAR_TO_ANSI(*InstancedCorePath));
 
             // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
-            l->load_game(TCHAR_TO_ANSI(*game));
+            l->load_game(TCHAR_TO_UTF8(*game));
 		
             // This is needed for some cores nestopia specifically is one example
             l->libretro_api.set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
