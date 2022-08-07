@@ -251,6 +251,7 @@ void ULibretroCoreInstance::SaveState(const FString& FilePath)
 			SaveStateBuffer.Reserve(libretro_api.serialize_size() + 2); // The plus two is a slight optimization based on how SaveArrayToFile works
 			SaveStateBuffer.AddUninitialized(libretro_api.serialize_size());
 			libretro_api.serialize(static_cast<void*>(SaveStateBuffer.GetData()), libretro_api.serialize_size());
+            FFileHelper::SaveArrayToFile(SaveStateBuffer, *SaveStatePath);
 		}
 	);
 }
