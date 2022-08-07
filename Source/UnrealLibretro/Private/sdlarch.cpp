@@ -261,8 +261,6 @@ static bool GLLogCall(const char* function, const char* file, int line)
         this->core_environment(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &data);
 	}
 
-    core.gl.pitch = geom->max_width * core.gl.bits_per_pixel;
-	
     // Unreal Resource init
     void *SharedHandle = nullptr;
 
@@ -423,7 +421,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
  void LibretroContext::core_video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
     DECLARE_SCOPE_CYCLE_COUNTER(TEXT("PrepareFrameBufferForRenderThread"), STAT_LibretroPrepareFrameBufferForRenderThread, STATGROUP_UnrealLibretro);
 
-    unsigned SrcPitch = 4 * width;
+    unsigned SrcPitch = 4 * core.av.geometry.max_width;
 	
     auto prepare_frame_for_upload_to_unreal_RHI = [&](void* const buffer)
     {
@@ -500,12 +498,6 @@ static bool GLLogCall(const char* function, const char* file, int line)
         // OpenGL is asynchronous and because of GPU driver reasons (work is executed FIFO for some drivers)
         // if we try reading the framebuffer we'll block here and consequently the framerate will be capped by Unreal Engines framerate
         // which will cause stuttering if its too low since most emulated games logic is tied to the framerate so we async copy the framebuffer and check a fence later
-            if UNLIKELY(pitch != core.gl.pitch) {
-                glBindTexture(GL_TEXTURE_2D, core.gl.texture);
-                core.gl.pitch = pitch;
-                glPixelStorei(GL_UNPACK_ROW_LENGTH, core.gl.pitch / core.gl.bits_per_pixel);
-                glBindTexture(GL_TEXTURE_2D, 0);
-            }
 
             switch (glClientWaitSync(core.gl.fence, GL_SYNC_FLUSH_COMMANDS_BIT, 0)) {
                 case GL_TIMEOUT_EXPIRED:

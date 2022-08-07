@@ -9,7 +9,7 @@
 #include "LibretroCoreInstance.generated.h"
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCoreIsReady, const class UTextureRenderTarget2D*, LibretroFramebuffer, const class USoundWave*, AudioBuffer);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnCoreFramebufferResize, float, ScaleFillU, float, ScaleFillV, float, RotationHertz);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCoreFramebufferResize);
 
 DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnControllerDisconnected, const class APlayerController*, PlayerController, const int, Port);
 
@@ -115,8 +115,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Libretro")
 	void DisconnectController(int Port);
 
-
-	/** Blueprint Properties */
+	/** 
+	 * @brief Where the Libretro Core's frame is drawn
+	 * 
+	 * Tip: While running with PIE you can visually examine this 
+     * 1. Click Eject or Press F8
+     * 2. Click on the actor with the rendertarget you want to look at 
+     * 3. Click on the LibretroCoreInstance component
+     * 4. Click the rendertarget in the details 
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro)
 	UTextureRenderTarget2D* RenderTarget;
 
@@ -145,20 +152,22 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro, AdvancedDisplay)
 	FString SRAMPath = "Default.srm";
 
-protected:
-	float rotation_hertz;
-	unsigned base_width;
-	unsigned base_height;
-	unsigned bottom_left_origin;
 
-	void NotifyOnFramebufferResizeDelegate()
-	{
-		check(RenderTarget->IsValidLowLevel());
-		float invert_y = bottom_left_origin ? -1 : 1;
-		OnCoreFrameBufferResize.Broadcast(           base_width  / (float) RenderTarget->SizeX,
-			                              invert_y * base_height / (float) RenderTarget->SizeY,
-			                              rotation_hertz);
-	}
+	/** These properties are with respect to how the frame is drawn by the Libretro Core in the framebuffer it's provided */
+	UPROPERTY(BlueprintReadOnly, Category = Libretro)
+	float FrameRotation;
+
+	UPROPERTY(BlueprintReadOnly, Category = Libretro)
+	int FrameWidth;
+
+	UPROPERTY(BlueprintReadOnly, Category = Libretro)
+	int FrameHeight;
+
+	UPROPERTY(BlueprintReadOnly, Category = Libretro)
+	bool bFrameBottomLeftOrigin;
+
+protected:
+
 	// @todo: It'd be nice if I could use something like std::wrapped_reference however Unreal doesn't offer an equivalent for now
 	TOptional<struct LibretroContext*> CoreInstance;
 

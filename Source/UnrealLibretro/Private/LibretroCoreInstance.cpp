@@ -116,11 +116,11 @@ void ULibretroCoreInstance::Launch()
 	                    weakThis->OnCoreIsReady.Broadcast(weakThis->RenderTarget, 
                                                           weakThis->AudioBuffer);
 
-                        weakThis->bottom_left_origin = bottom_left_origin;
-                        weakThis->base_width = geometry.base_width;
-                        weakThis->base_height = geometry.base_height;
+                        weakThis->bFrameBottomLeftOrigin = bottom_left_origin;
+                        weakThis->FrameWidth  = geometry.base_width;
+                        weakThis->FrameHeight = geometry.base_height;
                         
-                        weakThis->NotifyOnFramebufferResizeDelegate();
+                        weakThis->OnCoreFrameBufferResize.Broadcast();
 	                	
                         weakThis->AudioComponent->SetSound(weakThis->AudioBuffer);
                         weakThis->AudioComponent->Play();
@@ -149,9 +149,9 @@ void ULibretroCoreInstance::Launch()
                                 weakThis->AudioComponent->SetSound(weakThis->AudioBuffer);
                             }
 
-                            weakThis->base_width  = system_av_info.geometry.base_width;
-                            weakThis->base_height = system_av_info.geometry.base_height;
-                            weakThis->NotifyOnFramebufferResizeDelegate();
+                            weakThis->FrameWidth  = system_av_info.geometry.base_width;
+                            weakThis->FrameHeight = system_av_info.geometry.base_height;
+                            weakThis->OnCoreFrameBufferResize.Broadcast();
                         }
                     }, TStatId(), nullptr, ENamedThreads::GameThread);
 
@@ -164,8 +164,8 @@ void ULibretroCoreInstance::Launch()
                 {
                     if (weakThis.IsValid())
                     {
-                        weakThis->rotation_hertz = rotation / 4.f;
-                        weakThis->NotifyOnFramebufferResizeDelegate();
+                        weakThis->FrameRotation = rotation / 4.f;
+                        weakThis->OnCoreFrameBufferResize.Broadcast();
                     }
                 }, TStatId(), nullptr, ENamedThreads::GameThread);
                 
@@ -180,9 +180,9 @@ void ULibretroCoreInstance::Launch()
                 {
                     if (weakThis.IsValid())
                     {
-                        weakThis->base_width  = geometry.base_width;
-                        weakThis->base_height = geometry.base_height;
-                        weakThis->NotifyOnFramebufferResizeDelegate();
+                        weakThis->FrameWidth  = geometry.base_width;
+                        weakThis->FrameHeight = geometry.base_height;
+                        weakThis->OnCoreFrameBufferResize.Broadcast();
                     }
                 }, TStatId(), nullptr, ENamedThreads::GameThread);
                 
