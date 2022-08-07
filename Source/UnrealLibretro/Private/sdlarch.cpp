@@ -790,9 +790,20 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
 
         return false;
     }
+    case RETRO_ENVIRONMENT_GET_FASTFORWARDING: {
+        auto is_fast_forwarding = (bool*)data;
+        *is_fast_forwarding = false;
+        return true;
+    }
+    case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY: {
+        return false;
+    }
 	default:
+        if (!delegate_status) {
 		core_log(RETRO_LOG_WARN, "Unhandled env #%u", cmd);
-		return false;
+        }
+		
+		return delegate_status;
 	}
 
     return delegate_status;
