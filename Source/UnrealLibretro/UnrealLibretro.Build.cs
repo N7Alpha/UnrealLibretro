@@ -8,6 +8,7 @@ public class UnrealLibretro : ModuleRules
 	public UnrealLibretro(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
+		bEnforceIWYU = true;
 
 		PrivateIncludePaths.Add("UnrealLibretro/Public/libretro/include");
 
