@@ -12,6 +12,8 @@ cv2pdb.exe {core_name}.exe
 The pdb is produced in the same directory as the DLL. Copy both of them over to MyCores. Once that's done Visual Studio should automagically load the pdb  and will ask you to point to the source files. And now you might get more insight into whats going wrong... hopefully.
 
 ## Random notes
+To get faster iteration times use [Live Coding](https://docs.unrealengine.com/5.0/en-US/using-live-coding-to-recompile-unreal-engine-applications-at-runtime/) and add `bUseUnityBuild = false;` to your `[Project Name].Target.cs` and `[Project Name]Editor.Target.cs` build files. Mind that this might slow down the initial build the recompiles should be much faster.
+
 Q: Visual Studio loads the source files for the wrong core when debugging 
 
 A: Remove other pdbs AND source files and clean the build and rerun
