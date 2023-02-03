@@ -174,7 +174,7 @@ public:
             if (bHasHitResult && HitResult.GetActor())
             {
                 decltype(GripPosition.Size()) NearestComponentDistance = MAX_flt;
-                // @nocheckin Actor was nullptr here seems like that should be impossible
+                // @todo Actor was nullptr here seems like that should be impossible
                 for (auto* Component : HitResult.GetActor()->GetComponents())
                 {
                     if (auto* GrabComponent = Cast<ULibretroGrabComponent>(Component))
@@ -309,12 +309,12 @@ public:
         if (bIsValidTeleportLocation)
         {
             // Debug Teleport Location
-            UKismetSystemLibrary::DrawDebugCylinder(this, 
-                ProjectedTeleportLocation,
-                ProjectedTeleportLocation + FVector{0.0, 0.0, 25.0f},
-                25.0f);
+            //UKismetSystemLibrary::DrawDebugCylinder(this, 
+            //    ProjectedTeleportLocation,
+            //    ProjectedTeleportLocation + FVector{0.0, 0.0, 25.0f},
+            //    25.0f);
 
-            float NavMeshCellHeight = 8.0f; // John: This is a macro constant somewhere?
+            float NavMeshCellHeight = 8.0f; // John: This is a member of RecastNavMesh
             ProjectedTeleportLocation = ProjectedNavLocation.Location - FVector{0.0f, 0.0f, NavMeshCellHeight};
 
             // If the value hasn't changed we don't have to set it or toggle visibility

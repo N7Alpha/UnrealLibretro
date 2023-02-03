@@ -210,7 +210,7 @@ public:
 	TMap<FString, FString> CoreOptions;
 
 	/**
-	 * Making
+	 * Making @todo probably don't make this part of the public interface
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro, meta = (ShowInnerProperties))
 	TMap<FString, FLibretroControllerDescriptions> ControllersSetOnLaunch;

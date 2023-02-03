@@ -78,6 +78,8 @@ public:
         check(LibretroCoreInstance.IsValid());
 
         // If all controllers were set to default no longer bookkeep bound controllers since its not necessary
+        // The important side effect here is that it is reflected to the user in the gui since they'll only care
+        // to view which cores are configured with non-default controllers
         if (Algo::AllOf(LibretroCoreInstance->ControllersSetOnLaunch[SelectedLibraryName].ControllerDescription,
             [](auto& D) { return D.ID == RETRO_DEVICE_DEFAULT; }))
         {
