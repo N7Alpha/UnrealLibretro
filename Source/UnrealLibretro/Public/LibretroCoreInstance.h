@@ -113,6 +113,14 @@ public:
 	void Pause(bool ShouldPause = true);
 
 	/**
+	 * @brief Effectively a getter version of `retro_set_controller_port_device`
+	 *
+	 * @see `retro_set_controller_port_device` in libretro.h
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeCoreIsReady")
+	void GetController(int Port, int64 &ID, FString &Description);
+
+	/**
 	 * @brief Allows a user to control the Game.
 	 *
 	 * **Note:** This isn't an end all be all solution to handling input. Depending on the kind of functionality you want you might want to write your own solution. You can look at LibretroInputComponent to get an idea of how this might be done.

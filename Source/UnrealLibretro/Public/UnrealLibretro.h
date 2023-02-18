@@ -1,5 +1,6 @@
 #pragma once
 
+#include "LibretroCoreInstance.h"
 #include "Interfaces/IPluginManager.h"
 #include "UObject/NameTypes.h"
 
@@ -69,6 +70,20 @@ public:
 	static FString ResolveSRAMPath(const FString& UnresolvedRomPath, const FString& UnresolvedSavePath)
 	{
 		return IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(UnresolvedSavePath, TEXT("Saves"), TEXT("SRAM"), FPaths::GetCleanFilename(UnresolvedRomPath));
+	}
+
+	static void EnvironmentParseControllerInfo(const retro_controller_info* controller_info,
+		                                       TStaticArray<TArray<FLibretroControllerDescription>, PortCount>& ControllerDescriptions)
+	{
+		for (int port = 0; controller_info[port].types != NULL && port < PortCount; port++) {
+			for (unsigned t = 0; t < controller_info[port].num_types; t++) {
+				if (controller_info[port].types[t].desc == nullptr) break; // Not part of Libretro API but needed check for some cores
+
+				retro_controller_description controller_description = controller_info[port].types[t];
+				ControllerDescriptions[port].Add({ controller_description.desc,
+												   controller_description.id });
+			}
+		}
 	}
 
 private:
