@@ -224,16 +224,7 @@ static bool core_environment(unsigned cmd, void* data)
         case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO: {
             auto controller_info = (const struct retro_controller_info*)data;
             
-            for (int port = 0; controller_info[port].types != NULL && port < PortCount; port++) {
-                for (unsigned t = 0; t < controller_info[port].num_types; t++) {
-                    if (controller_info[port].types[t].desc == nullptr) break; // Not part of Libretro API but needed check for some cores
-                    retro_controller_description controller_description = controller_info[port].types[t];
-                    static_ControllerDescriptions[port].Add({ controller_description.desc, 
-                                                              controller_description.id    });
-
-                    UE_LOG(LogTemp, Verbose, TEXT("Supported Controllers: %s"), controller_description.id, UTF8_TO_TCHAR(controller_description.desc));
-                }
-            }
+            FUnrealLibretroModule::EnvironmentParseControllerInfo(controller_info, static_ControllerDescriptions);
 
             return true;
         }

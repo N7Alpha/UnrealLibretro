@@ -93,7 +93,6 @@ struct libretro_api_t {
     unsigned (*api_version)(void);
     void     (*get_system_info)(struct retro_system_info* info);
     void     (*get_system_av_info)(struct retro_system_av_info* info);
-    void     (*set_controller_port_device)(unsigned port, unsigned device);
     void     (*reset)(void);
     void     (*run)(void);
     size_t   (*serialize_size)(void);
@@ -139,22 +138,31 @@ public:
      */
     FLibretroInputState InputState[PortCount];
 
+    std::atomic<unsigned> devices[PortCount];
+    // Only safe to access from any thread once CoreState is not Starting
+    TStaticArray<TArray<struct FLibretroControllerDescription>, PortCount> ControllerDescriptions;
+
     struct retro_system_info system = { 0 };
 
+    void set_controller_port_device(unsigned port, unsigned device);
+
     TUniqueFunction<TRemovePointer<retro_environment_t>::Type> CoreEnvironmentCallback;
-protected:
-    LibretroContext() {}
-    ~LibretroContext() {}
 
     enum class ECoreState : int8
 	{
+        Starting,
     	Running,
     	Paused,
     	Shutdown
 	};
 	
-    std::atomic<ECoreState> CoreState{ ECoreState::Running };
+    std::atomic<ECoreState> CoreState{ ECoreState::Starting };
 
+protected:
+    LibretroContext() {}
+    ~LibretroContext() {}
+
+    void     (*_internal_set_controller_port_device)(unsigned port, unsigned device);
     libretro_api_t        libretro_api = { 0 };
     struct libretro_callbacks_t* libretro_callbacks = nullptr;
     TQueue<TUniqueFunction<void(libretro_api_t&)>, EQueueMode::Spsc> LibretroAPITasks; // TQueue<T, EQueueMode::Spsc> has acquire-release semantics on Enqueue and Dequeue so this should be thread-safe
