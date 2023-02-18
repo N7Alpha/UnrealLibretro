@@ -19,6 +19,24 @@ ULibretroCoreInstance::ULibretroCoreInstance()
     PrimaryComponentTick.bCanEverTick = true;
 }
 
+void ULibretroCoreInstance::GetController(int Port, int64& ID, FString& Description)
+{
+    NOT_LAUNCHED_GUARD
+
+    // This if statement guards against a datarace on LibretroContext::ControllerDescriptions
+    if (CoreInstance.GetValue()->CoreState.load(std::memory_order_acquire) != LibretroContext::ECoreState::Starting)
+    {
+        ID = CoreInstance.GetValue()->devices[Port].load(std::memory_order_relaxed);
+        for (auto & ControllerDescription : CoreInstance.GetValue()->ControllerDescriptions[Port])
+        {
+            if (ControllerDescription.ID == ID)
+            {
+                Description = ControllerDescription.Description;
+                break;
+            }
+        }
+    }
+}
  
 void ULibretroCoreInstance::ConnectController(APlayerController*       PlayerController,
                                              int                       Port,

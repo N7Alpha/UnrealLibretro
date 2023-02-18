@@ -447,6 +447,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
 
                 RHICmdList.EnqueueLambda([=](FRHICommandList&)
                     {
+                        // Potentially this should be a TryLock() so you don't preempt the render thread although it's unlikely that would happen
                         FScopeLock UploadTextureToRenderHardware(&this->Unreal.FrameUpload.CriticalSection);
                         GDynamicRHI->RHIUpdateTexture2D(
                             this->Unreal.TextureRHI.GetReference(),
@@ -764,6 +765,8 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
     case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO: {
         auto controller_info = (const struct retro_controller_info*)data;
 
+        FUnrealLibretroModule::EnvironmentParseControllerInfo(controller_info, ControllerDescriptions);
+
         return true;
     }
     case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER: {
@@ -833,6 +836,10 @@ void LibretroContext::core_audio_sample(int16_t left, int16_t right) {
 	core_audio_write(buf, (size_t)1);
 }
 
+void LibretroContext::set_controller_port_device(unsigned port, unsigned device) {
+    devices[port] = device; // The core doesn't keep track of this so we have to
+    _internal_set_controller_port_device(port, device);
+}
 
 void LibretroContext::load(const char *sofile) {
 	void (*set_environment)(retro_environment_t) = NULL;
@@ -852,7 +859,6 @@ void LibretroContext::load(const char *sofile) {
 	load_retro_sym(api_version);
 	load_retro_sym(get_system_info);
 	load_retro_sym(get_system_av_info);
-	load_retro_sym(set_controller_port_device);
 	load_retro_sym(reset);
 	load_retro_sym(run);
 	load_retro_sym(load_game);
@@ -862,6 +868,8 @@ void LibretroContext::load(const char *sofile) {
     load_retro_sym(serialize_size);
     load_retro_sym(serialize);
     load_retro_sym(unserialize);
+
+    load_sym(_internal_set_controller_port_device, retro_set_controller_port_device);
 
 	load_sym(set_environment, retro_set_environment);
 	load_sym(set_video_refresh, retro_set_video_refresh);
@@ -1001,20 +1009,20 @@ LibretroContext* LibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInst
                 auto* ControllerDescription = ControllersSetOnLaunch.Find(l->system.library_name);
                 if (ControllerDescription)
                 {
-                    l->libretro_api.set_controller_port_device(Port, (*ControllerDescription)[Port].ID);
+                    l->set_controller_port_device(Port, (*ControllerDescription)[Port].ID);
                 }
                 else
                 {
                     // This is needed for some cores nestopia specifically is one example
                     // otherwise nothing will be bound for some reason
-                    l->libretro_api.set_controller_port_device(Port, RETRO_DEVICE_DEFAULT);
+                    l->set_controller_port_device(Port, RETRO_DEVICE_DEFAULT);
                 }
             }
 
             // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
             l->load_game(TCHAR_TO_UTF8(*game));
 		
-
+            l->CoreState.store(ECoreState::Running, std::memory_order_release);
             LoadedCallback(l, l->libretro_api);
         	
         	// This simplifies the logic in core_video_refresh, It stops us from erroring it doesn't error when we try to unmap this pixel buffer in core_video_refresh
@@ -1148,8 +1156,13 @@ void LibretroContext::Shutdown(LibretroContext* Instance)
 
 void LibretroContext::Pause(bool ShouldPause)
 {
-    this->CoreState.store(ShouldPause ? ECoreState::Paused : ECoreState::Running,
-                          std::memory_order_relaxed);
+    // We enqueue the state change because otherwise we might prematurely unset the Starting state
+    // Alternatively you could add one more state to accomplish this, but this is fine for now
+    EnqueueTask([=](auto&&)
+        {
+            CoreState.store(ShouldPause ? ECoreState::Paused : ECoreState::Running, std::memory_order_relaxed);
+        });
+    
 }
 
 void LibretroContext::EnqueueTask(TUniqueFunction<void(libretro_api_t&)> LibretroAPITask)
