@@ -19,7 +19,13 @@
 			"Name": "UnrealLibretro",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",
-			"WhitelistPlatforms": [ "Win64", "Mac", "Android" ]
+			"WhitelistPlatforms": [ "Win64", "Android" ]
+		},
+		{
+			"Name": "UnrealLibretroEditor",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"WhitelistPlatforms": [ "Win64" ]
 		}
 	]
 }

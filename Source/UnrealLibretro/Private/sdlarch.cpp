@@ -5,6 +5,7 @@ extern "C"
 #include "gfx/scaler/pixconv.h"
 }
 
+#include "LibretroCoreInstance.h"
 #include "UnrealLibretro.h" // For Libretro debug log category
 #include "LibretroSettings.h"
 #include "LibretroInputDefinitions.h"
@@ -313,7 +314,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
                                         ID3D12Resource* ResolvedTexture = (ID3D12Resource*)this->Unreal.TextureRHI->GetTexture2D()->GetNativeResource();
                                         D3D12_RESOURCE_DESC TextureAttributes = ResolvedTexture->GetDesc();
                                         D3D12_RESOURCE_ALLOCATION_INFO TextureMemoryUsage = UE4D3DDevice->GetResourceAllocationInfo(0b0, 1, &TextureAttributes);
-                                        check(!FAILED(UE4D3DDevice->CreateSharedHandle(ResolvedTexture, NULL, GENERIC_ALL, *FString::Printf(TEXT("OpenGLSharedFramebuffer_UnrealLibretro_%u"), NamingIdx.Increment()), &SharedHandle)));
+                                        verify(!FAILED(UE4D3DDevice->CreateSharedHandle(ResolvedTexture, NULL, GENERIC_ALL, *FString::Printf(TEXT("OpenGLSharedFramebuffer_UnrealLibretro_%u"), NamingIdx.Increment()), &SharedHandle)));
                                         check(SharedHandle);
 
                                         MipLevels = TextureAttributes.MipLevels;
@@ -410,13 +411,14 @@ static bool GLLogCall(const char* function, const char* file, int line)
     } else {
         for (auto i : { 0, 1 }) {
             core.software.bgra_buffers[i] = FMemory::Malloc(4 * core.av.geometry.max_width
-                                                              * core.av.geometry.max_height);
+                                                              * core.av.geometry.max_height, PLATFORM_CACHE_LINE_SIZE);
         }
     }
 	
     core.hw.context_reset();
 }
 
+#include "Async/TaskGraphInterfaces.h"
 // Stripped down code for profiling purposes https://godbolt.org/z/c57esx
  void LibretroContext::core_video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
     DECLARE_SCOPE_CYCLE_COUNTER(TEXT("PrepareFrameBufferForRenderThread"), STAT_LibretroPrepareFrameBufferForRenderThread, STATGROUP_UnrealLibretro);
@@ -598,7 +600,7 @@ static void core_log(enum retro_log_level level, const char *fmt, ...) {
 }
 
 bool LibretroContext::core_environment(unsigned cmd, void *data) {
-    bool delegate_status;
+    bool delegate_status{false};
     if (CoreEnvironmentCallback)
     {
         delegate_status = CoreEnvironmentCallback(cmd, data);
@@ -606,17 +608,16 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
     
 	switch (cmd) {
     case RETRO_ENVIRONMENT_GET_VARIABLE: {
-        struct retro_variable* var = (struct retro_variable*)data;
+        retro_variable* var = (struct retro_variable*)data;
 
-        auto key = std::string(var->key);
+        std::string key(var->key);
 
         if (core.settings.find(key) != core.settings.end()) {
             var->value = core.settings.at(key).c_str();
             return true;
         }
-        else {
+        
             return false;
-        }
     }
     case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE: {
         const struct retro_variable* var = (const struct retro_variable*)data;
@@ -630,6 +631,8 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
             // Initialize key
             const std::string key(arr_var->key);
 
+            // Don't override custom options already set
+            if (core.settings.count(key) == 0) {
             // Parse and initialize default setting, First delimited setting is default by Libretro convention
             auto advance_past_space = [](const char* x) { while (*x == ' ') { x++; } return x; };
             auto past_comment = advance_past_space(strchr(arr_var->value, ';') + 1);
@@ -639,6 +642,7 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
             
             // Write setting to table
             core.settings[key] = default_setting;
+            }
 
         } while ((++arr_var)->key);
 
@@ -759,9 +763,6 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
     }
     case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO: {
         auto controller_info = (const struct retro_controller_info*)data;
-        for (unsigned i = 0; i < controller_info->num_types; i++) {
-            UE_LOG(Libretro, Verbose, TEXT("Supported Controllers: %s"), ANSI_TO_TCHAR(controller_info->types[i].desc));
-        }
 
         return true;
     }
@@ -809,13 +810,19 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
     return delegate_status;
 }
 
+// Unfinished experiment with less branchy version of this function https://godbolt.org/z/hYeYxr95r
 int16_t LibretroContext::core_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
+    // Some of the setup to get the core to poll for certain types of input is either done through retro_set_controller_port_device
+    // or in the handled RETRO_ENVIRONMENT_GET_VARIABLE and RETRO_ENVIRONMENT_SET_CONTROLLER_INFO events in the retro_environment_t
+    // callback core_environment. Getting the core to handle specific input amounts to reading documentation and sifting through the core's code
 
     switch (device) {
-        case RETRO_DEVICE_ANALOG:   
-            //check(index < 2); // "I haven't implemented Triggers and other analog controls yet"
-            return InputState[port].analog[id][index];
-        case RETRO_DEVICE_JOYPAD:   return InputState[port].digital[id];
+    case RETRO_DEVICE_JOYPAD:   return InputState[port][to_integral(ERetroDeviceID::JoypadB)     + id];
+    case RETRO_DEVICE_LIGHTGUN: return InputState[port][to_integral(ERetroDeviceID::LightgunX)   + id];
+    case RETRO_DEVICE_ANALOG:   return InputState[port][to_integral(ERetroDeviceID::AnalogLeftX) + 2 * index + (id % RETRO_DEVICE_ID_JOYPAD_L2)]; // The indexing logic is broken and might OOBs if we're queried for something that isn't an analog trigger or stick
+    case RETRO_DEVICE_POINTER:  return InputState[port][to_integral(ERetroDeviceID::PointerX)    + id];
+    case RETRO_DEVICE_MOUSE:
+    case RETRO_DEVICE_KEYBOARD:
         default:                    return 0;
     }
 }
@@ -884,12 +891,9 @@ void LibretroContext::load(const char *sofile) {
 
 
 void LibretroContext::load_game(const char* filename) {
-    struct retro_system_info system = { 0 };
     struct retro_game_info info = { filename , nullptr, (size_t)0, "" };
     TArray<uint8> gameBinary;
     
-    libretro_api.get_system_info(&system);
-
     if (!system.need_fullpath) {
         verify(FFileHelper::LoadFileToArray(gameBinary, UTF8_TO_TCHAR(filename)));
 
@@ -920,7 +924,7 @@ void LibretroContext::load_game(const char* filename) {
     video_configure(&core.av.geometry);
 }
 
-LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TUniqueFunction<void(LibretroContext*, libretro_api_t&)> LoadedCallback)
+LibretroContext* LibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInstance, FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TUniqueFunction<void(LibretroContext*, libretro_api_t&)> LoadedCallback)
 {
 
     check(IsInGameThread()); // So static initialization is safe + UObject access
@@ -929,6 +933,11 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     static TBitArray<TInlineAllocator<(max_instances / 8) + 1>> AllocatedInstances(false, max_instances);
 
     LibretroContext *l = new LibretroContext();
+
+    for (auto& Option : LibretroCoreInstance->CoreOptions)
+    {
+        l->core.settings[TCHAR_TO_UTF8(*Option.Key)] = TCHAR_TO_UTF8(*Option.Value);
+    }
 
     // Grab a statically generated callback structure
     int32 InstanceNumber;
@@ -959,10 +968,11 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
     // Kick the initialization process off to another thread. It shouldn't be added to the Unreal task pool because those are too slow and my code relies on OpenGL state being thread local.
     // The Runnable system is the standard way for spawning and managing threads in Unreal. FThread looks enticing, but they removed any way to detach threads since "it doesn't work as expected"
     l->LambdaRunnable = FLambdaRunnable::RunLambdaOnBackGroundThread(FPaths::GetCleanFilename(core) + FPaths::GetCleanFilename(game),
-        [=, LoadedCallback = MoveTemp(LoadedCallback)]() {
+        [=, LoadedCallback = MoveTemp(LoadedCallback), ControllersSetOnLaunch = LibretroCoreInstance->ControllersSetOnLaunch]() {
 
             // Here I load a copy of the dll instead of the original. If you load the same dll multiple times you won't obtain a new instance of the dll loaded into memory,
             // instead all variables and function pointers will point to the original loaded dll
+            // WARNING: Don't ever even try to load the original dll since the editor needs to load it to query core settings (This can happen when you pause in PIE!)
             const FString InstancedCorePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(
 #if PLATFORM_ANDROID
                 // On Android .so's have to be copied to your private application directory before they are loaded
@@ -983,13 +993,27 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
             l->core.hw.context_destroy = []() {};
 
             // Loads the dll and its function pointers into libretro_api
-            l->load(TCHAR_TO_ANSI(*InstancedCorePath));
+            l->load(TCHAR_TO_UTF8(*InstancedCorePath));
+
+            l->libretro_api.get_system_info(&l->system);
+            for (int Port = 0; Port < PortCount; Port++)
+            {
+                auto* ControllerDescription = ControllersSetOnLaunch.Find(l->system.library_name);
+                if (ControllerDescription)
+                {
+                    l->libretro_api.set_controller_port_device(Port, (*ControllerDescription)[Port].ID);
+                }
+                else
+                {
+                    // This is needed for some cores nestopia specifically is one example
+                    // otherwise nothing will be bound for some reason
+                    l->libretro_api.set_controller_port_device(Port, RETRO_DEVICE_DEFAULT);
+                }
+            }
 
             // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
             l->load_game(TCHAR_TO_UTF8(*game));
 		
-            // This is needed for some cores nestopia specifically is one example
-            l->libretro_api.set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
 
             LoadedCallback(l, l->libretro_api);
         	

@@ -1,8 +1,24 @@
 #pragma once
 
 #include "Interfaces/IPluginManager.h"
+#include "UObject/NameTypes.h"
 
 UNREALLIBRETRO_API DECLARE_LOG_CATEGORY_EXTERN(Libretro, Log, All);
+
+#if PLATFORM_WINDOWS && PLATFORM_64BITS
+#	define PLATFORM_INDEX 0
+#elif PLATFORM_ANDROID_ARM
+#   define PLATFORM_INDEX 1
+#elif PLATFORM_ANDROID_ARM64
+#	define PLATFORM_INDEX 2
+#endif
+
+static const struct { FString DistributionPath; FString Extension; FString BuildbotPath; FName ImageName; } CoreLibMetadata[] =
+{
+	{ TEXT("Win64/"),                  "_libretro.dll",           "https://buildbot.libretro.com/nightly/windows/x86_64/latest/"     ,   "Launcher.Platform_Windows.Large"      },
+	{ TEXT("Android/arm64-v8a/"),      "_libretro_android.so",    "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/"  ,   "Launcher.Platform_Android.Large"      },
+	{ TEXT("Android/armeabi-v7a/"),    "_libretro_android.so",    "https://buildbot.libretro.com/nightly/android/latest/armeabi-v7a/",   "Launcher.Platform_Android.Large"      },
+};
 
 class FUnrealLibretroModule : public IModuleInterface
 {
@@ -14,6 +30,11 @@ public:
 
 
 	/** Path Resolution */
+	static bool IsCoreName(const FString &CorePath)
+	{
+		return FPaths::GetExtension(CorePath).IsEmpty() && !CorePath.IsEmpty() && FPaths::GetPath(CorePath).IsEmpty();
+	}
+
 	template <typename... PathTypes>
 	static FString IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(const FString& Path, PathTypes&&... InPaths)
 	{
@@ -27,18 +48,9 @@ public:
 
 	static FString ResolveCorePath(FString UnresolvedCorePath)
 	{
-		if (FPaths::GetExtension(UnresolvedCorePath).IsEmpty()) {
-			UnresolvedCorePath = FString::Printf(
-#if PLATFORM_ANDROID_ARM
-				TEXT("Android/armeabi-v7a/%s.so")
-#elif PLATFORM_ANDROID_ARM64
-				TEXT("Android/arm64-v8a/%s.so")
-#elif PLATFORM_MAC
-				TEXT("Mac/%s.dylib")
-#elif PLATFORM_WINDOWS && PLATFORM_64BITS
-				TEXT("Win64\\%s.dll")
-#endif
-			, *UnresolvedCorePath);
+		if (IsCoreName(UnresolvedCorePath)) 
+		{
+			UnresolvedCorePath = CoreLibMetadata[PLATFORM_INDEX].DistributionPath + *UnresolvedCorePath + CoreLibMetadata[PLATFORM_INDEX].Extension;
 		}
 
 		return IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(UnresolvedCorePath, TEXT("MyCores"));
@@ -66,3 +78,5 @@ private:
 	FString RedistDirectory;
 #endif
 };
+
+#undef PLATFORM_INDEX

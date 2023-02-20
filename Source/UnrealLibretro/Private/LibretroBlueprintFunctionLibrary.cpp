@@ -4,6 +4,7 @@
 
 #include "Engine/Engine.h"
 #include "Camera/CameraComponent.h"
+#include "PhysicsEngine/PhysicsSettings.h"
 
 AActor* ULibretroBlueprintFunctionLibrary::LookingAtActor(UCameraComponent* CameraComponent, EBranchNames& Branch)
 {
@@ -27,9 +28,14 @@ UActorComponent* ULibretroBlueprintFunctionLibrary::HasComponent(AActor* Actor, 
 	return Component;
 }
 
-TMap<FKey, ERetroInput> ULibretroBlueprintFunctionLibrary::CombineInputMaps(const TMap<FKey, ERetroInput>& InMap1, const TMap<FKey, ERetroInput>& InMap2)
+TMap<FKey, ERetroDeviceID> ULibretroBlueprintFunctionLibrary::CombineInputMaps(const TMap<FKey, ERetroDeviceID>& InMap1, const TMap<FKey, ERetroDeviceID>& InMap2)
 {
 	auto OutMap(InMap1);
 	OutMap.Append(InMap2);
 	return OutMap;
+}
+
+bool ULibretroBlueprintFunctionLibrary::IsSupportUVFromHitResultsEnabledInConfig()
+{
+	return UPhysicsSettings::Get()->bSupportUVFromHitResults;
 }
