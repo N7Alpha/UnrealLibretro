@@ -192,31 +192,29 @@ static bool core_environment(unsigned cmd, void* data)
         case RETRO_ENVIRONMENT_SET_VARIABLES: {
             const struct retro_variable* arr_var = (const struct retro_variable*)data;
 
-            for (n = 0; n < sizeof(static_LibretroOptions) / sizeof(static_LibretroOptions[0]); n++, arr_var++) {
+            for (n = 0; n < sizeof(static_LibretroOptions) / sizeof(static_LibretroOptions[0]); arr_var++) {
                 if (arr_var->key == nullptr) break;
 
                 // Example entry:
                 // { .key = "foo_option", .value = "Speed hack coprocessor X; false|true" }
-                static_LibretroOptions[n].Key = arr_var->key;
+                const FString Value = arr_var->value;
 
-                const char* base = arr_var->value;
-                const char* end = base;
-
-                while (*end != ';') end++;
-                static_LibretroOptions[n].Description = FString(end - base, base);
-                end++;
-
-                while (*end == ' ') end++;
-
-                static_LibretroOptions[n].Values.Empty();
-                for (;;) {
-                    base = end;
-                    while (*end != '|' && *end != '\0') end++;
-
-                    static_LibretroOptions[n].Values.Add(FString(end - base, base));
-                    if (*end == '\0') break;
-                    end++;
+                // Find the position of the semicolon that separates the description and values
+                int32 SemicolonIndex;
+                if (!Value.FindChar(';', SemicolonIndex)) {
+                    UE_LOG(Libretro, Warning, TEXT("Failed to parse libretro core option '%s'. No semicolon"), *Value);
+                    continue; // Skip this Option
                 }
+
+                // Extract the description substring
+                static_LibretroOptions[n].Description = Value.Left(SemicolonIndex);
+
+                // Extract the values substring and split it into individual values
+                FString PipeDelimitedValueString = Value.Mid(SemicolonIndex + 1).TrimStart();
+
+                PipeDelimitedValueString.ParseIntoArray(static_LibretroOptions[n].Values, TEXT("|"), false);
+                static_LibretroOptions[n].Key = arr_var->key;
+                n++;
             }
 
             return true;
