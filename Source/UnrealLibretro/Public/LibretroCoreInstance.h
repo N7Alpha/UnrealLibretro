@@ -5,8 +5,32 @@
 #include "Components/AudioComponent.h"
 #include "LibretroInputDefinitions.h"
 #include "Engine/TextureRenderTarget2D.h"
-
 #include "LibretroCoreInstance.generated.h"
+
+
+USTRUCT(BlueprintType)
+struct FLibretroControllerDescription // retro_controller_description
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere)
+	FString Description{"Unspecified"};
+
+	UPROPERTY(VisibleAnywhere)
+	unsigned int ID{RETRO_DEVICE_DEFAULT};
+};
+
+USTRUCT(BlueprintType)
+struct FLibretroControllerDescriptions
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere)
+	FLibretroControllerDescription ControllerDescription[PortCount];
+
+	      FLibretroControllerDescription& operator[](int Port)       { return ControllerDescription[Port]; }
+	const FLibretroControllerDescription& operator[](int Port) const { return ControllerDescription[Port]; }
+};
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCoreIsReady, const class UTextureRenderTarget2D*, LibretroFramebuffer, const class USoundWave*, AudioBuffer);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCoreFramebufferResize);
@@ -26,7 +50,7 @@ public:
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	virtual void BeginDestroy();
 	
-
+	friend class FLibretroCoreInstanceDetails;
 
 	/** Delegate Functions */
 	/**
@@ -101,7 +125,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Libretro")
 	void ConnectController(APlayerController*        PlayerController,
 		                   int                       Port,
-		                   TMap<FKey, ERetroInput>   ControllerBindings,
+		                   TMap<FKey, ERetroDeviceID>ControllerBindings,
 		                   FOnControllerDisconnected OnControllerDisconnected,
 		                   bool                      ForwardAllKeyboardInputToCoreIfPossible);
 
@@ -114,6 +138,52 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Libretro")
 	void DisconnectController(int Port);
+
+	/**
+	 * @brief Sets the state of a button for the Libretro core
+	 * 
+	 * Bindings in ConnectController will override inputs set here
+	 * You can set analog inputs through this interface as well however it won't work well
+	 * 
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
+	void SetInputDigital(int Port, bool Pressed, ERetroDeviceID Input);
+
+	/**
+	 * @brief Sets the analog state of an input for the Libretro core
+	 * 
+	 * This should mainly only be used for analog stick inputs and analog triggers
+	 * The internal datatype returned when input is queried by the Libretro Core is int16
+	 * for digital inputs its 1 or 0 in which case use SetInputDigital
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
+	void SetInputAnalog(int Port, int _16BitSignedInteger, ERetroDeviceID Input);
+
+	/**
+	 * @brief Equivalent to pulling a trigger on a nes zapper or arcade gun
+	 * 
+	 * @param XY - The top-left of the screen is coordinate (0, 0) bottom-right is (1, 1), x is the horizontal axis
+	 *
+	 * These are convenience functions you can try fiddling around with the Lightgun and Pointer input directly in SetInputDigital too
+	 * 
+	 * There are some gotchas here:
+	 *	- on nestopia if you only pull the trigger for one frame it won't register
+	 *  - zapper on nes requires Port=1 which is the second port because of zero based indexing
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Libretro")
+	void GunPullTrigger(int Port, FVector2D XY);
+
+	/**
+	 * @brief This is used for reloading in lots of games
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Libretro")
+	void GunPullTriggerOffscreen(int Port);
+
+	/**
+	 * @brief Equivalent to releasing a trigger on a nes zapper or arcade gun
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Libretro")
+	void GunReleaseTrigger(int Port);
 
 	/** 
 	 * @brief Where the Libretro Core's frame is drawn
@@ -129,6 +199,21 @@ public:
 
 	UPROPERTY(BlueprintReadWrite, Category = Libretro)
 	UAudioComponent* AudioComponent;
+
+	/**
+	 * @brief A key-value map for configuring Libretro Cores
+	 * 
+	 * Options are appended to this list when you change them in the 'Libretro Core Options' section of the details panel
+	 * They are only added here if they differ from their default
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro)
+	TMap<FString, FString> CoreOptions;
+
+	/**
+	 * Making @todo probably don't make this part of the public interface
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro, meta = (ShowInnerProperties))
+	TMap<FString, FLibretroControllerDescriptions> ControllersSetOnLaunch;
 
 	/**
 	 * You should provide a path to your ROM relative to the MyROMs directory in the UnrealLibretro directory in your project's Plugins directory.
@@ -176,7 +261,7 @@ protected:
 	UPROPERTY()
 	USoundWave* AudioBuffer;
 	
-	TStaticArray<TMap<FKey, ERetroInput>,           PortCount> Bindings;
+	TStaticArray<TMap<FKey, ERetroDeviceID>,        PortCount> Bindings;
 	TStaticArray<TWeakObjectPtr<APlayerController>, PortCount> Controller{ nullptr };
 	TStaticArray<bool,                              PortCount> ForwardKeyboardInput{ false };
 	TStaticArray<FOnControllerDisconnected,         PortCount> Disconnected{ FOnControllerDisconnected() };

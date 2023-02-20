@@ -2,44 +2,95 @@
 
 #include "libretro/libretro.h"
 
+
+// By convention RETRO_DEVICE_JOYPAD is the default controller although often it represents something different compared to
+// the libretro.h documentation of RETRO_DEVICE_JOYPAD. Basically it will be the most reasonable controller for the core
+#define RETRO_DEVICE_DEFAULT RETRO_DEVICE_JOYPAD
+
+
 #include "InputCoreTypes.h"
 #include "CoreMinimal.h"
 
-constexpr int PortCount = 4;
-struct FLibretroInputState
+#include <type_traits> // One of the few std headers where its usage is recommended over a native Unreal Engine implementation see https://docs.unrealengine.com/5.0/en-US/epic-cplusplus-coding-standard-for-unreal-engine/#useofstandardlibraries
+
+// Check libretro.h for further documentation. More or less this maps to RETRO_DEVICE_ID values in there
+// DO NOT REORDER THESE... doing so will break indexing badly....
+//      The order for each RETRO_DEVICE is in the same numerical increasing order as every RETRO_DEVICE_*_ID value 
+UENUM(BlueprintType)
+enum class ERetroDeviceID : uint8
 {
-	unsigned digital[RETRO_DEVICE_ID_JOYPAD_R3 + 1]{};
-    int16_t  analog[RETRO_DEVICE_INDEX_ANALOG_RIGHT + 1][RETRO_DEVICE_ID_ANALOG_Y + 1]{};
+    // RETRO_DEVICE_ID_JOYPAD
+	JoypadB,
+	JoypadY,
+	JoypadSelect,
+	JoypadStart,
+	JoypadUp,
+	JoypadDown,
+	JoypadLeft,
+	JoypadRight,
+	JoypadA,
+	JoypadX,
+	JoypadL,
+	JoypadR,
+	JoypadL2,
+	JoypadR2,
+	JoypadL3,
+	JoypadR3,
+
+    // RETRO_DEVICE_ID_LIGHTGUN
+    LightgunX UMETA(Hidden), // The Lightgun entries marked UMETA(Hidden) here are deprecated according to libretro.h
+    LightgunY UMETA(Hidden),
+    LightgunTrigger,
+    LightgunAuxA,
+    LightgunAuxB,
+    LightgunPause UMETA(Hidden),
+    LightgunStart,
+    LightgunSelect,
+    LightgunAuxC,
+    LightgunDpadUp,
+    LightgunDpadDown,
+    LightgunDpadLeft,
+    LightgunDpadRight,
+    LightgunScreenX,
+    LightgunScreenY,
+    LightgunIsOffscreen,
+    LightgunReload,
+
+    // RETRO_DEVICE_ID_ANALOG                                       (For triggers)
+    // CartesianProduct(RETRO_DEVICE_ID_ANALOG, RETRO_DEVICE_INDEX) (For stick input)
+	AnalogLeftX,
+    AnalogLeftY,
+	AnalogRightX,
+	AnalogRightY,
+    AnalogL2,
+    AnalogR2,
+
+    // RETRO_DEVICE_ID_POINTER
+    PointerX,
+    PointerY,
+    PointerPressed,
+    PointerCount,
+
+    Size UMETA(Hidden),
 };
 
-// DO NOT REORDER THESE
-UENUM(BlueprintType)
-enum  class ERetroInput : uint8
+// std alchemy that converts enum class variables to their integer type
+template<typename E>
+static constexpr auto to_integral(E e) -> typename std::underlying_type<E>::type
 {
-	B,
-	Y,
-	SELECT,
-	START,
-	UP,
-	DOWN,
-	LEFT,
-	RIGHT,
-	A,
-	X,
-	L,
-	R,
-	L2,
-	R2,
-	L3,
-	R3,
-	LeftX,
-    RightX,
-	LeftY,
-	RightY,
-	DisconnectController,
+    return static_cast<typename std::underlying_type<E>::type>(e);
+}
 
-	DigitalCount = LeftX UMETA(Hidden),
-	AnalogCount = DisconnectController - DigitalCount UMETA(Hidden)
+constexpr int PortCount = 4;
+
+struct FLibretroInputState
+{
+    int16_t Data[to_integral(ERetroDeviceID::Size)]{0};
+
+    FLibretroInputState() {}
+
+    int16_t& operator[](unsigned Index)               { return Data[Index]; }
+    int16_t& operator[](ERetroDeviceID RetroDeviceID) { return Data[to_integral(RetroDeviceID)]; }
 };
 
 // const for a reason if you make this non-const make sure you don't cause a data race also make it non static too

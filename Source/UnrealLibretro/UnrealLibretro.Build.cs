@@ -46,8 +46,9 @@ public class UnrealLibretro : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"InputCore",
-				"Slate",
 				"Projects",
+				"HeadMountedDisplay",
+				"NavigationSystem",
 			}
 			);
 

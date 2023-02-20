@@ -22,7 +22,7 @@ ULibretroCoreInstance::ULibretroCoreInstance()
  
 void ULibretroCoreInstance::ConnectController(APlayerController*       PlayerController,
                                              int                       Port,
-                                             TMap<FKey, ERetroInput>   ControllerBindings,
+                                             TMap<FKey, ERetroDeviceID>   ControllerBindings,
                                              FOnControllerDisconnected OnControllerDisconnected,
                                              bool                      ForwardAllKeyboardInputToCoreIfPossible)
 {
@@ -47,7 +47,7 @@ void ULibretroCoreInstance::DisconnectController(int Port)
         {
             CoreInstance.GetValue()->EnqueueTask([&InputStatePort = this->CoreInstance.GetValue()->InputState[Port]](libretro_api_t& libretro_api)
             {
-                InputStatePort = { { 0 } };
+                InputStatePort = FLibretroInputState();
 
                 if (libretro_api.keyboard_event)
                 {
@@ -95,8 +95,17 @@ void ULibretroCoreInstance::Launch()
 
     RenderTarget->Filter = TF_Nearest; // @todo remove this
 
-    this->CoreInstance = LibretroContext::Launch(_CorePath, _RomPath, RenderTarget, static_cast<URawAudioSoundWave*>(AudioBuffer),
-	    [weakThis = MakeWeakObjectPtr(this), SRAMPath = FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath)]
+    // @todo Figure out if this is actually a problem then fix it maybe
+    // Sometimes it can be practical to make the UV's oversized so we don't want it to wrap
+    // however this might make debugging a little more confusing if you have a UV transformation issue because the texture might be rendered
+    // as completely black and not reflected or tiled or something <-- I actually immediately ran into this issue because the logic here was
+    // broken because I think all my UV's are negative
+    //RenderTarget->AddressX = TA_Clamp;
+    //RenderTarget->AddressY = TA_Clamp;
+
+    this->CoreInstance = LibretroContext::Launch(this, _CorePath, _RomPath, RenderTarget, static_cast<URawAudioSoundWave*>(AudioBuffer),
+	    [weakThis = MakeWeakObjectPtr(this), SRAMPath = FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath), 
+         ControllersSetOnLaunch = this->ControllersSetOnLaunch]
         (LibretroContext *_CoreInstance, libretro_api_t &libretro_api) 
 	    {   // Core has loaded
             
@@ -206,7 +215,8 @@ void ULibretroCoreInstance::Pause(bool ShouldPause)
     Paused = ShouldPause;
 }
 
-void ULibretroCoreInstance::Shutdown() {
+void ULibretroCoreInstance::Shutdown() 
+{
     
     NOT_LAUNCHED_GUARD
 
@@ -267,12 +277,74 @@ void ULibretroCoreInstance::BeginPlay()
     }*/
 }
 
-#include <type_traits>
-
-template<typename E>
-static constexpr auto to_integral(E e) -> typename std::underlying_type<E>::type
+void ULibretroCoreInstance::SetInputDigital(int Port, bool Pressed, ERetroDeviceID Input)
 {
-    return static_cast<typename std::underlying_type<E>::type>(e);
+    NOT_LAUNCHED_GUARD
+
+    if (Controller[Port] != nullptr) 
+{
+        UE_LOG(Libretro, Warning, TEXT("This function '%s' is incompatible with ConnectController this call will have no effect"), __func__);
+    }
+
+    CoreInstance.GetValue()->EnqueueTask([=, CoreInstance = CoreInstance.GetValue()](auto)
+    {
+        CoreInstance->InputState[Port][Input] = Pressed;
+    });
+}
+
+void ULibretroCoreInstance::SetInputAnalog(int Port, int _16BitSignedInteger, ERetroDeviceID Input)
+{
+    NOT_LAUNCHED_GUARD
+
+    if (Controller[Port] != nullptr)
+    {
+        UE_LOG(Libretro, Warning, TEXT("This function '%s' is incompatible with ConnectController this call will have no effect"), __func__);
+    }
+
+    CoreInstance.GetValue()->EnqueueTask([=, CoreInstance = CoreInstance.GetValue()](auto)
+    {
+        CoreInstance->InputState[Port][Input] = _16BitSignedInteger;
+    });
+}
+
+void ULibretroCoreInstance::GunPullTrigger(int Port, FVector2D XY)
+{
+    NOT_LAUNCHED_GUARD
+
+    CoreInstance.GetValue()->EnqueueTask([=, CoreInstance = CoreInstance.GetValue()](auto)
+    {
+        // I think mame wants both these to be set
+        CoreInstance->InputState[Port][ERetroDeviceID::PointerPressed] = true;
+        CoreInstance->InputState[Port][ERetroDeviceID::PointerCount] = 1;
+
+        // Translate into libretro coordinate system [0.0, 1.0] -> [-0x7fff, 0x7fff] which is just a shift and scale the rounding is pedantic
+        CoreInstance->InputState[Port][ERetroDeviceID::PointerX] = FMath::RoundHalfToEven(0x7FFF * 2.f *  (XY[0] - 0.5f));
+        CoreInstance->InputState[Port][ERetroDeviceID::PointerY] = FMath::RoundHalfToEven(0x7FFF * 2.f *  (XY[1] - 0.5f));
+    });
+}
+
+void ULibretroCoreInstance::GunPullTriggerOffscreen(int Port)
+{
+    NOT_LAUNCHED_GUARD
+
+    CoreInstance.GetValue()->EnqueueTask([=](auto) 
+    {
+        CoreInstance.GetValue()->InputState[Port][ERetroDeviceID::LightgunIsOffscreen] = true;
+        CoreInstance.GetValue()->InputState[Port][ERetroDeviceID::PointerPressed] = false;
+        CoreInstance.GetValue()->InputState[Port][ERetroDeviceID::PointerCount] = 1;
+    });
+}
+
+void ULibretroCoreInstance::GunReleaseTrigger(int Port) 
+{
+    NOT_LAUNCHED_GUARD
+
+    CoreInstance.GetValue()->EnqueueTask([=](auto)
+    {
+        CoreInstance.GetValue()->InputState[Port][ERetroDeviceID::LightgunIsOffscreen] = false;
+        CoreInstance.GetValue()->InputState[Port][ERetroDeviceID::PointerPressed] = false;
+        CoreInstance.GetValue()->InputState[Port][ERetroDeviceID::PointerCount] = 0;
+    });
 }
 
 void ULibretroCoreInstance::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
@@ -287,29 +359,32 @@ void ULibretroCoreInstance::TickComponent(float DeltaTime, enum ELevelTick TickT
         {
             if (!Controller[Port].IsValid()) continue;
 
-            FLibretroInputState NextInputState = {{0}};
+            FLibretroInputState NextInputState{};
             for (auto ControllerBinding : Bindings[Port])
             {
                 if (ControllerBinding.Key.IsAxis1D()) 
                 {
                     // Both Y-Axes should be inverted because of Libretro convention however Unreal has a quirk where the Y-Axis of the right stick is inverted by default for some reason
-                    //                         LX  RX  LY  RY
-                    float StickAxisInvert[] = { 1,  1, -1,  1 };
-                    int StickAxisIndex = to_integral(ControllerBinding.Value) - to_integral(ERetroInput::LeftX);
-                    // Some cores support 0x7FFF to -0x7FFF others to -0x8000. However I support only 0x7FFF to -0x7FFF
-                    auto retro_value = (int16_t)FMath::RoundHalfToEven(StickAxisInvert[StickAxisIndex] * 0x7FFF * Controller[Port]->PlayerInput->GetKeyValue(ControllerBinding.Key)); 
-                    reinterpret_cast<int16_t*>(NextInputState.analog)[StickAxisIndex] = int16_t(FMath::Clamp(reinterpret_cast<int16_t*>(NextInputState.analog)[StickAxisIndex] + retro_value, -0x7FFF, 0x7FFF));
+                    //                         LX  LY  RX  RY
+                    float StickAxisInvert[] = { 1, -1, 1,  1 };
+                    int StickAxisInvertIndex = to_integral(ControllerBinding.Value) - to_integral(ERetroDeviceID::AnalogLeftX);
+                    // Some cores support 0x7FFF to -0x7FFF others to -0x8000
+                    int16_t retro_value = FMath::RoundHalfToEven(StickAxisInvert[StickAxisInvertIndex] * 0x7FFF * Controller[Port]->PlayerInput->GetKeyValue(ControllerBinding.Key));
+                    NextInputState[ControllerBinding.Value] = FMath::Clamp(NextInputState[ControllerBinding.Value] + retro_value, -0x7FFF, 0x7FFF);
                 }
                 else
                 {
-                    NextInputState.digital[to_integral(ControllerBinding.Value)] |= static_cast<unsigned>(Controller[Port]->PlayerInput->IsPressed(ControllerBinding.Key));
+                    NextInputState[ControllerBinding.Value] |= static_cast<unsigned>(Controller[Port]->PlayerInput->IsPressed(ControllerBinding.Key));
                 }
             }
 
+            if (Bindings[Port].Num() > 0) 
+            {
             CoreInstance.GetValue()->EnqueueTask([&InputStatePort = this->CoreInstance.GetValue()->InputState[Port], NextInputState](auto)
             {
                 InputStatePort = NextInputState;
             });
+            }
 
             if (ForwardKeyboardInput[Port])
             {
