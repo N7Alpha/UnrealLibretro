@@ -117,7 +117,7 @@ public:
 	 * @brief analogous to new except asynchronous
 	 * @post The LoadedCallback is always called
 	 */
-    static LibretroContext* Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TUniqueFunction<void(LibretroContext*, libretro_api_t&)> LoadedCallback);
+    static LibretroContext* Launch(class ULibretroCoreInstance* LibretroCoreInstance, FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TUniqueFunction<void(LibretroContext*, libretro_api_t&)> LoadedCallback);
 	
 	/**
 	 * @brief analogous to delete except asynchronous
@@ -138,6 +138,8 @@ public:
      * This is what the libretro core reads from when determining input. If you want to use your own input method you can modify this directly.
      */
     FLibretroInputState InputState[PortCount];
+
+    struct retro_system_info system = { 0 };
 
     TUniqueFunction<TRemovePointer<retro_environment_t>::Type> CoreEnvironmentCallback;
 protected:
