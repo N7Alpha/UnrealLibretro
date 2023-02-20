@@ -7,16 +7,16 @@
 #include "UnrealLibretro.h"
 #include "UnrealLibretroEditor.h" 
 
-// @nocheckin clean up unused includes
+#include "CoreMinimal.h"
 #include "PropertyHandle.h"
 #include "DetailLayoutBuilder.h"
-#include "Widgets/Input/SNumericEntryBox.h"
 #include "SlateFwd.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SEditableTextBox.h"
-//#include "SAssetSearchBox.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SSearchBox.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Application/SlateApplication.h"
 #include "IDetailPropertyRow.h"
 #include "DetailCategoryBuilder.h"
 #include "DetailWidgetRow.h"
@@ -24,8 +24,7 @@
 #include "PlatformHttp.h"
 #include "Interfaces/IHttpResponse.h"
 #include "HAL/FileManager.h"
-//#include "EngineAnalytics.h"
-#include "Engine/World.h"
+#include "Misc/FileHelper.h"
 
 TSharedRef<IDetailCustomization> FLibretroCoreInstanceDetails::MakeInstance()
 {
@@ -249,7 +248,7 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
     
     // This represents a hook to the Libretro Panel and let's us customize the UI elements within it
     IDetailCategoryBuilder& LibretroCategory = DetailBuilder.EditCategory("Libretro");
-    //IDetailGroup*& Group = &LibretroCategory.AddGroup("test", FText::FromString(TEXT("test")));
+
     TArray<TWeakObjectPtr<UObject>> ObjectsCustomized;
     DetailBuilder.GetObjectsBeingCustomized(ObjectsCustomized);
     if (ObjectsCustomized.Num() > 1) return; // Don't customize the GUI when multiple ULibretroCoreInstances are selected
@@ -749,14 +748,14 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                                     return SNew(STableRow< TSharedRef<FText> >, OwnerTable)
                                            [
                                                SNew(SBox)
-                                                .HAlign(HAlign_Fill)
-                                                //.VAlign(VAlign_Center)
-                                                .HeightOverride(30.f)
-                                                [
-                                                    SNew(STextBlock)
-                                                    .Text(Item.Get())
-                                                    .Margin(2.f)
-                                                ]
+                                               .HAlign(HAlign_Fill)
+                                               //.VAlign(VAlign_Center)
+                                               .HeightOverride(30.f)
+                                               [
+                                                   SNew(STextBlock)
+                                                   .Text(Item.Get())
+                                                   .Margin(2.f)
+                                               ]
                                            ];
                                 })
                             .OnSelectionChanged_Lambda([this, RomPathProperty](TSharedPtr<FText> NewValue, ESelectInfo::Type)
