@@ -47,7 +47,7 @@ Try to follow the Unreal Engine coding standards at least in the Unreal based so
 
 ## Contact
 
-You should [post an issue](https://github.com/N7Alpha/UnrealLibretro/issues) if you have a problem or discover a bug. If you have general questions about the project or want to make a big contribution and you need to talk through the project structure with me you can email me at rehbein@cock.li
+You should [post an issue](https://github.com/N7Alpha/UnrealLibretro/issues) if you have a problem or discover a bug. If that is too intimidating or for more basic troubleshooting you can post in the support channel of the [Discord](https://discord.gg/nSTy2jyJmh). For anything else you can just email me at john.k.rehbein@gmail.com
 
 ## License
 
