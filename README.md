@@ -43,7 +43,7 @@ Navigate to UnrealLibretro's content folder in the Unreal Editor content browser
 
 ## Contributing
 
-Try to follow the Unreal Engine coding standards at least in the Unreal based source files. Mainly what needs to be worked on is Libretro core compatibility and probably fleshing out ```ULibretroCoreInstance``` to incorporate more of the API ```libretro.h``` exposes. I'm mainly just developing this for a project I'm working on myself, so there also might be some oversights in the API that should be rectified. More information about contributing can be found [here](CONTRIBUTING.md).
+Mainly what needs to be worked on is Libretro Core compatibility and probably fleshing out ```ULibretroCoreInstance``` to incorporate more of the API ```libretro.h``` exposes. More information about contributing can be found [here](CONTRIBUTING.md).
 
 ## Contact
 
