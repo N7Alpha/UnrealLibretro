@@ -11,6 +11,9 @@ extern "C"
 #include "LambdaRunnable.h"
 
 #include "HAL/FileManager.h"
+#include <fstream>
+#include <iostream>
+#include <filesystem>
 
 #if PLATFORM_APPLE
 #include <dispatch/dispatch.h>
@@ -920,6 +923,52 @@ void LibretroContext::load_game(const char* filename) {
     video_configure(&core.av.geometry);
 }
 
+void LibretroContext::load_cfg_file(const std::string& core_path) {
+    auto cfg_path = core_path.substr(0, core_path.find_last_of('.')) + ".cfg";
+#if PLATFORM_WINDOWS
+    std::replace(cfg_path.begin(), cfg_path.end(), '/', '\\');
+#endif
+    core_log(RETRO_LOG_DEBUG, "load_cfg_file(): cfg_path == %s", cfg_path.c_str());
+    std::ifstream file(cfg_path);
+    std::string line;
+    std::string section;
+
+    try {
+        while (std::getline(file, line)) {
+            // Remove leading and trailing whitespace from line
+            auto first = line.find_first_not_of(" \t");
+            auto last = line.find_last_not_of(" \t");
+            if (first == std::string::npos || last == std::string::npos) {
+                continue; // Skip empty lines
+            }
+            line = line.substr(first, last - first + 1);
+
+            // Check if line is a key-value pair
+            if (line.front() != '#') {
+                auto delimiter = line.find('=');
+                if (delimiter == std::string::npos) {
+                    continue; // Skip lines without '=' delimiter
+                }
+                auto key = line.substr(0, delimiter);
+                auto value = line.substr(delimiter + 1);
+                // Remove leading and trailing whitespace from key and value
+                key = key.substr(key.find_first_not_of(" \t"), key.find_last_not_of(" \t") + 1);
+                if (!value.empty()) {
+                    value = value.substr(value.find_first_not_of(" \t"), value.find_last_not_of(" \t") + 1);
+                    // Add key-value pair to settings
+                    core.settings[key] = value;
+                }
+            }
+        }
+    }
+    catch (const std::exception& e) {
+        core_log(RETRO_LOG_ERROR, "load_cfg_file(): caught exception: %s", e.what());
+    }
+    catch (...) {
+        core_log(RETRO_LOG_ERROR, "load_cfg_file(): caught unknown exception");
+    }
+}
+
 LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TUniqueFunction<void(LibretroContext*, libretro_api_t&)> LoadedCallback)
 {
 
@@ -984,6 +1033,9 @@ LibretroContext* LibretroContext::Launch(FString core, FString game, UTextureRen
 
             // Loads the dll and its function pointers into libretro_api
             l->load(TCHAR_TO_ANSI(*InstancedCorePath));
+
+            // Loads a core configuration file, if it exists, from the same directory as the core
+            l->load_cfg_file(TCHAR_TO_ANSI(*core));
 
             // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
             l->load_game(TCHAR_TO_UTF8(*game));
