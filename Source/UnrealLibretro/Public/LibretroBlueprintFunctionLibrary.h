@@ -31,9 +31,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Libretro|Util|Actor", meta = (ExpandEnumAsExecs = "Branch", DeterminesOutputType = "ComponentClass"))
 	static UActorComponent* HasComponent(AActor* Actor, TSubclassOf<UActorComponent> ComponentClass, EBranchNames &Branch);
 
-	UFUNCTION(BlueprintPure, Category = "Libretro|Util|Map", meta = (BlueprintThreadSafe))
-	static TMap<FKey, ERetroDeviceID> CombineInputMaps(const TMap<FKey, ERetroDeviceID> &InMap1, const TMap<FKey, ERetroDeviceID> &InMap2);
-
 	UFUNCTION(BlueprintPure, Category = "Libretro|Util")
 	static bool IsSupportUVFromHitResultsEnabledInConfig();
 };

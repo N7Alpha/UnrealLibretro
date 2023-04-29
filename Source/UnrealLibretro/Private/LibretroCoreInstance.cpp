@@ -37,50 +37,6 @@ void ULibretroCoreInstance::GetController(int Port, int64& ID, FString& Descript
         }
     }
 }
- 
-void ULibretroCoreInstance::ConnectController(APlayerController*       PlayerController,
-                                             int                       Port,
-                                             TMap<FKey, ERetroDeviceID>   ControllerBindings,
-                                             FOnControllerDisconnected OnControllerDisconnected,
-                                             bool                      ForwardAllKeyboardInputToCoreIfPossible)
-{
-    check(Port >= 0 && Port < PortCount);
-
-    DisconnectController(Port);
-
-    Bindings[Port] = ControllerBindings;
-    Controller[Port] = MakeWeakObjectPtr(PlayerController);
-    Disconnected[Port] = OnControllerDisconnected;
-
-    ForwardKeyboardInput[Port] = ForwardAllKeyboardInputToCoreIfPossible;
-}
-
-void ULibretroCoreInstance::DisconnectController(int Port)
-{
-    check(Port >= 0 && Port < PortCount);
-
-    if (Controller[Port].IsValid())
-    {
-        if (CoreInstance.IsSet())
-        {
-            CoreInstance.GetValue()->EnqueueTask([&InputStatePort = this->CoreInstance.GetValue()->InputState[Port]](libretro_api_t& libretro_api)
-            {
-                InputStatePort = FLibretroInputState();
-
-                if (libretro_api.keyboard_event)
-                {
-                    for (int k = RETROK_FIRST; k < RETROK_LAST; k++)
-                    {
-                        libretro_api.keyboard_event(false, k, 0, RETROKMOD_NONE);
-                    }
-                }
-            });
-        }
-    	
-        Disconnected[Port].ExecuteIfBound(Controller[Port].Get(), Port);
-        Controller[Port] = nullptr;
-    }
-}
 
 void ULibretroCoreInstance::Launch() 
 {
@@ -299,11 +255,6 @@ void ULibretroCoreInstance::SetInputDigital(int Port, bool Pressed, ERetroDevice
 {
     NOT_LAUNCHED_GUARD
 
-    if (Controller[Port] != nullptr) 
-{
-        UE_LOG(Libretro, Warning, TEXT("This function '%s' is incompatible with ConnectController this call will have no effect"), __func__);
-    }
-
     CoreInstance.GetValue()->EnqueueTask([=, CoreInstance = CoreInstance.GetValue()](auto)
     {
         CoreInstance->InputState[Port][Input] = Pressed;
@@ -314,114 +265,31 @@ void ULibretroCoreInstance::SetInputAnalog(int Port, int _16BitSignedInteger, ER
 {
     NOT_LAUNCHED_GUARD
 
-    if (Controller[Port] != nullptr)
-    {
-        UE_LOG(Libretro, Warning, TEXT("This function '%s' is incompatible with ConnectController this call will have no effect"), __func__);
-    }
-
     CoreInstance.GetValue()->EnqueueTask([=, CoreInstance = CoreInstance.GetValue()](auto)
     {
         CoreInstance->InputState[Port][Input] = _16BitSignedInteger;
     });
 }
 
-void ULibretroCoreInstance::GunPullTrigger(int Port, FVector2D XY)
-{
-    NOT_LAUNCHED_GUARD
-
-    CoreInstance.GetValue()->EnqueueTask([=, CoreInstance = CoreInstance.GetValue()](auto)
-    {
-        // I think mame wants both these to be set
-        CoreInstance->InputState[Port][ERetroDeviceID::PointerPressed] = true;
-        CoreInstance->InputState[Port][ERetroDeviceID::PointerCount] = 1;
-
-        // Translate into libretro coordinate system [0.0, 1.0] -> [-0x7fff, 0x7fff] which is just a shift and scale the rounding is pedantic
-        CoreInstance->InputState[Port][ERetroDeviceID::PointerX] = FMath::RoundHalfToEven(0x7FFF * 2.f *  (XY[0] - 0.5f));
-        CoreInstance->InputState[Port][ERetroDeviceID::PointerY] = FMath::RoundHalfToEven(0x7FFF * 2.f *  (XY[1] - 0.5f));
-    });
-}
-
-void ULibretroCoreInstance::GunPullTriggerOffscreen(int Port)
-{
-    NOT_LAUNCHED_GUARD
-
-    CoreInstance.GetValue()->EnqueueTask([=](auto) 
-    {
-        CoreInstance.GetValue()->InputState[Port][ERetroDeviceID::LightgunIsOffscreen] = true;
-        CoreInstance.GetValue()->InputState[Port][ERetroDeviceID::PointerPressed] = false;
-        CoreInstance.GetValue()->InputState[Port][ERetroDeviceID::PointerCount] = 1;
-    });
-}
-
-void ULibretroCoreInstance::GunReleaseTrigger(int Port) 
-{
-    NOT_LAUNCHED_GUARD
-
-    CoreInstance.GetValue()->EnqueueTask([=](auto)
-    {
-        CoreInstance.GetValue()->InputState[Port][ERetroDeviceID::LightgunIsOffscreen] = false;
-        CoreInstance.GetValue()->InputState[Port][ERetroDeviceID::PointerPressed] = false;
-        CoreInstance.GetValue()->InputState[Port][ERetroDeviceID::PointerCount] = 0;
-    });
-}
-
 void ULibretroCoreInstance::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
-#if ENGINE_MAJOR_VERSION <= 4 && ENGINE_MINOR_VERSION <= 25
-    #define IsAxis1D IsFloatAxis
-#endif
-
-    if (CoreInstance.IsSet()) 
+    if (   CoreInstance.IsSet()
+        && KeyboardInputSourcePlayerController)
     {
-        for (int Port = 0; Port < PortCount; Port++)
+        for (int i = 0; i < count_key_bindings; i++)
         {
-            if (!Controller[Port].IsValid()) continue;
-
-            FLibretroInputState NextInputState{};
-            for (auto ControllerBinding : Bindings[Port])
+            if (   KeyboardInputSourcePlayerController->PlayerInput->WasJustPressed(key_bindings[i].Unreal)
+                || KeyboardInputSourcePlayerController->PlayerInput->WasJustReleased(key_bindings[i].Unreal))
             {
-                if (ControllerBinding.Key.IsAxis1D()) 
+                this->CoreInstance.GetValue()->EnqueueTask(
+                    [=, down = KeyboardInputSourcePlayerController->PlayerInput->WasJustPressed(key_bindings[i].Unreal)]
+                (libretro_api_t libretro_api)
                 {
-                    // Both Y-Axes should be inverted because of Libretro convention however Unreal has a quirk where the Y-Axis of the right stick is inverted by default for some reason
-                    //                         LX  LY  RX  RY
-                    float StickAxisInvert[] = { 1, -1, 1,  1 };
-                    int StickAxisInvertIndex = to_integral(ControllerBinding.Value) - to_integral(ERetroDeviceID::AnalogLeftX);
-                    // Some cores support 0x7FFF to -0x7FFF others to -0x8000
-                    int16_t retro_value = FMath::RoundHalfToEven(StickAxisInvert[StickAxisInvertIndex] * 0x7FFF * Controller[Port]->PlayerInput->GetKeyValue(ControllerBinding.Key));
-                    NextInputState[ControllerBinding.Value] = FMath::Clamp(NextInputState[ControllerBinding.Value] + retro_value, -0x7FFF, 0x7FFF);
-                }
-                else
-                {
-                    NextInputState[ControllerBinding.Value] |= static_cast<unsigned>(Controller[Port]->PlayerInput->IsPressed(ControllerBinding.Key));
-                }
-            }
-
-            if (Bindings[Port].Num() > 0) 
-            {
-            CoreInstance.GetValue()->EnqueueTask([&InputStatePort = this->CoreInstance.GetValue()->InputState[Port], NextInputState](auto)
-            {
-                InputStatePort = NextInputState;
-            });
-            }
-
-            if (ForwardKeyboardInput[Port])
-            {
-                for (int i = 0; i < count_key_bindings; i++)
-                {
-                    if (   Controller[Port]->PlayerInput->WasJustPressed(key_bindings[i].Unreal)
-                        || Controller[Port]->PlayerInput->WasJustReleased(key_bindings[i].Unreal))
+                    if (libretro_api.keyboard_event)
                     {
-                        this->CoreInstance.GetValue()->EnqueueTask(
-                            [=, down = Controller[Port]->PlayerInput->WasJustPressed(key_bindings[i].Unreal)]
-                        (libretro_api_t libretro_api)
-                        {
-                            if (libretro_api.keyboard_event)
-                            {
-                                libretro_api.keyboard_event(down, key_bindings[i].libretro, 0, RETROKMOD_NONE);
-                            }
-                        });
+                        libretro_api.keyboard_event(down, key_bindings[i].libretro, 0, RETROKMOD_NONE);
                     }
-                }
+                });
             }
         }
     }
@@ -429,11 +297,6 @@ void ULibretroCoreInstance::TickComponent(float DeltaTime, enum ELevelTick TickT
 
 void ULibretroCoreInstance::BeginDestroy()
 {
-    for (int Port = 0; Port < PortCount; Port++)
-    {
-        DisconnectController(Port);
-    }
-    
     if (this->CoreInstance.IsSet())
     {
         // Save SRam
