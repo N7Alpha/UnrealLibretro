@@ -28,13 +28,6 @@ UActorComponent* ULibretroBlueprintFunctionLibrary::HasComponent(AActor* Actor, 
 	return Component;
 }
 
-TMap<FKey, ERetroDeviceID> ULibretroBlueprintFunctionLibrary::CombineInputMaps(const TMap<FKey, ERetroDeviceID>& InMap1, const TMap<FKey, ERetroDeviceID>& InMap2)
-{
-	auto OutMap(InMap1);
-	OutMap.Append(InMap2);
-	return OutMap;
-}
-
 bool ULibretroBlueprintFunctionLibrary::IsSupportUVFromHitResultsEnabledInConfig()
 {
 	return UPhysicsSettings::Get()->bSupportUVFromHitResults;

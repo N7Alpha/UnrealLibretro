@@ -35,8 +35,6 @@ struct FLibretroControllerDescriptions
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCoreIsReady, const class UTextureRenderTarget2D*, LibretroFramebuffer, const class USoundWave*, AudioBuffer);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCoreFramebufferResize);
 
-DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnControllerDisconnected, const class APlayerController*, PlayerController, const int, Port);
-
 
 UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent) )
 class UNREALLIBRETRO_API ULibretroCoreInstance : public UActorComponent
@@ -121,33 +119,6 @@ public:
 	void GetController(int Port, int64 &ID, FString &Description);
 
 	/**
-	 * @brief Allows a user to control the Game.
-	 *
-	 * **Note:** This isn't an end all be all solution to handling input. Depending on the kind of functionality you want you might want to write your own solution. You can look at LibretroInputComponent to get an idea of how this might be done.
-	 * 
-	 * @param PlayerController - The Player Controller that will control the Port. You will probably have to disable input handling if PlayerController is controlling a pawn I don't disable it automatically or use the possession system Unreal uses.
-	 * @param Port - Should be set between 0-3. 0 would control first player.
-	 * @param ControllerBindings - Bindings between Unreal Keys and Libretro's abstract controller interface. Be careful, the Libretro controller abstraction is counterintuitive since it uses the SNES layout you can read more about it [here](https://retropie.org.uk/docs/RetroArch-Configuration/).
-	 * @param OnControllerDisconnected - Called when DisconnectController(Port) is called and is called automatically if the LibretroComponent is destroyed.
-	 */
-	UFUNCTION(BlueprintCallable, Category = "Libretro")
-	void ConnectController(APlayerController*        PlayerController,
-		                   int                       Port,
-		                   TMap<FKey, ERetroDeviceID>ControllerBindings,
-		                   FOnControllerDisconnected OnControllerDisconnected,
-		                   bool                      ForwardAllKeyboardInputToCoreIfPossible);
-
-	/**
-	 * @brief Stops user attached to the port from controlling the game.
-	 * 
-	 * Causes this Libretro instance to no longer receive input from PlayerController attached to the port and calls the associated On Controller Disconnected delegate.
-	 * 
-	 * @param Port - Should be set between 0-3. 0 would disconnect first player.
-	 */
-	UFUNCTION(BlueprintCallable, Category = "Libretro")
-	void DisconnectController(int Port);
-
-	/**
 	 * @brief Sets the state of a button for the Libretro core
 	 * 
 	 * Bindings in ConnectController will override inputs set here
@@ -155,7 +126,7 @@ public:
 	 * 
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
-	void SetInputDigital(int Port, bool Pressed, ERetroDeviceID Input);
+	void SetInputDigital(int Port, bool Activated, ERetroDeviceID Input);
 
 	/**
 	 * @brief Sets the analog state of an input for the Libretro core
@@ -166,32 +137,6 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
 	void SetInputAnalog(int Port, int _16BitSignedInteger, ERetroDeviceID Input);
-
-	/**
-	 * @brief Equivalent to pulling a trigger on a nes zapper or arcade gun
-	 * 
-	 * @param XY - The top-left of the screen is coordinate (0, 0) bottom-right is (1, 1), x is the horizontal axis
-	 *
-	 * These are convenience functions you can try fiddling around with the Lightgun and Pointer input directly in SetInputDigital too
-	 * 
-	 * There are some gotchas here:
-	 *	- on nestopia if you only pull the trigger for one frame it won't register
-	 *  - zapper on nes requires Port=1 which is the second port because of zero based indexing
-	 */
-	UFUNCTION(BlueprintCallable, Category = "Libretro")
-	void GunPullTrigger(int Port, FVector2D XY);
-
-	/**
-	 * @brief This is used for reloading in lots of games
-	 */
-	UFUNCTION(BlueprintCallable, Category = "Libretro")
-	void GunPullTriggerOffscreen(int Port);
-
-	/**
-	 * @brief Equivalent to releasing a trigger on a nes zapper or arcade gun
-	 */
-	UFUNCTION(BlueprintCallable, Category = "Libretro")
-	void GunReleaseTrigger(int Port);
 
 	/** 
 	 * @brief Where the Libretro Core's frame is drawn
@@ -259,6 +204,10 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = Libretro)
 	bool bFrameBottomLeftOrigin;
 
+	/** Forward keyboard input from this APlayerController to the libretro core if the core can receive it */
+	UPROPERTY(BlueprintReadWrite, Category = Libretro)
+	APlayerController* KeyboardInputSourcePlayerController{nullptr};
+
 protected:
 
 	// @todo: It'd be nice if I could use something like std::wrapped_reference however Unreal doesn't offer an equivalent for now
@@ -268,9 +217,4 @@ protected:
 
 	UPROPERTY()
 	USoundWave* AudioBuffer;
-	
-	TStaticArray<TMap<FKey, ERetroDeviceID>,        PortCount> Bindings;
-	TStaticArray<TWeakObjectPtr<APlayerController>, PortCount> Controller{ nullptr };
-	TStaticArray<bool,                              PortCount> ForwardKeyboardInput{ false };
-	TStaticArray<FOnControllerDisconnected,         PortCount> Disconnected{ FOnControllerDisconnected() };
 };
