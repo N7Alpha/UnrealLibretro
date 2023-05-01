@@ -174,7 +174,7 @@ public:
             if (bHasHitResult && HitResult.GetActor())
             {
                 decltype(GripPosition.Size()) NearestComponentDistance = MAX_flt;
-                // @todo Actor was nullptr here seems like that should be impossible
+
                 for (auto* Component : HitResult.GetActor()->GetComponents())
                 {
                     if (auto* GrabComponent = Cast<ULibretroGrabComponent>(Component))
@@ -336,7 +336,7 @@ public:
 
                     TeleportTraceSplineMeshComponents[i]->SetMobility(EComponentMobility::Movable);
                     TeleportTraceSplineMeshComponents[i]->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-                    TeleportTraceSplineMeshComponents[i]->SetForwardAxis(ESplineMeshAxis::Y, false);
+                    TeleportTraceSplineMeshComponents[i]->SetForwardAxis(ESplineMeshAxis::X, false);
                     TeleportTraceSplineMeshComponents[i]->bTickInEditor = true;
                     TeleportTraceSplineMeshComponents[i]->bCastDynamicShadow = false;
                     TeleportTraceSplineMeshComponents[i]->CastShadow = false;
