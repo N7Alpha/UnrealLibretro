@@ -3,66 +3,49 @@
 #include "Misc/MessageDialog.h"
 #include "Modules/ModuleManager.h"
 
-#if PLATFORM_APPLE
-#include <dispatch/dispatch.h>
-#endif
-
-#if PLATFORM_WINDOWS
-#include "Windows/PreWindowsApi.h"
-#include "Windows/SDL2/SDL.h"
-#include "Windows/PostWindowsApi.h"
-#endif
-
 #include "LibretroSettings.h"
 
 DEFINE_LOG_CATEGORY(Libretro)
 
 #define LOCTEXT_NAMESPACE "FUnrealLibretroModule"
 
+#if PLATFORM_WINDOWS
+void* OpenGLDLL;
+PFN_wglCreateContext _wglCreateContext;
+PFN_wglDeleteContext _wglDeleteContext;
+PFN_wglMakeCurrent _wglMakeCurrent;
+PFN_wglGetProcAddress _wglGetProcAddress;
+#endif
+
 void FUnrealLibretroModule::StartupModule()
 {
 	// This code will execute after your module is loaded into memory; the exact timing is specified in the .uplugin file per-module
-
-	FString BaseDir = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
-
-	FString LibraryPath;
-#if PLATFORM_WINDOWS
-	LibraryPath      = FPaths::Combine(*BaseDir, TEXT("Binaries/Win64/ThirdParty/SDL2.dll"));
-	RedistDirectory  = FPaths::Combine(*BaseDir, TEXT("Binaries/Win64/ThirdParty/libretro/"));
-#elif PLATFORM_MAC
-	LibraryPath = FPaths::Combine(*BaseDir, TEXT("Binaries/Mac/ThirdParty/libSDL2.dylib"));
-#endif // PLATFORM_WINDOWS
-
 #define LIBRETRO_NOTE " Note: disable UnrealLibretro or delete the UnrealLibretro plugin to make this error go away." \
 						" You can also post an issue to github."
 #define LIBRETRO_MODULE_LOAD_ERROR(msg) FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("LibretroError", msg LIBRETRO_NOTE)); \
 										UE_LOG(Libretro, Fatal, TEXT(msg LIBRETRO_NOTE));
 
-#if !PLATFORM_ANDROID
-	// SDL is needed to get OpenGL contexts and windows from the OS in a sane way. I tried looking for an official Unreal way to do it, but I couldn't really find one SDL is so portable though it shouldn't matter
-	SDLHandle = !LibraryPath.IsEmpty() ? FPlatformProcess::GetDllHandle(*LibraryPath) : nullptr;
-
-	if (!SDLHandle)
-	{
-		LIBRETRO_MODULE_LOAD_ERROR("Failed to load SDL2.dll");
-	}
-
-#if PLATFORM_APPLE
-	dispatch_sync(dispatch_get_main_queue(), ^ {
-#endif
-	int load_sdl_error = SDL_Init(SDL_INIT_VIDEO);
-#if PLATFORM_APPLE
-	});
-#endif
-
-	if (load_sdl_error)
-	{
-		LIBRETRO_MODULE_LOAD_ERROR("Failed to initialize SDL2");
-	}
-#endif
-
 #if PLATFORM_WINDOWS
+	FString BaseDir = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir();
+	RedistDirectory = FPaths::Combine(*BaseDir, TEXT("Binaries/Win64/ThirdParty/libretro/"));
 	FPlatformProcess::AddDllDirectory(*RedistDirectory);
+
+	OpenGLDLL = FPlatformProcess::GetDllHandle(TEXT("opengl32.dll"));
+	if (!OpenGLDLL)
+	{
+		LIBRETRO_MODULE_LOAD_ERROR("Couldn't load opengl32.dll");
+	}
+
+	wglCreateContext = (decltype(wglCreateContext))FPlatformProcess::GetDllExport(OpenGLDLL, TEXT("wglCreateContext"));
+	wglGetProcAddress = (decltype(wglGetProcAddress))FPlatformProcess::GetDllExport(OpenGLDLL, TEXT("wglGetProcAddress"));
+	wglDeleteContext = (decltype(wglDeleteContext))FPlatformProcess::GetDllExport(OpenGLDLL, TEXT("wglDeleteContext"));
+	wglMakeCurrent = (decltype(wglMakeCurrent))FPlatformProcess::GetDllExport(OpenGLDLL, TEXT("wglMakeCurrent"));
+
+	WNDCLASS wc = { 0 };
+	wc.lpfnWndProc = DefWindowProc;
+	wc.hInstance = GetModuleHandle(NULL);
+	wc.lpszClassName = TEXT("my_opengl_class");
+	RegisterClass(&wc);
 #endif
 }
 
@@ -75,16 +58,12 @@ void FUnrealLibretroModule::ShutdownModule()
 	// I could also fix the shutdown_audio hack as well as remove the numerous weak pointers in LibretroContext.
 	// I'm nervous how much the engine will block the game thread on that condition though so that still might not be a solution.
 #if 0
-#if PLATFORM_APPLE
-	dispatch_sync(dispatch_get_main_queue(), ^ {
-#endif
-	SDL_Quit();
-#if PLATFORM_APPLE
-	});
-#endif
 	
-	FPlatformProcess::FreeDllHandle(SDLHandle);
-	SDLHandle = nullptr;
+#if PLATFORM_WINDOWS
+	FPlatformProcess::FreeDllHandle(OpenGLDLL);
+	OpenGLDLL = nullptr;
+	UnregisterClass(TEXT("my_opengl_class"), GetModuleHandle(NULL));
+#endif
 
 	// @todo Remove RedistDirectory from Searchpath
 #endif
