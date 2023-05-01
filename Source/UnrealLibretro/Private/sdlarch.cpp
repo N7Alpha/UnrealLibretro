@@ -27,7 +27,7 @@ extern "C"
 #endif
 
 #if PLATFORM_ANDROID
-#define SDL_GL_GetProcAddress eglGetProcAddress
+#define GL_GET_PROC_ADDRESS eglGetProcAddress
 
 #include <android/native_window.h> // requires ndk r5 or newer
 #include <EGL/egl.h> // requires ndk r5 or newer
@@ -172,50 +172,60 @@ static bool GLLogCall(const char* function, const char* file, int line)
     if (!eglMakeCurrent(core.gl.egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, core.gl.egl_context)) {
         UE_LOG(Libretro, Fatal, TEXT("eglMakeCurrent() returned error %d"), eglGetError());
     }
+#elif PLATFORM_WINDOWS
+    // Use wgl to create a hidden window to get an OpenGL context
+    core.gl.window = CreateWindowEx(
+        0, TEXT("my_opengl_class"), TEXT("OpenGL Window"),
+        WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_POPUP,
+        0, 0, 1, 1,
+        NULL, NULL, GetModuleHandle(NULL), NULL
+    );
+
+    if (!core.gl.window) {
+        UE_LOG(Libretro, Fatal, TEXT("Failed to create window"));
+    }
+
+    core.gl.hdc = GetDC(core.gl.window);
+
+    PIXELFORMATDESCRIPTOR pfd = {
+        sizeof(PIXELFORMATDESCRIPTOR), 1,
+        PFD_SUPPORT_OPENGL,
+        PFD_TYPE_RGBA, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        PFD_MAIN_PLANE, 0, 0, 0, 0
+    };
+
+    int pixel_format = ChoosePixelFormat(core.gl.hdc, &pfd);
+    if (!pixel_format) {
+        UE_LOG(Libretro, Fatal, TEXT("Failed to choose pixel format"));
+    }
+
+    if (!SetPixelFormat(core.gl.hdc, pixel_format, &pfd)) {
+        UE_LOG(Libretro, Fatal, TEXT("Failed to set pixel format"));
+    }
+
+    core.gl.context = wglCreateContext(core.gl.hdc);
+    if (!core.gl.context) {
+        UE_LOG(Libretro, Fatal, TEXT("Failed to create OpenGL context"));
+    }
+
+    if (!wglMakeCurrent(core.gl.hdc, core.gl.context)) {
+        UE_LOG(Libretro, Fatal, TEXT("Failed to activate OpenGL context"));
+    }
 #else
-    SDL_GL_ResetAttributes(); // SDL state isn't thread local unlike OpenGL. So Libretro Cores could potentially interfere with eachother's Attributes since you're setting globals.
-
-    if (core.hw.context_type == RETRO_HW_CONTEXT_OPENGL_CORE || core.hw.version_major >= 3) {
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, core.hw.version_major); 
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, core.hw.version_minor);
-    }
-
-    switch (core.hw.context_type) {
-    case RETRO_HW_CONTEXT_OPENGL_CORE:
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-        break;
-    case RETRO_HW_CONTEXT_OPENGLES2:
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-        break;
-    case RETRO_HW_CONTEXT_OPENGL:
-        if (core.hw.version_major >= 3)
-            SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
-        break;
-    default:
-        UE_LOG(Libretro, Fatal, TEXT("Unsupported hw context %i. (only OPENGL, OPENGL_CORE and OPENGLES2 supported)"), core.hw.context_type);
-    }
-
-    // Might be able to use this instead SWindow::GetNativeWindow()
-    core.gl.window = SDL_CreateWindow("sdlarch", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 0, 0, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN); // @todo This is fine on windows, but creating a window from a background thread will crash on some versions Linux if you don't enable a special flag and everytime on MacOS
-
-	if (!core.gl.window)
-        UE_LOG(Libretro, Fatal, TEXT("Failed to create window: %s"), ANSI_TO_TCHAR(SDL_GetError()));
-
-#if defined(DEBUG_OPENGL_CALLBACK)
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
-#endif
-    core.gl.context = SDL_GL_CreateContext(core.gl.window);
-
-
-    if (!core.gl.context)
-        UE_LOG(Libretro, Fatal, TEXT("Failed to create OpenGL context: %s"), ANSI_TO_TCHAR(SDL_GetError()));
+    // @todo Other platforms don't have routines to get OpenGL contexts currently
+    // GLFW's interface has an oversight that windows and contexts are created together (You could expose some of it's internals to work around this)
+    // and SDL is kind of bloated and wasn't flexible enough for Android to work with it
+    // My current thoughts are use Google ANGLE since then the EGL code used above for PLATFORM_ANDROID should work without modification
+    // ANGLE potentially could allow for easier interop with Unreal's RHI since you can run ANGLE on top of it if its DX12 or Vulkan
+    // However the main issue with ANGLE is that it seems the Libretro Cores need to be built for it in mind and I don't know if that feature is being actively developed right now
+    checkNoEntry();
 #endif
 
     #pragma warning(push)
     #pragma warning(disable:4191)
 
     // Initialize all entry points.
-    #define GET_GL_PROCEDURES(Type,Func) Func = (Type)SDL_GL_GetProcAddress(#Func);
+    #define GET_GL_PROCEDURES(Type,Func) Func = (Type)GL_GET_PROC_ADDRESS(#Func);
     ENUM_GL_PROCEDURES(GET_GL_PROCEDURES);
     ENUM_GL_WIN32_INTEROP_PROCEDURES(GET_GL_PROCEDURES);
 
@@ -228,7 +238,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
     ENUM_GL_WIN32_INTEROP_PROCEDURES(CHECK_GL_PROCEDURES);
     this->gl_win32_interop_supported_by_driver = false; // bFoundAllEntryPoints; Not ready
     
-    glGetError = (PFNGLGETERRORPROC) SDL_GL_GetProcAddress("glGetError");
+    glGetError = (PFNGLGETERRORPROC)GL_GET_PROC_ADDRESS("glGetError");
     check(glGetError);
 
     // Restore warning C4191.
@@ -697,7 +707,7 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
         hw->get_current_framebuffer = libretro_callbacks->c_get_current_framebuffer;
 #pragma warning(push)
 #pragma warning(disable:4191)
-        hw->get_proc_address = (retro_hw_get_proc_address_t)SDL_GL_GetProcAddress;
+        hw->get_proc_address = (retro_hw_get_proc_address_t)GL_GET_PROC_ADDRESS;
 #pragma warning(pop)
         core.hw = *hw;
         core.using_opengl = true;
@@ -1095,14 +1105,18 @@ LibretroContext* LibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInst
             }, TStatId(), nullptr, ENamedThreads::GameThread);
         	
             {
-#if !PLATFORM_ANDROID
+#if PLATFORM_WINDOWS
+                // On windows the thread that created a window MUST also destroy it https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-destroywindow#:~:text=A%20thread%20cannot%20use%20DestroyWindow%20to%20destroy%20a%20window%20created%20by%20a%20different%20thread
                 if (l->core.gl.window)
                 {
-                    verify(SDL_GL_MakeCurrent(l->core.gl.window, NULL) == 0);
-                    SDL_DestroyWindow(l->core.gl.window);  // @todo: In SDLarch's code SDL_Quit was here and that implicitly destroyed some things like windows. So I'm not sure if I'm exhaustively destroying everything that it destroyed yet. In order to fix this you could probably just run SDL_Quit here and step with the debugger to see all the stuff it destroys.
+                    wglMakeCurrent(l->core.gl.hdc, NULL);
+                    verify(ReleaseDC(l->core.gl.window, l->core.gl.hdc));
+                    verify(DestroyWindow(l->core.gl.window));
                 }
 #endif
-            	
+            	// The double nested command enqueue is based on boilerplate I found elsewhere in the engine
+                // Since render commands are executed fifo we only delete shared resources after the render thread is done with them
+                // The actual render command execution is done on the RHI thread so we have to synchronize there as well
                 ENQUEUE_RENDER_COMMAND(LibretroCleanupResourcesSharedWithRenderThread)([l](FRHICommandListImmediate& RHICmdList)
                     {
                         RHICmdList.EnqueueLambda([l](FRHICommandList&)
@@ -1114,12 +1128,12 @@ LibretroContext* LibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInst
                                         FMemory::Free(l->core.software.bgra_buffers[i]);
                                     }
                                 }
-#if !PLATFORM_ANDROID
+#if PLATFORM_WINDOWS
                                 if (l->core.gl.context)
                                 {
-                                    SDL_GL_DeleteContext(l->core.gl.context); /** implicitly releases resources like fbos, pbos, and textures */
+                                    wglDeleteContext(l->core.gl.context); /** implicitly releases resources like fbos, pbos, and textures */
                                 }
-#else
+#elif PLATFORM_ANDROID
                                 if (l->core.gl.egl_context) 
                                 {
                                     verify(eglDestroyContext(l->core.gl.egl_display, 
