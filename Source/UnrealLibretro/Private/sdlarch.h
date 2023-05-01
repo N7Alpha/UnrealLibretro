@@ -19,18 +19,6 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 #include "LibretroInputDefinitions.h"
 #include "RawAudioSoundWave.h"
 
-
-// Third party libraries
-#if PLATFORM_WINDOWS
-#include "Windows/AllowWindowsPlatformTypes.h"
-#include "Windows/PreWindowsApi.h"
-#include "Windows/SDL2/SDL.h"
-#include "Windows/PostWindowsApi.h"
-#include "Windows/HideWindowsPlatformTypes.h"
-#elif PLATFORM_APPLE
-#include "Mac/SDL2/SDL.h"
-#endif
-
 #if PLATFORM_WINDOWS
 #include "Windows/PreWindowsApi.h"
 #endif
@@ -191,9 +179,10 @@ protected:
 #if PLATFORM_ANDROID
             void* egl_context;
             void* egl_display;
-#else
-            SDL_Window* window;
-            SDL_GLContext context;
+#elif PLATFORM_WINDOWS
+            HWND window;
+            HGLRC context;
+            HDC hdc;
 #endif
 
             GLuint texture;

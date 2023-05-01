@@ -21,6 +21,48 @@ static const struct { FString DistributionPath; FString Extension; FString Build
 	{ TEXT("Android/armeabi-v7a/"),    "_libretro_android.so",    "https://buildbot.libretro.com/nightly/android/latest/armeabi-v7a/",   "Launcher.Platform_Android.Large"      },
 };
 
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include "Windows/PreWindowsApi.h"
+#include <windows.h>
+
+typedef HGLRC(WINAPI* PFN_wglCreateContext)(HDC);
+typedef BOOL(WINAPI* PFN_wglDeleteContext)(HGLRC);
+typedef PROC(WINAPI* PFN_wglGetProcAddress)(LPCSTR);
+typedef HDC(WINAPI* PFN_wglGetCurrentDC)(void);
+typedef HGLRC(WINAPI* PFN_wglGetCurrentContext)(void);
+typedef BOOL(WINAPI* PFN_wglMakeCurrent)(HDC, HGLRC);
+typedef BOOL(WINAPI* PFN_wglShareLists)(HGLRC, HGLRC);
+
+#define wglCreateContext _wglCreateContext
+#define wglDeleteContext _wglDeleteContext
+#define wglMakeCurrent _wglMakeCurrent
+#define wglGetProcAddress _wglGetProcAddress
+
+#define GL_GET_PROC_ADDRESS Win32GLGetProcAddress
+
+extern void* OpenGLDLL;
+extern PFN_wglCreateContext _wglCreateContext;
+extern PFN_wglDeleteContext _wglDeleteContext;
+extern PFN_wglMakeCurrent _wglMakeCurrent;
+extern PFN_wglGetProcAddress _wglGetProcAddress;
+
+static void* Win32GLGetProcAddress(const char* procname)
+{
+	void* proc = wglGetProcAddress(procname);
+
+	if (!proc)
+	{
+		proc = FPlatformProcess::GetDllExport(OpenGLDLL, ANSI_TO_TCHAR(procname));
+	}
+
+	return proc;
+}
+
+#include "Windows/PostWindowsApi.h"
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
+
 class FUnrealLibretroModule : public IModuleInterface
 {
 public:
