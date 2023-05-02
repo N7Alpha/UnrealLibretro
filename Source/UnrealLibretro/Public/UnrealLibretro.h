@@ -135,4 +135,4 @@ private:
 #endif
 };
 
-#undef PLATFORM_INDEX
+#undef PLATFORM_INDEX
