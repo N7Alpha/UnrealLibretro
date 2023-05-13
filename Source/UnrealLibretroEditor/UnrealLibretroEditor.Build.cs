@@ -13,6 +13,7 @@ public class UnrealLibretroEditor : ModuleRules
         new string[]
         {
             System.IO.Path.Combine(ModuleDirectory, "miniz"),
+            System.IO.Path.Combine(ModuleDirectory, "Private", "lzma"),
         });
         
 
