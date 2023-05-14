@@ -1173,7 +1173,10 @@ void LibretroContext::Pause(bool ShouldPause)
     // Alternatively you could add one more state to accomplish this, but this is fine for now
     EnqueueTask([=](auto&&)
         {
-            CoreState.store(ShouldPause ? ECoreState::Paused : ECoreState::Running, std::memory_order_relaxed);
+            if (CoreState.load(std::memory_order_relaxed) != ECoreState::Shutdown) 
+            {
+                CoreState.store(ShouldPause ? ECoreState::Paused : ECoreState::Running, std::memory_order_relaxed);
+            }
         });
     
 }
