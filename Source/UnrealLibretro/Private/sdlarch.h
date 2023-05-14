@@ -21,6 +21,7 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 
 #if PLATFORM_WINDOWS
 #include "Windows/PreWindowsApi.h"
+#include "Windows/WindowsHWrapper.h"
 #endif
 
 #include "ThirdParty/OpenGL/GL/glcorearb.h"

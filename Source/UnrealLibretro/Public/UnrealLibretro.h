@@ -24,7 +24,6 @@ static const struct { FString DistributionPath; FString Extension; FString Build
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include "Windows/PreWindowsApi.h"
-#include <windows.h>
 
 typedef HGLRC(WINAPI* PFN_wglCreateContext)(HDC);
 typedef BOOL(WINAPI* PFN_wglDeleteContext)(HGLRC);
