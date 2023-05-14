@@ -137,9 +137,23 @@ public:
 
     TUniqueFunction<TRemovePointer<retro_environment_t>::Type> CoreEnvironmentCallback;
 
+    /**
+     * @brief Describes the state of the core we're executing
+     * 
+     * @note Certain fields like ControllerDescriptions are only safe to access from other threads once we're in the running state @todo Maybe add encapsulation to make this explicit
+     * The following State Machine indicates valid state transitions:
+     *   +----------+          +-----------+
+     *   | Starting |--------->|  Running  |------------+
+     *   +----------+          +-----------+            |
+     *                            ^     |               |
+     *                            |     v               v
+     *                         +-----------+       +-----------+
+     *                         |  Paused   |------>|  Shutdown |
+     *                         +-----------+       +-----------+
+     */
     enum class ECoreState : int8
 	{
-        Starting,
+        Starting,     // Guranteed to stay in this state until we start running the core
     	Running,
     	Paused,
     	Shutdown
