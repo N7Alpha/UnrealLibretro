@@ -36,12 +36,16 @@ public:
         MotionControllerLeft = CreateDefaultSubobject<UMotionControllerComponent>(TEXT("MotionControllerLeft"));
         MotionControllerRight = CreateDefaultSubobject<UMotionControllerComponent>(TEXT("MotionControllerRight"));
         
-        // John: I set defaults in a blueprint subclass instead since I think that's slightly easier to understand
-        // You can filter for settings that differ from the default in the editor which is a nice feature writing new defaults here would mask that ability
-        //MotionControllerLeft->bDisplayDeviceModel = true;
-        //MotionControllerRight->bDisplayDeviceModel = true;
-        //MotionControllerLeft->MotionSource = "Left";
-        //MotionControllerRight->MotionSource = "Right";
+#if    ENGINE_MAJOR_VERSION >  4 \
+    || ENGINE_MINOR_VERSION >= 26
+        MotionControllerLeftAim = CreateDefaultSubobject<UMotionControllerComponent>(TEXT("MotionControllerLeftAim"));
+        MotionControllerRightAim = CreateDefaultSubobject<UMotionControllerComponent>(TEXT("MotionControllerRightAim"));
+        MotionControllerLeftAim->MotionSource = "LeftAim";
+        MotionControllerRightAim->MotionSource = "RightAim";
+#else
+        MotionControllerLeftAim = MotionControllerLeft;
+        MotionControllerRightAim = MotionControllerRight;
+#endif
 
         Camera->SetupAttachment(DefaultRootComponent);
         MotionControllerLeft->SetupAttachment(DefaultRootComponent);
@@ -95,38 +99,38 @@ public:
     UPROPERTY(EditAnywhere)
     UMotionControllerComponent* MotionControllerRight;
 
-    // These just aren't available in 4.24
-    //UPROPERTY(EditAnywhere)
-    //UMotionControllerComponent* MotionControllerLeftAim;
-    //
-    //UPROPERTY(EditAnywhere)
-    //UMotionControllerComponent* MotionControllerRightAim;
+    UPROPERTY(EditAnywhere)
+    UMotionControllerComponent* MotionControllerLeftAim;
+    
+    UPROPERTY(EditAnywhere)
+    UMotionControllerComponent* MotionControllerRightAim;
 
     UPROPERTY(EditAnywhere)
     UStaticMesh* SplineMesh;
 
     UPROPERTY()
-    ULibretroGrabComponent *HeldComponentLeft = nullptr;
+    ULibretroGrabComponent* HeldComponentLeft = nullptr;
 
     UPROPERTY()
-    ULibretroGrabComponent *HeldComponentRight = nullptr;
+    ULibretroGrabComponent* HeldComponentRight = nullptr;
 
 protected:
     struct FHand
     {
-        decltype(HeldComponentLeft) &HeldComponent;
-        decltype(MotionControllerLeft) &MotionController;
+        decltype(HeldComponentLeft)& HeldComponent;
+        decltype(MotionControllerLeft)& MotionController;
+        decltype(MotionControllerLeftAim)& MotionControllerAim;
     };
 
     CONSTEXPR FHand GetHand(EControllerHand ControllerHand)
     {
         if (ControllerHand == EControllerHand::Left)
         {
-            return { HeldComponentLeft,  MotionControllerLeft };
+            return { HeldComponentLeft,  MotionControllerLeft,  MotionControllerLeftAim };
         }
         else 
         {
-            return { HeldComponentRight, MotionControllerRight };
+            return { HeldComponentRight, MotionControllerRight, MotionControllerRightAim };
         }
     }
 
@@ -236,7 +240,7 @@ public:
         {
             if (auto* GrabComponent = GetGrabComponentNearMotionController(Hand.MotionController))
             {
-                if (GrabComponent->TryGrab(Hand.MotionController))
+                if (GrabComponent->TryGrab(Hand.MotionControllerAim))
                 {
                     Hand.HeldComponent = GrabComponent;
 
@@ -386,7 +390,7 @@ public:
                 }
             }
 
-            TeleportTrace(MotionControllerRight->GetComponentLocation(), MotionControllerRight->GetForwardVector());
+            TeleportTrace(MotionControllerRightAim->GetComponentLocation(), MotionControllerRightAim->GetForwardVector());
         }
         else
         {
