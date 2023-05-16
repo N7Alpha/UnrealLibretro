@@ -29,12 +29,23 @@ public:
     {
         PrimaryActorTick.bCanEverTick = false;
 
+        static ConstructorHelpers::FClassFinder<AActor> VRTeleportVisualizerClassFinder(TEXT("/UnrealLibretro/Blueprints/LibretroVRTeleportVisualizer"));
+        TeleportVisualizerClass = VRTeleportVisualizerClassFinder.Class;
+
+        static ConstructorHelpers::FObjectFinder<UStaticMesh> BeamMeshFinder(TEXT("/UnrealLibretro/Mesh/BeamMesh"));
+        SplineMesh = BeamMeshFinder.Object;
+
         auto* DefaultRootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("DefaultSceneRoot"));
         SetRootComponent(DefaultRootComponent);
 
         Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
         MotionControllerLeft = CreateDefaultSubobject<UMotionControllerComponent>(TEXT("MotionControllerLeft"));
         MotionControllerRight = CreateDefaultSubobject<UMotionControllerComponent>(TEXT("MotionControllerRight"));
+        
+        MotionControllerLeft->MotionSource = "Left";
+        MotionControllerRight->MotionSource = "Right";
+        MotionControllerLeft->bDisplayDeviceModel = true;
+        MotionControllerRight->bDisplayDeviceModel = true;
         
 #if    ENGINE_MAJOR_VERSION >  4 \
     || ENGINE_MINOR_VERSION >= 26
