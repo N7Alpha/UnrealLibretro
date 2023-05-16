@@ -22,7 +22,7 @@ public:
     static CONSTEXPR auto ShouldStartPlayerInVRPawn = UHeadMountedDisplayFunctionLibrary::IsHeadMountedDisplayEnabled;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Classes)
-    TSubclassOf<APawn> DefaultVRPawnClass;
+    TSubclassOf<APawn> DefaultVRPawnClass = ALibretroVRPawn::StaticClass();
 
     ALibretroGameMode()
     {
@@ -31,9 +31,6 @@ public:
 
         static ConstructorHelpers::FClassFinder<AHUD> HUDClassFinder(TEXT("/UnrealLibretro/Blueprints/LibretroHUD"));
         HUDClass = HUDClassFinder.Class;
-
-        static ConstructorHelpers::FClassFinder<APawn> VRPawnClassFinder(TEXT("/UnrealLibretro/Blueprints/LibretroVRPawnBlueprint"));
-        DefaultVRPawnClass = VRPawnClassFinder.Class;
     }
 
 protected:
