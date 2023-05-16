@@ -42,6 +42,12 @@ public class UnrealLibretro : ModuleRules
 			}
 			);
 
+		if (   Target.Version.MajorVersion == 4
+		    || Target.Version.MinorVersion == 0)
+        {
+			PrivateDependencyModuleNames.Add("OculusHMD");
+		}
+
 		if (   Target.Version.MajorVersion >  4
 			|| Target.Version.MinorVersion >= 26)
         {
