@@ -159,31 +159,37 @@ public:
         ULibretroGrabComponent* NearestGrabComponent = nullptr;
         FVector GripPosition = MotionController->GetComponentLocation();
 
-        if (auto* World = GEngine->GetWorldFromContextObject(this, EGetWorldErrorMode::LogAndReturnNull))
+        if (UWorld* World = GEngine->GetWorldFromContextObject(this, EGetWorldErrorMode::LogAndReturnNull))
         {
-            FHitResult HitResult;
-            bool bHasHitResult = World->SweepSingleByChannel(
-                HitResult, 
+            TArray<FHitResult> HitResults;
+            bool bHasHitResults = World->SweepMultiByChannel(
+                HitResults,
                 GripPosition,
                 GripPosition,
                 FQuat::Identity,
-                ECollisionChannel::ECC_PhysicsBody, 
+                ECollisionChannel::ECC_PhysicsBody,
                 FCollisionShape::MakeSphere(GrabRadiusFromGripPosition),
                 FCollisionQueryParams() /* bTraceComplex = false */);
 
-            if (bHasHitResult && HitResult.GetActor())
+            if (bHasHitResults)
             {
-                decltype(GripPosition.Size()) NearestComponentDistance = MAX_flt;
+                double NearestComponentDistance = MAX_dbl;
 
-                for (auto* Component : HitResult.GetActor()->GetComponents())
+                for (const FHitResult& HitResult : HitResults)
                 {
-                    if (auto* GrabComponent = Cast<ULibretroGrabComponent>(Component))
+                    if (AActor* HitActor = HitResult.GetActor())
                     {
-                        auto GrabComponentDistance = (GrabComponent->GetComponentLocation() - GripPosition).Size();
-                        if (GrabComponentDistance <= NearestComponentDistance)
+                        for (UActorComponent* Component : HitActor->GetComponents())
                         {
-                            NearestGrabComponent = GrabComponent;
-                            NearestComponentDistance = GrabComponentDistance;
+                            if (ULibretroGrabComponent* GrabComponent = Cast<ULibretroGrabComponent>(Component))
+                            {
+                                double GrabComponentDistance = (GrabComponent->GetComponentLocation() - GripPosition).Size();
+                                if (GrabComponentDistance < NearestComponentDistance)
+                                {
+                                    NearestGrabComponent = GrabComponent;
+                                    NearestComponentDistance = GrabComponentDistance;
+                                }
+                            }
                         }
                     }
                 }
