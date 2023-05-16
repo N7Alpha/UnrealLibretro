@@ -25,6 +25,7 @@
 #include "Interfaces/IHttpResponse.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
+#include "EditorStyleSet.h"
 
 TSharedRef<IDetailCustomization> FLibretroCoreInstanceDetails::MakeInstance()
 {
