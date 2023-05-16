@@ -1,5 +1,3 @@
-#pragma once
-
 #include "LambdaRunnable.h"
 #include "HAL/Runnable.h"
 #include "HAL/RunnableThread.h" 
