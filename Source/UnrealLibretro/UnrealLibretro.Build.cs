@@ -53,5 +53,11 @@ public class UnrealLibretro : ModuleRules
         {
 			PublicDependencyModuleNames.Add("DeveloperSettings"); // Was moved into its own module in 4.26
 		}
+
+		if (   Target.Version.MajorVersion == 5
+		    && Target.Version.MinorVersion >= 2)
+		{
+			PrivateDependencyModuleNames.Add("AudioExtensions");
+		}
 	}
 }

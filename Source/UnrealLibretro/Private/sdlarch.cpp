@@ -454,11 +454,15 @@ static bool GLLogCall(const char* function, const char* file, int line)
             {
                 check(this->Unreal.TextureRHI.GetReference());
 
-                RHICmdList.EnqueueLambda([=](FRHICommandList&)
+                RHICmdList.EnqueueLambda([=](FRHICommandList& RHICmdList)
                     {
                         // Potentially this should be a TryLock() so you don't preempt the render thread although it's unlikely that would happen
                         FScopeLock UploadTextureToRenderHardware(&this->Unreal.FrameUpload.CriticalSection);
                         GDynamicRHI->RHIUpdateTexture2D(
+#if    ENGINE_MAJOR_VERSION == 5 \
+    && ENGINE_MINOR_VERSION >= 2
+                            RHICmdList,
+#endif
                             this->Unreal.TextureRHI.GetReference(),
                             MipIndex,
                             Region,
