@@ -33,4 +33,7 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Libretro|Util")
 	static bool IsSupportUVFromHitResultsEnabledInConfig();
+
+	UFUNCTION(BlueprintCallable, Category = "Libretro|Util")
+	static FTransform GetPlayAreaTransform();
 };
