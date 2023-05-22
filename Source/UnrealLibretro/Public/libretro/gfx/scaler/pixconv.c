@@ -41,6 +41,8 @@
 #include <emmintrin.h>
 #elif defined(__MMX__)
 #include <mmintrin.h>
+#elif (defined(__ARM_NEON__) || defined(__ARM_NEON))
+#include <arm_neon.h>
 #endif
 
 void conv_rgb565_0rgb1555(void *output_, const void *input_,
@@ -314,7 +316,8 @@ void conv_rgb565_abgr8888(void *output_, const void *input_,
    const __m128i mul16_g    = _mm_set1_epi16(0x2080);
    const __m128i mul16_b    = _mm_set1_epi16(0x4200);
    const __m128i a          = _mm_set1_epi16(0x00ff);
-    int max_width            = width - 7;
+#elif defined(__SSE2__) || (defined(__ARM_NEON__) || defined(__ARM_NEON))
+   int max_width            = width - 7;
 #endif
     for (h = 0; h < height;
          h++, output += out_stride >> 2, input += in_stride >> 1)
@@ -342,6 +345,27 @@ void conv_rgb565_abgr8888(void *output_, const void *input_,
                _mm_slli_si128(res_hi_ra, 2));
          _mm_storeu_si128((__m128i*)(output + w + 0), res_lo);
          _mm_storeu_si128((__m128i*)(output + w + 4), res_hi);
+      }
+#elif (defined(__ARM_NEON__) || defined(__ARM_NEON))
+      for (; w < max_width; w += 8)
+      {
+         uint16x8_t in = vld1q_u16(input + w);
+
+         uint16x8_t r = (in >> 11) & 0x1f;
+         uint16x8_t g = (in >>  5) & 0x3f;
+         uint16x8_t b = (in >>  0) & 0x1f;
+
+         r = (r << 3) | (r >> 2);
+         g = (g << 2) | (g >> 4);
+         b = (b << 3) | (b >> 2);
+
+         uint8x8x4_t res;
+         res.val[0] = vmovn_u16(r);
+         res.val[1] = vmovn_u16(g);
+         res.val[2] = vmovn_u16(b);
+         res.val[3] = vdup_n_u8(0xffu);
+
+         vst4_u8((uint8_t*)(output + w), res);
       }
 #endif
        for (; w < width; w++)
