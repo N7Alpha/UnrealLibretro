@@ -32,59 +32,6 @@ TSharedRef<IDetailCustomization> FLibretroCoreInstanceDetails::MakeInstance()
     return MakeShareable(new FLibretroCoreInstanceDetails);
 }
 
-void FLibretroOptions::OnOptionSelected(int32 Index)
-{
-    if (Parent->LibretroCoreInstance.IsValid())
-    {
-        // If default is selected remove the key from core options since no key is implicit default
-        if (Index == 0)
-        {
-            if (Parent->LibretroCoreInstance->CoreOptions.Contains(Key))
-            {
-                Parent->LibretroCoreInstance->CoreOptions.Remove(Key);
-                Parent->MarkEditorNeedsSave();
-            }
-        } 
-        // Otherwise add the selected option
-        else
-        {
-            Parent->LibretroCoreInstance->CoreOptions.Add(Key) = Values[Index];
-            Parent->MarkEditorNeedsSave();
-        }
-    }
-}
-
-FText FLibretroOptions::GetSelectedOptionName() const
-{
-    if (Parent->LibretroCoreInstance.IsValid())
-    {
-        FString *SelectedOptionString = Parent->LibretroCoreInstance->CoreOptions.Find(Key);
-        if (SelectedOptionString == nullptr)
-        {
-            return FText::FromString(Values[0]);
-        }
-        else
-        {
-            return FText::FromString(*SelectedOptionString);
-        }
-    }
-
-    return FText::FromString(TEXT("Error"));
-}
-
-TSharedRef<SWidget> FLibretroOptions::OnGenerateDropdownMenu()
-{
-    FMenuBuilder MenuBuilder(true, nullptr);
-
-    for (int32 i = 0; i < Values.Num(); i++)
-    {
-        FUIAction ItemAction(FExecuteAction::CreateRaw(this, &FLibretroOptions::OnOptionSelected, i));
-        MenuBuilder.AddMenuEntry(FText::FromString(Values[i]), TAttribute<FText>(), FSlateIcon(), ItemAction);
-    }
-
-    return MenuBuilder.MakeWidget();
-}
-
 void FLibretroCoreInstanceDetails::RefreshCoreListViews()
 {
     const FText& InSearchText = SearchBox->GetText();
@@ -453,7 +400,6 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
     IDetailCategoryBuilder& OptionsCategory = DetailBuilder.EditCategory("Libretro Core Options");
     for (int i = 0; i < n; i++)
     {
-        static_LibretroOptions[i].Parent = this;
         LibretroOptions.Add(static_LibretroOptions[i]);
 
         OptionsCategory.AddCustomRow(FText::GetEmpty())
@@ -479,18 +425,67 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                 .MinDesiredWidth(150.0f)
                 [
                     SNew(STextBlock)
-                    .Text_Raw(&LibretroOptions[i], &FLibretroOptions::GetOptionDescription)
+                    .Text_Lambda([&Option = LibretroOptions[i]](){ return FText::FromString(Option.Description);  })
                     .Font(IDetailLayoutBuilder::GetDetailFont())
                 ]
                 .ValueContent()
                 [
                     SNew(SComboButton)
-                    .OnGetMenuContent_Raw(&LibretroOptions[i], &FLibretroOptions::OnGenerateDropdownMenu)
+                    // The following is fired when the user clicks an option to modify it this callback fills the drop down with options
+                    .OnGetMenuContent_Lambda([&Option = LibretroOptions[i], this]()
+                        {
+                            FMenuBuilder MenuBuilder(true, nullptr);
+
+                            for (int32 i = 0; i < Option.Values.Num(); i++)
+                            {
+                                // This is fired when the user clicks one of the possible options from the drop down
+                                FUIAction ItemAction(FExecuteAction::CreateLambda([&Option, i, this] 
+                                    {
+                                        if (this->LibretroCoreInstance.IsValid())
+                                        {
+                                            // If default is selected remove the key from core options since no key is implicit default
+                                            if (i == FLibretroOptions::DefaultOptionIndex)
+                                            {
+                                                if (this->LibretroCoreInstance->CoreOptions.Contains(Option.Key))
+                                                {
+                                                    this->LibretroCoreInstance->CoreOptions.Remove(Option.Key);
+                                                    this->MarkEditorNeedsSave();
+                                                }
+                                            }
+                                            // Otherwise add the selected option
+                                            else
+                                            {
+                                                this->LibretroCoreInstance->CoreOptions.Add(Option.Key) = Option.Values[i];
+                                                this->MarkEditorNeedsSave();
+                                            }
+                                        }
+                                    }));
+                                MenuBuilder.AddMenuEntry(FText::FromString(Option.Values[i]), TAttribute<FText>(), FSlateIcon(), ItemAction);
+                            }
+
+                            return MenuBuilder.MakeWidget();
+                        })
                     .ContentPadding(FMargin(2.0f, 2.0f))
                     .ButtonContent()
                     [
                         SNew(STextBlock)
-                        .Text_Raw(&LibretroOptions[i], &FLibretroOptions::GetSelectedOptionName)
+                        .Text_Lambda([&Option = LibretroOptions[i], this]()
+                            {
+                                if (this->LibretroCoreInstance.IsValid())
+                                {
+                                    FString* SelectedOptionString = this->LibretroCoreInstance->CoreOptions.Find(Option.Key);
+                                    if (SelectedOptionString == nullptr)
+                                    {
+                                        return FText::FromString(Option.Values[FLibretroOptions::DefaultOptionIndex]);
+                                    }
+                                    else
+                                    {
+                                        return FText::FromString(*SelectedOptionString);
+                                    }
+                                }
+
+                                return FText::FromString(TEXT("Error"));
+                            })
                         .Font(IDetailLayoutBuilder::GetDetailFont())
                     ]
                 ];
