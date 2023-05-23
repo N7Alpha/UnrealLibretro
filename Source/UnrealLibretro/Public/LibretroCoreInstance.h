@@ -7,6 +7,22 @@
 #include "Engine/TextureRenderTarget2D.h"
 #include "LibretroCoreInstance.generated.h"
 
+USTRUCT(BlueprintType)
+struct FLibretroOptions
+{
+	GENERATED_BODY()
+
+	static CONSTEXPR int DefaultOptionIndex = 0; // By libretro convention
+
+	UPROPERTY(BlueprintReadOnly)
+	FString         Key;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString         Description;
+
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> Values;
+};
 
 USTRUCT(BlueprintType)
 struct FLibretroControllerDescription // retro_controller_description

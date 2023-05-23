@@ -14,21 +14,6 @@
 class IPropertyHandle;
 class SComboButton;
 
-struct FLibretroOptions
-{
-    class FLibretroCoreInstanceDetails* Parent;
-
-    FString         Key;
-    FString         Description;
-    TArray<FString> Values;
-
-    FText GetSelectedOptionName() const;
-    FText GetOptionDescription() const { return FText::FromString(Description); }
-    void OnOptionSelected(int32 Index);
-    TSharedRef<SWidget> OnGenerateDropdownMenu();
-};
-
-
 /**
  * @brief Editor custom GUI code for the LibretroCoreInstance type
  * 
