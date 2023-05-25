@@ -113,9 +113,10 @@ public:
 		return IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(UnresolvedSavePath, TEXT("Saves"), TEXT("SRAM"), FPaths::GetCleanFilename(UnresolvedRomPath));
 	}
 
-	static void EnvironmentParseControllerInfo(const retro_controller_info* controller_info,
-		                                       TStaticArray<TArray<FLibretroControllerDescription>, PortCount>& ControllerDescriptions)
+	static TStaticArray<TArray<FLibretroControllerDescription>, PortCount> EnvironmentParseControllerInfo(const retro_controller_info* controller_info)
 	{
+		TStaticArray<TArray<FLibretroControllerDescription>, PortCount> ControllerDescriptions;
+
 		for (int port = 0; controller_info[port].types != NULL && port < PortCount; port++) {
 			for (unsigned t = 0; t < controller_info[port].num_types; t++) {
 				if (controller_info[port].types[t].desc == nullptr) break; // Not part of Libretro API but needed check for some cores
@@ -125,6 +126,44 @@ public:
 												   controller_description.id });
 			}
 		}
+
+		return ControllerDescriptions;
+	}
+
+	static TArray<FLibretroOption> EnvironmentParseOptions(const struct retro_variable* variable_array)
+	{
+		TArray<FLibretroOption> ParsedOptions;
+
+		while (variable_array->key != nullptr)
+		{
+			// Example entry:
+			// { .key = "foo_option", .value = "Speed hack coprocessor X; false|true" }
+			const FString Value = variable_array->value;
+
+			// Find the position of the semicolon that separates the description and values
+			int32 SemicolonIndex;
+			if (!Value.FindChar(';', SemicolonIndex))
+			{
+				UE_LOG(Libretro, Warning, TEXT("Failed to parse libretro core option '%s'. No semicolon"), *Value);
+				continue; // Skip this Option
+			}
+
+			FLibretroOption Option;
+
+			// Extract the description substring
+			Option.Description = Value.Left(SemicolonIndex);
+
+			// Extract the values substring and split it into individual values
+			FString PipeDelimitedValueString = Value.Mid(SemicolonIndex + 1).TrimStart();
+
+			PipeDelimitedValueString.ParseIntoArray(Option.Values, TEXT("|"), false);
+			Option.Key = variable_array->key;
+
+			ParsedOptions.Add(Option);
+			variable_array++;
+		}
+
+		return ParsedOptions;
 	}
 
 private:

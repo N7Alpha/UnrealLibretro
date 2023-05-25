@@ -776,9 +776,7 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
         return true;
     }
     case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO: {
-        auto controller_info = (const struct retro_controller_info*)data;
-
-        FUnrealLibretroModule::EnvironmentParseControllerInfo(controller_info, ControllerDescriptions);
+        ControllerDescriptions = FUnrealLibretroModule::EnvironmentParseControllerInfo((const struct retro_controller_info*)data);
 
         return true;
     }

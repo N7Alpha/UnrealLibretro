@@ -129,8 +129,7 @@ void FLibretroCoreInstanceDetails::StartBuildbotBatchDownload(TSharedPtr<FText> 
     RefreshCoreListViews();
 }
 
-static int32 n = 0;
-static FLibretroOptions static_LibretroOptions[100];
+static TArray<FLibretroOption> static_LibretroOptions;
 
 static TStaticArray<TArray<FLibretroControllerDescription>, PortCount> static_ControllerDescriptions;
 
@@ -138,39 +137,12 @@ static bool core_environment(unsigned cmd, void* data)
 {
     switch (cmd) {
         case RETRO_ENVIRONMENT_SET_VARIABLES: {
-            const struct retro_variable* arr_var = (const struct retro_variable*)data;
-
-            for (n = 0; n < sizeof(static_LibretroOptions) / sizeof(static_LibretroOptions[0]); arr_var++) {
-                if (arr_var->key == nullptr) break;
-
-                // Example entry:
-                // { .key = "foo_option", .value = "Speed hack coprocessor X; false|true" }
-                const FString Value = arr_var->value;
-
-                // Find the position of the semicolon that separates the description and values
-                int32 SemicolonIndex;
-                if (!Value.FindChar(';', SemicolonIndex)) {
-                    UE_LOG(Libretro, Warning, TEXT("Failed to parse libretro core option '%s'. No semicolon"), *Value);
-                    continue; // Skip this Option
-                }
-
-                // Extract the description substring
-                static_LibretroOptions[n].Description = Value.Left(SemicolonIndex);
-
-                // Extract the values substring and split it into individual values
-                FString PipeDelimitedValueString = Value.Mid(SemicolonIndex + 1).TrimStart();
-
-                PipeDelimitedValueString.ParseIntoArray(static_LibretroOptions[n].Values, TEXT("|"), false);
-                static_LibretroOptions[n].Key = arr_var->key;
-                n++;
-            }
+            static_LibretroOptions = FUnrealLibretroModule::EnvironmentParseOptions((const struct retro_variable*)data);
 
             return true;
         }
         case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO: {
-            auto controller_info = (const struct retro_controller_info*)data;
-            
-            FUnrealLibretroModule::EnvironmentParseControllerInfo(controller_info, static_ControllerDescriptions);
+            static_ControllerDescriptions = FUnrealLibretroModule::EnvironmentParseControllerInfo((const struct retro_controller_info*)data);
 
             return true;
         }
@@ -192,8 +164,6 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
     
     LibretroCoreInstance = CastChecked<ULibretroCoreInstance>(ObjectsCustomized[0].Get());
 
-    static_ControllerDescriptions = TStaticArray<TArray<FLibretroControllerDescription>, PortCount>{};
-    n = 0; // To make sure we don't get stale options from the last selected core
     FString RomPathValidExtensionsDelimited; // Contains a string like "bin|rom|iso"
     if (LibretroCoreInstance.IsValid())
     {
@@ -398,10 +368,9 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
 
     // Construct Libreto Core Options Panel... It's directly under the Libretro section
     IDetailCategoryBuilder& OptionsCategory = DetailBuilder.EditCategory("Libretro Core Options");
-    for (int i = 0; i < n; i++)
+    LibretroOptions = MoveTemp(static_LibretroOptions);
+    for (const FLibretroOption& Option : LibretroOptions)
     {
-        LibretroOptions.Add(static_LibretroOptions[i]);
-
         OptionsCategory.AddCustomRow(FText::GetEmpty())
 #if ENGINE_MAJOR_VERSION >= 5
                 .OverrideResetToDefault(FResetToDefaultOverride::Create
@@ -425,14 +394,14 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                 .MinDesiredWidth(150.0f)
                 [
                     SNew(STextBlock)
-                    .Text_Lambda([&Option = LibretroOptions[i]](){ return FText::FromString(Option.Description);  })
+                    .Text_Lambda([&Option](){ return FText::FromString(Option.Description);  })
                     .Font(IDetailLayoutBuilder::GetDetailFont())
                 ]
                 .ValueContent()
                 [
                     SNew(SComboButton)
                     // The following is fired when the user clicks an option to modify it this callback fills the drop down with options
-                    .OnGetMenuContent_Lambda([&Option = LibretroOptions[i], this]()
+                    .OnGetMenuContent_Lambda([&Option, this]()
                         {
                             FMenuBuilder MenuBuilder(true, nullptr);
 
@@ -444,7 +413,7 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                                         if (this->LibretroCoreInstance.IsValid())
                                         {
                                             // If default is selected remove the key from core options since no key is implicit default
-                                            if (i == FLibretroOptions::DefaultOptionIndex)
+                                            if (i == FLibretroOption::DefaultOptionIndex)
                                             {
                                                 if (this->LibretroCoreInstance->CoreOptions.Contains(Option.Key))
                                                 {
@@ -469,14 +438,14 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                     .ButtonContent()
                     [
                         SNew(STextBlock)
-                        .Text_Lambda([&Option = LibretroOptions[i], this]()
+                        .Text_Lambda([&Option, this]()
                             {
                                 if (this->LibretroCoreInstance.IsValid())
                                 {
                                     FString* SelectedOptionString = this->LibretroCoreInstance->CoreOptions.Find(Option.Key);
                                     if (SelectedOptionString == nullptr)
                                     {
-                                        return FText::FromString(Option.Values[FLibretroOptions::DefaultOptionIndex]);
+                                        return FText::FromString(Option.Values[FLibretroOption::DefaultOptionIndex]);
                                     }
                                     else
                                     {
