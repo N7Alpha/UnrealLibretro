@@ -8,7 +8,7 @@
 #include "LibretroCoreInstance.generated.h"
 
 USTRUCT(BlueprintType)
-struct FLibretroOptions
+struct FLibretroOption
 {
 	GENERATED_BODY()
 
