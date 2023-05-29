@@ -63,33 +63,47 @@ void FUnrealLibretroEditorModule::StartupModule()
             {
                 if (bSucceeded)
                 {
-                    check(IsInGameThread()); // Make sure we're handling the result on the GameThread because we're modifying datastructures that Slate uses too
-                    
-                    // Each row in this array looks something like this "2022-10-21 bb0926bb boom3_libretro.dll.zip"
-                    // CoreIdentifer = "boom3" for this example
-                    TArray<FString> CoreIndexRows;
-                    HttpResponse->GetContentAsString().ParseIntoArrayLines(CoreIndexRows);
-
-                    for (auto CoreIndexRow : CoreIndexRows)
+                    if (EHttpResponseCodes::IsOk(HttpResponse->GetResponseCode()))
                     {
-                        TArray<FString> CoreIndexColumnEntries;
-                        CoreIndexRow.ParseIntoArrayWS(CoreIndexColumnEntries);
+                        check(IsInGameThread()); // Make sure we're handling the result on the GameThread because we're modifying datastructures that Slate uses too
+                    
+                        // Each row in this array looks something like this "2022-10-21 bb0926bb boom3_libretro.dll.zip"
+                        // CoreIdentifer = "boom3" for this example
+                        TArray<FString> CoreIndexRows;
+                        HttpResponse->GetContentAsString().ParseIntoArrayLines(CoreIndexRows);
 
-                        auto CoreIdentiferEnd = CoreIndexColumnEntries.Last().Find(CoreLibMetadata[PlatformIndex].Extension, ESearchCase::CaseSensitive);
-                        auto CoreIdentifer = FString(CoreIdentiferEnd, *CoreIndexColumnEntries.Last());
-                        CoreListViewDataSource.FindOrAdd(CoreIdentifer).PlatformAvailableBitField |= (1UL << PlatformIndex);
-
-                        // The logic here is naive I make no attempt to periodically poll the directory for external file creation/deletion
-                        auto RelativeCorePath = CoreLibMetadata[PlatformIndex].DistributionPath + CoreIdentifer + CoreLibMetadata[PlatformIndex].Extension;
-                        if (FPaths::FileExists(FUnrealLibretroModule::ResolveCorePath(RelativeCorePath)))
+                        for (auto CoreIndexRow : CoreIndexRows)
                         {
-                            CoreListViewDataSource[CoreIdentifer].PlatformDownloadedBitField |= (1UL << PlatformIndex);
+                            TArray<FString> CoreIndexColumnEntries;
+                            CoreIndexRow.ParseIntoArrayWS(CoreIndexColumnEntries);
+
+                            int32 CoreIdentiferEnd = CoreIndexColumnEntries.Last().Find(CoreLibMetadata[PlatformIndex].Extension, ESearchCase::CaseSensitive);
+                            FString CoreIdentifer = FString(CoreIdentiferEnd, *CoreIndexColumnEntries.Last());
+                            CoreListViewDataSource.FindOrAdd(CoreIdentifer).PlatformAvailableBitField |= (1UL << PlatformIndex);
                         }
+                    }
+                    else
+                    {
+                        UE_LOG(Libretro, Warning, TEXT("Failed to get core list for platform. Invalid response. code=%d error=%s"), HttpResponse->GetResponseCode(), *HttpResponse->GetContentAsString());
                     }
                 }
                 else
                 {
                     UE_LOG(Libretro, Warning, TEXT("Failed to get core list for platform"));
+                }
+
+                // The logic here is naive I make no attempt to periodically poll the directory for external file creation/deletion
+                TArray<FString> CorePaths;
+                auto PlatformCoresPath = IPluginManager::Get().FindPlugin("UnrealLibretro")->GetBaseDir() + "/MyCores/" + CoreLibMetadata[PlatformIndex].DistributionPath;
+                IFileManager::Get().FindFiles(CorePaths, *PlatformCoresPath, nullptr);
+
+                for (FString& CorePath : CorePaths) 
+                {
+                    FString CoreIdentifer;
+                    if (CorePath.Split(CoreLibMetadata[PlatformIndex].Extension, &CoreIdentifer, nullptr, ESearchCase::CaseSensitive, ESearchDir::FromEnd))
+                    {
+                        CoreListViewDataSource.FindOrAdd(CoreIdentifer).PlatformDownloadedBitField |= (1UL << PlatformIndex);
+                    }
                 }
             });
         
