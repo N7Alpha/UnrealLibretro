@@ -624,41 +624,65 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
     case RETRO_ENVIRONMENT_GET_VARIABLE: {
         retro_variable* var = (struct retro_variable*)data;
 
-        std::string key(var->key);
+        int i = 0;
+        for (FString TargetKey = FString(var->key); i < OptionDescriptions.Num(); i++) {
+            if (OptionDescriptions[i].Key == TargetKey) break;
+        }
 
-        if (core.settings.find(key) != core.settings.end()) {
-            var->value = core.settings.at(key).c_str();
-            return true;
+        if (i == OptionDescriptions.Num()) {
+            UE_LOG(Libretro, Warning, TEXT ("Core '%s' violated libretro spec asked for unkown option '%s'"), UTF8_TO_TCHAR(system.library_name), UTF8_TO_TCHAR(var->key));
+            return false;
         }
         
-            return false;
+        FString TargetValue = OptionDescriptions[i].Values[OptionSelectedIndex[i].load(std::memory_order_relaxed)];
+        
+        int32 Utf8Length = FTCHARToUTF8_Convert::ConvertedLength(*TargetValue, TargetValue.Len());
+        TArray<char>& TargetValueCString = OptionsCache.FindOrAdd(var->key);
+        TargetValueCString.SetNumZeroed(Utf8Length + 1, false);
+        
+        FTCHARToUTF8_Convert::Convert(TargetValueCString.GetData(), Utf8Length, *TargetValue, TargetValue.Len());
+        var->value = TargetValueCString.GetData();
+
+        return true;
     }
     case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE: {
-        const struct retro_variable* var = (const struct retro_variable*)data;
-        //checkNoEntry();
+        bool* core_should_query_for_options = (bool*)data;
+
+        // atomic<>::exchange is necessary otherwise we could miss newly set options because of a race condition
+        *core_should_query_for_options = OptionsHaveBeenModified.exchange(false, std::memory_order_acquire);
+
         return false;
     }
     case RETRO_ENVIRONMENT_SET_VARIABLES: {
-        const struct retro_variable* arr_var = (const struct retro_variable*)data;
-        
-        do {
-            // Initialize key
-            const std::string key(arr_var->key);
+        // Queuing this and synchronizing on the game thread prevents a data race
+        FTaskGraphInterface::Get().WaitUntilTaskCompletes(FFunctionGraphTask::CreateAndDispatchWhenReady([this, data]() 
+            { 
+                OptionDescriptions = FUnrealLibretroModule::EnvironmentParseOptions((const struct retro_variable*)data);
 
-            // Don't override custom options already set
-            if (core.settings.count(key) == 0) {
-            // Parse and initialize default setting, First delimited setting is default by Libretro convention
-            auto advance_past_space = [](const char* x) { while (*x == ' ') { x++; } return x; };
-            auto past_comment = advance_past_space(strchr(arr_var->value, ';') + 1);
-            const char *delimiter_ptr = strchr(arr_var->value, '|');
-            if (delimiter_ptr == nullptr) delimiter_ptr = strchr(arr_var->value, '\0');
-            std::string default_setting(past_comment, delimiter_ptr - past_comment);
-            
-            // Write setting to table
-            core.settings[key] = default_setting;
+                if (OptionSelectedIndex.Num() > 0 && OptionSelectedIndex.Num() != OptionDescriptions.Num()) {
+                    UE_LOG(Libretro, Warning, TEXT("Core violated libretro spec size of Options changed"));
+                }
+
+                // By libretro spec the 0 index setting is the default one
+                OptionSelectedIndex.SetNumZeroed(OptionDescriptions.Num(), false);
+            }, 
+            TStatId(), nullptr, ENamedThreads::GameThread));
+
+        for (int i = 0; i < OptionDescriptions.Num(); i++)
+        {
+            if (FString* TargetValue = StartingOptions.Find(OptionDescriptions[i].Key))
+            {
+                auto TargetIndex = OptionDescriptions[i].Values.IndexOfByKey(*TargetValue);
+
+                if (TargetIndex == INDEX_NONE)
+                {
+                    UE_LOG(Libretro, Warning, TEXT("Value '%s' does not exist for option '%s'"), **TargetValue, *OptionDescriptions[i].Key);
+                    continue;
+                }
+
+                OptionSelectedIndex[i].store(TargetIndex, std::memory_order_relaxed);
             }
-
-        } while ((++arr_var)->key);
+        }
 
         return true;
     }
@@ -776,7 +800,9 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
         return true;
     }
     case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO: {
-        ControllerDescriptions = FUnrealLibretroModule::EnvironmentParseControllerInfo((const struct retro_controller_info*)data);
+        FTaskGraphInterface::Get().WaitUntilTaskCompletes(FFunctionGraphTask::CreateAndDispatchWhenReady([this, data]()
+            { ControllerDescriptions = FUnrealLibretroModule::EnvironmentParseControllerInfo((const struct retro_controller_info*)data);  },
+            TStatId(), nullptr, ENamedThreads::GameThread));
 
         return true;
     }
@@ -847,11 +873,6 @@ void LibretroContext::core_audio_sample(int16_t left, int16_t right) {
 	core_audio_write(buf, (size_t)1);
 }
 
-void LibretroContext::set_controller_port_device(unsigned port, unsigned device) {
-    devices[port] = device; // The core doesn't keep track of this so we have to
-    _internal_set_controller_port_device(port, device);
-}
-
 void LibretroContext::load(const char *sofile) {
 	void (*set_environment)(retro_environment_t) = NULL;
 	void (*set_video_refresh)(retro_video_refresh_t) = NULL;
@@ -870,6 +891,7 @@ void LibretroContext::load(const char *sofile) {
 	load_retro_sym(api_version);
 	load_retro_sym(get_system_info);
 	load_retro_sym(get_system_av_info);
+    load_retro_sym(set_controller_port_device);
 	load_retro_sym(reset);
 	load_retro_sym(run);
 	load_retro_sym(load_game);
@@ -879,8 +901,6 @@ void LibretroContext::load(const char *sofile) {
     load_retro_sym(serialize_size);
     load_retro_sym(serialize);
     load_retro_sym(unserialize);
-
-    load_sym(_internal_set_controller_port_device, retro_set_controller_port_device);
 
 	load_sym(set_environment, retro_set_environment);
 	load_sym(set_video_refresh, retro_set_video_refresh);
@@ -953,11 +973,6 @@ LibretroContext* LibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInst
 
     LibretroContext *l = new LibretroContext();
 
-    for (auto& Option : LibretroCoreInstance->CoreOptions)
-    {
-        l->core.settings[TCHAR_TO_UTF8(*Option.Key)] = TCHAR_TO_UTF8(*Option.Value);
-    }
-
     // Grab a statically generated callback structure
     int32 InstanceNumber;
     {
@@ -980,6 +995,9 @@ LibretroContext* LibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInst
 
     ConvertPath(l->core.save_directory,   LibretroSettings->CoreSaveDirectory);
     ConvertPath(l->core.system_directory, LibretroSettings->CoreSystemDirectory);
+    
+    l->StartingOptions = LibretroSettings->GlobalCoreOptions;
+    l->StartingOptions.Append(LibretroCoreInstance->EditorPresetOptions); // Potentially overrides global options
 
     l->UnrealRenderTarget = MakeWeakObjectPtr(RenderTarget);
     l->UnrealSoundBuffer  = MakeWeakObjectPtr(SoundBuffer );
@@ -987,7 +1005,7 @@ LibretroContext* LibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInst
     // Kick the initialization process off to another thread. It shouldn't be added to the Unreal task pool because those are too slow and my code relies on OpenGL state being thread local.
     // The Runnable system is the standard way for spawning and managing threads in Unreal. FThread looks enticing, but they removed any way to detach threads since "it doesn't work as expected"
     l->LambdaRunnable = FLambdaRunnable::RunLambdaOnBackGroundThread(FPaths::GetCleanFilename(core) + FPaths::GetCleanFilename(game),
-        [=, LoadedCallback = MoveTemp(LoadedCallback), ControllersSetOnLaunch = LibretroCoreInstance->ControllersSetOnLaunch]() {
+        [=, LoadedCallback = MoveTemp(LoadedCallback), EditorPresetControllers = LibretroCoreInstance->EditorPresetControllers]() {
 
             // Here I load a copy of the dll instead of the original. If you load the same dll multiple times you won't obtain a new instance of the dll loaded into memory,
             // instead all variables and function pointers will point to the original loaded dll
@@ -1017,17 +1035,14 @@ LibretroContext* LibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInst
             l->libretro_api.get_system_info(&l->system);
             for (int Port = 0; Port < PortCount; Port++)
             {
-                auto* ControllerDescription = ControllersSetOnLaunch.Find(l->system.library_name);
-                if (ControllerDescription)
+                unsigned DeviceID = RETRO_DEVICE_DEFAULT;
+                if (const FLibretroControllerDescriptions* CorePresetControllers = EditorPresetControllers.Find(l->system.library_name))
                 {
-                    l->set_controller_port_device(Port, (*ControllerDescription)[Port].ID);
+                    DeviceID = (*CorePresetControllers)[Port].ID;
                 }
-                else
-                {
-                    // This is needed for some cores nestopia specifically is one example
-                    // otherwise nothing will be bound for some reason
-                    l->set_controller_port_device(Port, RETRO_DEVICE_DEFAULT);
-                }
+
+                l->DeviceIDs[Port] = DeviceID;
+                l->libretro_api.set_controller_port_device(Port, DeviceID);
             }
 
             // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.

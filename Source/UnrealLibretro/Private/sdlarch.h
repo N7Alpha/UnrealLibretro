@@ -7,8 +7,6 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 
 // Standard Template Library https://docs.unrealengine.com/en-US/Programming/Development/CodingStandard/#useofstandardlibraries
 #include <atomic>
-#include <unordered_map>
-#include <string>
 
 // Unreal imports
 #include "CoreMinimal.h"
@@ -82,6 +80,7 @@ struct libretro_api_t {
     unsigned (*api_version)(void);
     void     (*get_system_info)(struct retro_system_info* info);
     void     (*get_system_av_info)(struct retro_system_av_info* info);
+    void     (*set_controller_port_device)(unsigned port, unsigned device);
     void     (*reset)(void);
     void     (*run)(void);
     size_t   (*serialize_size)(void);
@@ -127,13 +126,16 @@ public:
      */
     FLibretroInputState InputState[PortCount];
 
-    std::atomic<unsigned> devices[PortCount];
-    // Only safe to access from any thread once CoreState is not Starting
+    std::atomic<bool> OptionsHaveBeenModified;
+    TArray<std::atomic<uint8>> OptionSelectedIndex;
+    TMap<FString, FString> StartingOptions;
+
+    // The following are always safe to access from the game thread and are guranteed to be initialized after exiting the starting state
+    TArray<FLibretroOption> OptionDescriptions;
     TStaticArray<TArray<struct FLibretroControllerDescription>, PortCount> ControllerDescriptions;
+    decltype(retro_controller_description::id) DeviceIDs[PortCount]; // The core doesn't keep track of this so we have to
 
     struct retro_system_info system = { 0 };
-
-    void set_controller_port_device(unsigned port, unsigned device);
 
     TUniqueFunction<TRemovePointer<retro_environment_t>::Type> CoreEnvironmentCallback;
 
@@ -165,7 +167,6 @@ protected:
     LibretroContext() {}
     ~LibretroContext() {}
 
-    void     (*_internal_set_controller_port_device)(unsigned port, unsigned device);
     libretro_api_t        libretro_api = { 0 };
     struct libretro_callbacks_t* libretro_callbacks = nullptr;
     TQueue<TUniqueFunction<void(libretro_api_t&)>, EQueueMode::Spsc> LibretroAPITasks; // TQueue<T, EQueueMode::Spsc> has acquire-release semantics on Enqueue and Dequeue so this should be thread-safe
@@ -173,6 +174,10 @@ protected:
     // @todo remove these and have the loaded callback handle these resources
     TWeakObjectPtr<UTextureRenderTarget2D> UnrealRenderTarget{nullptr};
     TWeakObjectPtr<URawAudioSoundWave> UnrealSoundBuffer{nullptr};
+
+    TMap<FString, TArray<char>> OptionsCache; // This isn't technically needed in theory a core should immediately convert an option into it's internal representation and cease referencing 
+                                              // the string before control flow is passed back to you, but the lifetime of a string passed to a core when it uses RETRO_ENVIRONMENT_GET_VARIABLE 
+                                              // isn't well defined in the libretro spec, so some cores like mame will misbehave if you free a string before it's done with it
 
     struct
     {
@@ -226,7 +231,6 @@ protected:
 
         TArray<char, TInlineAllocator<512>>   save_directory,
                                             system_directory;
-        std::unordered_map<std::string, std::string> settings;
     } core = { 0 };
 
 public:
