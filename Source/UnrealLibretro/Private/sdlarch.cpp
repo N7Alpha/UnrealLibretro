@@ -292,7 +292,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
                                 FRHIResourceCreateInfo Info{ TEXT("Dummy Texture for now") };
                                 this->Unreal.TextureRHI = RHICreateTexture2D(core.av.geometry.max_width,
                                                                              core.av.geometry.max_height,
-                                                                             PF_R8G8B8A8,
+                                                                             UnrealPixelFormat,
                                                                              1,
                                                                              1,
                                                                              TexCreate_CPUWritable | TexCreate_Dynamic,
@@ -305,7 +305,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
                     UnrealRenderTarget->bGPUSharedFlag = true; // Allows us to share this rendertarget with other applications and APIs in this case OpenGL
                     UnrealRenderTarget->InitCustomFormat(core.av.geometry.max_width,
                                                          core.av.geometry.max_height,
-                                                         PF_R8G8B8A8,
+                                                         UnrealPixelFormat,
                                                          false);
                     ENQUEUE_RENDER_COMMAND(LibretroInitRHIFramebuffer)
                         ([&](FRHICommandListImmediate& RHICmdList)
@@ -481,15 +481,33 @@ static bool GLLogCall(const char* function, const char* file, int line)
     	
         auto bgra_buffer = core.software.bgra_buffers[core.free_framebuffer_index = !core.free_framebuffer_index];
 
+        if (core.gl.pixel_format == GL_BGRA) {
         switch (core.gl.pixel_type) {
             case GL_UNSIGNED_SHORT_5_6_5: {
-                conv_rgb565_abgr8888(bgra_buffer, data,
+                conv_rgb565_argb8888(bgra_buffer, data,
                     width, height,
                     SrcPitch, pitch);
             }
             break;
             case GL_UNSIGNED_SHORT_5_5_5_1: {
                 checkNoEntry();
+            }
+            break;
+            case GL_UNSIGNED_BYTE: {
+                conv_copy(bgra_buffer, data,
+                    width, height,
+                    SrcPitch, pitch);
+            }
+            break;
+            default:
+                checkNoEntry();
+            }
+        } else {
+            switch (core.gl.pixel_type) {
+            case GL_UNSIGNED_SHORT_5_6_5: {
+                conv_rgb565_abgr8888(bgra_buffer, data,
+                    width, height,
+                    SrcPitch, pitch);
             }
             break;
             case GL_UNSIGNED_BYTE: {
@@ -500,6 +518,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
             break;
             default:
                 checkNoEntry();
+            }
         }
 
         prepare_frame_for_upload_to_unreal_RHI(bgra_buffer);
@@ -546,8 +565,8 @@ static bool GLLogCall(const char* function, const char* file, int line)
                             LogGLErrors(glReadPixels(0, 0,
                                 core.av.geometry.max_width, // @enhancement Only copy the portion of the buffer we need rather than the max possible potential size
                                 core.av.geometry.max_height,
-                                GL_RGBA,
-                                GL_UNSIGNED_BYTE,
+                                core.gl.pixel_format,
+                                core.gl.pixel_type,
                                 offset_into_pbo_where_data_is_written));
                         }
                         glDeleteSync(core.gl.fence);
@@ -713,9 +732,21 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
 	            core.gl.bits_per_pixel = sizeof(uint16_t);
 	            break;
 	        case RETRO_PIXEL_FORMAT_XRGB8888:
-	            core.gl.pixel_type = GL_UNSIGNED_BYTE;
-	            core.gl.pixel_format = GL_RGBA;
-	            core.gl.bits_per_pixel = sizeof(uint32_t);
+                
+                core.gl.pixel_type = GL_UNSIGNED_BYTE;
+                core.gl.pixel_format = GL_BGRA;
+                core.gl.bits_per_pixel = sizeof(uint32_t);
+
+                // @todo The OpenGL RHI backend is supposed to swizzle the red and blue components of textures created with render targets
+                // so in effect it should be a BGRA however that doesn't seem to be the case and it always behaves like rgba
+                // I'll probably clean all this stuff up when I do a big optimization of the framebuffer copying stuff
+                if ((FString)GDynamicRHI->GetName() == TEXT("OpenGL")) {
+                    UnrealPixelFormat = PF_R8G8B8A8;
+                    core.gl.pixel_type = GL_UNSIGNED_BYTE;
+                    core.gl.pixel_format = GL_RGBA;
+                    core.gl.bits_per_pixel = sizeof(uint32_t);
+                }
+
 	            break;
 	        case RETRO_PIXEL_FORMAT_RGB565:
 	            core.gl.pixel_type = GL_UNSIGNED_SHORT_5_6_5;
