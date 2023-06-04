@@ -997,7 +997,7 @@ LibretroContext* LibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInst
     ConvertPath(l->core.system_directory, LibretroSettings->CoreSystemDirectory);
     
     l->StartingOptions = LibretroSettings->GlobalCoreOptions;
-    l->StartingOptions.Append(LibretroCoreInstance->CoreOptions); // Potentially overrides global options
+    l->StartingOptions.Append(LibretroCoreInstance->EditorPresetOptions); // Potentially overrides global options
 
     l->UnrealRenderTarget = MakeWeakObjectPtr(RenderTarget);
     l->UnrealSoundBuffer  = MakeWeakObjectPtr(SoundBuffer );
