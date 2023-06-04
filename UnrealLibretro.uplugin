@@ -27,5 +27,11 @@
 			"LoadingPhase": "Default",
 			"WhitelistPlatforms": [ "Win64" ]
 		}
-	]
+	],
+	"Plugins": [
+    {
+      "Name": "OculusVR",
+      "Enabled": true
+    }
+  ]
 }
