@@ -6,6 +6,7 @@
 #include "DetailCustomizations.h"
 #include "HttpModule.h"
 #include "PlatformHttp.h"
+#include "HAL/FileManager.h"
 #include "Interfaces/IHttpResponse.h"
 
 #include "miniz.h"
