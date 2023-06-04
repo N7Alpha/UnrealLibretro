@@ -16,9 +16,12 @@ UNREALLIBRETRO_API DECLARE_LOG_CATEGORY_EXTERN(Libretro, Log, All);
 
 static const struct { FString DistributionPath; FString Extension; FString BuildbotPath; FName ImageName; } CoreLibMetadata[] =
 {
-	{ TEXT("Win64/"),                  "_libretro.dll",           "https://buildbot.libretro.com/nightly/windows/x86_64/latest/"     ,   "Launcher.Platform_Windows.Large"      },
-	{ TEXT("Android/armeabi-v7a/"),    "_libretro_android.so",    "https://buildbot.libretro.com/nightly/android/latest/armeabi-v7a/",   "Launcher.Platform_Android.Large"      },
-	{ TEXT("Android/arm64-v8a/"),      "_libretro_android.so",    "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/"  ,   "Launcher.Platform_Android.Large"      },
+	{ TEXT("Win64/"),                  "_libretro.dll",           "https://buildbot.libretro.com/nightly/windows/x86_64/latest/",        "Launcher.Platform_Windows.Large" },
+	{ TEXT("Android/armeabi-v7a/"),    "_libretro_android.so",    "https://buildbot.libretro.com/nightly/android/latest/armeabi-v7a/",   "Launcher.Platform_Android.Large" },
+	{ TEXT("Android/arm64-v8a/"),      "_libretro_android.so",    "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/",     "Launcher.Platform_Android.Large" },
+//	{ TEXT("Linux/x86_64/"),           "_libretro.so",            "https://buildbot.libretro.com/nightly/linux/x86_64/latest/",          "Launcher.Platform_Linux.Large"   },
+//	{ TEXT("Mac/arm64-v8a/"),          "_libretro.dylib",         "https://buildbot.libretro.com/nightly/apple/osx/arm64/latest/",       "Launcher.Platform_Mac.Large"     },
+//	{ TEXT("iOS/universal/"),          "_libretro_ios.dylib",     "https://buildbot.libretro.com/nightly/apple/ios-arm64/latest/",       "Launcher.Platform_iOS.Large"     },
 };
 
 #if PLATFORM_WINDOWS
