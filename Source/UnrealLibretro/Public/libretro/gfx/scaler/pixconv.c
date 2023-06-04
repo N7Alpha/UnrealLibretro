@@ -222,6 +222,8 @@ void conv_rgb565_argb8888(void *output_, const void *input_,
    const __m64 a          = _mm_set1_pi16(0x00ff);
 
    int max_width            = width - 3;
+#elif (defined(__ARM_NEON__) || defined(__ARM_NEON))
+   int max_width            = width - 7;
 #endif
 
    for (h = 0; h < height;
@@ -284,6 +286,23 @@ void conv_rgb565_argb8888(void *output_, const void *input_,
       }
 
       _mm_empty();
+#elif (defined(__ARM_NEON__) || defined(__ARM_NEON))
+      for (; w < max_width; w += 8)
+      {
+         uint16x8_t in = vld1q_u16(input + w);
+
+         uint16x8_t r = vsriq_n_u16(in, in, 5);
+         uint16x8_t b = vsliq_n_u16(in, in, 5);
+         uint16x8_t g = vsriq_n_u16(b,  b,  6);
+
+         uint8x8x4_t res;
+         res.val[3] = vdup_n_u8(0xffu);
+         res.val[2] = vshrn_n_u16(r, 8);
+         res.val[1] = vshrn_n_u16(g, 8);
+         res.val[0] = vshrn_n_u16(b, 2);
+
+         vst4_u8((uint8_t*)(output + w), res);
+      }
 #endif
 
       for (; w < width; w++)
@@ -316,7 +335,9 @@ void conv_rgb565_abgr8888(void *output_, const void *input_,
    const __m128i mul16_g    = _mm_set1_epi16(0x2080);
    const __m128i mul16_b    = _mm_set1_epi16(0x4200);
    const __m128i a          = _mm_set1_epi16(0x00ff);
-#elif defined(__SSE2__) || (defined(__ARM_NEON__) || defined(__ARM_NEON))
+
+   int max_width            = width - 7;
+#elif (defined(__ARM_NEON__) || defined(__ARM_NEON))
    int max_width            = width - 7;
 #endif
     for (h = 0; h < height;
@@ -351,19 +372,15 @@ void conv_rgb565_abgr8888(void *output_, const void *input_,
       {
          uint16x8_t in = vld1q_u16(input + w);
 
-         uint16x8_t r = (in >> 11) & 0x1f;
-         uint16x8_t g = (in >>  5) & 0x3f;
-         uint16x8_t b = (in >>  0) & 0x1f;
-
-         r = (r << 3) | (r >> 2);
-         g = (g << 2) | (g >> 4);
-         b = (b << 3) | (b >> 2);
+         uint16x8_t r = vsriq_n_u16(in, in, 5);
+         uint16x8_t b = vsliq_n_u16(in, in, 5);
+         uint16x8_t g = vsriq_n_u16(b,  b,  6);
 
          uint8x8x4_t res;
-         res.val[0] = vmovn_u16(r);
-         res.val[1] = vmovn_u16(g);
-         res.val[2] = vmovn_u16(b);
          res.val[3] = vdup_n_u8(0xffu);
+         res.val[2] = vshrn_n_u16(b, 2);
+         res.val[1] = vshrn_n_u16(g, 8);
+         res.val[0] = vshrn_n_u16(r, 8);
 
          vst4_u8((uint8_t*)(output + w), res);
       }
@@ -892,9 +909,26 @@ void conv_argb8888_abgr8888(void *output_, const void *input_,
    const uint32_t *input = (const uint32_t*)input_;
    uint32_t *output      = (uint32_t*)output_;
 
-   for (h = 0; h < height;
-         h++, output += out_stride >> 2, input += in_stride >> 2)
-   {
+#if (defined(__ARM_NEON__) || defined(__ARM_NEON))
+    int max_width = width - 15;
+#endif
+
+    for (h = 0; h < height;
+        h++, output += out_stride >> 2, input += in_stride >> 2)
+    {
+        w = 0;
+#if (defined(__ARM_NEON__) || defined(__ARM_NEON))
+      for (w = 0; w < max_width; w += 16)
+      {
+          uint8x16x4_t in = vld4q_u8((unsigned char*)(input + w));
+          uint8x16x4_t res;
+          res.val[3] = in.val[3];
+          res.val[2] = in.val[0];
+          res.val[1] = in.val[1];
+          res.val[0] = in.val[2];
+          vst4q_u8((uint8_t*)(output + w), res);
+      }
+#endif
       for (w = 0; w < width; w++)
       {
          uint32_t col = input[w];
