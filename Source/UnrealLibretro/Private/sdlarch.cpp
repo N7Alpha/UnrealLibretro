@@ -852,18 +852,22 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
 
 // Unfinished experiment with less branchy version of this function https://godbolt.org/z/hYeYxr95r
 int16_t LibretroContext::core_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
-    // Some of the setup to get the core to poll for certain types of input is either done through retro_set_controller_port_device
-    // or in the handled RETRO_ENVIRONMENT_GET_VARIABLE and RETRO_ENVIRONMENT_SET_CONTROLLER_INFO events in the retro_environment_t
-    // callback core_environment. Getting the core to handle specific input amounts to reading documentation and sifting through the core's code
+    // To get the core to poll for certain types of input sometimes requires setting particular controllers for compatible ports
+    // or changing specific options related to the input you're trying to poll for. If it's not obvious your main resources are
+    // forums, the libretro documentation, or looking through the core's code itself.
+    // Also here are some pitfalls I've encountered:
+    // - The core might need to poll for at least two frames to register an input
+    // - Some cores will not poll for any input by default (I fix this by always binding the RETRO_DEVICE_JOYPAD)
+    // - The RETRO_DEVICE_POINTER interface is generally preferred over the lightgun and mouse even for things like lightguns and mice although you still use some parts of the lightgun interface for handling lightgun input probably same goes for mouse
 
     switch (device) {
     case RETRO_DEVICE_JOYPAD:   return InputState[port][to_integral(ERetroDeviceID::JoypadB)     + id];
     case RETRO_DEVICE_LIGHTGUN: return InputState[port][to_integral(ERetroDeviceID::LightgunX)   + id];
     case RETRO_DEVICE_ANALOG:   return InputState[port][to_integral(ERetroDeviceID::AnalogLeftX) + 2 * index + (id % RETRO_DEVICE_ID_JOYPAD_L2)]; // The indexing logic is broken and might OOBs if we're queried for something that isn't an analog trigger or stick
-    case RETRO_DEVICE_POINTER:  return InputState[port][to_integral(ERetroDeviceID::PointerX)    + id];
+    case RETRO_DEVICE_POINTER:  return InputState[port][to_integral(ERetroDeviceID::PointerX)    + 4 * index + id];
     case RETRO_DEVICE_MOUSE:
     case RETRO_DEVICE_KEYBOARD:
-        default:                    return 0;
+    default:                    return 0;
     }
 }
 
