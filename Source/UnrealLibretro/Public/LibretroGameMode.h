@@ -41,6 +41,10 @@ protected:
             // The HUD currently displays information irrelevant to VR Players... so disable it
             NewPlayer->ClientSetHUD(nullptr);
         }
+        else
+        {
+            NewPlayer->ClientSetHUD(HUDClass);
+        }
     }
 
     // I could not get this procedure to be called in blueprints that's the primary reason why I wrote this class in C++
