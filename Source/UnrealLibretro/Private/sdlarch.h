@@ -163,6 +163,8 @@ public:
 	
     std::atomic<ECoreState> CoreState{ ECoreState::Starting };
 
+    EPixelFormat UnrealPixelFormat{PF_B8G8R8A8};
+
 protected:
     LibretroContext() {}
     ~LibretroContext() {}
