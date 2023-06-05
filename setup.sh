@@ -1,6 +1,6 @@
 #!/bin/bash
-# This file will setup the required binaries, headers, and create user folders. After running this you can drag and drop the UnrealLibretro folder into your project's plugins folder
-# and you should be able to load the plugin, and the example blueprint.
+# This file will setup the required binaries and create user folders. After running this you can drag and drop the UnrealLibretro folder into your project's plugins folder
+# and you should be able to load the plugin, and then try loading the example map in the plugin's content folder don't forget to enable "Show Plugin Content".
 
 # Prompt user to install 7zip if necessary
 if ! command -v 7z
@@ -20,7 +20,3 @@ mkdir -p Binaries/Win64/ThirdParty/libretro
 wget -c https://buildbot.libretro.com/nightly/windows/x86_64/RetroArch_update.7z --directory /tmp
 7z x -aoa -o/tmp /tmp/RetroArch_update.7z
 cp /tmp/RetroArch-Win64/*.dll Binaries/Win64/ThirdParty/libretro
-
-# Acquire and move unversioned data from unversioned branch (Note this will break if you don't have a really new version of git)
-git fetch
-git restore --source origin/unversioned Content/
