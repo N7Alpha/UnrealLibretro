@@ -19,6 +19,7 @@ class UNREALLIBRETRO_API ALibretroGameMode : public AGameModeBase
 public:
     // @todo There is probably some smarter way of determining this
     // This returns true if you launch PIE in "VR Preview" mode
+    // If you start your packaged game with the flag -vr then this will also be true
     static CONSTEXPR auto ShouldStartPlayerInVRPawn = UHeadMountedDisplayFunctionLibrary::IsHeadMountedDisplayEnabled;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Classes)

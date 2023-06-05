@@ -98,6 +98,12 @@ void ULibretroCoreInstance::Launch()
 {
     Shutdown();
     
+    if (this->RomPath.IsEmpty())
+    {
+        UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Path given for ROM was empty"), *this->CorePath);
+        return;
+    }
+    
     auto _CorePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::ResolveCorePath(this->CorePath));
     auto _RomPath  = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::ResolveROMPath (this->RomPath));
 
@@ -134,8 +140,7 @@ void ULibretroCoreInstance::Launch()
     //RenderTarget->AddressY = TA_Clamp;
 
     this->CoreInstance = LibretroContext::Launch(this, _CorePath, _RomPath, RenderTarget, static_cast<URawAudioSoundWave*>(AudioBuffer),
-	    [weakThis = MakeWeakObjectPtr(this), SRAMPath = FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath), 
-         ControllersSetOnLaunch = this->ControllersSetOnLaunch]
+	    [weakThis = MakeWeakObjectPtr(this), SRAMPath = FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath)]
         (LibretroContext *_CoreInstance, libretro_api_t &libretro_api) 
 	    {   // Core has loaded
             
