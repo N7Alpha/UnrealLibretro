@@ -154,12 +154,12 @@ public:
      *                         +-----------+       +-----------+
      */
     enum class ECoreState : int8
-	{
-        Starting,     // Guranteed to stay in this state until we start running the core
-    	Running,
-    	Paused,
-    	Shutdown
-	};
+    {
+        Starting,
+        Running,
+        Paused,
+        Shutdown
+    };
 	
     std::atomic<ECoreState> CoreState{ ECoreState::Starting };
 

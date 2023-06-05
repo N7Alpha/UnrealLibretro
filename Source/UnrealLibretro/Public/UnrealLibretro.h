@@ -101,9 +101,9 @@ public:
 		return IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(UnresolvedCorePath, TEXT("MyCores"));
 	}
 
-	static FString ResolveROMPath(const FString& UnresolvedRomRom)
+	static FString ResolveROMPath(const FString& UnresolvedRomPath)
 	{
-		return IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(UnresolvedRomRom, TEXT("MyROMs"));
+		return IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(UnresolvedRomPath, TEXT("MyROMs"));
 	}
 
 	static FString ResolveSaveStatePath(const FString& UnresolvedRomPath, const FString& UnresolvedSavePath)
