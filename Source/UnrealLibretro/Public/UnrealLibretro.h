@@ -170,7 +170,6 @@ public:
 	}
 
 private:
-	void* SDLHandle;
 
 #ifdef PLATFORM_WINDOWS
 	FString RedistDirectory;
