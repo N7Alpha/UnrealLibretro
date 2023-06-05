@@ -219,10 +219,10 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                     if (LibretroCoreInstance.IsValid())
                     {
                         TArray<FString> Keys;
-                        LibretroCoreInstance->ControllersSetOnLaunch.GetKeys(Keys);
+                        LibretroCoreInstance->EditorPresetControllers.GetKeys(Keys);
 
                         // Make the CorePath core always selectable
-                        if (!LibretroCoreInstance->ControllersSetOnLaunch.Contains(CoreLibraryName))
+                        if (!LibretroCoreInstance->EditorPresetControllers.Contains(CoreLibraryName))
                         {
                             Keys.Add(CoreLibraryName);
                         }
@@ -248,32 +248,32 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                         {
                             return    LibretroCoreInstance.IsValid() 
                                    && SelectedLibraryName == CoreLibraryName
-                                   && LibretroCoreInstance->ControllersSetOnLaunch.Contains(SelectedLibraryName)
-                                   && LibretroCoreInstance->ControllersSetOnLaunch[SelectedLibraryName][Port].ID != RETRO_DEVICE_DEFAULT;
+                                   && LibretroCoreInstance->EditorPresetControllers.Contains(SelectedLibraryName)
+                                   && LibretroCoreInstance->EditorPresetControllers[SelectedLibraryName][Port].ID != RETRO_DEVICE_DEFAULT;
                         }),
                     FResetToDefaultHandler::CreateLambda([Port, this](TSharedPtr<IPropertyHandle> CoreControllerProperty)
                         {
                             if (LibretroCoreInstance.IsValid())
                             {
-                                auto &ControllersSetOnLaunchForSelectedCore = LibretroCoreInstance->ControllersSetOnLaunch.FindChecked(SelectedLibraryName);
+                                auto &EditorPresetControllersForSelectedCore = LibretroCoreInstance->EditorPresetControllers.FindChecked(SelectedLibraryName);
                                 
                                 // Set to unspecified default then try to set to specified one if there is one
-                                ControllersSetOnLaunchForSelectedCore[Port] = FLibretroControllerDescription();
+                                EditorPresetControllersForSelectedCore[Port] = FLibretroControllerDescription();
                                 for (auto& ControllerDescription : ControllerDescriptions[Port])
                                 {
                                     if (ControllerDescription.ID == RETRO_DEVICE_DEFAULT)
                                     {
-                                        ControllersSetOnLaunchForSelectedCore[Port] = ControllerDescription;
+                                        EditorPresetControllersForSelectedCore[Port] = ControllerDescription;
                                     }
                                 }
 
-                                RemoveControllersSetOnLaunchForSelectedCoreIfAllAreDefault();
+                                RemoveEditorPresetControllersForSelectedCoreIfAllAreDefault();
                             }
                         })
                     ))
 #endif
             // Setting this makes it so our reset to default handlers are called I believe
-            .PropertyHandleList({ DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ULibretroCoreInstance, ControllersSetOnLaunch)) })
+            .PropertyHandleList({ DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ULibretroCoreInstance, EditorPresetControllers)) })
             .NameContent()
             .MinDesiredWidth(150.0f)
             [
@@ -294,32 +294,32 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                                 {
                                     // Early return if we're not actually changing selected controllers for a port
                                     if (   !LibretroCoreInstance.IsValid()
-                                        || !LibretroCoreInstance->ControllersSetOnLaunch.Contains(SelectedLibraryName)
+                                        || !LibretroCoreInstance->EditorPresetControllers.Contains(SelectedLibraryName)
                                         && ControllerDescriptions[RowPort][j].ID == RETRO_DEVICE_DEFAULT
-                                        || LibretroCoreInstance->ControllersSetOnLaunch.Contains(SelectedLibraryName)
-                                        && ControllerDescriptions[RowPort][j].ID == LibretroCoreInstance->ControllersSetOnLaunch[SelectedLibraryName][RowPort].ID)
+                                        || LibretroCoreInstance->EditorPresetControllers.Contains(SelectedLibraryName)
+                                        && ControllerDescriptions[RowPort][j].ID == LibretroCoreInstance->EditorPresetControllers[SelectedLibraryName][RowPort].ID)
                                     {
                                         return;
                                     }
 
-                                    FLibretroControllerDescriptions &ControllersSetOnLaunchForCore = LibretroCoreInstance->ControllersSetOnLaunch.FindOrAdd(SelectedLibraryName);
+                                    FLibretroControllerDescriptions &EditorPresetControllersForCore = LibretroCoreInstance->EditorPresetControllers.FindOrAdd(SelectedLibraryName);
 
-                                    ControllersSetOnLaunchForCore[RowPort] = ControllerDescriptions[RowPort][j];
+                                    EditorPresetControllersForCore[RowPort] = ControllerDescriptions[RowPort][j];
 
                                     // Copy over whatever special names the Core uses for the default
                                     for (int Port = 0; Port < PortCount; Port++)
                                     {
-                                        if (ControllersSetOnLaunchForCore[Port].ID != RETRO_DEVICE_DEFAULT) continue;
+                                        if (EditorPresetControllersForCore[Port].ID != RETRO_DEVICE_DEFAULT) continue;
                                         for (auto& ControllerDescription : ControllerDescriptions[Port])
                                         {
                                             if (ControllerDescription.ID == RETRO_DEVICE_DEFAULT)
                                             {
-                                                ControllersSetOnLaunchForCore[Port] = ControllerDescription;
+                                                EditorPresetControllersForCore[Port] = ControllerDescription;
                                             }
                                         }
                                     }
 
-                                    RemoveControllersSetOnLaunchForSelectedCoreIfAllAreDefault();
+                                    RemoveEditorPresetControllersForSelectedCoreIfAllAreDefault();
 
                                     MarkEditorNeedsSave();
                                 }));
@@ -338,12 +338,12 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
 
                             if (LibretroCoreInstance.IsValid())
                             {
-                                auto* ControllersSetOnLaunchForCore = LibretroCoreInstance->ControllersSetOnLaunch.Find(SelectedLibraryName);
+                                auto* EditorPresetControllersForCore = LibretroCoreInstance->EditorPresetControllers.Find(SelectedLibraryName);
 
                                 // If we have non-default controllers bound to a port
-                                if (ControllersSetOnLaunchForCore)
+                                if (EditorPresetControllersForCore)
                                 {
-                                    DisplayControllerDescription = (*ControllersSetOnLaunchForCore)[Port];
+                                    DisplayControllerDescription = (*EditorPresetControllersForCore)[Port];
                                 }
                                 // Else relay the default description the core told us
                                 else
@@ -375,21 +375,21 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
 #if ENGINE_MAJOR_VERSION >= 5
                 .OverrideResetToDefault(FResetToDefaultOverride::Create
                     (
-                        FIsResetToDefaultVisible::CreateLambda([i, this](TSharedPtr<IPropertyHandle> CoreOptionsOverrideProperty)
+                        FIsResetToDefaultVisible::CreateLambda([&Option, this](TSharedPtr<IPropertyHandle> EditorPresetOptionsOverrideProperty)
                             {
-                                return LibretroCoreInstance.IsValid() ? LibretroCoreInstance->CoreOptions.Contains(LibretroOptions[i].Key) : false;
+                                return LibretroCoreInstance.IsValid() ? LibretroCoreInstance->EditorPresetOptions.Contains(Option.Key) : false;
                             }),
-                        FResetToDefaultHandler::CreateLambda([i, this](TSharedPtr<IPropertyHandle> CoreOptionsOverrideProperty)
+                        FResetToDefaultHandler::CreateLambda([&Option, this](TSharedPtr<IPropertyHandle> EditorPresetOptionsOverrideProperty)
                             {
-                                if (LibretroCoreInstance.IsValid() && LibretroCoreInstance->CoreOptions.Contains(LibretroOptions[i].Key))
+                                if (LibretroCoreInstance.IsValid() && LibretroCoreInstance->EditorPresetOptions.Contains(Option.Key))
                                 {
-                                    LibretroCoreInstance->CoreOptions.FindAndRemoveChecked(LibretroOptions[i].Key);
+                                    LibretroCoreInstance->EditorPresetOptions.FindAndRemoveChecked(Option.Key);
                                 }
                             })
                      ))
 #endif
                 // Setting this makes it so our reset to default handlers are called I believe
-                .PropertyHandleList({ DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ULibretroCoreInstance, CoreOptions)) })
+                .PropertyHandleList({ DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ULibretroCoreInstance, EditorPresetOptions)) })
                 .NameContent()
                 .MinDesiredWidth(150.0f)
                 [
@@ -415,16 +415,16 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                                             // If default is selected remove the key from core options since no key is implicit default
                                             if (i == FLibretroOption::DefaultOptionIndex)
                                             {
-                                                if (this->LibretroCoreInstance->CoreOptions.Contains(Option.Key))
+                                                if (this->LibretroCoreInstance->EditorPresetOptions.Contains(Option.Key))
                                                 {
-                                                    this->LibretroCoreInstance->CoreOptions.Remove(Option.Key);
+                                                    this->LibretroCoreInstance->EditorPresetOptions.Remove(Option.Key);
                                                     this->MarkEditorNeedsSave();
                                                 }
                                             }
                                             // Otherwise add the selected option
                                             else
                                             {
-                                                this->LibretroCoreInstance->CoreOptions.Add(Option.Key) = Option.Values[i];
+                                                this->LibretroCoreInstance->EditorPresetOptions.Add(Option.Key) = Option.Values[i];
                                                 this->MarkEditorNeedsSave();
                                             }
                                         }
@@ -442,7 +442,7 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                             {
                                 if (this->LibretroCoreInstance.IsValid())
                                 {
-                                    FString* SelectedOptionString = this->LibretroCoreInstance->CoreOptions.Find(Option.Key);
+                                    FString* SelectedOptionString = this->LibretroCoreInstance->EditorPresetOptions.Find(Option.Key);
                                     if (SelectedOptionString == nullptr)
                                     {
                                         return FText::FromString(Option.Values[FLibretroOption::DefaultOptionIndex]);

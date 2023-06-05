@@ -13,6 +13,37 @@
 
 #include <type_traits> // One of the few std headers where its usage is recommended over a native Unreal Engine implementation see https://docs.unrealengine.com/5.0/en-US/epic-cplusplus-coding-standard-for-unreal-engine/#useofstandardlibraries
 
+#include "LibretroInputDefinitions.generated.h"
+
+USTRUCT(BlueprintType)
+struct FLibretroOption
+{
+    GENERATED_BODY()
+
+    static CONSTEXPR int DefaultOptionIndex = 0; // By libretro convention
+
+    UPROPERTY(BlueprintReadOnly)
+    FString         Key;
+
+    UPROPERTY(BlueprintReadOnly)
+    FString         Description;
+
+    UPROPERTY(BlueprintReadOnly)
+    TArray<FString> Values;
+};
+
+USTRUCT(BlueprintType)
+struct FLibretroControllerDescription // retro_controller_description
+{
+    GENERATED_BODY()
+
+    UPROPERTY(VisibleAnywhere)
+    FString Description{"Unspecified"};
+
+    UPROPERTY(VisibleAnywhere)
+    unsigned int ID{ RETRO_DEVICE_DEFAULT };
+};
+
 // Check libretro.h for further documentation. More or less this maps to RETRO_DEVICE_ID values in there
 // DO NOT REORDER THESE... doing so will break indexing badly....
 //      The order for each RETRO_DEVICE is in the same numerical increasing order as every RETRO_DEVICE_*_ID value 

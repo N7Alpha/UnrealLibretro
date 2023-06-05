@@ -8,35 +8,6 @@
 #include "LibretroCoreInstance.generated.h"
 
 USTRUCT(BlueprintType)
-struct FLibretroOption
-{
-	GENERATED_BODY()
-
-	static CONSTEXPR int DefaultOptionIndex = 0; // By libretro convention
-
-	UPROPERTY(BlueprintReadOnly)
-	FString         Key;
-
-	UPROPERTY(BlueprintReadOnly)
-	FString         Description;
-
-	UPROPERTY(BlueprintReadOnly)
-	TArray<FString> Values;
-};
-
-USTRUCT(BlueprintType)
-struct FLibretroControllerDescription // retro_controller_description
-{
-	GENERATED_BODY()
-
-	UPROPERTY(VisibleAnywhere)
-	FString Description{"Unspecified"};
-
-	UPROPERTY(VisibleAnywhere)
-	unsigned int ID{RETRO_DEVICE_DEFAULT};
-};
-
-USTRUCT(BlueprintType)
 struct FLibretroControllerDescriptions
 {
 	GENERATED_BODY()
@@ -127,19 +98,43 @@ public:
 	void Pause(bool ShouldPause = true);
 
 	/**
-	 * @brief Effectively a getter version of `retro_set_controller_port_device`
+	 * The following methods help with setting bound controllers for the core at runtime
+	 * These are not preserved when the core is restarted
 	 *
-	 * @see `retro_set_controller_port_device` in libretro.h
+	 * @see `RETRO_ENVIRONMENT_SET_CONTROLLER_INFO`
+	 * @see retro_set_controller_port_device
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeCoreIsReady")
-	void GetController(int Port, int64 &ID, FString &Description);
+	UFUNCTION(BlueprintPure, Category = "Libretro|IneffectiveBeforeLaunchComplete")
+	TArray<FLibretroControllerDescription> GetControllerDescriptions(int Port);
+
+	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunchComplete")
+	void GetController(int Port, int64& ID, FString& Description);
+
+	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunchComplete")
+	void SetController(int Port, int64 ID);
+
+	/**
+	 * The following methods help with setting options for the core at runtime
+	 * These are not preserved when the core is restarted
+	 * 
+	 * @see `RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE`
+	 * @see `RETRO_ENVIRONMENT_GET_VARIABLE`
+	 * @see `RETRO_ENVIRONMENT_SET_VARIABLES`
+	 */
+	UFUNCTION(BlueprintPure, Category = "Libretro|IneffectiveBeforeLaunchComplete")
+	TArray<FLibretroOption> GetOptionDescriptions();
+
+	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunchComplete")
+	void GetOption(const FString& Key, FString& Value, int &Index);
+
+	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunchComplete")
+	void SetOption(const FString& Key, const FString& Value);
 
 	/**
 	 * @brief Sets the state of a button for the Libretro core
 	 * 
 	 * Bindings in ConnectController will override inputs set here
 	 * You can set analog inputs through this interface as well however it won't work well
-	 * 
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
 	void SetInputDigital(int Port, bool Activated, ERetroDeviceID Input);
@@ -170,19 +165,23 @@ public:
 	UAudioComponent* AudioComponent;
 
 	/**
-	 * @brief A key-value map for configuring Libretro Cores
+	 * @brief A key-value map that stores the options set for Libretro Cores from the editor
 	 * 
 	 * Options are appended to this list when you change them in the 'Libretro Core Options' section of the details panel
-	 * They are only added here if they differ from their default
+	 * They are only added here if they differ from their default. These Options override global options set from an ini
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro)
-	TMap<FString, FString> CoreOptions;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Libretro)
+	TMap<FString, FString> EditorPresetOptions;
 
 	/**
-	 * Making @todo probably don't make this part of the public interface
+	 * @brief A key-value map for storing controllers that will be bound on launch per libretro core
+	 *
+	 * @todo The keys are from a C struct retro_system_info::library_name I use this to associate the core with the controls...
+	 * This might not be the most reliable and if you update a core there's a chance the association might break. 
+	 * Looking at the Retroarch source might provide some insights here
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro, meta = (ShowInnerProperties))
-	TMap<FString, FLibretroControllerDescriptions> ControllersSetOnLaunch;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Libretro, meta = (ShowInnerProperties))
+	TMap<FString, FLibretroControllerDescriptions> EditorPresetControllers;
 
 	/**
 	 * You should provide a path to your ROM relative to the MyROMs directory in the UnrealLibretro directory in your project's Plugins directory.

@@ -1040,7 +1040,7 @@ LibretroContext* LibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInst
     // Kick the initialization process off to another thread. It shouldn't be added to the Unreal task pool because those are too slow and my code relies on OpenGL state being thread local.
     // The Runnable system is the standard way for spawning and managing threads in Unreal. FThread looks enticing, but they removed any way to detach threads since "it doesn't work as expected"
     l->LambdaRunnable = FLambdaRunnable::RunLambdaOnBackGroundThread(FPaths::GetCleanFilename(core) + FPaths::GetCleanFilename(game),
-        [=, LoadedCallback = MoveTemp(LoadedCallback), ControllersSetOnLaunch = LibretroCoreInstance->ControllersSetOnLaunch]() {
+        [=, LoadedCallback = MoveTemp(LoadedCallback), EditorPresetControllers = LibretroCoreInstance->EditorPresetControllers]() {
 
             // Here I load a copy of the dll instead of the original. If you load the same dll multiple times you won't obtain a new instance of the dll loaded into memory,
             // instead all variables and function pointers will point to the original loaded dll
@@ -1071,9 +1071,9 @@ LibretroContext* LibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInst
             for (int Port = 0; Port < PortCount; Port++)
             {
                 unsigned DeviceID = RETRO_DEVICE_DEFAULT;
-                if (const FLibretroControllerDescriptions* ControllerDescriptions = ControllersSetOnLaunch.Find(l->system.library_name))
+                if (const FLibretroControllerDescriptions* CorePresetControllers = EditorPresetControllers.Find(l->system.library_name))
                 {
-                    DeviceID = (*ControllerDescriptions)[Port].ID;
+                    DeviceID = (*CorePresetControllers)[Port].ID;
                 }
 
                 l->DeviceIDs[Port] = DeviceID;

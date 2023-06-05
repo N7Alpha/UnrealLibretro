@@ -19,21 +19,77 @@ ULibretroCoreInstance::ULibretroCoreInstance()
     PrimaryComponentTick.bCanEverTick = true;
 }
 
+//bool ULibretroCoreInstance::IsReadyForFinishDestroy() { return true; };
+
+void ULibretroCoreInstance::SetController(int Port, int64 ID)
+{
+    NOT_LAUNCHED_GUARD
+
+    // This if statement guards against a datarace on LibretroContext::DeviceIDs
+    if (CoreInstance.GetValue()->CoreState.load(std::memory_order_acquire) != LibretroContext::ECoreState::Starting)
+    {
+        CoreInstance.GetValue()->DeviceIDs[Port] = ID;
+        CoreInstance.GetValue()->EnqueueTask([Port, ID](libretro_api_t &libretro_api)
+            {
+                libretro_api.set_controller_port_device(Port, ID);
+            }); 
+    }
+}
+
 void ULibretroCoreInstance::GetController(int Port, int64& ID, FString& Description)
 {
     NOT_LAUNCHED_GUARD
 
-    // This if statement guards against a datarace on LibretroContext::ControllerDescriptions
+    // This if statement guards against a datarace on LibretroContext::DeviceIDs
     if (CoreInstance.GetValue()->CoreState.load(std::memory_order_acquire) != LibretroContext::ECoreState::Starting)
     {
-        ID = CoreInstance.GetValue()->devices[Port].load(std::memory_order_relaxed);
-        for (auto & ControllerDescription : CoreInstance.GetValue()->ControllerDescriptions[Port])
+        ID = CoreInstance.GetValue()->DeviceIDs[Port];
+        for (FLibretroControllerDescription& ControllerDescription : CoreInstance.GetValue()->ControllerDescriptions[Port])
         {
             if (ControllerDescription.ID == ID)
             {
                 Description = ControllerDescription.Description;
                 break;
             }
+        }
+    }
+}
+
+TArray<FLibretroOption> ULibretroCoreInstance::GetOptionDescriptions()
+{
+    return CoreInstance.IsSet() ? CoreInstance.GetValue()->OptionDescriptions           : TArray<FLibretroOption>{};
+}
+
+TArray<FLibretroControllerDescription> ULibretroCoreInstance::GetControllerDescriptions(int Port)
+{
+    return CoreInstance.IsSet() ? CoreInstance.GetValue()->ControllerDescriptions[Port] : TArray<FLibretroControllerDescription>{};
+}
+
+void ULibretroCoreInstance::GetOption(const FString& Key, FString& Value, int& Index)
+{
+    NOT_LAUNCHED_GUARD
+
+    for (int i = 0; i < CoreInstance.GetValue()->OptionDescriptions.Num(); i++)
+    {
+        if (CoreInstance.GetValue()->OptionDescriptions[i].Key == Key)
+        {
+            Index = CoreInstance.GetValue()->OptionSelectedIndex[i].load(std::memory_order_relaxed);
+            Value = CoreInstance.GetValue()->OptionDescriptions[i].Values[Index];
+        }
+    }
+}
+
+void ULibretroCoreInstance::SetOption(const FString& Key, const FString& Value)
+{
+    NOT_LAUNCHED_GUARD
+
+    for (int i = 0; i < CoreInstance.GetValue()->OptionDescriptions.Num(); i++)
+    {
+        if (CoreInstance.GetValue()->OptionDescriptions[i].Key == Key)
+        {
+            int32 Index = CoreInstance.GetValue()->OptionDescriptions[i].Values.IndexOfByKey(Value);
+            CoreInstance.GetValue()->OptionSelectedIndex[i].store(Index, std::memory_order_relaxed);
+            CoreInstance.GetValue()->OptionsHaveBeenModified.store(true, std::memory_order_release);
         }
     }
 }
