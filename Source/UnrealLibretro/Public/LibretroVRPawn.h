@@ -6,6 +6,9 @@
 #include "LibretroGrabComponent.h"
 
 #include "CoreMinimal.h"
+#include "UObject/ConstructorHelpers.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/Engine.h"
 #include "Engine/StaticMeshActor.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet/KismetMathLibrary.h"

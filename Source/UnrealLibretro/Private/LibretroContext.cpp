@@ -5,6 +5,8 @@ extern "C"
 #include "gfx/scaler/pixconv.h"
 }
 
+#include "Misc/FileHelper.h"
+
 #include "LibretroCoreInstance.h"
 #include "UnrealLibretro.h" // For Libretro debug log category
 #include "LibretroSettings.h"
