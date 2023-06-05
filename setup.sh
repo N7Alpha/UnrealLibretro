@@ -17,6 +17,6 @@ mkdir -p MyROMs MyCores
 mkdir -p Binaries/Win64/ThirdParty/libretro
 
 # Get general binaries for running Libretro Cores on Windows
-wget -c https://buildbot.libretro.com/nightly/windows/x86_64/RetroArch_update.7z --directory /tmp
+wget -c https://buildbot.libretro.com/nightly/windows/x86_64/RetroArch_update.7z --directory /tmp --timeout=600
 7z x -aoa -o/tmp /tmp/RetroArch_update.7z
 cp /tmp/RetroArch-Win64/*.dll Binaries/Win64/ThirdParty/libretro
