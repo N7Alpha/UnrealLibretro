@@ -129,7 +129,7 @@ void FLibretroCoreInstanceDetails::StartBuildbotBatchDownload(TSharedPtr<FText> 
     RefreshCoreListViews();
 }
 
-static TArray<FLibretroOption> static_LibretroOptions;
+static TArray<FLibretroOptionDescription> static_LibretroOptions;
 
 static TStaticArray<TArray<FLibretroControllerDescription>, PortCount> static_ControllerDescriptions;
 
@@ -369,7 +369,7 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
     // Construct Libreto Core Options Panel... It's directly under the Libretro section
     IDetailCategoryBuilder& OptionsCategory = DetailBuilder.EditCategory("Libretro Core Options");
     LibretroOptions = MoveTemp(static_LibretroOptions);
-    for (const FLibretroOption& Option : LibretroOptions)
+    for (const FLibretroOptionDescription& Option : LibretroOptions)
     {
         OptionsCategory.AddCustomRow(FText::GetEmpty())
 #if ENGINE_MAJOR_VERSION >= 5
@@ -413,7 +413,7 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                                         if (this->LibretroCoreInstance.IsValid())
                                         {
                                             // If default is selected remove the key from core options since no key is implicit default
-                                            if (i == FLibretroOption::DefaultOptionIndex)
+                                            if (i == FLibretroOptionDescription::DefaultOptionIndex)
                                             {
                                                 if (this->LibretroCoreInstance->EditorPresetOptions.Contains(Option.Key))
                                                 {
@@ -445,7 +445,7 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                                     FString* SelectedOptionString = this->LibretroCoreInstance->EditorPresetOptions.Find(Option.Key);
                                     if (SelectedOptionString == nullptr)
                                     {
-                                        return FText::FromString(Option.Values[FLibretroOption::DefaultOptionIndex]);
+                                        return FText::FromString(Option.Values[FLibretroOptionDescription::DefaultOptionIndex]);
                                     }
                                     else
                                     {

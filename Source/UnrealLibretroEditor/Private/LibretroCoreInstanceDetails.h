@@ -51,7 +51,7 @@ public:
     /** IDetailCustomization interface */
     virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
 
-    TArray<FLibretroOption> LibretroOptions;
+    TArray<FLibretroOptionDescription> LibretroOptions;
     TStaticArray<TArray<FLibretroControllerDescription>, PortCount> ControllerDescriptions;
 
     TWeakObjectPtr<ULibretroCoreInstance> LibretroCoreInstance;
