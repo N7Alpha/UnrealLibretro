@@ -16,7 +16,7 @@
 #include "LibretroInputDefinitions.generated.h"
 
 USTRUCT(BlueprintType)
-struct FLibretroOption
+struct FLibretroOptionDescription
 {
     GENERATED_BODY()
 

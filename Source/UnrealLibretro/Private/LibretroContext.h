@@ -131,7 +131,7 @@ public:
     TMap<FString, FString> StartingOptions;
 
     // The following are always safe to access from the game thread and are guranteed to be initialized after exiting the starting state
-    TArray<FLibretroOption> OptionDescriptions;
+    TArray<FLibretroOptionDescription> OptionDescriptions;
     TStaticArray<TArray<struct FLibretroControllerDescription>, PortCount> ControllerDescriptions;
     decltype(retro_controller_description::id) DeviceIDs[PortCount]; // The core doesn't keep track of this so we have to
 

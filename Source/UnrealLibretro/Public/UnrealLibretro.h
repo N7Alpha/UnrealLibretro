@@ -133,9 +133,9 @@ public:
 		return ControllerDescriptions;
 	}
 
-	static TArray<FLibretroOption> EnvironmentParseOptions(const struct retro_variable* variable_array)
+	static TArray<FLibretroOptionDescription> EnvironmentParseOptions(const struct retro_variable* variable_array)
 	{
-		TArray<FLibretroOption> ParsedOptions;
+		TArray<FLibretroOptionDescription> ParsedOptions;
 
 		while (variable_array->key != nullptr)
 		{
@@ -151,7 +151,7 @@ public:
 				continue; // Skip this Option
 			}
 
-			FLibretroOption Option;
+			FLibretroOptionDescription Option;
 
 			// Extract the description substring
 			Option.Description = Value.Left(SemicolonIndex);

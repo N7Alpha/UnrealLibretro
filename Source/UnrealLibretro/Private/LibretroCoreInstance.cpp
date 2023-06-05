@@ -55,9 +55,9 @@ void ULibretroCoreInstance::GetController(int Port, int64& ID, FString& Descript
     }
 }
 
-TArray<FLibretroOption> ULibretroCoreInstance::GetOptionDescriptions()
+TArray<FLibretroOptionDescription> ULibretroCoreInstance::GetOptionDescriptions()
 {
-    return CoreInstance.IsSet() ? CoreInstance.GetValue()->OptionDescriptions           : TArray<FLibretroOption>{};
+    return CoreInstance.IsSet() ? CoreInstance.GetValue()->OptionDescriptions           : TArray<FLibretroOptionDescription>{};
 }
 
 TArray<FLibretroControllerDescription> ULibretroCoreInstance::GetControllerDescriptions(int Port)

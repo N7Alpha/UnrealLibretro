@@ -124,7 +124,7 @@ public:
 	 * @see `RETRO_ENVIRONMENT_SET_VARIABLES`
 	 */
 	UFUNCTION(BlueprintPure, Category = "Libretro|IneffectiveBeforeLaunchComplete")
-	TArray<FLibretroOption> GetOptionDescriptions();
+	TArray<FLibretroOptionDescription> GetOptionDescriptions();
 
 	UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunchComplete")
 	void GetOption(const FString& Key, FString& Value, int &Index);
