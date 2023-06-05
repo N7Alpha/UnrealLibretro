@@ -242,5 +242,4 @@ protected:
 
     void load(const char* sofile);
     void load_game(const char* filename);
-    void load_cfg_file(const std::string& core_path);
 };
