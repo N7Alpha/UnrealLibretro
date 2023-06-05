@@ -10,7 +10,7 @@
 #include "UnrealLibretro.h"
 #include "LibretroInputDefinitions.h"
 #include "RawAudioSoundWave.h"
-#include "sdlarch.h"
+#include "LibretroContext.h"
 
 #define NOT_LAUNCHED_GUARD if (!CoreInstance.IsSet()) return;
 

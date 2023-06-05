@@ -1,5 +1,5 @@
 
-#include "sdlarch.h"
+#include "LibretroContext.h"
 extern "C"
 {
 #include "gfx/scaler/pixconv.h"
