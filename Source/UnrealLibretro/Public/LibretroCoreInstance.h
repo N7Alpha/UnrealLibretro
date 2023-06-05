@@ -19,7 +19,7 @@ struct FLibretroControllerDescriptions
 	const FLibretroControllerDescription& operator[](int Port) const { return ControllerDescription[Port]; }
 };
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCoreIsReady, const class UTextureRenderTarget2D*, LibretroFramebuffer, const class USoundWave*, AudioBuffer);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnLaunchComplete, const class UTextureRenderTarget2D*, LibretroFramebuffer, const class USoundWave*, AudioBuffer, const bool, bSuccess);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCoreFramebufferResize);
 
 
@@ -39,10 +39,12 @@ public:
 
 	/** Delegate Functions */
 	/**
-	 * Issued after the emulator has been successfully launched
+	 * Issued after a call to Launch has finished setting up the core on a background thread
+	 * 
+	 * @param bSuccess - If true the procedures marked IneffectiveBeforeLaunchComplete will now function
 	 */
 	UPROPERTY(BlueprintAssignable)
-	FOnCoreIsReady OnCoreIsReady;
+	FOnLaunchComplete OnLaunchComplete;
 
 	/**
 	 * Issued initially whenever the core framebuffer is changes dimensions. The arguments provided will scale uv's appropriately to exactly fit the framebuffer

@@ -161,8 +161,8 @@ void ULibretroCoreInstance::Launch()
 	            {
 	                if (weakThis.IsValid())
 	                {
-	                    weakThis->OnCoreIsReady.Broadcast(weakThis->RenderTarget, 
-                                                          weakThis->AudioBuffer);
+	                    weakThis->OnLaunchComplete.Broadcast(weakThis->RenderTarget,
+                                                             weakThis->AudioBuffer, true);
 
                         weakThis->bFrameBottomLeftOrigin = bottom_left_origin;
                         weakThis->FrameWidth  = geometry.base_width;
