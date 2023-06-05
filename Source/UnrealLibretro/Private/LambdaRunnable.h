@@ -13,7 +13,7 @@ class UNREALLIBRETRO_API FLambdaRunnable : public FRunnable
 private:
 	/** Thread to run the worker FRunnable on */
 	
-	uint64 Number;
+	uint64 Number{0};
 
 	//Lambda function pointer
 	TUniqueFunction< void()> FunctionPointer;
@@ -27,7 +27,7 @@ public:
 
 	// Begin FRunnable interface.
 	virtual uint32 Run();
-	FRunnableThread* Thread;
+	FRunnableThread* Thread{nullptr};
 	// End FRunnable interface
 
 	/*

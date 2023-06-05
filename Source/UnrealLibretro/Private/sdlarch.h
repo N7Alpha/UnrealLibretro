@@ -255,7 +255,7 @@ protected:
 	#define DEFINE_GL_PROCEDURES(Type,Func) Type Func = NULL;
     ENUM_GL_PROCEDURES(DEFINE_GL_PROCEDURES);
     ENUM_GL_WIN32_INTEROP_PROCEDURES(DEFINE_GL_PROCEDURES)
-    bool gl_win32_interop_supported_by_driver;
+    bool gl_win32_interop_supported_by_driver{false};
 	
     void create_window();
     void video_configure(const struct retro_game_geometry* geom);
