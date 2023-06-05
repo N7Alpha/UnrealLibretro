@@ -29,7 +29,7 @@ Then in the Windows file explorer navigate to the root directory of your project
 ## Integrating into your Project
 
 ### Download a Libretro Core
-You can download a Libretro Core from [here](https://buildbot.libretro.com/nightly/windows/x86_64/latest/) and place it into the MyCores folder.
+You can download Libretro Cores directly from the Unreal Editor. If that isn't working try accessing downloading them from the [buildbot](https://buildbot.libretro.com/nightly/windows/x86_64/latest/)
 
 ### Download a ROM
 You know and I know you know where to get these. Once you have the one you want place it into your MyROMs folder.
@@ -38,8 +38,10 @@ You know and I know you know where to get these. Once you have the one you want 
 Some cores require that you also provide a content folder. PPSSPP is [one example](https://docs.libretro.com/library/ppsspp/#bios). Mainly this just involves taking a folder from a release of the emulator and moving it into the `UnrealLibretro/System` directory. There might be weirder ones. You can probably just find them by googling or searching the [Libretro docs](https://docs.libretro.com/).
 
 ### In the Unreal Editor
-Restart your project if you performed the setup while the Unreal Editor was running.
-Navigate to UnrealLibretro's content folder in the Unreal Editor content browser, and open the example map LibretroWorld. Exploring the objects in this folder should give you an idea of how to use the API.
+- Restart your project if you performed the setup process while the Unreal Editor was running
+- Enable "Show Plugin Content" from the Content Browser options
+- Navigate to UnrealLibretro's content folder in the Unreal Editor Content Browser, and open the example map LibretroMap
+- Click on the actors to set their Cores and ROMs then hit play
 
 ## Contributing
 
