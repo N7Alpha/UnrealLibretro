@@ -52,10 +52,10 @@ void FUnrealLibretroModule::StartupModule()
 void FUnrealLibretroModule::ShutdownModule()
 {
 	// @todo For now I skip resource cleanup. It could be added back if I added isReadyForFinishDestroy(bool) to ULibretroCoreInstance
-	// in conjunction with waiting for the LibretroContext to destruct since UE uses the outstanding UObjects from this module visible through
+	// in conjunction with waiting for the FLibretroContext to destruct since UE uses the outstanding UObjects from this module visible through
 	// the reflection system (UProperty, etc)  to determine when it is safe to shutdown this module.
-	// This is because LibretroContext depends on the dlls and paths loaded by this module and is destructed asynchronously and is not a UObject.
-	// I could also fix the shutdown_audio hack as well as remove the numerous weak pointers in LibretroContext.
+	// This is because FLibretroContext depends on the dlls and paths loaded by this module and is destructed asynchronously and is not a UObject.
+	// I could also fix the shutdown_audio hack as well as remove the numerous weak pointers in FLibretroContext.
 	// I'm nervous how much the engine will block the game thread on that condition though so that still might not be a solution.
 #if 0
 	

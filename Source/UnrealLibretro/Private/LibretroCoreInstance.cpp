@@ -25,8 +25,8 @@ void ULibretroCoreInstance::SetController(int Port, int64 ID)
 {
     NOT_LAUNCHED_GUARD
 
-    // This if statement guards against a datarace on LibretroContext::DeviceIDs
-    if (CoreInstance.GetValue()->CoreState.load(std::memory_order_acquire) != LibretroContext::ECoreState::Starting)
+    // This if statement guards against a datarace on FLibretroContext::DeviceIDs
+    if (CoreInstance.GetValue()->CoreState.load(std::memory_order_acquire) != FLibretroContext::ECoreState::Starting)
     {
         CoreInstance.GetValue()->DeviceIDs[Port] = ID;
         CoreInstance.GetValue()->EnqueueTask([Port, ID](libretro_api_t &libretro_api)
@@ -40,8 +40,8 @@ void ULibretroCoreInstance::GetController(int Port, int64& ID, FString& Descript
 {
     NOT_LAUNCHED_GUARD
 
-    // This if statement guards against a datarace on LibretroContext::DeviceIDs
-    if (CoreInstance.GetValue()->CoreState.load(std::memory_order_acquire) != LibretroContext::ECoreState::Starting)
+    // This if statement guards against a datarace on FLibretroContext::DeviceIDs
+    if (CoreInstance.GetValue()->CoreState.load(std::memory_order_acquire) != FLibretroContext::ECoreState::Starting)
     {
         ID = CoreInstance.GetValue()->DeviceIDs[Port];
         for (FLibretroControllerDescription& ControllerDescription : CoreInstance.GetValue()->ControllerDescriptions[Port])
@@ -139,9 +139,9 @@ void ULibretroCoreInstance::Launch()
     //RenderTarget->AddressX = TA_Clamp;
     //RenderTarget->AddressY = TA_Clamp;
 
-    this->CoreInstance = LibretroContext::Launch(this, _CorePath, _RomPath, RenderTarget, static_cast<URawAudioSoundWave*>(AudioBuffer),
+    this->CoreInstance = FLibretroContext::Launch(this, _CorePath, _RomPath, RenderTarget, static_cast<URawAudioSoundWave*>(AudioBuffer),
 	    [weakThis = MakeWeakObjectPtr(this), SRAMPath = FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath)]
-        (LibretroContext *_CoreInstance, libretro_api_t &libretro_api) 
+        (FLibretroContext *_CoreInstance, libretro_api_t &libretro_api) 
 	    {   // Core has loaded
             
 	        // Load save data into core @todo this is just a weird place to hook this in
@@ -255,7 +255,7 @@ void ULibretroCoreInstance::Shutdown()
     
     NOT_LAUNCHED_GUARD
 
-    LibretroContext::Shutdown(CoreInstance.GetValue());
+    FLibretroContext::Shutdown(CoreInstance.GetValue());
     CoreInstance.Reset();
 }
 

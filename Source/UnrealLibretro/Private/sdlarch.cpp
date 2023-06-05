@@ -128,7 +128,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
     return true;
 }
 
- void LibretroContext::create_window() {
+ void FLibretroContext::create_window() {
 #if PLATFORM_ANDROID
     // Get an OpenGL context via EGL
     const EGLint attribs[] = {
@@ -265,7 +265,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
     UE_LOG(Libretro, Log, TEXT("GL_VERSION: %s\n"), ANSI_TO_TCHAR((char*)glGetString(GL_VERSION)));
 }
 
- void LibretroContext::video_configure(const struct retro_game_geometry *geom) {
+ void FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
 	if (!core.gl.pixel_format) {
         auto data = RETRO_PIXEL_FORMAT_0RGB1555;
         this->core_environment(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &data);
@@ -429,7 +429,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
 
 #include "Async/TaskGraphInterfaces.h"
 // Stripped down code for profiling purposes https://godbolt.org/z/c57esx
- void LibretroContext::core_video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
+ void FLibretroContext::core_video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
     DECLARE_SCOPE_CYCLE_COUNTER(TEXT("PrepareFrameBufferForRenderThread"), STAT_LibretroPrepareFrameBufferForRenderThread, STATGROUP_UnrealLibretro);
 
     unsigned SrcPitch = 4 * core.av.geometry.max_width;
@@ -591,7 +591,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
     }
 }
 
-size_t LibretroContext::core_audio_write(const int16_t *buf, size_t frames) {
+size_t FLibretroContext::core_audio_write(const int16_t *buf, size_t frames) {
     unsigned FramesEnqueued = 0;
     while (FramesEnqueued < frames && Unreal.AudioQueue->Enqueue(((int32*)buf)[FramesEnqueued])) {
         FramesEnqueued++;
@@ -632,7 +632,7 @@ static void core_log(enum retro_log_level level, const char *fmt, ...) {
 
 }
 
-bool LibretroContext::core_environment(unsigned cmd, void *data) {
+bool FLibretroContext::core_environment(unsigned cmd, void *data) {
     bool delegate_status{false};
     if (CoreEnvironmentCallback)
     {
@@ -882,7 +882,7 @@ bool LibretroContext::core_environment(unsigned cmd, void *data) {
 }
 
 // Unfinished experiment with less branchy version of this function https://godbolt.org/z/hYeYxr95r
-int16_t LibretroContext::core_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
+int16_t FLibretroContext::core_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
     // To get the core to poll for certain types of input sometimes requires setting particular controllers for compatible ports
     // or changing specific options related to the input you're trying to poll for. If it's not obvious your main resources are
     // forums, the libretro documentation, or looking through the core's code itself.
@@ -903,12 +903,12 @@ int16_t LibretroContext::core_input_state(unsigned port, unsigned device, unsign
 }
 
 
-void LibretroContext::core_audio_sample(int16_t left, int16_t right) {
+void FLibretroContext::core_audio_sample(int16_t left, int16_t right) {
 	int16_t buf[2] = {left, right};
 	core_audio_write(buf, (size_t)1);
 }
 
-void LibretroContext::load(const char *sofile) {
+void FLibretroContext::load(const char *sofile) {
 	void (*set_environment)(retro_environment_t) = NULL;
 	void (*set_video_refresh)(retro_video_refresh_t) = NULL;
 	void (*set_input_poll)(retro_input_poll_t) = NULL;
@@ -964,7 +964,7 @@ void LibretroContext::load(const char *sofile) {
 }
 
 
-void LibretroContext::load_game(const char* filename) {
+void FLibretroContext::load_game(const char* filename) {
     struct retro_game_info info = { filename , nullptr, (size_t)0, "" };
     TArray<uint8> gameBinary;
     
@@ -998,7 +998,7 @@ void LibretroContext::load_game(const char* filename) {
     video_configure(&core.av.geometry);
 }
 
-LibretroContext* LibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInstance, FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TUniqueFunction<void(LibretroContext*, libretro_api_t&)> LoadedCallback)
+FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInstance, FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TUniqueFunction<void(FLibretroContext*, libretro_api_t&)> LoadedCallback)
 {
 
     check(IsInGameThread()); // So static initialization is safe + UObject access
@@ -1006,7 +1006,7 @@ LibretroContext* LibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInst
     static constexpr uint32 max_instances = sizeof(libretro_callbacks_table) / sizeof(libretro_callbacks_table[0]);
     static TBitArray<TInlineAllocator<(max_instances / 8) + 1>> AllocatedInstances(false, max_instances);
 
-    LibretroContext *l = new LibretroContext();
+    FLibretroContext *l = new FLibretroContext();
 
     // Grab a statically generated callback structure
     int32 InstanceNumber;
@@ -1210,7 +1210,7 @@ LibretroContext* LibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInst
     return l;
 }
 
-void LibretroContext::Shutdown(LibretroContext* Instance) 
+void FLibretroContext::Shutdown(FLibretroContext* Instance) 
 {
 	// We enqueue the shutdown procedure as the final task since we want outstanding tasks to be executed first
     Instance->EnqueueTask([Instance](auto&&)
@@ -1219,7 +1219,7 @@ void LibretroContext::Shutdown(LibretroContext* Instance)
         });
 }
 
-void LibretroContext::Pause(bool ShouldPause)
+void FLibretroContext::Pause(bool ShouldPause)
 {
     // We enqueue the state change because otherwise we might prematurely unset the Starting state
     // Alternatively you could add one more state to accomplish this, but this is fine for now
@@ -1233,7 +1233,7 @@ void LibretroContext::Pause(bool ShouldPause)
     
 }
 
-void LibretroContext::EnqueueTask(TUniqueFunction<void(libretro_api_t&)> LibretroAPITask)
+void FLibretroContext::EnqueueTask(TUniqueFunction<void(libretro_api_t&)> LibretroAPITask)
 {
     check(IsInGameThread()); // LibretroAPITasks is a single producer single consumer queue
     LibretroAPITasks.Enqueue(MoveTemp(LibretroAPITask));
