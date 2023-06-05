@@ -53,6 +53,8 @@ public:
         MotionControllerRightAim = CreateDefaultSubobject<UMotionControllerComponent>(TEXT("MotionControllerRightAim"));
         MotionControllerLeftAim->MotionSource = "LeftAim";
         MotionControllerRightAim->MotionSource = "RightAim";
+        MotionControllerLeftAim->SetupAttachment(DefaultRootComponent);
+        MotionControllerRightAim->SetupAttachment(DefaultRootComponent);
 #else
         MotionControllerLeftAim = MotionControllerLeft;
         MotionControllerRightAim = MotionControllerRight;
@@ -251,7 +253,10 @@ public:
         {
             if (auto* GrabComponent = GetGrabComponentNearMotionController(Hand.MotionController))
             {
-                if (GrabComponent->TryGrab(Hand.MotionControllerAim))
+                // John: This bias makes it so we don't aim up on Unreal Engine 4.26 or later since Epic 
+                // changed how UMotionControllerComponent::MotionSource behaved in that version
+                FRotator OrientationAimBias = FRotator(Hand.MotionController->GetRelativeRotation().Quaternion().Inverse() * Hand.MotionControllerAim->GetRelativeRotation().Quaternion());
+                if (GrabComponent->TryGrab(Hand.MotionController, OrientationAimBias))
                 {
                     Hand.HeldComponent = GrabComponent;
 

@@ -91,7 +91,7 @@ public:
     }
 
     UFUNCTION(BlueprintCallable)
-    bool TryGrab(UMotionControllerComponent* MotionController)
+    bool TryGrab(UMotionControllerComponent* MotionController, FRotator OrientationBias = FRotator::ZeroRotator)
     {
         // Then 0: Try to grab
         switch (GrabType) 
@@ -127,7 +127,7 @@ public:
                     // Orient the held Actor to match GrabComponent's relative location
 
                     GetAttachParent()->SetRelativeRotation(
-                        GetRelativeRotation().GetInverse(),
+                        FRotator(OrientationBias.Quaternion() * GetRelativeRotation().GetInverse().Quaternion()),
                         /* Sweep = */ false,
                         /* OutSweepHitResult = */ nullptr,
                         ETeleportType::TeleportPhysics);
