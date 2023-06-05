@@ -228,7 +228,7 @@ public:
 protected:
 
 	// @todo: It'd be nice if I could use something like std::wrapped_reference however Unreal doesn't offer an equivalent for now
-	TOptional<struct LibretroContext*> CoreInstance;
+	TOptional<struct FLibretroContext*> CoreInstance;
 
 	bool Paused = false;
 

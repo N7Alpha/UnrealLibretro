@@ -98,18 +98,18 @@ struct libretro_api_t {
     retro_keyboard_event_t keyboard_event;
 };
 
-struct LibretroContext {
+struct FLibretroContext {
 public:
 	/**
 	 * @brief analogous to new except asynchronous
 	 * @post The LoadedCallback is always called
 	 */
-    static LibretroContext* Launch(class ULibretroCoreInstance* LibretroCoreInstance, FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TUniqueFunction<void(LibretroContext*, libretro_api_t&)> LoadedCallback);
+    static FLibretroContext* Launch(class ULibretroCoreInstance* LibretroCoreInstance, FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TUniqueFunction<void(FLibretroContext*, libretro_api_t&)> LoadedCallback);
 	
 	/**
 	 * @brief analogous to delete except asynchronous
 	 */
-    static void Shutdown(LibretroContext* Instance);
+    static void Shutdown(FLibretroContext* Instance);
 
 	/**
 	 * Queued tasks will still execute even if paused
@@ -166,8 +166,8 @@ public:
     EPixelFormat UnrealPixelFormat{PF_B8G8R8A8};
 
 protected:
-    LibretroContext() {}
-    ~LibretroContext() {}
+    FLibretroContext() {}
+    ~FLibretroContext() {}
 
     libretro_api_t        libretro_api = { 0 };
     struct libretro_callbacks_t* libretro_callbacks = nullptr;
