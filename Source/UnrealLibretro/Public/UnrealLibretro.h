@@ -2,6 +2,7 @@
 
 #include "LibretroCoreInstance.h"
 #include "Interfaces/IPluginManager.h"
+#include "Misc/Paths.h"
 #include "UObject/NameTypes.h"
 
 UNREALLIBRETRO_API DECLARE_LOG_CATEGORY_EXTERN(Libretro, Log, All);

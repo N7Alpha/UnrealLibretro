@@ -22,13 +22,13 @@ struct FLibretroOptionDescription
 
     static CONSTEXPR int DefaultOptionIndex = 0; // By libretro convention
 
-    UPROPERTY(BlueprintReadOnly)
+    UPROPERTY(BlueprintReadOnly, Category = "Libretro")
     FString         Key;
 
-    UPROPERTY(BlueprintReadOnly)
+    UPROPERTY(BlueprintReadOnly, Category = "Libretro")
     FString         Description;
 
-    UPROPERTY(BlueprintReadOnly)
+    UPROPERTY(BlueprintReadOnly, Category = "Libretro")
     TArray<FString> Values;
 };
 
@@ -37,10 +37,10 @@ struct FLibretroControllerDescription // retro_controller_description
 {
     GENERATED_BODY()
 
-    UPROPERTY(VisibleAnywhere)
+    UPROPERTY(VisibleAnywhere, Category = "Libretro")
     FString Description{"Unspecified"};
 
-    UPROPERTY(VisibleAnywhere)
+    UPROPERTY(VisibleAnywhere, Category = "Libretro")
     unsigned int ID{ RETRO_DEVICE_DEFAULT };
 };
 

@@ -12,7 +12,7 @@ struct FLibretroControllerDescriptions
 {
 	GENERATED_BODY()
 
-	UPROPERTY(VisibleAnywhere)
+	UPROPERTY(VisibleAnywhere, Category = "Libretro")
 	FLibretroControllerDescription ControllerDescription[PortCount];
 
 	      FLibretroControllerDescription& operator[](int Port)       { return ControllerDescription[Port]; }

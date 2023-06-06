@@ -14,6 +14,8 @@ extern "C"
 #include "LambdaRunnable.h"
 
 #include "HAL/FileManager.h"
+#include "Misc/Paths.h"
+#include "TextureResource.h"
 
 #if PLATFORM_APPLE
 #include <dispatch/dispatch.h>

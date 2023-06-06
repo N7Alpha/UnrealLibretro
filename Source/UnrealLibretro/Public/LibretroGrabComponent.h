@@ -41,31 +41,31 @@ public:
         PrimaryComponentTick.bCanEverTick = false;
     }
 
-    UPROPERTY(BlueprintReadWrite, AdvancedDisplay)
+    UPROPERTY(BlueprintReadWrite, AdvancedDisplay, Category = "Libretro")
     UMotionControllerComponent* MotionControllerRef;
 
-    UPROPERTY(BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Libretro")
     bool bIsHeld{false};
     
-    UPROPERTY(BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Libretro")
     FRotator PrimaryGrabRelativeRotation;
     
-    UPROPERTY(BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Libretro")
     bool bSimulateOnDrop{false};
     
-    UPROPERTY(EditAnywhere)
+    UPROPERTY(EditAnywhere, Category = "Libretro")
     LibretroGrabType GrabType;
     
-    UPROPERTY(EditAnywhere)
+    UPROPERTY(EditAnywhere, Category = "Libretro")
     UHapticFeedbackEffect_Base* OnGrabHapticEffect;
 
-    UPROPERTY(BlueprintAssignable)
+    UPROPERTY(BlueprintAssignable, Category = "Libretro")
     FOnGrabbed OnGrabbed;
 
-    UPROPERTY(BlueprintAssignable)
+    UPROPERTY(BlueprintAssignable, Category = "Libretro")
     FOnDropped OnDropped;
 
-    UFUNCTION(BlueprintCallable)
+    UFUNCTION(BlueprintCallable, Category = "Libretro")
     void SetShouldSimulateOnDrop()
     {
         if (auto* Parent = Cast<UPrimitiveComponent>(GetAttachParent()))
@@ -77,7 +77,7 @@ public:
         }
     };
 
-    UFUNCTION(BlueprintCallable)
+    UFUNCTION(BlueprintCallable, Category = "Libretro")
     void SetPrimitiveCompPhysics(bool bSimulate) 
     {
         if (auto* Parent = Cast<UPrimitiveComponent>(GetAttachParent()))
@@ -90,7 +90,7 @@ public:
         }
     }
 
-    UFUNCTION(BlueprintCallable)
+    UFUNCTION(BlueprintCallable, Category = "Libretro")
     bool TryGrab(UMotionControllerComponent* MotionController, FRotator OrientationBias = FRotator::ZeroRotator)
     {
         // Then 0: Try to grab
@@ -170,7 +170,7 @@ public:
         return bIsHeld;
     }
 
-    UFUNCTION(BlueprintCallable)
+    UFUNCTION(BlueprintCallable, Category = "Libretro")
     bool TryRelease(UMotionControllerComponent* MotionController)
     {
         // Then 0: Try to release

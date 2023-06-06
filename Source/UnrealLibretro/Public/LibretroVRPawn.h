@@ -16,6 +16,7 @@
 #include "GameFramework/Pawn.h"
 #include "Components/SplineMeshComponent.h"
 #include "NavigationSystem.h"
+#include "Components/InputComponent.h"
 #include "Camera/CameraComponent.h"
 #include "MotionControllerComponent.h"
 #include "HeadMountedDisplayFunctionLibrary.h"
@@ -68,60 +69,60 @@ public:
         MotionControllerRight->SetupAttachment(DefaultRootComponent);
     }
 
-    UPROPERTY(BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Libretro")
     FVector ProjectedTeleportLocation;
 
-    UPROPERTY(BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Libretro")
     bool bValidTeleportLocation = false;
 
-    UPROPERTY(BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Libretro")
     bool bTeleportTraceActive = false;
 
-    UPROPERTY(BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Libretro")
     float GrabRadiusFromGripPosition = 6.0f;
 
-    UPROPERTY(BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Libretro")
     float AxisDeadzoneThreshold = 0.7f;
 
-    UPROPERTY(EditAnywhere)
+    UPROPERTY(EditAnywhere, Category = "Libretro")
     TSubclassOf<AActor> TeleportVisualizerClass = AActor::StaticClass();
 
-    UPROPERTY(BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Libretro")
     AActor* TeleportVisualizerReference = nullptr;
 
-    UPROPERTY(BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Libretro")
     float SnapTurnDegrees = -45.0f;
 
-    UPROPERTY(BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Libretro")
     TArray<FVector> TeleportTracePathPositions;
 
     // This is a pool of spline mesh components we've created so far not all of them are always used
-    UPROPERTY(EditAnywhere)
+    UPROPERTY(EditAnywhere, Category = "Libretro")
     TArray<USplineMeshComponent*> TeleportTraceSplineMeshComponents;
 
     // You can change Query Extent to get different  results, a low value will "help" the player find a teleport location
-    UPROPERTY(BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Libretro")
     FVector TeleportProjectPointToNavigationQueryExtent;
 
     //UPROPERTY(BlueprintReadWrite)
     //AMenu
 
-    UPROPERTY(EditAnywhere)
+    UPROPERTY(EditAnywhere, Category = "Libretro")
     UCameraComponent* Camera;
 
-    UPROPERTY(EditAnywhere)
+    UPROPERTY(EditAnywhere, Category = "Libretro")
     UMotionControllerComponent* MotionControllerLeft;
 
-    UPROPERTY(EditAnywhere)
+    UPROPERTY(EditAnywhere, Category = "Libretro")
     UMotionControllerComponent* MotionControllerRight;
 
-    UPROPERTY(EditAnywhere)
+    UPROPERTY(EditAnywhere, Category = "Libretro")
     UMotionControllerComponent* MotionControllerLeftAim;
     
-    UPROPERTY(EditAnywhere)
+    UPROPERTY(EditAnywhere, Category = "Libretro")
     UMotionControllerComponent* MotionControllerRightAim;
 
-    UPROPERTY(EditAnywhere)
+    UPROPERTY(EditAnywhere, Category = "Libretro")
     UStaticMesh* SplineMesh;
 
     UPROPERTY()
