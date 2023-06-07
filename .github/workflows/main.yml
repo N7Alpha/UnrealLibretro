@@ -26,7 +26,7 @@ jobs:
         
       # Runs setup.sh in the root of the project directory. 
       - name: Run Setup Script
-        run: wsl ./setup.sh
+        run: C:\msys64\mingw64.exe ./setup.sh
 
       # Lots of copying and pasting since we build for many unreal engine versions
       - name: Package for Unreal Engine 4.24 
