@@ -104,16 +104,15 @@ void FLibretroCoreInstanceDetails::StartBuildbotBatchDownload(TSharedPtr<FText> 
                         }
 
                         free(UnzippedData);
-                        FFunctionGraphTask::CreateAndDispatchWhenReady([=]()
-                            {
-                                auto& CoreListViewDataSource = FModuleManager::GetModuleChecked<FUnrealLibretroEditorModule>("UnrealLibretroEditor").CoreListViewDataSource;
-                                CoreListViewDataSource[CoreIdentifier].PlatformDownloadedBitField |= (1UL << PlatformIndex);
 
-                                if (--CoreListViewDataSource[CoreIdentifier].DownloadsPending == 0)
-                                {
-                                    RefreshCoreListViews();
-                                }
-                            }, TStatId(), nullptr, ENamedThreads::GameThread);
+                        check(IsInGameThread()); // We have to be on this thread when we update Slate
+                        auto& CoreListViewDataSource = FModuleManager::GetModuleChecked<FUnrealLibretroEditorModule>("UnrealLibretroEditor").CoreListViewDataSource;
+                        CoreListViewDataSource[CoreIdentifier].PlatformDownloadedBitField |= (1UL << PlatformIndex);
+
+                        if (--CoreListViewDataSource[CoreIdentifier].DownloadsPending == 0)
+                        {
+                            RefreshCoreListViews();
+                        }
                     }
                 }
                 else
