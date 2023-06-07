@@ -11,27 +11,27 @@ completion.
 class UNREALLIBRETRO_API FLambdaRunnable : public FRunnable
 {
 private:
-	/** Thread to run the worker FRunnable on */
-	
-	uint64 Number{0};
+    /** Thread to run the worker FRunnable on */
+    
+    uint64 Number{0};
 
-	//Lambda function pointer
-	TUniqueFunction< void()> FunctionPointer;
+    //Lambda function pointer
+    TUniqueFunction< void()> FunctionPointer;
 
-	static FThreadSafeCounter ThreadNumber;
+    static FThreadSafeCounter ThreadNumber;
 
 public:
-	//Constructor / Destructor
-	FLambdaRunnable(FString ThreadName, TUniqueFunction< void()> InFunction);
-	virtual ~FLambdaRunnable();
+    //Constructor / Destructor
+    FLambdaRunnable(FString ThreadName, TUniqueFunction< void()> InFunction);
+    virtual ~FLambdaRunnable();
 
-	// Begin FRunnable interface.
-	virtual uint32 Run();
-	FRunnableThread* Thread{nullptr};
-	// End FRunnable interface
+    // Begin FRunnable interface.
+    virtual uint32 Run();
+    FRunnableThread* Thread{nullptr};
+    // End FRunnable interface
 
-	/*
-	Runs the passed lambda on the background thread, new thread per call
-	*/
-	static FLambdaRunnable* RunLambdaOnBackGroundThread(FString ThreadName, TUniqueFunction< void()> InFunction);
+    /*
+    Runs the passed lambda on the background thread, new thread per call
+    */
+    static FLambdaRunnable* RunLambdaOnBackGroundThread(FString ThreadName, TUniqueFunction< void()> InFunction);
 };

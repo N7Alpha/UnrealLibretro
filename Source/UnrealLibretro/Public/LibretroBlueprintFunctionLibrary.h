@@ -14,26 +14,26 @@ class UCameraComponent;
 UENUM(BlueprintType)
 enum class EBranchNames : uint8 
 {
-	Yes,
-	No
+    Yes,
+    No
 };
 
 
 UCLASS()
 class UNREALLIBRETRO_API ULibretroBlueprintFunctionLibrary : public UBlueprintFunctionLibrary
 {
-	GENERATED_BODY()
-	
+    GENERATED_BODY()
+    
 public:
-	UFUNCTION(BlueprintCallable, Category = "Libretro|Util", meta = (ExpandEnumAsExecs = "Branch"))
-	static AActor* LookingAtActor(class UCameraComponent* CameraComponent, EBranchNames& Branch);
-	
-	UFUNCTION(BlueprintCallable, Category = "Libretro|Util|Actor", meta = (ExpandEnumAsExecs = "Branch", DeterminesOutputType = "ComponentClass"))
-	static UActorComponent* HasComponent(AActor* Actor, TSubclassOf<UActorComponent> ComponentClass, EBranchNames &Branch);
+    UFUNCTION(BlueprintCallable, Category = "Libretro|Util", meta = (ExpandEnumAsExecs = "Branch"))
+    static AActor* LookingAtActor(class UCameraComponent* CameraComponent, EBranchNames& Branch);
+    
+    UFUNCTION(BlueprintCallable, Category = "Libretro|Util|Actor", meta = (ExpandEnumAsExecs = "Branch", DeterminesOutputType = "ComponentClass"))
+    static UActorComponent* HasComponent(AActor* Actor, TSubclassOf<UActorComponent> ComponentClass, EBranchNames &Branch);
 
-	UFUNCTION(BlueprintPure, Category = "Libretro|Util")
-	static bool IsSupportUVFromHitResultsEnabledInConfig();
+    UFUNCTION(BlueprintPure, Category = "Libretro|Util")
+    static bool IsSupportUVFromHitResultsEnabledInConfig();
 
-	UFUNCTION(BlueprintCallable, Category = "Libretro|Util")
-	static FTransform GetPlayAreaTransform();
+    UFUNCTION(BlueprintCallable, Category = "Libretro|Util")
+    static FTransform GetPlayAreaTransform();
 };

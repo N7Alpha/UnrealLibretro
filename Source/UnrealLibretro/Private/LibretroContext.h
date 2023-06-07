@@ -100,25 +100,25 @@ struct libretro_api_t {
 
 struct FLibretroContext {
 public:
-	/**
-	 * @brief analogous to new except asynchronous
-	 * @post The LoadedCallback is always called
-	 */
+    /**
+     * @brief analogous to new except asynchronous
+     * @post The LoadedCallback is always called
+     */
     static FLibretroContext* Launch(class ULibretroCoreInstance* LibretroCoreInstance, FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TUniqueFunction<void(FLibretroContext*, libretro_api_t&)> LoadedCallback);
-	
-	/**
-	 * @brief analogous to delete except asynchronous
-	 */
+    
+    /**
+     * @brief analogous to delete except asynchronous
+     */
     static void Shutdown(FLibretroContext* Instance);
 
-	/**
-	 * Queued tasks will still execute even if paused
-	 */
+    /**
+     * Queued tasks will still execute even if paused
+     */
     void Pause(bool ShouldPause);
-	
-	/**
-	 * @post Everything queued before calling shutdown will be executed
-	 */
+    
+    /**
+     * @post Everything queued before calling shutdown will be executed
+     */
     void EnqueueTask(TUniqueFunction<void(libretro_api_t&)> LibretroAPITask);
 
     /**
@@ -160,7 +160,7 @@ public:
         Paused,
         Shutdown
     };
-	
+    
     std::atomic<ECoreState> CoreState{ ECoreState::Starting };
 
     EPixelFormat UnrealPixelFormat{PF_B8G8R8A8};
@@ -186,7 +186,7 @@ protected:
         // These are all ThreadSafe shared pointers that are the main bridge between and unreal
         FTexture2DRHIRef TextureRHI;
         TSharedPtr<TCircularQueue<int32>, ESPMode::ThreadSafe> AudioQueue;
-    	
+        
         struct
         {
             FCriticalSection CriticalSection;
@@ -196,8 +196,8 @@ protected:
 
     struct {
         bool using_opengl;
-    	
-    	struct {
+        
+        struct {
 #if PLATFORM_ANDROID
             void* egl_context;
             void* egl_display;
@@ -219,11 +219,11 @@ protected:
             GLuint pixel_type;
             GLuint pixel_format;
             GLuint bits_per_pixel;
-    	} gl;
+        } gl;
 
-    	struct {
+        struct {
             void* bgra_buffers[2];
-    	} software;
+        } software;
 
         bool free_framebuffer_index;
 
@@ -248,15 +248,15 @@ protected:
     int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id);
     // void   core_input_poll(void);
     bool    core_environment(unsigned cmd, void* data);
-	
+    
     // I read somewhere online that you technically have to load OpenGL procedures per context you make on Windows
     // I don't think it actually matters unless you're using multiple rendering devices, and even in that case it might
     // not matter. I still load them per instance anyway to be on the safe side.
-	#define DEFINE_GL_PROCEDURES(Type,Func) Type Func = NULL;
+    #define DEFINE_GL_PROCEDURES(Type,Func) Type Func = NULL;
     ENUM_GL_PROCEDURES(DEFINE_GL_PROCEDURES);
     ENUM_GL_WIN32_INTEROP_PROCEDURES(DEFINE_GL_PROCEDURES)
     bool gl_win32_interop_supported_by_driver{false};
-	
+    
     void create_window();
     void video_configure(const struct retro_game_geometry* geom);
 

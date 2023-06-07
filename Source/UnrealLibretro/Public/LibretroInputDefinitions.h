@@ -51,22 +51,22 @@ UENUM(BlueprintType)
 enum class ERetroDeviceID : uint8
 {
     // RETRO_DEVICE_ID_JOYPAD
-	JoypadB,
-	JoypadY,
-	JoypadSelect,
-	JoypadStart,
-	JoypadUp,
-	JoypadDown,
-	JoypadLeft,
-	JoypadRight,
-	JoypadA,
-	JoypadX,
-	JoypadL,
-	JoypadR,
-	JoypadL2,
-	JoypadR2,
-	JoypadL3,
-	JoypadR3,
+    JoypadB,
+    JoypadY,
+    JoypadSelect,
+    JoypadStart,
+    JoypadUp,
+    JoypadDown,
+    JoypadLeft,
+    JoypadRight,
+    JoypadA,
+    JoypadX,
+    JoypadL,
+    JoypadR,
+    JoypadL2,
+    JoypadR2,
+    JoypadL3,
+    JoypadR3,
 
     // RETRO_DEVICE_ID_LIGHTGUN
     LightgunX UMETA(Hidden), // The Lightgun entries marked UMETA(Hidden) here are deprecated according to libretro.h
@@ -89,10 +89,10 @@ enum class ERetroDeviceID : uint8
 
     // RETRO_DEVICE_ID_ANALOG                                       (For triggers)
     // CartesianProduct(RETRO_DEVICE_ID_ANALOG, RETRO_DEVICE_INDEX) (For stick input)
-	AnalogLeftX,
+    AnalogLeftX,
     AnalogLeftY,
-	AnalogRightX,
-	AnalogRightY,
+    AnalogRightX,
+    AnalogRightY,
     AnalogL2,
     AnalogR2,
 

@@ -140,11 +140,11 @@ void ULibretroCoreInstance::Launch()
     //RenderTarget->AddressY = TA_Clamp;
 
     this->CoreInstance = FLibretroContext::Launch(this, _CorePath, _RomPath, RenderTarget, static_cast<URawAudioSoundWave*>(AudioBuffer),
-	    [weakThis = MakeWeakObjectPtr(this), SRAMPath = FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath)]
+        [weakThis = MakeWeakObjectPtr(this), SRAMPath = FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath)]
         (FLibretroContext *_CoreInstance, libretro_api_t &libretro_api) 
-	    {   // Core has loaded
+        {   // Core has loaded
             
-	        // Load save data into core @todo this is just a weird place to hook this in
+            // Load save data into core @todo this is just a weird place to hook this in
             auto File = IPlatformFile::GetPlatformPhysical().OpenRead(*SRAMPath);
             if (File && libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM))
             {
@@ -152,16 +152,16 @@ void ULibretroCoreInstance::Launch()
                                    libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM));
                 File->~IFileHandle(); // must be called explicitly
             }
-	        
-	        // Notify delegate
-	        FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady(
+            
+            // Notify delegate
+            FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady(
                 [weakThis, 
                  bottom_left_origin = _CoreInstance->LibretroThread_bottom_left_origin,
                  geometry           = _CoreInstance->LibretroThread_geometry]()
-	            {
-	                if (weakThis.IsValid())
-	                {
-	                    weakThis->OnLaunchComplete.Broadcast(weakThis->RenderTarget,
+                {
+                    if (weakThis.IsValid())
+                    {
+                        weakThis->OnLaunchComplete.Broadcast(weakThis->RenderTarget,
                                                              weakThis->AudioBuffer, true);
 
                         weakThis->bFrameBottomLeftOrigin = bottom_left_origin;
@@ -169,12 +169,12 @@ void ULibretroCoreInstance::Launch()
                         weakThis->FrameHeight = geometry.base_height;
                         
                         weakThis->OnCoreFrameBufferResize.Broadcast();
-	                	
+                        
                         weakThis->AudioComponent->SetSound(weakThis->AudioBuffer);
                         weakThis->AudioComponent->Play();
-	                }
-	            }, TStatId(), nullptr, ENamedThreads::GameThread);
-	    });
+                    }
+                }, TStatId(), nullptr, ENamedThreads::GameThread);
+        });
     
     // @todo theres a data race with how I assign this
     this->CoreInstance.GetValue()->CoreEnvironmentCallback = [weakThis = MakeWeakObjectPtr(this), CoreInstance = this->CoreInstance.GetValue()](unsigned cmd, void* data)->bool
@@ -221,7 +221,7 @@ void ULibretroCoreInstance::Launch()
             }
             case RETRO_ENVIRONMENT_SET_GEOMETRY: {
                 auto geometry = (const struct retro_game_geometry*) data;
-            		
+                    
                 FFunctionGraphTask::CreateAndDispatchWhenReady(
                     [weakThis,
                      geometry = *(const struct retro_game_geometry*)data]()
@@ -235,7 +235,7 @@ void ULibretroCoreInstance::Launch()
                 }, TStatId(), nullptr, ENamedThreads::GameThread);
                 
                 return true;
-	        }
+            }
         }
 
         return false;
@@ -286,19 +286,19 @@ void ULibretroCoreInstance::LoadState(const FString& FilePath)
 
 void ULibretroCoreInstance::SaveState(const FString& FilePath)
 {
-	NOT_LAUNCHED_GUARD
-	
-	this->CoreInstance.GetValue()->EnqueueTask
-	(
-		[SaveStatePath = FUnrealLibretroModule::ResolveSaveStatePath(RomPath, FilePath)](libretro_api_t& libretro_api)
-		{
+    NOT_LAUNCHED_GUARD
+    
+    this->CoreInstance.GetValue()->EnqueueTask
+    (
+        [SaveStatePath = FUnrealLibretroModule::ResolveSaveStatePath(RomPath, FilePath)](libretro_api_t& libretro_api)
+        {
             TArray<uint8> SaveStateBuffer; // @dynamic
-			SaveStateBuffer.Reserve(libretro_api.serialize_size() + 2); // The plus two is a slight optimization based on how SaveArrayToFile works
-			SaveStateBuffer.AddUninitialized(libretro_api.serialize_size());
-			libretro_api.serialize(static_cast<void*>(SaveStateBuffer.GetData()), libretro_api.serialize_size());
+            SaveStateBuffer.Reserve(libretro_api.serialize_size() + 2); // The plus two is a slight optimization based on how SaveArrayToFile works
+            SaveStateBuffer.AddUninitialized(libretro_api.serialize_size());
+            libretro_api.serialize(static_cast<void*>(SaveStateBuffer.GetData()), libretro_api.serialize_size());
             FFileHelper::SaveArrayToFile(SaveStateBuffer, *SaveStatePath);
-		}
-	);
+        }
+    );
 }
 
 #include "Scalability.h"

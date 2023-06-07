@@ -81,7 +81,7 @@ libretro_callbacks_t libretro_callbacks_table[] = { REP100(FUNC_WRAP_INIT) };
 #define load_sym(V, S) do {\
     if (0 == ((*(void**)&V) = FPlatformProcess::GetDllExport(libretro_api.handle, TEXT(#S)))) \
         UE_LOG(Libretro, Fatal, TEXT("Failed to load symbol '" #S "'': %u"), FPlatformMisc::GetLastError()); \
-	} while (0)
+    } while (0)
 #define load_retro_sym(S) load_sym(libretro_api.S, retro_##S)
 
 
@@ -270,10 +270,10 @@ static bool GLLogCall(const char* function, const char* file, int line)
 }
 
  void FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
-	if (!core.gl.pixel_format) {
+    if (!core.gl.pixel_format) {
         auto data = RETRO_PIXEL_FORMAT_0RGB1555;
         this->core_environment(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &data);
-	}
+    }
 
     // Unreal Resource init
     void *SharedHandle = nullptr;
@@ -343,8 +343,8 @@ static bool GLLogCall(const char* function, const char* file, int line)
                     UnrealSoundBuffer->SetSampleRate(core.av.timing.sample_rate);
                     UnrealSoundBuffer->NumChannels = 2;
                     UnrealSoundBuffer->AudioQueue = Unreal.AudioQueue;
-	}
-		
+    }
+        
             }, TStatId(), nullptr, ENamedThreads::GameThread)
     ); // mfence
 
@@ -427,7 +427,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
                                                               * core.av.geometry.max_height, PLATFORM_CACHE_LINE_SIZE);
         }
     }
-	
+    
     core.hw.context_reset();
 }
 
@@ -437,7 +437,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
     DECLARE_SCOPE_CYCLE_COUNTER(TEXT("PrepareFrameBufferForRenderThread"), STAT_LibretroPrepareFrameBufferForRenderThread, STATGROUP_UnrealLibretro);
 
     unsigned SrcPitch = 4 * core.av.geometry.max_width;
-	
+    
     auto prepare_frame_for_upload_to_unreal_RHI = [&](void* const buffer)
     {
         void* old_buffer;
@@ -482,7 +482,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
     
     if (data && data != RETRO_HW_FRAME_BUFFER_VALID) {
         DECLARE_SCOPE_CYCLE_COUNTER(TEXT("CPUConvertAndCopyFramebuffer"), STAT_LibretroCPUConvertAndCopyFramebuffer, STATGROUP_UnrealLibretro);
-    	
+        
         auto bgra_buffer = core.software.bgra_buffers[core.free_framebuffer_index = !core.free_framebuffer_index];
 
         if (core.gl.pixel_format == GL_BGRA) {
@@ -530,7 +530,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
     else if (data == RETRO_HW_FRAME_BUFFER_VALID) {
         check(core.using_opengl && core.gl.pixel_type == GL_UNSIGNED_BYTE);
 
-    	if (core.gl.rhi_interop_memory) {
+        if (core.gl.rhi_interop_memory) {
             // @todo I make no attempt to synchronize the core's drawing operations with RHI reads, some cores will work but others have synchronization issues
             //       It seems like a good reference resource on how to do this is either ITextureShareItem Engine/Source/Programs/TextureShare/TextureShareSDK
         } else {
@@ -611,13 +611,13 @@ size_t FLibretroContext::core_audio_write(const int16_t *buf, size_t frames) {
 
 
 static void core_log(enum retro_log_level level, const char *fmt, ...) {
-	char buffer[4096] = {0};
-	static const char * levelstr[] = { "dbg", "inf", "wrn", "err" };
-	va_list va;
+    char buffer[4096] = {0};
+    static const char * levelstr[] = { "dbg", "inf", "wrn", "err" };
+    va_list va;
 
-	va_start(va, fmt);
-	vsnprintf(buffer, sizeof(buffer), fmt, va);
-	va_end(va);
+    va_start(va, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, va);
+    va_end(va);
 
     switch (level) {
     case RETRO_LOG_DEBUG:
@@ -643,7 +643,7 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
         delegate_status = CoreEnvironmentCallback(cmd, data);
     }
     
-	switch (cmd) {
+    switch (cmd) {
     case RETRO_ENVIRONMENT_GET_VARIABLE: {
         retro_variable* var = (struct retro_variable*)data;
 
@@ -709,33 +709,33 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
 
         return true;
     }
-	case RETRO_ENVIRONMENT_GET_LOG_INTERFACE: {
-		struct retro_log_callback *cb = (struct retro_log_callback *)data;
-		cb->log = core_log;
+    case RETRO_ENVIRONMENT_GET_LOG_INTERFACE: {
+        struct retro_log_callback *cb = (struct retro_log_callback *)data;
+        cb->log = core_log;
         return true;
-	}
-	case RETRO_ENVIRONMENT_GET_CAN_DUPE: {
+    }
+    case RETRO_ENVIRONMENT_GET_CAN_DUPE: {
         bool *bval = (bool *)data;
         *bval = true;
         return true;
     }
-		
-	case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: {
-		const enum retro_pixel_format *format = (enum retro_pixel_format *)data;
+        
+    case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: {
+        const enum retro_pixel_format *format = (enum retro_pixel_format *)data;
 
-		if (*format > RETRO_PIXEL_FORMAT_RGB565)
-			return false;
+        if (*format > RETRO_PIXEL_FORMAT_RGB565)
+            return false;
 
         if (core.gl.texture)
             UE_LOG(Libretro, Fatal, TEXT("Tried to change pixel format after initialization."));
 
         switch (*format) {
-	        case RETRO_PIXEL_FORMAT_0RGB1555:
-	            core.gl.pixel_type = GL_UNSIGNED_SHORT_5_5_5_1;
-	            core.gl.pixel_format = GL_BGRA;
-	            core.gl.bits_per_pixel = sizeof(uint16_t);
-	            break;
-	        case RETRO_PIXEL_FORMAT_XRGB8888:
+            case RETRO_PIXEL_FORMAT_0RGB1555:
+                core.gl.pixel_type = GL_UNSIGNED_SHORT_5_5_5_1;
+                core.gl.pixel_format = GL_BGRA;
+                core.gl.bits_per_pixel = sizeof(uint16_t);
+                break;
+            case RETRO_PIXEL_FORMAT_XRGB8888:
                 
                 core.gl.pixel_type = GL_UNSIGNED_BYTE;
                 core.gl.pixel_format = GL_BGRA;
@@ -751,18 +751,18 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
                     core.gl.bits_per_pixel = sizeof(uint32_t);
                 }
 
-	            break;
-	        case RETRO_PIXEL_FORMAT_RGB565:
-	            core.gl.pixel_type = GL_UNSIGNED_SHORT_5_6_5;
-	            core.gl.pixel_format = GL_RGB;
-	            core.gl.bits_per_pixel = sizeof(uint16_t);
-	            break;
-	        default:
-	            UE_LOG(Libretro, Fatal, TEXT("Unknown pixel type %u"), *format);
+                break;
+            case RETRO_PIXEL_FORMAT_RGB565:
+                core.gl.pixel_type = GL_UNSIGNED_SHORT_5_6_5;
+                core.gl.pixel_format = GL_RGB;
+                core.gl.bits_per_pixel = sizeof(uint16_t);
+                break;
+            default:
+                UE_LOG(Libretro, Fatal, TEXT("Unknown pixel type %u"), *format);
         }
 
         return true;
-	}
+    }
     case RETRO_ENVIRONMENT_SET_HW_RENDER: {
         struct retro_hw_render_callback *hw = (struct retro_hw_render_callback*)data;
         check(hw->context_type < RETRO_HW_CONTEXT_VULKAN);
@@ -874,13 +874,13 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
     case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY: {
         return false;
     }
-	default:
+    default:
         if (!delegate_status) {
-		core_log(RETRO_LOG_WARN, "Unhandled env #%u", cmd);
+        core_log(RETRO_LOG_WARN, "Unhandled env #%u", cmd);
         }
-		
-		return delegate_status;
-	}
+        
+        return delegate_status;
+    }
 
     return delegate_status;
 }
@@ -908,45 +908,45 @@ int16_t FLibretroContext::core_input_state(unsigned port, unsigned device, unsig
 
 
 void FLibretroContext::core_audio_sample(int16_t left, int16_t right) {
-	int16_t buf[2] = {left, right};
-	core_audio_write(buf, (size_t)1);
+    int16_t buf[2] = {left, right};
+    core_audio_write(buf, (size_t)1);
 }
 
 void FLibretroContext::load(const char *sofile) {
-	void (*set_environment)(retro_environment_t) = NULL;
-	void (*set_video_refresh)(retro_video_refresh_t) = NULL;
-	void (*set_input_poll)(retro_input_poll_t) = NULL;
-	void (*set_input_state)(retro_input_state_t) = NULL;
-	void (*set_audio_sample)(retro_audio_sample_t) = NULL;
-	void (*set_audio_sample_batch)(retro_audio_sample_batch_t) = NULL;
+    void (*set_environment)(retro_environment_t) = NULL;
+    void (*set_video_refresh)(retro_video_refresh_t) = NULL;
+    void (*set_input_poll)(retro_input_poll_t) = NULL;
+    void (*set_input_state)(retro_input_state_t) = NULL;
+    void (*set_audio_sample)(retro_audio_sample_t) = NULL;
+    void (*set_audio_sample_batch)(retro_audio_sample_batch_t) = NULL;
     
     libretro_api.handle = FPlatformProcess::GetDllHandle(ANSI_TO_TCHAR(sofile));
 
-	if (!libretro_api.handle)
+    if (!libretro_api.handle)
         UE_LOG(LogTemp, Fatal ,TEXT("Failed to load core: %s"), ANSI_TO_TCHAR(sofile));
 
-	load_retro_sym(init);
-	load_retro_sym(deinit);
-	load_retro_sym(api_version);
-	load_retro_sym(get_system_info);
-	load_retro_sym(get_system_av_info);
+    load_retro_sym(init);
+    load_retro_sym(deinit);
+    load_retro_sym(api_version);
+    load_retro_sym(get_system_info);
+    load_retro_sym(get_system_av_info);
     load_retro_sym(set_controller_port_device);
-	load_retro_sym(reset);
-	load_retro_sym(run);
-	load_retro_sym(load_game);
-	load_retro_sym(unload_game);
+    load_retro_sym(reset);
+    load_retro_sym(run);
+    load_retro_sym(load_game);
+    load_retro_sym(unload_game);
     load_retro_sym(get_memory_data);
     load_retro_sym(get_memory_size);
     load_retro_sym(serialize_size);
     load_retro_sym(serialize);
     load_retro_sym(unserialize);
 
-	load_sym(set_environment, retro_set_environment);
-	load_sym(set_video_refresh, retro_set_video_refresh);
-	load_sym(set_input_poll, retro_set_input_poll);
-	load_sym(set_input_state, retro_set_input_state);
-	load_sym(set_audio_sample, retro_set_audio_sample);
-	load_sym(set_audio_sample_batch, retro_set_audio_sample_batch);
+    load_sym(set_environment, retro_set_environment);
+    load_sym(set_video_refresh, retro_set_video_refresh);
+    load_sym(set_input_poll, retro_set_input_poll);
+    load_sym(set_input_state, retro_set_input_state);
+    load_sym(set_audio_sample, retro_set_audio_sample);
+    load_sym(set_audio_sample_batch, retro_set_audio_sample_batch);
 
     libretro_callbacks->video_refresh = [=](const void* data, unsigned width, unsigned height, size_t pitch) { return core_video_refresh(data, width, height, pitch); };
     libretro_callbacks->audio_write = [=](const int16_t *data, size_t frames) { return core_audio_write(data, frames); };
@@ -954,7 +954,7 @@ void FLibretroContext::load(const char *sofile) {
     libretro_callbacks->input_state = [=](unsigned port, unsigned device, unsigned index, unsigned id) { return core_input_state(port, device, index, id); };
     libretro_callbacks->input_poll = [=]() { };
     libretro_callbacks->environment = [=](unsigned cmd, void* data) { return core_environment(cmd, data); };
- 	libretro_callbacks->get_current_framebuffer = [=]() { return core.gl.framebuffer; };
+     libretro_callbacks->get_current_framebuffer = [=]() { return core.gl.framebuffer; };
 
     set_environment(libretro_callbacks->c_environment);
     set_video_refresh(libretro_callbacks->c_video_refresh);
@@ -963,8 +963,8 @@ void FLibretroContext::load(const char *sofile) {
     set_audio_sample(libretro_callbacks->c_audio_sample);
     set_audio_sample_batch(libretro_callbacks->c_audio_write);
 
-	libretro_api.init();
-	libretro_api.initialized = true;
+    libretro_api.init();
+    libretro_api.initialized = true;
 }
 
 
@@ -983,7 +983,7 @@ void FLibretroContext::load_game(const char* filename) {
         UE_LOG(Libretro, Fatal, TEXT("The core failed to load the content."));
 
     libretro_api.get_system_av_info(&core.av);
- 	
+     
     if (core.using_opengl) {
 // SDL State isn't threadlocal like OpenGL so we have to synchronize here when we create a window
 #if PLATFORM_APPLE
@@ -1086,11 +1086,11 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
             // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
             l->load_game(TCHAR_TO_UTF8(*game));
-		
+        
             l->CoreState.store(ECoreState::Running, std::memory_order_release);
             LoadedCallback(l, l->libretro_api);
-        	
-        	// This simplifies the logic in core_video_refresh, It stops us from erroring it doesn't error when we try to unmap this pixel buffer in core_video_refresh
+            
+            // This simplifies the logic in core_video_refresh, It stops us from erroring it doesn't error when we try to unmap this pixel buffer in core_video_refresh
             // You could just move this to the beginning of core_video_refresh and surround it with an if statement that does this the first time through
             if (l->core.using_opengl) {
                 l->glBindBuffer(GL_PIXEL_PACK_BUFFER, l->core.gl.pixel_buffer_objects[l->core.free_framebuffer_index]);
@@ -1114,16 +1114,16 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                     {
                         l->libretro_api.run();
                     }
-                	
+                    
                     // Execute tasks from command queue  Note: It's semantically significant that this is here. Since I hook in save state
-                	//                                         operations here it must necessarily come after run is called on the core
+                    //                                         operations here it must necessarily come after run is called on the core
                     TUniqueFunction<void(libretro_api_t&)> Task;
                     while (l->LibretroAPITasks.Dequeue(Task)) 
                     {
                         Task(l->libretro_api);
                     }
                 }
-            	
+                
                 { // @todo My timing solution is a bit adhoc. I'm sure theres probably a better way.
                     DECLARE_SCOPE_CYCLE_COUNTER(TEXT("Sleep"), STAT_LibretroSleep, STATGROUP_UnrealLibretro);
 
@@ -1142,23 +1142,23 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
             // Explicit Cleanup
             if (l->libretro_api.initialized)
             {
-	            l->libretro_api.deinit();
+                l->libretro_api.deinit();
             }
-        	
+            
             if (l->libretro_api.handle)
             {
-	            FPlatformProcess::FreeDllHandle(l->libretro_api.handle);
+                FPlatformProcess::FreeDllHandle(l->libretro_api.handle);
             }
 
             IPlatformFile::GetPlatformPhysical().DeleteFile(*InstancedCorePath);
 
             l->Unreal.AudioQueue.Reset();
-        	
+            
             FFunctionGraphTask::CreateAndDispatchWhenReady([=]
             {
                 AllocatedInstances[InstanceNumber] = false;
             }, TStatId(), nullptr, ENamedThreads::GameThread);
-        	
+            
             {
 #if PLATFORM_WINDOWS
                 // On windows the thread that created a window MUST also destroy it https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-destroywindow#:~:text=A%20thread%20cannot%20use%20DestroyWindow%20to%20destroy%20a%20window%20created%20by%20a%20different%20thread
@@ -1169,7 +1169,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                     verify(DestroyWindow(l->core.gl.window));
                 }
 #endif
-            	// The double nested command enqueue is based on boilerplate I found elsewhere in the engine
+                // The double nested command enqueue is based on boilerplate I found elsewhere in the engine
                 // Since render commands are executed fifo we only delete shared resources after the render thread is done with them
                 // The actual render command execution is done on the RHI thread so we have to synchronize there as well
                 ENQUEUE_RENDER_COMMAND(LibretroCleanupResourcesSharedWithRenderThread)([l](FRHICommandListImmediate& RHICmdList)
@@ -1197,12 +1197,12 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 #endif
 
                                 l->Unreal.TextureRHI.SafeRelease();
-                        	
+                            
                                 if (l->LambdaRunnable)
                                 {
                                     delete l->LambdaRunnable; /** This will block the render thread if for some reason the thread we were running on hasn't exited yet */
                                 }
-                        	
+                            
                                 delete l; /** Task queue released */
                             });
                     }
@@ -1216,7 +1216,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
 void FLibretroContext::Shutdown(FLibretroContext* Instance) 
 {
-	// We enqueue the shutdown procedure as the final task since we want outstanding tasks to be executed first
+    // We enqueue the shutdown procedure as the final task since we want outstanding tasks to be executed first
     Instance->EnqueueTask([Instance](auto&&)
         {
             Instance->CoreState.store(ECoreState::Shutdown, std::memory_order_relaxed);
