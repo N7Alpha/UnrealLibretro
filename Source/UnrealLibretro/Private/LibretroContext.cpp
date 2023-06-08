@@ -741,24 +741,22 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
                 core.gl.pixel_format = GL_BGRA;
                 core.gl.bits_per_pixel = sizeof(uint32_t);
 
-                // @todo The OpenGL RHI backend is supposed to swizzle the red and blue components of textures created with render targets
-                // so in effect it should be a BGRA however that doesn't seem to be the case and it always behaves like rgba
-                // I'll probably clean all this stuff up when I do a big optimization of the framebuffer copying stuff
-                if ((FString)GDynamicRHI->GetName() == TEXT("OpenGL")) {
-                    UnrealPixelFormat = PF_R8G8B8A8;
-                    core.gl.pixel_type = GL_UNSIGNED_BYTE;
-                    core.gl.pixel_format = GL_RGBA;
-                    core.gl.bits_per_pixel = sizeof(uint32_t);
-                }
-
                 break;
             case RETRO_PIXEL_FORMAT_RGB565:
                 core.gl.pixel_type = GL_UNSIGNED_SHORT_5_6_5;
-                core.gl.pixel_format = GL_RGB;
+                core.gl.pixel_format = GL_BGRA;
                 core.gl.bits_per_pixel = sizeof(uint16_t);
                 break;
             default:
                 UE_LOG(Libretro, Fatal, TEXT("Unknown pixel type %u"), *format);
+        }
+
+        // @todo The OpenGL RHI backend is supposed to swizzle the red and blue components of textures created with render targets
+        // so in effect it should be a BGRA however that doesn't seem to be the case and it always behaves like rgba
+        // I'll probably clean all this stuff up when I do a big optimization of the framebuffer copying stuff
+        if ((FString)GDynamicRHI->GetName() == TEXT("OpenGL")) {
+            UnrealPixelFormat = PF_R8G8B8A8;
+            core.gl.pixel_format = GL_RGBA;
         }
 
         return true;
