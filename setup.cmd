@@ -4,6 +4,9 @@ echo When done, drag the echo UnrealLibretro folder into your project's Plugins 
 echo Enable "Show Plugin Content", then try the example map in the plugin's content folder.
 echo.
 
+REM Add 7zip to the path incase it's not already there
+set "PATH=%PATH%;C:\Program Files\7-Zip;C:\Program Filesx86\7-Zip"
+
 REM Make directories that won't be dynamically generated
 for %%d in (MyROMs MyCores Binaries\Win64\ThirdParty\libretro) do if not exist %%d md %%d && echo - Created %%d
 
@@ -15,6 +18,7 @@ REM Prompt user to install curl if necessary (it is a default component on Windo
 where curl >nul 2>nul
 if %errorlevel% neq 0 (
     echo curl not found. You can download and install it from https://curl.se/
+    pause
     exit /b 1
 )
 echo - Downloading file to %TMPFILE%
@@ -25,13 +29,9 @@ REM Prompt user to install 7zip if necessary
 where 7z >nul 2>nul
 if %errorlevel% neq 0 (
     echo 7zip not found. You can download and install it from https://www.7-zip.org/
+    pause
     exit /b 1
 )
 echo - Unpacking & copying file
 call 7z x -aoa -o"%TEMP%" %TMPFILE%
 move /y "%TEMP%\RetroArch-Win64\*.dll" Binaries\Win64\ThirdParty\libretro
-
-echo.
-echo - Clean up temporary files
-del %TMPFILE%
-rd /s /q "%TEMP%\RetroArch-Win64"

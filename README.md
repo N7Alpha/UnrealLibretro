@@ -20,10 +20,8 @@ Extract the archive and place it in your project's plugins folder.
 
 Clone the repo into your Unreal Engine project's Plugin folder.
 
-Open a MinGW64 terminal and navigate to the root directory of this plugin then run this command
-```
-./setup.sh
-```
+Run the associated `setup` script for your current platform. If Windows double-click the setup.cmd
+
 Then in the Windows file explorer navigate to the root directory of your project and right click the .uproject file then select "Generate Visual Studio project files" in the context menu.
 
 ## Integrating into your Project
