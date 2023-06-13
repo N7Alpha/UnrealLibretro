@@ -1,5 +1,12 @@
 #pragma once
 
+#if    ENGINE_MAJOR_VERSION == 5 \
+    && ENGINE_MINOR_VERSION >= 1 \
+    && WITH_EDITOR
+#include "Misc/MessageDialog.h"
+#include "OpenXRInputSettings.h"
+#endif
+
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
 #include "Engine/World.h"
@@ -55,6 +62,21 @@ protected:
         SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
         SpawnParams.Owner = NewPlayer;
         SpawnParams.Instigator = nullptr;
+
+#if    ENGINE_MAJOR_VERSION == 5 \
+    && ENGINE_MINOR_VERSION >= 1 \
+    && WITH_EDITOR
+        UOpenXRInputSettings* OpenXRInputSettings = GetMutableDefault<UOpenXRInputSettings>();
+        if (OpenXRInputSettings && OpenXRInputSettings->MappableInputConfig != nullptr)
+        {
+            const FText Title = FText::FromString(TEXT("MappableInputConfig"));
+            const FText Message = FText::FromString(TEXT(
+                "It looks like OpenXRInputSettings::MappableInputConfig is set in one of your project's config inis. "
+                "This was likely set by the VRTemplate project if you're using a project derived from that. "
+                "This is incompatible with the way I handle input for now though so you'll need to remove that setting from the editor or the ini."));
+            FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
+        }
+#endif
 
         auto Pawn = GetWorld()->SpawnActor<APawn>(ShouldStartPlayerInVRPawn() ? DefaultVRPawnClass : DefaultPawnClass, StartSpot->GetActorTransform(), SpawnParams);
 

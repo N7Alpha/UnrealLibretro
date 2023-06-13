@@ -47,6 +47,10 @@ public class UnrealLibretro : ModuleRules
         {
 			PrivateDependencyModuleNames.Add("OculusHMD");
 		}
+		else
+		{
+			PrivateDependencyModuleNames.Add("OpenXRInput");
+		}
 
 		if (   Target.Version.MajorVersion >  4
 			|| Target.Version.MinorVersion >= 26)
