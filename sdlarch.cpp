@@ -1,14 +1,35 @@
+#include "glad.h"
+#include "imgui.h"
+#include "imgui_impl_sdl2.h"
+#include "imgui_impl_opengl3.h"
+
+#include "juice/juice.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <atomic>
+
+#ifdef _WIN32
+#include <windows.h>
+static void sleep(unsigned int secs) { Sleep(secs * 1000); }
+#else
+#include <unistd.h> // for sleep
+#endif
 
 #include <SDL.h>
+#include <SDL_opengl.h>
 #include "libretro.h"
-#include "glad.h"
 
 static SDL_Window *g_win = NULL;
-static SDL_GLContext *g_ctx = NULL;
+static SDL_GLContext g_ctx = NULL;
 static SDL_AudioDeviceID g_pcm = 0;
 static struct retro_frame_time_callback runloop_frame_time;
 static retro_usec_t runloop_frame_time_last = 0;
 static const uint8_t *g_kbd = NULL;
+static juice_agent_t *agent;
+bool g_netplay_ready = false;
 static struct retro_audio_callback audio_callback;
 
 static float g_scale = 3;
@@ -120,7 +141,10 @@ static struct keymap g_binds[] = {
     { 0, 0 }
 };
 
-static unsigned g_joy[RETRO_DEVICE_ID_JOYPAD_R3+1] = { 0 };
+static unsigned g_joy[RETRO_DEVICE_ID_JOYPAD_R3+1+1] = { 0 };
+
+static std::atomic<unsigned> g_frame_counter_remote{(unsigned)-1};
+auto &frame_counter = g_joy[RETRO_DEVICE_ID_JOYPAD_R3+1];
 
 #define load_sym(V, S) do {\
     if (!((*(void**)&V) = SDL_LoadFunction(g_retro.handle, #S))) \
@@ -449,6 +473,45 @@ static bool video_set_pixel_format(unsigned format) {
 	return true;
 }
 
+static ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+
+void draw_imgui() {
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplSDL2_NewFrame();
+    ImGui::NewFrame();
+    ImGuiIO& io = ImGui::GetIO(); (void)io;
+    static bool show_demo_window = false;
+
+    // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
+    if (show_demo_window)
+        ImGui::ShowDemoWindow(&show_demo_window);
+
+    // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
+    {
+        static float f = 0.0f;
+        static int counter = 0;
+
+        ImGui::Begin("Hello, world!");                          // Create a window called "Hello, world!" and append into it.
+
+        ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
+        ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
+       // ImGui::Checkbox("Another Window", &show_another_window);
+
+        ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
+        ImGui::ColorEdit3("clear color", (float*)&clear_color); // Edit 3 floats representing a color
+
+        if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
+            counter++;
+        ImGui::SameLine();
+        ImGui::Text("counter = %d", counter);
+
+        ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
+        ImGui::End();
+    }
+
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+}
 
 static void video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
     if (g_video.clip_w != width || g_video.clip_h != height)
@@ -488,16 +551,14 @@ static void video_refresh(const void *data, unsigned width, unsigned height, uns
     glBindVertexArray(0);
 
     glUseProgram(0);
-
-    SDL_GL_SwapWindow(g_win);
 }
 
 static void video_deinit() {
     if (g_video.fbo_id)
         glDeleteFramebuffers(1, &g_video.fbo_id);
 
-	if (g_video.tex_id)
-		glDeleteTextures(1, &g_video.tex_id);
+    if (g_video.tex_id)
+        glDeleteTextures(1, &g_video.tex_id);
 
     if (g_shader.vao)
         glDeleteVertexArrays(1, &g_shader.vao);
@@ -701,7 +762,7 @@ static bool core_environment(unsigned cmd, void *data) {
                 semicolon++;
 
             if (first_pipe) {
-                outvar->value = malloc((first_pipe - semicolon) + 1);
+                outvar->value = (const char *)malloc((first_pipe - semicolon) + 1);
                 memcpy((char*)outvar->value, semicolon, first_pipe - semicolon);
                 ((char*)outvar->value)[first_pipe - semicolon] = '\0';
             } else {
@@ -826,6 +887,8 @@ static bool core_environment(unsigned cmd, void *data) {
 
 static void core_video_refresh(const void *data, unsigned width, unsigned height, size_t pitch) {
     video_refresh(data, width, height, pitch);
+    draw_imgui();
+    SDL_GL_SwapWindow(g_win);
 }
 
 
@@ -836,16 +899,27 @@ static void core_input_poll(void) {
 	for (i = 0; g_binds[i].k || g_binds[i].rk; ++i)
         g_joy[g_binds[i].rk] = g_kbd[g_binds[i].k];
 
+    printf("Sending Input for frame %d\n", frame_counter);
+    juice_send(agent, (const char *)g_joy, sizeof(g_joy));
+    frame_counter++;
     if (g_kbd[SDL_SCANCODE_ESCAPE])
         running = false;
 }
 
+static unsigned g_joy_remote[RETRO_DEVICE_ID_JOYPAD_R3+1+1] = { 0 };
 
 static int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
 	if (port || index || device != RETRO_DEVICE_JOYPAD)
 		return 0;
 
-	return g_joy[id];
+    while (g_frame_counter_remote.load(std::memory_order_acquire) != (frame_counter-1)) {
+        _mm_pause();
+        _mm_pause();
+    }
+
+    printf("frame_counter: %d\n", frame_counter);
+    fflush(stdout);
+	return g_joy[id] > g_joy_remote[id] ? g_joy[id] : g_joy_remote[id];
 }
 
 
@@ -970,6 +1044,193 @@ static void core_unload() {
 
 static void noop() {}
 
+#define BUFFER_SIZE 4096
+
+static bool gathering_done = false;
+static char candidates[BUFFER_SIZE] = {0};
+static char remote_candidates[BUFFER_SIZE] = {0};
+
+static void on_state_changed(juice_agent_t *agent, juice_state_t state, void *user_ptr);
+static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr);
+static void on_gathering_done(juice_agent_t *agent, void *user_ptr);
+static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *user_ptr);
+
+void receive_juice_log(juice_log_level_t level, const char *message) {
+    static const char *log_level_names[] = {"VERBOSE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"};
+
+    fprintf(stdout, "%s: %s\n", log_level_names[level], message);
+    fflush(stdout);
+    assert(level < JUICE_LOG_LEVEL_ERROR);
+}
+
+int test_connectivity() {
+  juice_set_log_handler(receive_juice_log);
+
+  juice_set_log_level(JUICE_LOG_LEVEL_WARN);
+  // Create agent
+  juice_config_t config;
+  memset(&config, 0, sizeof(config));
+
+  // STUN server example*
+  config.stun_server_host = "stun.l.google.com";
+  config.stun_server_port = 19302;
+  //config.bind_address = "127.0.0.1";
+
+  config.cb_state_changed = on_state_changed;
+  config.cb_candidate = on_candidate;
+  config.cb_gathering_done = on_gathering_done;
+  config.cb_recv = on_recv;
+  config.user_ptr = NULL;
+
+  agent = juice_create(&config);
+
+  // Generate local description
+  char sdp[JUICE_MAX_SDP_STRING_LEN];
+  juice_get_local_description(agent, sdp, JUICE_MAX_SDP_STRING_LEN);
+  printf("Local description:\n%s\n", sdp);
+
+  // Gather candidates
+  juice_gather_candidates(agent);
+  char sdp_remote[JUICE_MAX_SDP_STRING_LEN] = {0};
+
+  bool remote_candidates_aquired = false;
+  while (!remote_candidates_aquired) {
+    for (SDL_Event ev; SDL_PollEvent(&ev);) {
+        ImGui_ImplSDL2_ProcessEvent(&ev);
+
+        if (ev.type == SDL_WINDOWEVENT) {
+            switch (ev.window.event) {
+            case SDL_WINDOWEVENT_CLOSE: 
+                return -1;
+            case SDL_WINDOWEVENT_RESIZED:
+                resize_cb(ev.window.data1, ev.window.data2);
+                break;
+            }
+        }
+    }
+
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplSDL2_NewFrame(g_win);
+    ImGui::NewFrame();
+
+    ImGuiIO& io = ImGui::GetIO();
+    glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
+    glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    // Show ImGui window
+    ImGui::Begin("SDP Connectivity Test");
+    ImGui::Text("Local SDP:");
+    ImGui::InputTextMultiline("Local SDP", sdp, sizeof(sdp), ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
+    ImGui::InputTextMultiline("Remote SDP", sdp_remote, sizeof(sdp_remote), ImVec2(0, 0), ImGuiInputTextFlags_None);
+
+    ImGui::InputTextMultiline("Local Candidates", candidates, sizeof(candidates), ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
+    ImGui::InputTextMultiline("Remote Candidates", remote_candidates, sizeof(remote_candidates), ImVec2(0, 0), ImGuiInputTextFlags_None);
+    
+    if (ImGui::Button("Submit")) {
+        auto status = juice_set_remote_description(agent, sdp_remote);
+        assert(JUICE_ERR_SUCCESS == status);
+        remote_candidates_aquired = true;
+    }
+    ImGui::End();
+
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+    SDL_GL_SwapWindow(g_win);
+  }
+
+  for (char *p = remote_candidates; p[0] != '\0'; p++) {
+     char *base = p;
+
+     while (p[0] != '\0' && p[0] != '\n') p++;
+     if (p[0] == '\n') p[0] = '\0';
+
+     int status = juice_add_remote_candidate(agent, base);
+     assert(status == JUICE_ERR_SUCCESS);
+  }
+
+  juice_set_remote_gathering_done(agent);
+  sleep(2);
+
+  // -- Connection should be finished --
+
+  juice_state_t state = juice_get_state(agent);
+  bool success = (state == JUICE_STATE_COMPLETED);
+  
+  if (!success) {
+    printf("Connection failed: %d\n", state);
+    return -1;
+  }
+
+  // Retrieve candidates
+  char local[JUICE_MAX_CANDIDATE_SDP_STRING_LEN];
+  char remote[JUICE_MAX_CANDIDATE_SDP_STRING_LEN];
+  if (success &= (juice_get_selected_candidates(agent, local, JUICE_MAX_CANDIDATE_SDP_STRING_LEN, remote,
+                                                JUICE_MAX_CANDIDATE_SDP_STRING_LEN) == 0)) {
+    printf("Local candidate: %s\n", local);
+    printf("Remote candidate: %s\n", remote);
+  }
+  assert(success);
+
+  // Retrieve addresses
+  char localAddr[JUICE_MAX_ADDRESS_STRING_LEN];
+  char remoteAddr[JUICE_MAX_ADDRESS_STRING_LEN];
+  if (success &= (juice_get_selected_addresses(agent, localAddr, JUICE_MAX_ADDRESS_STRING_LEN, remoteAddr, JUICE_MAX_ADDRESS_STRING_LEN) == 0)) {
+    printf("Local address: %s\n", localAddr);
+    printf("Remote address: %s\n", remoteAddr);
+  }
+  assert(success);
+
+  if (success) {
+    printf("Success\n");
+    return 0;
+  } else {
+    printf("Failure\n");
+    return -1;
+  }
+}
+
+// On state changed
+static void on_state_changed(juice_agent_t *agent, juice_state_t state, void *user_ptr) {
+  printf("State: %s\n", juice_state_to_string(state));
+
+  if (state == JUICE_STATE_CONNECTED) {
+    // On connected, send a message
+    //const char *message = "Hello";
+    //juice_send(agent, message, strlen(message));
+  }
+}
+
+// On local candidate gathered
+static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr) {
+  printf("Candidate: %s\n", sdp);
+
+  strcat(candidates, sdp);
+  strcat(candidates, "\n");
+}
+
+// On local candidates gathering done
+static void on_gathering_done(juice_agent_t *agent, void *user_ptr) {
+  printf("Gathering done\n");
+  gathering_done = true;
+}
+
+// On message received
+static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *user_ptr) {
+  assert(size == sizeof(g_joy_remote));
+
+  memcpy(g_joy_remote, data, size);
+  g_frame_counter_remote.store(g_joy_remote[sizeof(g_joy_remote)/sizeof(g_joy_remote[0]) - 1], std::memory_order_release);
+
+  printf("Received with size: %lld\nRecieved:", size);
+  for (unsigned i = 0; i < sizeof(g_joy_remote) / sizeof(g_joy_remote[0]); i++) {
+    printf("%x ", g_joy_remote[i]);
+  }
+  printf("\n");
+  fflush(stdout);
+} 
+
 int main(int argc, char *argv[]) {
 	if (argc < 2)
 		die("usage: %s <core> [game]", argv[0]);
@@ -995,8 +1256,31 @@ int main(int argc, char *argv[]) {
     // Configure the player input devices.
     g_retro.retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
 
+    // GL 3.0 + GLSL 130
+    const char* glsl_version = "#version 130";
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+
+    //IMGUI_CHECKVERSION();
+    ImGui::SetCurrentContext(ImGui::CreateContext());
+    ImGuiIO& io = ImGui::GetIO(); (void)io;
+    //io.IniFilename = NULL; // Don't write an ini file that caches window positions
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+    //io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+
+    // Setup Dear ImGui style
+    ImGui::StyleColorsDark();
+    //ImGui::StyleColorsLight();
+
+    // Setup Platform/Renderer backends
+    ImGui_ImplSDL2_InitForOpenGL(g_win, g_ctx);
+    ImGui_ImplOpenGL3_Init(glsl_version);
+
     SDL_Event ev;
 
+    if (test_connectivity() == -1) goto cleanup;
     while (running) {
         // Update the game loop timer.
         if (runloop_frame_time.callback) {
@@ -1015,6 +1299,7 @@ int main(int argc, char *argv[]) {
         }
 
         while (SDL_PollEvent(&ev)) {
+            ImGui_ImplSDL2_ProcessEvent(&ev);
             switch (ev.type) {
             case SDL_QUIT: running = false; break;
             case SDL_WINDOWEVENT:
@@ -1028,12 +1313,18 @@ int main(int argc, char *argv[]) {
         }
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-		g_retro.retro_run();
-	}
 
+        g_netplay_ready = false;
+        g_retro.retro_run();
+
+	}
+cleanup:
 	core_unload();
 	audio_deinit();
 	video_deinit();
+
+    // Destroy agent
+    juice_destroy(agent);
 
     if (g_vars) {
         for (const struct retro_variable *v = g_vars; v->key; ++v) {
