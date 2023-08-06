@@ -1,15 +1,22 @@
+#include "sam2.c"
 #include "glad.h"
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_opengl3.h"
 
 #include "juice/juice.h"
+#include "zstd.h"
+
+#define ZDICT_STATIC_LINKING_ONLY
+#include "zdict.h"
+#include "rs.h"
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <atomic>
+#include <time.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -18,9 +25,18 @@ static void sleep(unsigned int secs) { Sleep(secs * 1000); }
 #include <unistd.h> // for sleep
 #endif
 
+#define SDL_MAIN_HANDLED
 #include <SDL.h>
 #include <SDL_opengl.h>
 #include "libretro.h"
+
+// Considering various things like STUN/TURN headers and the UDP/IP headers, additional junk load balancers and routers might add I keep this conservative
+#define PACKET_MTU_PAYLOAD_BYTES 1408
+
+#define JUICE_CONCURRENCY_MODE JUICE_CONCURRENCY_MODE_USER
+
+
+#define NETPLAY 1
 
 static SDL_Window *g_win = NULL;
 static SDL_GLContext g_ctx = NULL;
@@ -28,8 +44,10 @@ static SDL_AudioDeviceID g_pcm = 0;
 static struct retro_frame_time_callback runloop_frame_time;
 static retro_usec_t runloop_frame_time_last = 0;
 static const uint8_t *g_kbd = NULL;
-static juice_agent_t *agent;
+struct retro_system_av_info g_av = {0};
+static juice_agent_t *agent = NULL;
 bool g_netplay_ready = false;
+static sam2_socket_t g_sam2_socket = 0;
 static struct retro_audio_callback audio_callback;
 
 static float g_scale = 3;
@@ -95,6 +113,7 @@ static struct {
 	void *handle;
 	bool initialized;
 	bool supports_no_game;
+    uint64_t quirks;
 	// The last performance counter registered. TODO: Make it a linked list.
 	struct retro_perf_counter* perf_counter_last;
 
@@ -106,9 +125,9 @@ static struct {
 	void (*retro_set_controller_port_device)(unsigned port, unsigned device);
 	void (*retro_reset)(void);
 	void (*retro_run)(void);
-//	size_t retro_serialize_size(void);
-//	bool retro_serialize(void *data, size_t size);
-//	bool retro_unserialize(const void *data, size_t size);
+	size_t (*retro_serialize_size)(void);
+	bool (*retro_serialize)(void *data, size_t size);
+	bool (*retro_unserialize)(const void *data, size_t size);
 //	void retro_cheat_reset(void);
 //	void retro_cheat_set(unsigned index, bool enabled, const char *code);
 	bool (*retro_load_game)(const struct retro_game_info *game);
@@ -141,10 +160,10 @@ static struct keymap g_binds[] = {
     { 0, 0 }
 };
 
-static unsigned g_joy[RETRO_DEVICE_ID_JOYPAD_R3+1+1] = { 0 };
+static unsigned g_joy[RETRO_DEVICE_ID_JOYPAD_R3 + 1 /* Null terminator */] = { 0 };
 
-static std::atomic<unsigned> g_frame_counter_remote{(unsigned)-1};
-auto &frame_counter = g_joy[RETRO_DEVICE_ID_JOYPAD_R3+1];
+static int64_t g_frame_counter_remote{-1};
+int64_t frame_counter = 0;
 
 #define load_sym(V, S) do {\
     if (!((*(void**)&V) = SDL_LoadFunction(g_retro.handle, #S))) \
@@ -473,9 +492,165 @@ static bool video_set_pixel_format(unsigned format) {
 	return true;
 }
 
-static ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+#define CHANNEL_INPUT              0b00000000
+#define CHANNEL_SAVESTATE_TRANSFER 0b00010000
 
+#define FORMAT_UNIT_COUNT_SIZE 64
+double format_unit_count(double count, char *unit)
+{
+    // Make sure the postfix isn't too long
+    if (strlen(unit) > 32) {
+        strcpy(unit, "units");
+    }
+
+    static char postfix[FORMAT_UNIT_COUNT_SIZE];
+    strcpy(postfix, unit);
+    const char* prefixes[] = { "", "kilo", "mega", "giga" };
+    const char* binary_prefixes[] = { "", "kibi", "mebi", "gibi" };
+    int prefix_count = sizeof(prefixes) / sizeof(prefixes[0]);
+    
+    // Choose the correct set of prefixes and scaling factor based on the postfix
+    const char** prefix_to_use = prefixes;
+    double scale_factor = 1000.0;
+    if (   strcmp(postfix, "bits") == 0
+        || strcmp(postfix, "bytes") == 0) {
+        prefix_to_use = binary_prefixes;
+        scale_factor = 1024.0;
+    }
+
+    double display_count = (double)count;
+    int prefix_index = 0;
+
+    while (display_count >= scale_factor && prefix_index < prefix_count - 1) {
+        display_count /= scale_factor;
+        prefix_index++;
+    }
+
+    // Generate the unit string
+    snprintf(unit, FORMAT_UNIT_COUNT_SIZE, "%s%s", prefix_to_use[prefix_index], postfix);
+
+    return display_count;
+}
+
+#define MAX_ROOMS 1024
+typedef struct {
+    uint8_t channel_and_flags;
+    int64_t frame;
+    unsigned joy[RETRO_DEVICE_ID_JOYPAD_R3 + 1 /* Null terminator */];
+} input_packet_t; // @todo get this to have the no padding
+
+#define SAVESTATE_TRANSFER_FLAG_K_IS_239         0b0001
+#define SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0 0b0010
+
+typedef struct {
+    uint8_t channel_and_flags;
+    union {
+        uint8_t reed_solomon_k;
+        uint8_t packet_groups;
+        uint8_t sequence_hi;
+    };
+
+    uint8_t sequence_lo;
+
+    uint8_t payload[]; // Variable size; at most PACKET_MTU_PAYLOAD_BYTES-3
+} savestate_transfer_packet_t;
+
+typedef struct {
+    uint8_t channel_and_flags;
+    union {
+        uint8_t reed_solomon_k;
+        uint8_t packet_groups;
+        uint8_t sequence_hi;
+    };
+
+    uint8_t sequence_lo;
+
+    uint8_t payload[PACKET_MTU_PAYLOAD_BYTES-3]; // Variable size; at most PACKET_MTU_PAYLOAD_BYTES-3
+} savestate_transfer_packet2_t;
+static_assert(sizeof(savestate_transfer_packet2_t) == PACKET_MTU_PAYLOAD_BYTES);
+
+typedef struct {
+    int64_t total_size_bytes;
+    int64_t frame;
+    uint64_t encoding_chain; // @todo probably won't use this
+    uint64_t xxhash;
+
+    int64_t savestate_size;
+    uint8_t zipped_savestate[];
+} savestate_transfer_payload_t;
+
+
+static sam2_room_t g_room = { "My Room Name", "TURN host", 0b01010101, 0 };
+static sam2_room_t g_sam2_rooms[MAX_ROOMS];
+static int g_sam2_room_count = 0;
+static int g_zstd_compress_level = 0;
+static sam2_request_u g_sam2_request;
+#define MAX_SAMPLE_SIZE 128
+static int g_sample_size = MAX_SAMPLE_SIZE/2;
+static uint64_t g_save_cycle_count[MAX_SAMPLE_SIZE] = {0};
+static uint64_t g_zstd_cycle_count[MAX_SAMPLE_SIZE] = {1};
+static uint64_t g_zstd_compress_size[MAX_SAMPLE_SIZE] = {0};
+static uint64_t g_reed_solomon_encode_cycle_count[MAX_SAMPLE_SIZE] = {0};
+static uint64_t g_reed_solomon_decode_cycle_count[MAX_SAMPLE_SIZE] = {0};
+static uint64_t g_save_cycle_count_offset = 0;
+static size_t g_serialize_size = 0;
+static bool g_do_zstd_compress = false;
+static bool g_do_zstd_delta_compress = false;
+static bool g_use_rle = false;
+
+int g_zstd_thread_count = 4;
+
+size_t dictionary_size = 0;
+unsigned char g_dictionary[256*1024];
+
+static bool g_use_dictionary = false;
+static bool g_dictionary_is_dirty = true;
+static ZDICT_cover_params_t g_parameters = {0};
+
+
+#define CHANNEL_INPUT              0b00000000
+#define CHANNEL_SAVESTATE_TRANSFER 0b00010000
+
+
+#define MAX_REDUNDANT_PACKETS 32
+static bool g_do_reed_solomon = false;
+static int g_redundant_packets = MAX_REDUNDANT_PACKETS - 1;
+static int g_lost_packets = 0;
+
+uint64_t g_remote_savestate_hash = 0x6AEBEEF1EDADD1E5;
+
+#define MAX_SAVE_STATES 64
+static unsigned char g_savebuffer[MAX_SAVE_STATES][20 * 1024 * 1024] = {0};
+
+#define SAVE_STATE_COMPRESSED_BOUND_BYTES ZSTD_COMPRESSBOUND(sizeof(g_savebuffer[0]))
+#define SAVE_STATE_COMPRESSED_BOUND_WITH_REDUNDANCY_BYTES (255 * SAVE_STATE_COMPRESSED_BOUND_BYTES / (255 - MAX_REDUNDANT_PACKETS))
+static unsigned char g_savestate_transfer_payload_untyped[sizeof(savestate_transfer_payload_t) + SAVE_STATE_COMPRESSED_BOUND_WITH_REDUNDANCY_BYTES];
+static savestate_transfer_payload_t *g_savestate_transfer_payload = (savestate_transfer_payload_t *) g_savestate_transfer_payload_untyped;
+static uint8_t *g_savebuffer_compressed = g_savestate_transfer_payload->zipped_savestate;
+
+static int g_save_state_index = 0;
+static int g_save_state_used_for_delta_index_offset = 1;
+
+#define MAX_FEC_PACKET_GROUPS 16
+#define FEC_REDUNDANT_BLOCKS 16
+static void* g_fec_packet[MAX_FEC_PACKET_GROUPS][255 - FEC_REDUNDANT_BLOCKS];
+static int g_fec_index[MAX_FEC_PACKET_GROUPS][255 - FEC_REDUNDANT_BLOCKS];
+static int g_fec_index_counter[MAX_FEC_PACKET_GROUPS] = {0};
+static unsigned char g_remote_savestate_transfer_packets[SAVE_STATE_COMPRESSED_BOUND_WITH_REDUNDANCY_BYTES + MAX_FEC_PACKET_GROUPS * (255 - FEC_REDUNDANT_BLOCKS) * sizeof(savestate_transfer_packet_t)];
+static int64_t g_remote_savestate_transfer_offset = 0;
+uint8_t g_remote_packet_groups = MAX_FEC_PACKET_GROUPS;
+static bool g_send_savestate_next_frame = false;
+
+static bool g_is_refreshing_rooms = false;
+
+
+static ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+static bool g_connected_to_sam2 = false;
 void draw_imgui() {
+    static int spinnerIndex = 0;
+    char spinnerFrames[4] = { '|', '/', '-', '\\' };
+    char spinnerGlyph = spinnerFrames[(spinnerIndex++/4)%4];
+
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
@@ -490,20 +665,233 @@ void draw_imgui() {
     {
         static float f = 0.0f;
         static int counter = 0;
+        char unit[FORMAT_UNIT_COUNT_SIZE] = {0};
 
-        ImGui::Begin("Hello, world!");                          // Create a window called "Hello, world!" and append into it.
+        ImGui::Begin("Compression investigation");                          // Create a window called "Hello, world!" and append into it.
 
-        ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
+        double avg_cycle_count = 0;
+        double avg_zstd_compress_size = 0;
+        double max_compress_size = 0;
+        double avg_zstd_cycle_count = 0;
+        double max_reed_solomon_decode_cycle_count = 0;
+
+        for (int i = 0; i < g_sample_size; i++) {
+            avg_cycle_count += g_save_cycle_count[i];
+            avg_zstd_compress_size += g_zstd_compress_size[i];
+            avg_zstd_cycle_count += g_zstd_cycle_count[i];
+            if (g_zstd_compress_size[i] > max_compress_size) {
+                max_compress_size = g_zstd_compress_size[i];
+            }
+            if (g_reed_solomon_decode_cycle_count[i] > max_reed_solomon_decode_cycle_count) {
+                max_reed_solomon_decode_cycle_count = g_reed_solomon_decode_cycle_count[i];
+            }
+        }
+        avg_cycle_count        /= g_sample_size;
+        avg_zstd_compress_size /= g_sample_size;
+        avg_zstd_cycle_count   /= g_sample_size;
+        strcpy(unit, "cycles");
+        double display_count = format_unit_count(avg_cycle_count, unit);
+
+        ImGui::Text("retro_serialize average cycle count: %.2f %s", display_count, unit);
+        ImGui::Checkbox("Compress serialized data with zstd", &g_do_zstd_compress);
+        if (g_do_zstd_compress) {
+            const char *algorithm_name = g_use_rle ? "rle" : "zstd";
+            ImGui::Checkbox("Use RLE", &g_use_rle);
+            ImGui::Checkbox("Delta Compression", &g_do_zstd_delta_compress);
+            ImGui::Checkbox("Use Dictionary", &g_use_dictionary);
+            if (g_use_dictionary) {
+                unsigned k_min = 16;
+                unsigned k_max = 2048;
+
+                unsigned d_min = 6;
+                unsigned d_max = 16;
+
+                g_dictionary_is_dirty |= ImGui::SliderScalar("k", ImGuiDataType_U32, &g_parameters.k, &k_min, &k_max);
+                g_dictionary_is_dirty |= ImGui::SliderScalar("d", ImGuiDataType_U32, &g_parameters.d, &d_min, &d_max);
+            }
+
+            ImGui::Checkbox("Do Reed Solomon", &g_do_reed_solomon);
+            if (g_do_reed_solomon) {
+                ImGui::SliderInt("Lost Packets", &g_lost_packets, 0, MAX_REDUNDANT_PACKETS);
+
+                strcpy(unit, "cycles");
+                display_count = format_unit_count(max_reed_solomon_decode_cycle_count, unit);
+                ImGui::Text("Reed solomon max decode cycle count %.2f %s", display_count, unit);
+            }
+
+            strcpy(unit, "bits");
+            display_count = format_unit_count(8 * avg_zstd_compress_size, unit);
+            ImGui::Text("%s compression average size: %.2f %s", algorithm_name, display_count, unit);
+
+            // Show compression max size
+            strcpy(unit, "bits");
+            display_count = format_unit_count(8 * max_compress_size, unit);
+            ImGui::Text("%s compression max size: %.2f %s", algorithm_name, display_count, unit);
+
+            strcpy(unit, "bytes/cycle");
+            display_count = format_unit_count(g_serialize_size / avg_zstd_cycle_count, unit);
+            ImGui::Text("%s compression average speed: %.2f %s", algorithm_name, display_count, unit);
+
+            g_send_savestate_next_frame = ImGui::Button("Send Savestate");
+            ImGui::Text("Remote Savestate hash: %llx", g_remote_savestate_hash);
+        }
+
+        ImGui::SliderInt("Sample size", &g_sample_size, 1, MAX_SAMPLE_SIZE);
+        if (!g_use_rle) {
+            g_dictionary_is_dirty |= ImGui::SliderInt("Compression level", (int*)&g_zstd_compress_level, -22, 22);
+            g_parameters.zParams.compressionLevel = g_zstd_compress_level;
+        }
+
+        { // Show a graph of one of the data sets
+            // Add a combo box for buffer selection
+            static const char* items[] = {"cycle_count", "cycle_count", "compress_size"};
+            static int current_item = 0;  // default selection
+            ImGui::Combo("Buffers", &current_item, items, IM_ARRAYSIZE(items));
+
+            // Create a temporary array to hold float values for plotting.
+            float temp[MAX_SAMPLE_SIZE];
+
+            // Based on the selection, copy data to the temp array and draw the graph for the corresponding buffer.
+            if (current_item == 0) {
+                for (int i = 0; i < g_sample_size; ++i) {
+                    temp[i] = static_cast<float>(g_save_cycle_count[(i+g_save_cycle_count_offset)%g_sample_size]);
+                }
+                ImGui::PlotLines("save_cycle_count", temp, g_sample_size);
+            } else if (current_item == 1) {
+                for (int i = 0; i < g_sample_size; ++i) {
+                    temp[i] = static_cast<float>(g_zstd_cycle_count[(i+g_save_cycle_count_offset)%g_sample_size]);
+                }
+                ImGui::PlotLines("cycle_count", temp, g_sample_size);
+            } else if (current_item == 2) {
+                for (int i = 0; i < g_sample_size; ++i) {
+                    temp[i] = static_cast<float>(g_zstd_compress_size[(i+g_save_cycle_count_offset)%g_sample_size]);
+                }
+                ImGui::PlotLines("compress_size", temp, g_sample_size);
+            }
+
+            // Add a toggle for switching between histogram and line plot
+            static bool show_histogram = false;
+            ImGui::Checkbox("Show as Histogram", &show_histogram);
+
+            if (show_histogram) {
+                if (current_item == 0) {
+                    ImGui::PlotHistogram("save_cycle_count", temp, g_sample_size);
+                } else if (current_item == 1) {
+                    ImGui::PlotHistogram("cycle_count", temp, g_sample_size);
+                } else if (current_item == 2) {
+                    ImGui::PlotHistogram("compress_size", temp, g_sample_size);
+                }
+            }
+        }
+
+        // Slider to select the current save state index
+        ImGui::SliderInt("Save State Index (saved every frame)", &g_save_state_index, 0, MAX_SAVE_STATES-1);
+        ImGui::SliderInt("Delta compression frame offset", &g_save_state_used_for_delta_index_offset, 0, MAX_SAVE_STATES-1);
+        // Button to add a new save state
+        //if (ImGui::Button("Add Save State For Training")) {
+        //    if (g_save_state_count < MAX_SAVE_STATES) {
+        //        g_save_state_count++;
+        //        g_save_state_index = g_save_state_count - 1;
+        //    }
+        //}
+        
         ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
        // ImGui::Checkbox("Another Window", &show_another_window);
 
-        ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
+        ImGui::SliderFloat("float", &f, 0.0f, 1.0f);           // Edit 1 float using a slider from 0.0f to 1.0f
         ImGui::ColorEdit3("clear color", (float*)&clear_color); // Edit 3 floats representing a color
+        
+        ImGui::End();
+        {
+            ImGui::Begin("Sam2 Interface", NULL, ImGuiWindowFlags_AlwaysAutoResize);
 
-        if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
-            counter++;
-        ImGui::SameLine();
-        ImGui::Text("counter = %d", counter);
+            if (g_connected_to_sam2) {
+                ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to the SAM2");
+            } else {
+                ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1), "Connecting to the SAM2 %c", spinnerGlyph);
+            }
+
+            // Editable text fields for room name and TURN host
+            ImGui::InputText("##name", g_room.name, sizeof(g_room.name));
+            ImGui::SameLine();
+            ImGui::InputText("##turn_hostname", g_room.turn_hostname, sizeof(g_room.turn_hostname));
+
+            // Fixed text fields to display binary values
+            char ports_str[65];
+            char flags_str[65];
+
+            // Convert the integer values to binary strings
+            for (int i = 0; i < 64; i+=4) {
+                ports_str[i/4] = '0' + ((g_room.ports >> (60 - i)) & 0xF);
+                flags_str[i/4] = '0' + ((g_room.flags >> (60 - i)) & 0xF);
+            }
+
+            ports_str[16] = '\0';
+            flags_str[16] = '\0';
+
+            ImGui::Text("Port bitfield: %s", ports_str);
+            ImGui::SameLine();
+            ImGui::Text("Flags bitfield: %s", flags_str);
+
+            // Create a "Make" button that sends a make room request when clicked
+            if (ImGui::Button("Make")) {
+                // Send a make room request
+                sig_room_make_request_t *request = &g_sam2_request.room_make_request;
+                request->room = g_room;
+                // Fill in the rest of the request fields appropriately...
+                sam2_client_send(g_sam2_socket, &g_sam2_request, SAM2_EMESSAGE_MAKE);
+            }
+        }
+
+        {
+            if (ImGui::Button(g_is_refreshing_rooms ? "Stop" : "Refresh")) {
+                // Toggle the state
+                g_is_refreshing_rooms = !g_is_refreshing_rooms;
+
+                if (g_is_refreshing_rooms) {
+                    // The list message is only a header
+                    g_sam2_room_count = 0;
+                    sam2_client_send(g_sam2_socket, &g_sam2_request, SAM2_EMESSAGE_LIST);
+                } else {
+
+                }
+            }
+
+            // If we're in the "Stop" state
+            if (g_is_refreshing_rooms) {
+                // Run your "Stop" code here
+            }
+
+            int selected_room_index = -1;  // Initialize as -1 to indicate no selection
+            // Table
+            if (ImGui::BeginTable("Rooms table", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+                ImGui::TableSetupColumn("Room Name");
+                ImGui::TableSetupColumn("TURN Host Name");
+                ImGui::TableHeadersRow();
+
+                for (int room_index = 0; room_index < g_sam2_room_count; ++room_index) {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+
+                    // Make the row selectable and keep track of the selected room
+                    ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick;
+                    if (ImGui::Selectable(g_sam2_rooms[room_index].name, selected_room_index == room_index, selectable_flags))
+                    {
+                        selected_room_index = room_index;
+                    }
+                    
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%s", g_sam2_rooms[room_index].turn_hostname);
+                }
+
+                ImGui::EndTable();
+            }
+
+            if (selected_room_index != -1) {
+                printf("Selected room at index %d\n", selected_room_index);
+                selected_room_index = -1;
+            }
+        }
 
         ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
         ImGui::End();
@@ -876,6 +1264,11 @@ static bool core_environment(unsigned cmd, void *data) {
         *value = 1 << 0 | 1 << 1;
         return true;
     }
+    case RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS: {
+        uint64_t *quirks = (uint64_t*)data;
+        g_retro.quirks = *quirks;
+        return true;
+    }
 	default:
 		core_log(RETRO_LOG_DEBUG, "Unhandled env #%u", cmd);
 		return false;
@@ -899,26 +1292,37 @@ static void core_input_poll(void) {
 	for (i = 0; g_binds[i].k || g_binds[i].rk; ++i)
         g_joy[g_binds[i].rk] = g_kbd[g_binds[i].k];
 
-    printf("Sending Input for frame %d\n", frame_counter);
-    juice_send(agent, (const char *)g_joy, sizeof(g_joy));
-    frame_counter++;
+    //printf("Sending Input for frame %d\n", frame_counter);
+#if NETPLAY
+    input_packet_t input_packet;
+
+    input_packet.channel_and_flags = CHANNEL_INPUT;
+    input_packet.frame = frame_counter++;
+    memcpy(input_packet.joy, g_joy, sizeof(g_joy));
+
+    juice_send(agent, (char *) &input_packet, sizeof(input_packet));
     if (g_kbd[SDL_SCANCODE_ESCAPE])
         running = false;
+#endif
 }
 
-static unsigned g_joy_remote[RETRO_DEVICE_ID_JOYPAD_R3+1+1] = { 0 };
+static unsigned g_joy_remote[RETRO_DEVICE_ID_JOYPAD_R3+1] = { 0 };
 
 static int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
 	if (port || index || device != RETRO_DEVICE_JOYPAD)
 		return 0;
 
-    while (g_frame_counter_remote.load(std::memory_order_acquire) != (frame_counter-1)) {
+#if NETPLAY
+    while (g_frame_counter_remote != frame_counter-1) {
+#if JUICE_CONCURRENCY_MODE == JUICE_CONCURRENCY_MODE_USER
+    juice_user_poll(&agent, 1);
+#endif
         _mm_pause();
         _mm_pause();
     }
-
-    printf("frame_counter: %d\n", frame_counter);
-    fflush(stdout);
+#endif
+    //printf("frame_counter: %d\n", frame_counter);
+    //fflush(stdout);
 	return g_joy[id] > g_joy_remote[id] ? g_joy[id] : g_joy_remote[id];
 }
 
@@ -957,6 +1361,9 @@ static void core_load(const char *sofile) {
 	load_retro_sym(retro_run);
 	load_retro_sym(retro_load_game);
 	load_retro_sym(retro_unload_game);
+    load_retro_sym(retro_serialize_size);
+    load_retro_sym(retro_serialize);
+    load_retro_sym(retro_unserialize);
 
 	load_sym(set_environment, retro_set_environment);
 	load_sym(set_video_refresh, retro_set_video_refresh);
@@ -978,9 +1385,7 @@ static void core_load(const char *sofile) {
 	puts("Core loaded");
 }
 
-
 static void core_load_game(const char *filename) {
-	struct retro_system_av_info av = {0};
 	struct retro_system_info system = {0};
 	struct retro_game_info info = { filename, 0 };
 
@@ -1020,10 +1425,10 @@ static void core_load_game(const char *filename) {
 	if (!g_retro.retro_load_game(&info))
 		die("The core failed to load the content.");
 
-	g_retro.retro_get_system_av_info(&av);
+	g_retro.retro_get_system_av_info(&g_av);
 
-	video_configure(&av.geometry);
-	audio_init(av.timing.sample_rate);
+	video_configure(&g_av.geometry);
+	audio_init(g_av.timing.sample_rate);
 
     if (info.data)
         SDL_free((void*)info.data);
@@ -1047,8 +1452,7 @@ static void noop() {}
 #define BUFFER_SIZE 4096
 
 static bool gathering_done = false;
-static char candidates[BUFFER_SIZE] = {0};
-static char remote_candidates[BUFFER_SIZE] = {0};
+char g_sdp[JUICE_MAX_SDP_STRING_LEN];
 
 static void on_state_changed(juice_agent_t *agent, juice_state_t state, void *user_ptr);
 static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr);
@@ -1072,6 +1476,7 @@ int test_connectivity() {
   memset(&config, 0, sizeof(config));
 
   // STUN server example*
+  config.concurrency_mode = JUICE_CONCURRENCY_MODE;
   config.stun_server_host = "stun.l.google.com";
   config.stun_server_port = 19302;
   //config.bind_address = "127.0.0.1";
@@ -1085,9 +1490,9 @@ int test_connectivity() {
   agent = juice_create(&config);
 
   // Generate local description
-  char sdp[JUICE_MAX_SDP_STRING_LEN];
-  juice_get_local_description(agent, sdp, JUICE_MAX_SDP_STRING_LEN);
-  printf("Local description:\n%s\n", sdp);
+  
+  juice_get_local_description(agent, g_sdp, JUICE_MAX_SDP_STRING_LEN);
+  printf("Local description:\n%s\n", g_sdp);
 
   // Gather candidates
   juice_gather_candidates(agent);
@@ -1121,11 +1526,11 @@ int test_connectivity() {
     // Show ImGui window
     ImGui::Begin("SDP Connectivity Test");
     ImGui::Text("Local SDP:");
-    ImGui::InputTextMultiline("Local SDP", sdp, sizeof(sdp), ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
+    ImGui::InputTextMultiline("Local SDP", g_sdp, sizeof(g_sdp), ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
     ImGui::InputTextMultiline("Remote SDP", sdp_remote, sizeof(sdp_remote), ImVec2(0, 0), ImGuiInputTextFlags_None);
 
-    ImGui::InputTextMultiline("Local Candidates", candidates, sizeof(candidates), ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
-    ImGui::InputTextMultiline("Remote Candidates", remote_candidates, sizeof(remote_candidates), ImVec2(0, 0), ImGuiInputTextFlags_None);
+    // ImGui::InputTextMultiline("Local Candidates", candidates, sizeof(candidates), ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
+    // ImGui::InputTextMultiline("Remote Candidates", remote_candidates, sizeof(remote_candidates), ImVec2(0, 0), ImGuiInputTextFlags_None);
     
     if (ImGui::Button("Submit")) {
         auto status = juice_set_remote_description(agent, sdp_remote);
@@ -1140,6 +1545,7 @@ int test_connectivity() {
     SDL_GL_SwapWindow(g_win);
   }
 
+#if 0
   for (char *p = remote_candidates; p[0] != '\0'; p++) {
      char *base = p;
 
@@ -1149,10 +1555,22 @@ int test_connectivity() {
      int status = juice_add_remote_candidate(agent, base);
      assert(status == JUICE_ERR_SUCCESS);
   }
+#endif
 
   juice_set_remote_gathering_done(agent);
+  #if JUICE_CONCURRENCY_MODE == JUICE_CONCURRENCY_MODE_USER
+  // Poll for two seconds sleeping 20ms between polls
+  for(int i = 0; i < 100; ++i) {
+    juice_user_poll(&agent, 1);
+    #ifdef _WIN32
+      Sleep(20);
+    #else
+      usleep(20000);
+    #endif
+  }
+  #else
   sleep(2);
-
+  #endif
   // -- Connection should be finished --
 
   juice_state_t state = juice_get_state(agent);
@@ -1206,8 +1624,8 @@ static void on_state_changed(juice_agent_t *agent, juice_state_t state, void *us
 static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr) {
   printf("Candidate: %s\n", sdp);
 
-  strcat(candidates, sdp);
-  strcat(candidates, "\n");
+  strcat(g_sdp, sdp);
+  strcat(g_sdp, "\n");
 }
 
 // On local candidates gathering done
@@ -1218,22 +1636,217 @@ static void on_gathering_done(juice_agent_t *agent, void *user_ptr) {
 
 // On message received
 static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *user_ptr) {
-  assert(size == sizeof(g_joy_remote));
+    uint8_t channel_and_flags = data[0];
+    switch (channel_and_flags & 0xF0) {
+    case CHANNEL_INPUT: {
+        SDL_assert(size == sizeof(input_packet_t));
+        memcpy(&g_frame_counter_remote, data + offsetof(input_packet_t, frame), sizeof(input_packet_t::frame));
+        memcpy(g_joy_remote, data + offsetof(input_packet_t, joy), sizeof(input_packet_t::joy));
+        break;
+    }
+    case CHANNEL_SAVESTATE_TRANSFER: {
+        SDL_assert(size >= sizeof(savestate_transfer_packet_t));
+        SDL_assert(size <= PACKET_MTU_PAYLOAD_BYTES);
+        uint8_t sequence_hi = 0;
+        int k = 239;
+        if (channel_and_flags & SAVESTATE_TRANSFER_FLAG_K_IS_239) {
+            if (channel_and_flags & SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0) {
+                g_remote_packet_groups = data[1];
+            } else {
+                sequence_hi = data[1];
+            }
+        } else {
+            k = data[1];
+            g_remote_packet_groups = 1; // k != 239 => 1 packet group
+        }
 
-  memcpy(g_joy_remote, data, size);
-  g_frame_counter_remote.store(g_joy_remote[sizeof(g_joy_remote)/sizeof(g_joy_remote[0]) - 1], std::memory_order_release);
+        if (g_fec_index_counter[sequence_hi] == k) {
+            // We already have received enough Reed-Solomon blocks to decode the payload; we can ignore this packet
+            break;
+        }
 
-  printf("Received with size: %lld\nRecieved:", size);
-  for (unsigned i = 0; i < sizeof(g_joy_remote) / sizeof(g_joy_remote[0]); i++) {
-    printf("%x ", g_joy_remote[i]);
-  }
-  printf("\n");
-  fflush(stdout);
-} 
+        uint8_t sequence_lo = data[2];
+
+        uint8_t *copied_packet_ptr = (uint8_t *) memcpy(g_remote_savestate_transfer_packets + g_remote_savestate_transfer_offset, data, size);
+        g_fec_packet[sequence_hi][sequence_lo] = copied_packet_ptr + sizeof(savestate_transfer_packet_t);
+        g_remote_savestate_transfer_offset += size;
+
+        g_fec_index[sequence_hi][g_fec_index_counter[sequence_hi]++] = sequence_lo;
+
+        if (g_fec_index_counter[sequence_hi] == k) {
+            int redudant_blocks_sent = k * FEC_REDUNDANT_BLOCKS / (255 - FEC_REDUNDANT_BLOCKS);
+            void *rs_code = fec_new(k, k + redudant_blocks_sent);
+            int rs_block_size = (int) (size - sizeof(savestate_transfer_packet_t));
+            int status = fec_decode(rs_code, g_fec_packet[sequence_hi], g_fec_index[sequence_hi], rs_block_size);
+            SDL_assert(status == 0);
+            fec_free(rs_code);
+
+            bool all_data_decoded = true;
+            for (int i = 0; i < g_remote_packet_groups; i++) {
+                all_data_decoded &= g_fec_index_counter[i] == k;
+            }
+
+            if (all_data_decoded) { 
+                printf("All the savestate data has been decoded\n");
+
+                uint8_t *savestate_transfer_payload_untyped = (uint8_t *) g_savestate_transfer_payload;
+                int64_t remote_payload_size = 0;
+                
+                for (int j = 0; j < g_remote_packet_groups; j++) {
+                    for (int i = 0; i < k; i++) {
+                        memcpy(savestate_transfer_payload_untyped + remote_payload_size, g_fec_packet[j][i], rs_block_size);
+                        remote_payload_size += rs_block_size;
+                    }
+                }
+
+                g_remote_savestate_hash = fnv1a_hash(g_savestate_transfer_payload, g_savestate_transfer_payload->total_size_bytes);
+                printf("Received savestate payload with hash: %llx size: %llu bytes\n", g_remote_savestate_hash, g_savestate_transfer_payload->total_size_bytes);
+
+                // Reset the savestate transfer state
+                g_remote_packet_groups = MAX_FEC_PACKET_GROUPS;
+                g_remote_savestate_transfer_offset = 0;
+                memset(g_fec_index_counter, 0, sizeof(g_fec_index_counter));
+            }
+        }
+        break;  
+    }
+    default:
+      fprintf(stderr, "Unknown channel: %d\n", channel_and_flags);
+      break;
+    }
+
+    //printf("Received with size: %lld\nReceived:", size);
+    //for (unsigned i = 0; i < sizeof(g_joy_remote) / sizeof(g_joy_remote[0]); i++) {
+    //  printf("%x ", g_joy_remote[i]);
+    //}
+    //printf("\n");
+    //fflush(stdout);
+}
+
+uint64_t rdtsc() {
+#if defined(_MSC_VER)   /* MSVC compiler */
+    return __rdtsc();
+#elif defined(__GNUC__) /* GCC compiler */
+    unsigned int lo, hi;
+    __asm__ __volatile__ (
+      "rdtsc" : "=a" (lo), "=d" (hi)  
+    );
+    return ((uint64_t)hi << 32) | lo;
+#else
+#error "Unsupported compiler"
+#endif
+}
+
+void rle_encode32(void *input_typeless, size_t inputSize, void *output_typeless, size_t *outputSize) {
+    size_t writeIndex = 0;
+    size_t readIndex = 0;
+
+    // The games where we need high compression of rle are 32-bit consoles
+    int32_t *input = (int32_t *)input_typeless;
+    int32_t *output = (int32_t *)output_typeless;
+
+    while (readIndex < inputSize) {
+        if (input[readIndex] == 0) {
+            int32_t zeroCount = 0;
+            while (readIndex < inputSize && input[readIndex] == 0) {
+                zeroCount++;
+                readIndex++;
+            }
+
+            output[writeIndex++] = 0; // write a zero to mark the start of a run
+            output[writeIndex++] = zeroCount; // write the count of zeros
+        } else {
+            output[writeIndex++] = input[readIndex++];
+        }
+    }
+
+    *outputSize = writeIndex;
+}
+
+void rle_encode8(void *input_typeless, size_t inputSize, void *output_typeless, uint64_t *outputUsed) {
+    size_t writeIndex = 0;
+    size_t readIndex = 0;
+
+    unsigned char *input = (unsigned char *)input_typeless;
+    unsigned char *output = (unsigned char *)output_typeless;
+
+    while (readIndex < inputSize) {
+        if (input[readIndex] == 0) {
+            while (readIndex < inputSize && input[readIndex] == 0) {
+                unsigned char zeroCount = 0;
+                while (zeroCount < 255 && readIndex < inputSize && input[readIndex] == 0) {
+                    zeroCount++;
+                    readIndex++;
+                }
+
+                output[writeIndex++] = 0; // write a zero to mark the start of a run
+                output[writeIndex++] = zeroCount; // write the count of zeros
+            }
+        } else {
+            output[writeIndex++] = input[readIndex++];
+        }
+    }
+
+    *outputUsed = writeIndex;
+}
+
+void logical_partition(int sz, int redundant, int *n, int *out_k, int *packet_size, int *packet_groups) {
+    int k_max = 255 - redundant;
+    *packet_groups = 1;
+    int k;
+    for (;;) {
+        k = (sz - 1) / (*packet_groups * *packet_size) + 1;
+
+        if (k > k_max) {
+            *packet_groups = (k - 1) / k_max + 1;
+            *packet_size = (sz - 1) / (k_max * *packet_groups) + 1;
+        } else {
+            break;
+        }
+    }
+
+    *n = k + k * redundant / k_max;
+    *out_k = k;
+}
+
+
 
 int main(int argc, char *argv[]) {
 	if (argc < 2)
 		die("usage: %s <core> [game]", argv[0]);
+
+    SDL_SetMainReady();
+
+    g_parameters.d = 8;
+    g_parameters.k = 256;
+    g_parameters.steps = 4;
+    g_parameters.nbThreads = g_zstd_thread_count;
+    g_parameters.splitPoint = 0;
+    g_parameters.zParams.compressionLevel = g_zstd_compress_level;
+
+    void *rom_data = NULL;
+    size_t rom_size = 0;
+    if (argc > 2) {
+        SDL_RWops *file = SDL_RWFromFile(argv[2], "rb");
+
+        if (!file)
+            die("Failed to load %s: %s", argv[2], SDL_GetError());
+
+        rom_size = SDL_RWsize(file);
+
+        if (rom_size < 0)
+            die("Failed to query game file size: %s", SDL_GetError());
+
+        rom_data = SDL_malloc(rom_size);
+
+        if (!rom_data)
+            die("Failed to allocate memory for the content");
+
+        if (!SDL_RWread(file, (void*)rom_data, rom_size, 1))
+            die("Failed to read file data: %s", SDL_GetError());
+
+        SDL_RWclose(file);
+    }
 
     if (SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS) < 0)
         die("Failed to initialize SDL");
@@ -1280,7 +1893,9 @@ int main(int argc, char *argv[]) {
 
     SDL_Event ev;
 
+#if NETPLAY
     if (test_connectivity() == -1) goto cleanup;
+#endif
     while (running) {
         // Update the game loop timer.
         if (runloop_frame_time.callback) {
@@ -1313,9 +1928,272 @@ int main(int argc, char *argv[]) {
         }
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
+#if 0
+        // Timing for frame rate
+        struct timespec start_time, end_time;
+        clock_gettime(CLOCK_MONOTONIC, &start_time);
+#endif
         g_netplay_ready = false;
         g_retro.retro_run();
+
+        g_serialize_size = g_retro.retro_serialize_size();
+        if (sizeof(g_savebuffer[0]) >= g_serialize_size) {
+            uint64_t start = rdtsc();
+            g_retro.retro_serialize(g_savebuffer[g_save_state_index], sizeof(g_savebuffer[0]));
+            g_save_cycle_count[g_save_cycle_count_offset] = rdtsc() - start;
+        } else {
+            fprintf(stderr, "Save buffer too small to save state\n");
+        }
+
+        if (g_do_zstd_compress) {
+            uint64_t start = rdtsc();
+            unsigned char *buffer = g_savebuffer[g_save_state_index];
+            static unsigned char g_savebuffer_delta[sizeof(g_savebuffer[0])];
+            if (g_do_zstd_delta_compress) {
+                buffer = g_savebuffer_delta;
+                for (int i = 0; i < g_serialize_size; i++) {
+                    int delta_index = (g_save_state_index - g_save_state_used_for_delta_index_offset + MAX_SAVE_STATES) % MAX_SAVE_STATES;
+                    g_savebuffer_delta[i] = g_savebuffer[delta_index][i] ^ g_savebuffer[g_save_state_index][i];
+                } 
+            }
+
+            if (g_use_rle) {
+                // If we're 4 byte aligned use the 4-byte wordsize rle that gives us the highest gains in 32-bit consoles (where we need it the most)
+                if (g_serialize_size % 4 == 0) {
+                    rle_encode32(buffer, g_serialize_size / 4, g_savebuffer_compressed, g_zstd_compress_size + g_save_cycle_count_offset);
+                    g_zstd_compress_size[g_save_cycle_count_offset] *= 4;
+                } else {
+                    rle_encode8(buffer, g_serialize_size, g_savebuffer_compressed, g_zstd_compress_size + g_save_cycle_count_offset);
+                }
+            } else {
+                if (g_use_dictionary) {
+
+                    // There is a lot of ceremony to use the dictionary
+                    static ZSTD_CDict *cdict = NULL;
+                    if (g_dictionary_is_dirty) {
+                        size_t partition_size = rom_size / 8;
+                        size_t samples_sizes[8] = { partition_size, partition_size, partition_size, partition_size, 
+                                                    partition_size, partition_size, partition_size, partition_size };
+                        size_t dictionary_size = ZDICT_optimizeTrainFromBuffer_cover(
+                            g_dictionary, sizeof(g_dictionary),
+                            rom_data, samples_sizes, sizeof(samples_sizes)/sizeof(samples_sizes[0]),
+                            &g_parameters);
+
+                        if (cdict) {
+                            ZSTD_freeCDict(cdict);
+                        }
+
+                        if (ZDICT_isError(dictionary_size)) {
+                            fprintf(stderr, "Error optimizing dictionary: %s\n", ZDICT_getErrorName(dictionary_size));
+                            cdict = NULL;
+                        } else {
+                            cdict = ZSTD_createCDict(g_dictionary, sizeof(g_dictionary), g_zstd_compress_level);
+                        }
+
+                        g_dictionary_is_dirty = false;
+                    }
+
+                    static ZSTD_CCtx *cctx = NULL;
+                    if (cctx == NULL) {
+                        cctx = ZSTD_createCCtx();
+                    }
+
+                    ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, g_zstd_compress_level);
+                    //ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 0);
+                    ZSTD_CCtx_setParameter(cctx, ZSTD_c_nbWorkers, g_zstd_thread_count);
+                    //ZSTD_CCtx_setParameter(cctx, ZSTD_c_jobSize, 0);
+                    //ZSTD_CCtx_setParameter(cctx, ZSTD_c_overlapLog, 0);
+                    //ZSTD_CCtx_setParameter(cctx, ZSTD_c_enableLdm, 0);
+                    //ZSTD_CCtx_setParameter(cctx, ZSTD_c_ldmHashLog, 0);
+
+                    if (cdict) {
+                        g_zstd_compress_size[g_save_cycle_count_offset] = ZSTD_compress_usingCDict(cctx, 
+                                                                                                   g_savebuffer_compressed, SAVE_STATE_COMPRESSED_BOUND_BYTES,
+                                                                                                   buffer, g_serialize_size, 
+                                                                                                   cdict);
+                    }
+                } else {
+                    g_zstd_compress_size[g_save_cycle_count_offset] = ZSTD_compress(g_savebuffer_compressed,
+                                                                                    SAVE_STATE_COMPRESSED_BOUND_BYTES,
+                                                                                    buffer, g_serialize_size, g_zstd_compress_level);
+                }
+
+            }
+
+            if (ZSTD_isError(g_zstd_compress_size[g_save_cycle_count_offset])) {
+                fprintf(stderr, "Error compressing: %s\n", ZSTD_getErrorName(g_zstd_compress_size[g_save_cycle_count_offset]));
+                g_zstd_compress_size[g_save_cycle_count_offset] = 0;
+            }
+
+            g_zstd_cycle_count[g_save_cycle_count_offset] = rdtsc() - start;
+
+            // Reed Solomon
+            int packet_payload_size = PACKET_MTU_PAYLOAD_BYTES - sizeof(savestate_transfer_packet_t);
+
+            int n, k, packet_groups;
+            logical_partition(sizeof(savestate_transfer_payload_t) + g_zstd_compress_size[g_save_cycle_count_offset], 16, &n, &k, &packet_payload_size, &packet_groups);
+            //int k = g_zstd_compress_size[g_save_cycle_count_offset]/PACKET_MTU_PAYLOAD_BYTES+1;
+            //int n = k + g_redundant_packets;
+            char *data[(SAVE_STATE_COMPRESSED_BOUND_BYTES/PACKET_MTU_PAYLOAD_BYTES+1+MAX_REDUNDANT_PACKETS)];
+            if (g_do_reed_solomon) {
+                #if 0
+                uint64_t remaining = g_zstd_compress_size[g_save_cycle_count_offset];
+                int i = 0;
+                for (; i < k; i++) {
+                    uint64_t consume = SAM2_MIN(PACKET_MTU_PAYLOAD_BYTES, remaining);
+                    memcpy(g_savebuffer_compressed_packetized[i], &g_savebuffer_compressed[i * PACKET_MTU_PAYLOAD_BYTES], consume);
+                    remaining -= consume;
+                    data[i] = (char *) g_savebuffer_compressed_packetized[i];
+                }
+
+                memset(&g_savebuffer_compressed_packetized[i + PACKET_MTU_PAYLOAD_BYTES - remaining], 0, remaining);
+
+                for (; i < n; i++) {
+                    data[i] = (char *) g_savebuffer_compressed_packetized[i];
+                }
+
+                uint64_t start = rdtsc();
+                rs_encode2(k, n, data, PACKET_MTU_PAYLOAD_BYTES);
+                g_reed_solomon_encode_cycle_count[g_save_cycle_count_offset] = rdtsc() - start;
+
+                for (i = 0; i < g_lost_packets; i++) {
+                    data[i] = NULL;
+                }
+
+                start = rdtsc();
+                rs_decode2(k, n, data, PACKET_MTU_PAYLOAD_BYTES);
+                g_reed_solomon_decode_cycle_count[g_save_cycle_count_offset] = rdtsc() - start;
+                #else
+
+                #endif
+            }
+
+            if (g_send_savestate_next_frame) {
+                g_send_savestate_next_frame = false;
+
+                g_savestate_transfer_payload->frame = frame_counter;
+                g_savestate_transfer_payload->savestate_size = g_zstd_compress_size[g_save_cycle_count_offset];
+                g_savestate_transfer_payload->total_size_bytes = sizeof(savestate_transfer_payload_t) + g_zstd_compress_size[g_save_cycle_count_offset];
+
+                uint64_t hash = fnv1a_hash(g_savestate_transfer_payload, g_savestate_transfer_payload->total_size_bytes);
+                printf("Sending savestate payload with hash: %llx size: %llu bytes\n", hash, g_savestate_transfer_payload->total_size_bytes);
+
+                for (int j = 0; j < packet_groups; j++) {
+                    void *data[255];
+                    void *rs_code = fec_new(k, n);
+                    
+                    for (int i = 0; i < n; i++) {
+                        data[i] = g_savestate_transfer_payload_untyped + i * packet_payload_size + j * packet_payload_size * packet_groups;
+                    }
+
+                    for (int i = k; i < n; i++) {
+                        fec_encode(rs_code, (void **)data, data[i], i, packet_payload_size);
+                    }
+
+                    fec_free(rs_code);
+
+                    if (agent) {
+                        for (int i = 0; i < n; i++) {
+                            // @todo I need to send the rest of the payload
+                            // interchange the for loop as well
+                            savestate_transfer_packet2_t packet;
+                            packet.channel_and_flags = CHANNEL_SAVESTATE_TRANSFER;
+                            if (k == 239) {
+                                packet.channel_and_flags |= SAVESTATE_TRANSFER_FLAG_K_IS_239;
+                                if (j == 0) {
+                                    packet.channel_and_flags |= SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0;
+                                    packet.packet_groups = packet_groups;
+                                } else {
+                                    packet.sequence_hi = j;
+                                }
+                            } else {
+                                packet.reed_solomon_k = k;
+                            }
+
+                            packet.sequence_lo = i;
+
+                            memcpy(packet.payload, data[i], packet_payload_size);
+
+                            int status = juice_send(agent, (char *) &packet, sizeof(savestate_transfer_packet_t) + packet_payload_size);
+                            SDL_assert(status == 0);
+                        }
+                    }
+                }
+            }
+        }
+
+
+        g_save_cycle_count_offset = (g_save_cycle_count_offset + 1) % g_sample_size;
+        g_save_state_index = (g_save_state_index + 1) % MAX_SAVE_STATES;
+
+        if (g_sam2_socket == 0) {
+            if (sam2_client_connect(&g_sam2_socket, "35.84.2.235") == 0) {
+                printf("Socket created successfully SAM2\n");
+            }
+        }
+
+        if (g_connected_to_sam2 || (g_connected_to_sam2 = sam2_client_poll_connection(g_sam2_socket, 0))) {
+            static sam2_response_u response;
+            static sam2_message_e response_tag = SAM2_EMESSAGE_NONE;
+            static int response_length = 0;
+            for (;;) {
+                // I think we get stuck in an infinite loop here
+                int status = sam2_client_poll(g_sam2_socket, &response, &response_tag, &response_length);
+
+                if (status < 0) {
+                    fprintf(stderr, "TCP Stream state corrupted exiting...\n");
+                    fflush(stderr);
+                    exit(1);
+                }
+
+                if (   response_tag == SAM2_EMESSAGE_PART
+                    || response_tag == SAM2_EMESSAGE_NONE) {
+                    break;
+                }
+
+                switch (response_tag) {
+                case SAM2_EMESSAGE_LIST: {
+                    sam2_room_list_response_t *room_list = &response.room_list_response;
+                    printf("Received list of %lld games from SAM2\n", (long long int) room_list->room_count);
+                    fflush(stdout);
+                    for (int i = 0; i < room_list->room_count; i++) {
+                        //printf("  %s turn_host:%s\n", room_list->rooms[i].name, room_list->rooms[i].turn_hostname);
+                    }
+                    
+                    fflush(stdout);
+                    int64_t rooms_to_copy = SAM2_MIN(room_list->room_count, (int64_t) MAX_ROOMS - g_sam2_room_count);
+                    memcpy(g_sam2_rooms + g_sam2_room_count, room_list->rooms, rooms_to_copy * sizeof(sam2_room_t));
+                    g_sam2_room_count += rooms_to_copy;
+                    g_is_refreshing_rooms = g_sam2_room_count != room_list->server_room_count;
+                    break;
+                }
+                default:
+                    fprintf(stderr, "Received unknown message (%d) from SAM2\n", (int) response_tag);
+                    break;
+
+                }
+            }
+        }
+        
+
+#if 0
+        // Compute how long the processing took
+        clock_gettime(CLOCK_MONOTONIC, &end_time);
+        long elapsed = (end_time.tv_sec - start_time.tv_sec) * 1000 + (end_time.tv_nsec - start_time.tv_nsec) / 1000000; // milliseconds
+        
+        // Compute how much we should sleep to maintain the desired frame rate
+        int frame_time = (int)round(1000.0 / g_av.timing.fps); // Frame time in milliseconds
+        int sleep_time = frame_time - elapsed; // How much time left to sleep
+
+        // If the processing was quicker than frame time, sleep the remaining time
+        if (sleep_time > 0) {
+            struct timespec sleep_duration;
+            sleep_duration.tv_sec = sleep_time / 1000;
+            sleep_duration.tv_nsec = (sleep_time % 1000) * 1000000;
+            nanosleep(&sleep_duration, NULL);
+        }
+#endif
+
 
 	}
 cleanup:
