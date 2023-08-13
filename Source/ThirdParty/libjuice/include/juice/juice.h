@@ -75,6 +75,12 @@ typedef enum juice_concurrency_mode {
 	JUICE_CONCURRENCY_MODE_POLL = 0, // Connections share a single thread
 	JUICE_CONCURRENCY_MODE_MUX,      // Connections are multiplexed on a single UDP socket
 	JUICE_CONCURRENCY_MODE_THREAD,   // Each connection runs in its own thread
+
+	JUICE_CONCURRENCY_MODE_USER,     // Connections are manually polled by the user...
+	                                 // Note:
+									 // - juice api calls that reference an agent using this mode must be non-concurrent
+	                                 // - The OS's UDP packet buffering capacity is limited you need to make sure the inflow of packets will not cause a bottleneck 
+	                                 // - ICE keepalive requirements necessitate regular polling RFC 8445 11.
 } juice_concurrency_mode_t;
 
 typedef struct juice_config {
@@ -117,6 +123,10 @@ JUICE_EXPORT int juice_get_selected_candidates(juice_agent_t *agent, char *local
 JUICE_EXPORT int juice_get_selected_addresses(juice_agent_t *agent, char *local, size_t local_size,
                                               char *remote, size_t remote_size);
 JUICE_EXPORT const char *juice_state_to_string(juice_state_t state);
+
+// JUICE_CONCURRENCY_MODE_USER specific interface
+
+JUICE_EXPORT int juice_user_poll(juice_agent_t **agents, int agents_count);
 
 // ICE server
 
