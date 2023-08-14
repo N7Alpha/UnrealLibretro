@@ -1790,7 +1790,7 @@ void rle_encode8(void *input_typeless, size_t inputSize, void *output_typeless, 
     *outputUsed = writeIndex;
 }
 
-void logical_partition(int sz, int redundant, int *n, int *out_k, int *packet_size, int *packet_groups) {
+static void logical_partition(int sz, int redundant, int *n, int *out_k, int *packet_size, int *packet_groups) {
     int k_max = 255 - redundant;
     *packet_groups = 1;
     int k;
@@ -1809,6 +1809,10 @@ void logical_partition(int sz, int redundant, int *n, int *out_k, int *packet_si
     *out_k = k;
 }
 
+// This is a little confusing since the lower byte of sequence corresponds to the largest stride
+static int64_t logical_partition_offset_bytes(uint8_t sequence_hi, uint8_t sequence_lo, int block_size_bytes, int block_stride) {
+    return (int64_t) sequence_hi * block_size_bytes + sequence_lo * block_size_bytes * block_stride;
+}
 
 
 int main(int argc, char *argv[]) {
@@ -2034,8 +2038,8 @@ int main(int argc, char *argv[]) {
             logical_partition(sizeof(savestate_transfer_payload_t) + g_zstd_compress_size[g_save_cycle_count_offset], 16, &n, &k, &packet_payload_size, &packet_groups);
             //int k = g_zstd_compress_size[g_save_cycle_count_offset]/PACKET_MTU_PAYLOAD_BYTES+1;
             //int n = k + g_redundant_packets;
-            char *data[(SAVE_STATE_COMPRESSED_BOUND_BYTES/PACKET_MTU_PAYLOAD_BYTES+1+MAX_REDUNDANT_PACKETS)];
             if (g_do_reed_solomon) {
+                char *data[(SAVE_STATE_COMPRESSED_BOUND_BYTES/PACKET_MTU_PAYLOAD_BYTES+1+MAX_REDUNDANT_PACKETS)];
                 #if 0
                 uint64_t remaining = g_zstd_compress_size[g_save_cycle_count_offset];
                 int i = 0;
@@ -2079,21 +2083,25 @@ int main(int argc, char *argv[]) {
                 printf("Sending savestate payload with hash: %llx size: %llu bytes\n", hash, g_savestate_transfer_payload->total_size_bytes);
 
                 for (int j = 0; j < packet_groups; j++) {
-                    void *data[255];
-                    void *rs_code = fec_new(k, n);
-                    
                     for (int i = 0; i < n; i++) {
-                        data[i] = g_savestate_transfer_payload_untyped + i * packet_payload_size + j * packet_payload_size * packet_groups;
-                    }
-
-                    for (int i = k; i < n; i++) {
-                        fec_encode(rs_code, (void **)data, data[i], i, packet_payload_size);
-                    }
-
-                    fec_free(rs_code);
-
-                    if (agent) {
+                        void *data[255];
+                        void *rs_code = fec_new(k, n);
+                        
                         for (int i = 0; i < n; i++) {
+                            data[i] = g_savestate_transfer_payload_untyped + logical_partition_offset_bytes(j, i, packet_payload_size, packet_groups);
+                        }
+
+                        for (int i = k; i < n; i++) {
+                            fec_encode(rs_code, (void **)data, data[i], i, packet_payload_size);
+                        }
+
+                        fec_free(rs_code);
+                    }
+                }
+
+                if (agent) {
+                    for (int i = 0; i < n; i++) {
+                        for (int j = 0; j < packet_groups; j++) {
                             // @todo I need to send the rest of the payload
                             // interchange the for loop as well
                             savestate_transfer_packet2_t packet;
@@ -2112,7 +2120,7 @@ int main(int argc, char *argv[]) {
 
                             packet.sequence_lo = i;
 
-                            memcpy(packet.payload, data[i], packet_payload_size);
+                            memcpy(packet.payload, g_savestate_transfer_payload_untyped + logical_partition_offset_bytes(j, i, packet_payload_size, packet_groups), packet_payload_size);
 
                             int status = juice_send(agent, (char *) &packet, sizeof(savestate_transfer_packet_t) + packet_payload_size);
                             SDL_assert(status == 0);
