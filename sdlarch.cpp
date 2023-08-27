@@ -30,13 +30,13 @@ static void sleep(unsigned int secs) { Sleep(secs * 1000); }
 #include <SDL_opengl.h>
 #include "libretro.h"
 
-// Considering various things like STUN/TURN headers and the UDP/IP headers, additional junk load balancers and routers might add I keep this conservative
+// Considering various things like UDP/IP headers, STUN/TURN headers, and additional junk 
+// load-balancers/routers might add I keep this conservative
 #define PACKET_MTU_PAYLOAD_BYTES 1408
 
 #define JUICE_CONCURRENCY_MODE JUICE_CONCURRENCY_MODE_USER
 
-
-#define NETPLAY 1
+#define NETPLAY 0
 
 static SDL_Window *g_win = NULL;
 static SDL_GLContext g_ctx = NULL;
@@ -45,13 +45,16 @@ static struct retro_frame_time_callback runloop_frame_time;
 static retro_usec_t runloop_frame_time_last = 0;
 static const uint8_t *g_kbd = NULL;
 struct retro_system_av_info g_av = {0};
-static juice_agent_t *agent = NULL;
-bool g_netplay_ready = false;
-static sam2_socket_t g_sam2_socket = 0;
 static struct retro_audio_callback audio_callback;
 
 static float g_scale = 3;
 bool running = true;
+
+static juice_agent_t *g_agent[SAM2_PORT_MAX+1] = {0};
+static sam2_signal_message_t g_signal_message[SAM2_PORT_MAX+1] = {0};
+bool g_netplay_ready = false;
+static sam2_socket_t g_sam2_socket = 0;
+
 
 static struct {
 	GLuint tex_id;
@@ -580,9 +583,14 @@ typedef struct {
 } savestate_transfer_payload_t;
 
 
-static sam2_room_t g_room = { "My Room Name", "TURN host", 0b01010101, 0 };
+static sam2_room_t g_new_room_set_through_gui = { 
+    "My Room Name",
+    "TURN host",
+    { SAM2_PORT_UNAVAILABLE, SAM2_PORT_AVAILABLE, SAM2_PORT_AVAILABLE, SAM2_PORT_AVAILABLE },
+};
+static sam2_room_t g_room_we_are_in = {0};
 static sam2_room_t g_sam2_rooms[MAX_ROOMS];
-static int g_sam2_room_count = 0;
+static int64_t g_sam2_room_count = 0;
 static int g_zstd_compress_level = 0;
 static sam2_request_u g_sam2_request;
 #define MAX_SAMPLE_SIZE 128
@@ -642,10 +650,41 @@ uint8_t g_remote_packet_groups = MAX_FEC_PACKET_GROUPS;
 static bool g_send_savestate_next_frame = false;
 
 static bool g_is_refreshing_rooms = false;
-
+char g_sdp[JUICE_MAX_SDP_STRING_LEN] = {0};
+char g_sdp_remote[JUICE_MAX_SDP_STRING_LEN] = {0};
+int g_joining_on_port = -1;
+uint64_t g_our_peer_id = 0;
+static int g_volume = 3;
 
 static ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 static bool g_connected_to_sam2 = false;
+static sam2_error_response_t g_last_sam2_error = {SAM2_RESPONSE_SUCCESS};
+
+static void peer_ids_to_string(uint64_t peer_ids[], char *output) {
+    for (int i = 0; i < SAM2_PORT_MAX; i++) {
+        switch(peer_ids[i]) {
+            case SAM2_PORT_UNAVAILABLE:
+                output[i] = 'U';
+                break;
+            case SAM2_PORT_AVAILABLE:
+                output[i] = 'A';
+                break;
+            case SAM2_PORT_RESERVE:
+                output[i] = 'R';
+                break;
+            default:
+                output[i] = 'P';
+                break;
+        }
+    }
+
+    output[SAM2_AUTHORITY_INDEX] = 'a';
+
+    // Null terminate the string
+    output[SAM2_AUTHORITY_INDEX + 1] = '\0';
+}
+
+
 void draw_imgui() {
     static int spinnerIndex = 0;
     char spinnerFrames[4] = { '|', '/', '-', '\\' };
@@ -661,13 +700,22 @@ void draw_imgui() {
     if (show_demo_window)
         ImGui::ShowDemoWindow(&show_demo_window);
 
+    {
+        ImGui::Begin("ICE");
+        ImGui::InputTextMultiline("Local SDP", g_sdp, sizeof(g_sdp), ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
+        ImGui::InputTextMultiline("Remote SDP", g_sdp_remote, sizeof(g_sdp_remote), ImVec2(0, 0), ImGuiInputTextFlags_None);
+        ImGui::End();
+    }
+
     // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
     {
         static float f = 0.0f;
         static int counter = 0;
         char unit[FORMAT_UNIT_COUNT_SIZE] = {0};
 
-        ImGui::Begin("Compression investigation");                          // Create a window called "Hello, world!" and append into it.
+        ImGui::Begin("Compression investigation");
+
+        ImGui::SliderInt("Volume", &g_volume, 0, 100);
 
         double avg_cycle_count = 0;
         double avg_zstd_compress_size = 0;
@@ -809,41 +857,115 @@ void draw_imgui() {
                 ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to the SAM2");
             } else {
                 ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1), "Connecting to the SAM2 %c", spinnerGlyph);
+                goto finished_drawning_sam2_interface;
             }
 
+            if (g_last_sam2_error.code) {
+                ImGui::TextColored(ImVec4(1, 0, 0, 1), "Last error: %s", g_last_sam2_error.description);
+            }
+
+            sam2_room_t *display_room = g_our_peer_id ? &g_room_we_are_in : &g_new_room_set_through_gui;
+
             // Editable text fields for room name and TURN host
-            ImGui::InputText("##name", g_room.name, sizeof(g_room.name));
+            ImGui::InputText("##name", display_room->name, sizeof(display_room->name),
+                g_our_peer_id ? ImGuiInputTextFlags_ReadOnly : ImGuiInputTextFlags_None);
             ImGui::SameLine();
-            ImGui::InputText("##turn_hostname", g_room.turn_hostname, sizeof(g_room.turn_hostname));
+            ImGui::InputText("##turn_hostname", display_room->turn_hostname, sizeof(display_room->turn_hostname),
+                g_our_peer_id ? ImGuiInputTextFlags_ReadOnly : ImGuiInputTextFlags_None);
 
             // Fixed text fields to display binary values
-            char ports_str[65];
-            char flags_str[65];
+            //char ports_str[65] = {0};
+            char flags_str[65] = {0};
 
             // Convert the integer values to binary strings
             for (int i = 0; i < 64; i+=4) {
-                ports_str[i/4] = '0' + ((g_room.ports >> (60 - i)) & 0xF);
-                flags_str[i/4] = '0' + ((g_room.flags >> (60 - i)) & 0xF);
+                //ports_str[i/4] = '0' + ((g_room.ports >> (60 - i)) & 0xF);
+                flags_str[i/4] = '0' + ((display_room->flags >> (60 - i)) & 0xF);
             }
 
-            ports_str[16] = '\0';
-            flags_str[16] = '\0';
-
-            ImGui::Text("Port bitfield: %s", ports_str);
-            ImGui::SameLine();
             ImGui::Text("Flags bitfield: %s", flags_str);
+        }
 
+        if (g_our_peer_id) {
+            ImGui::Text("Our Peer ID: %" PRIx64, g_our_peer_id);
+
+            ImGui::SeparatorText("Connection Status");
+            for (int p = 0; p < SAM2_ARRAY_LENGTH(g_agent); p++) {
+                if (p != SAM2_AUTHORITY_INDEX) {
+                    ImGui::Text("Port %d:", p);
+                } else {
+                    ImGui::Text("Authority:");
+                }
+
+                ImGui::SameLine();
+
+                switch (g_room_we_are_in.peer_ids[p]) {
+                case SAM2_PORT_UNAVAILABLE:
+                    ImGui::Text("Unavailable");
+                    break;
+                case SAM2_PORT_AVAILABLE:
+                    ImGui::Text("Available");
+                    break;
+                case SAM2_PORT_RESERVE:
+                    ImGui::Text("Reserved");
+                    break;
+                default:
+                    ImGui::Text("Peer ID %" PRIx64, g_room_we_are_in.peer_ids[p]);
+                    break;
+                }
+
+                if (g_agent[p]) {
+                    ImGui::SameLine();
+                    ImGui::Text("State: %s", juice_state_to_string(juice_get_state(g_agent[p])));
+                    ImGui::SameLine();
+
+                    static bool is_open[SAM2_ARRAY_LENGTH(g_agent)] = {0};
+                    is_open[p] |= ImGui::Button("Signal Msg");
+                    if (is_open[p]) {
+                        ImGui::Begin("Sam2 Signal Message", &is_open[p], ImGuiInputTextFlags_ReadOnly);
+                        
+                        ImGui::Text("Port: %d", p);
+                        // Display header
+                        ImGui::Text("Header: %.8s", g_signal_message[p].header);
+
+                        // Display peer_id
+                        ImGui::Text("Peer ID: %" PRIx64, g_signal_message[p].peer_id);
+
+                        // Display ice_sdp
+                        ImGui::InputTextMultiline("ICE SDP", g_signal_message[p].ice_sdp, sizeof(g_signal_message[p].ice_sdp),
+                            ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
+
+                        ImGui::End();
+                    }
+                }
+            }
+
+            if (ImGui::Button("Exit")) {
+                // Send an exit room request
+                sam2_room_join_request_t request = {0};
+                request.room = g_room_we_are_in;
+
+                for (int p = 0; p < SAM2_ARRAY_LENGTH(g_agent); p++) {
+                    if (request.room.peer_ids[p] == g_our_peer_id) {
+                        request.room.peer_ids[p] = SAM2_PORT_AVAILABLE;
+                        break;
+                    }
+                }
+
+                sam2_client_send(g_sam2_socket, (char *) &request, SAM2_EMESSAGE_JOIN);
+
+                g_our_peer_id = 0;
+            }
+
+        } else {
             // Create a "Make" button that sends a make room request when clicked
             if (ImGui::Button("Make")) {
                 // Send a make room request
                 sig_room_make_request_t *request = &g_sam2_request.room_make_request;
-                request->room = g_room;
+                request->room = g_new_room_set_through_gui;
                 // Fill in the rest of the request fields appropriately...
-                sam2_client_send(g_sam2_socket, &g_sam2_request, SAM2_EMESSAGE_MAKE);
+                sam2_client_send(g_sam2_socket, (char *) &g_sam2_request, SAM2_EMESSAGE_MAKE);
             }
-        }
-
-        {
             if (ImGui::Button(g_is_refreshing_rooms ? "Stop" : "Refresh")) {
                 // Toggle the state
                 g_is_refreshing_rooms = !g_is_refreshing_rooms;
@@ -851,7 +973,7 @@ void draw_imgui() {
                 if (g_is_refreshing_rooms) {
                     // The list message is only a header
                     g_sam2_room_count = 0;
-                    sam2_client_send(g_sam2_socket, &g_sam2_request, SAM2_EMESSAGE_LIST);
+                    sam2_client_send(g_sam2_socket, (char *) &g_sam2_request, SAM2_EMESSAGE_LIST);
                 } else {
 
                 }
@@ -862,11 +984,13 @@ void draw_imgui() {
                 // Run your "Stop" code here
             }
 
-            int selected_room_index = -1;  // Initialize as -1 to indicate no selection
+            ImGui::BeginChild("TableWindow", ImVec2(ImGui::GetWindowContentRegionWidth(), ImGui::GetWindowContentRegionMax().y/2), true);
+            static int selected_room_index = -1;  // Initialize as -1 to indicate no selection
             // Table
-            if (ImGui::BeginTable("Rooms table", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+            if (ImGui::BeginTable("Rooms table", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
                 ImGui::TableSetupColumn("Room Name");
                 ImGui::TableSetupColumn("TURN Host Name");
+                ImGui::TableSetupColumn("Peers");
                 ImGui::TableHeadersRow();
 
                 for (int room_index = 0; room_index < g_sam2_room_count; ++room_index) {
@@ -875,24 +999,50 @@ void draw_imgui() {
 
                     // Make the row selectable and keep track of the selected room
                     ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick;
-                    if (ImGui::Selectable(g_sam2_rooms[room_index].name, selected_room_index == room_index, selectable_flags))
-                    {
+                    if (ImGui::Selectable(g_sam2_rooms[room_index].name, selected_room_index == room_index, selectable_flags)) {
                         selected_room_index = room_index;
                     }
                     
                     ImGui::TableNextColumn();
                     ImGui::Text("%s", g_sam2_rooms[room_index].turn_hostname);
+
+                    ImGui::TableNextColumn();
+                    char ports_str[65];
+                    peer_ids_to_string(g_new_room_set_through_gui.peer_ids, ports_str);
+                    ImGui::Text("%s", ports_str);
                 }
 
                 ImGui::EndTable();
             }
 
+            ImGui::EndChild();
+
             if (selected_room_index != -1) {
-                printf("Selected room at index %d\n", selected_room_index);
-                selected_room_index = -1;
+                if (ImGui::Button("Join")) {
+                    // Send a join room request
+                    sam2_room_join_request_t request = {0};
+                    request.room = g_sam2_rooms[selected_room_index];
+
+                    int p = 0;
+                    for (p = 0; p < SAM2_PORT_MAX; p++) {
+                        if (request.room.peer_ids[p] == SAM2_PORT_AVAILABLE) {
+                            request.room.peer_ids[p] = SAM2_PORT_RESERVE;
+                            break;
+                        }
+                    }
+
+                    if (p == SAM2_PORT_MAX) {
+                        die("No available ports in the room");
+                    }
+
+                    g_joining_on_port = p;
+                    
+                    sam2_client_send(g_sam2_socket, (char *) &request, SAM2_EMESSAGE_JOIN);
+                }
             }
         }
 
+finished_drawning_sam2_interface:
         ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
         ImGui::End();
     }
@@ -1002,7 +1152,11 @@ static void audio_deinit() {
 }
 
 static size_t audio_write(const int16_t *buf, unsigned frames) {
-    SDL_QueueAudio(g_pcm, buf, sizeof(*buf) * frames * 2);
+    int16_t scaled_buf[4096];
+    for (unsigned i = 0; i < frames * 2; i++) {
+        scaled_buf[i] = (buf[i] * g_volume) / 100;
+    }
+    SDL_QueueAudio(g_pcm, scaled_buf, sizeof(*buf) * frames * 2);
     return frames;
 }
 
@@ -1449,11 +1603,6 @@ static void core_unload() {
 
 static void noop() {}
 
-#define BUFFER_SIZE 4096
-
-static bool gathering_done = false;
-char g_sdp[JUICE_MAX_SDP_STRING_LEN];
-
 static void on_state_changed(juice_agent_t *agent, juice_state_t state, void *user_ptr);
 static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr);
 static void on_gathering_done(juice_agent_t *agent, void *user_ptr);
@@ -1467,6 +1616,7 @@ void receive_juice_log(juice_log_level_t level, const char *message) {
     assert(level < JUICE_LOG_LEVEL_ERROR);
 }
 
+#if NETPLAY
 int test_connectivity() {
   juice_set_log_handler(receive_juice_log);
 
@@ -1496,7 +1646,6 @@ int test_connectivity() {
 
   // Gather candidates
   juice_gather_candidates(agent);
-  char sdp_remote[JUICE_MAX_SDP_STRING_LEN] = {0};
 
   bool remote_candidates_aquired = false;
   while (!remote_candidates_aquired) {
@@ -1527,13 +1676,13 @@ int test_connectivity() {
     ImGui::Begin("SDP Connectivity Test");
     ImGui::Text("Local SDP:");
     ImGui::InputTextMultiline("Local SDP", g_sdp, sizeof(g_sdp), ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
-    ImGui::InputTextMultiline("Remote SDP", sdp_remote, sizeof(sdp_remote), ImVec2(0, 0), ImGuiInputTextFlags_None);
+    ImGui::InputTextMultiline("Remote SDP", g_sdp_remote, sizeof(g_sdp_remote), ImVec2(0, 0), ImGuiInputTextFlags_None);
 
     // ImGui::InputTextMultiline("Local Candidates", candidates, sizeof(candidates), ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
     // ImGui::InputTextMultiline("Remote Candidates", remote_candidates, sizeof(remote_candidates), ImVec2(0, 0), ImGuiInputTextFlags_None);
     
     if (ImGui::Button("Submit")) {
-        auto status = juice_set_remote_description(agent, sdp_remote);
+        auto status = juice_set_remote_description(agent, g_sdp_remote);
         assert(JUICE_ERR_SUCCESS == status);
         remote_candidates_aquired = true;
     }
@@ -1608,7 +1757,7 @@ int test_connectivity() {
     return -1;
   }
 }
-
+#endif
 // On state changed
 static void on_state_changed(juice_agent_t *agent, juice_state_t state, void *user_ptr) {
   printf("State: %s\n", juice_state_to_string(state));
@@ -1622,16 +1771,24 @@ static void on_state_changed(juice_agent_t *agent, juice_state_t state, void *us
 
 // On local candidate gathered
 static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr) {
-  printf("Candidate: %s\n", sdp);
+    printf("Candidate: %s\n", sdp);
 
-  strcat(g_sdp, sdp);
-  strcat(g_sdp, "\n");
+    int p = 0;
+    for (; p < SAM2_ARRAY_LENGTH(g_agent); p++) if (agent == g_agent[p]) break;
+    sam2_signal_message_t *response = &g_signal_message[p];
+
+    strcat(response->ice_sdp, sdp);
+    strcat(response->ice_sdp, "\n");
 }
 
 // On local candidates gathering done
 static void on_gathering_done(juice_agent_t *agent, void *user_ptr) {
-  printf("Gathering done\n");
-  gathering_done = true;
+    printf("Gathering done\n");
+
+    int p = 0;
+    for (; p < SAM2_ARRAY_LENGTH(g_agent); p++) if (agent == g_agent[p]) break;
+
+    sam2_client_send(g_sam2_socket, (char *) &g_signal_message[p], SAM2_EMESSAGE_SIGNAL);
 }
 
 // On message received
@@ -1666,6 +1823,8 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         }
 
         uint8_t sequence_lo = data[2];
+
+        LOG_VERBOSE("Received savestate packet sequence_hi: %hhu sequence_lo: %hhu\n", sequence_hi, sequence_lo);
 
         uint8_t *copied_packet_ptr = (uint8_t *) memcpy(g_remote_savestate_transfer_packets + g_remote_savestate_transfer_offset, data, size);
         g_fec_packet[sequence_hi][sequence_lo] = copied_packet_ptr + sizeof(savestate_transfer_packet_t);
@@ -1814,6 +1973,52 @@ static int64_t logical_partition_offset_bytes(uint8_t sequence_hi, uint8_t seque
     return (int64_t) sequence_hi * block_size_bytes + sequence_lo * block_size_bytes * block_stride;
 }
 
+// Byte swaps 4 byte words in place from big endian to little endian
+// If the IEEE float32 encoding of the word is between 65536 and 1/65536 or -65536 and -1/65536, then the word is not swapped
+static void heuristic_byte_swap(uint32_t *data, size_t size) {
+    for (size_t i = 0; i < size; ++i) {
+        uint32_t word = data[i];
+        uint32_t ieee_float_32_exponent = (word >> 23) & 0xFF;
+
+        // Check if the value is within the range [1/65536, 65536] or (-65536, -1/65536]
+
+        if ((ieee_float_32_exponent < 0x6F) || (ieee_float_32_exponent >= 0x8F)) {
+            // Byte swap if the value is not within the specified range
+            data[i] = ((word >> 24) & 0x000000FF) | 
+                      ((word >> 8) & 0x0000FF00) | 
+                      ((word << 8) & 0x00FF0000) | 
+                      ((word << 24) & 0xFF000000);
+        }
+    }
+}
+
+void startup_ice_for_peer(juice_agent_t **agent, sam2_signal_message_t *signal_message, uint64_t peer_id) {
+    juice_config_t config;
+    memset(&config, 0, sizeof(config));
+
+    // STUN server example*
+    config.concurrency_mode = JUICE_CONCURRENCY_MODE;
+    config.stun_server_host = "stun.l.google.com";
+    config.stun_server_port = 19302;
+    //config.bind_address = "127.0.0.1";
+
+    config.cb_state_changed = on_state_changed;
+    config.cb_candidate = on_candidate;
+    config.cb_gathering_done = on_gathering_done;
+    config.cb_recv = on_recv;
+    config.user_ptr = NULL;
+
+    *agent = juice_create(&config);
+
+    memset(signal_message, 0, sizeof(*signal_message));
+
+    signal_message->peer_id = peer_id;
+
+    juice_get_local_description(*agent, signal_message->ice_sdp, JUICE_MAX_SDP_STRING_LEN);
+
+    // This call starts an asynchronous process that will call the on_candidate callback
+    juice_gather_candidates(*agent);
+}
 
 int main(int argc, char *argv[]) {
 	if (argc < 2)
@@ -1849,12 +2054,16 @@ int main(int argc, char *argv[]) {
         if (!SDL_RWread(file, (void*)rom_data, rom_size, 1))
             die("Failed to read file data: %s", SDL_GetError());
 
+        //heuristic_byte_swap((uint32_t *)rom_data, rom_size / 4);
+        //std::reverse((uint8_t *)rom_data, (uint8_t *)rom_data + rom_size);
         SDL_RWclose(file);
     }
 
     if (SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS) < 0)
         die("Failed to initialize SDL");
 
+    // Setup Platform/Renderer backends
+    // GL 3.0 + GLSL 130
     g_video.hw.version_major = 4;
     g_video.hw.version_minor = 5;
     g_video.hw.context_type  = RETRO_HW_CONTEXT_OPENGL_CORE;
@@ -1901,6 +2110,38 @@ int main(int argc, char *argv[]) {
     if (test_connectivity() == -1) goto cleanup;
 #endif
     while (running) {
+
+#if JUICE_CONCURRENCY_MODE == JUICE_CONCURRENCY_MODE_USER
+        for (int p = 0; p < SAM2_ARRAY_LENGTH(g_agent); p++) {
+            if (!g_agent[p]) continue;
+
+            // Tick the agent... sends ICE keepalives, calls callbacks to give us packets, etc.
+            for (int i = 0; i < 100; i++) {
+                juice_user_poll(&g_agent[p], 1);
+            }
+
+            juice_state_t state = juice_get_state(g_agent[p]);
+            switch (state) {
+            case JUICE_STATE_DISCONNECTED: break;
+            case JUICE_STATE_GATHERING: break;
+            case JUICE_STATE_CONNECTING: {
+                break;
+            }
+            case JUICE_STATE_CONNECTED: {
+                printf("Connected\n");
+            }
+            case JUICE_STATE_COMPLETED: {
+
+            }
+            case JUICE_STATE_FAILED: {
+
+            }
+            }
+
+
+        }
+#endif
+
         // Update the game loop timer.
         if (runloop_frame_time.callback) {
             retro_time_t current = cpu_features_get_time_usec();
@@ -1937,7 +2178,6 @@ int main(int argc, char *argv[]) {
         struct timespec start_time, end_time;
         clock_gettime(CLOCK_MONOTONIC, &start_time);
 #endif
-        g_netplay_ready = false;
         g_retro.retro_run();
 
         g_serialize_size = g_retro.retro_serialize_size();
@@ -2039,8 +2279,8 @@ int main(int argc, char *argv[]) {
             //int k = g_zstd_compress_size[g_save_cycle_count_offset]/PACKET_MTU_PAYLOAD_BYTES+1;
             //int n = k + g_redundant_packets;
             if (g_do_reed_solomon) {
-                char *data[(SAVE_STATE_COMPRESSED_BOUND_BYTES/PACKET_MTU_PAYLOAD_BYTES+1+MAX_REDUNDANT_PACKETS)];
                 #if 0
+                char *data[(SAVE_STATE_COMPRESSED_BOUND_BYTES/PACKET_MTU_PAYLOAD_BYTES+1+MAX_REDUNDANT_PACKETS)];
                 uint64_t remaining = g_zstd_compress_size[g_save_cycle_count_offset];
                 int i = 0;
                 for (; i < k; i++) {
@@ -2083,27 +2323,26 @@ int main(int argc, char *argv[]) {
                 printf("Sending savestate payload with hash: %llx size: %llu bytes\n", hash, g_savestate_transfer_payload->total_size_bytes);
 
                 for (int j = 0; j < packet_groups; j++) {
+                    void *data[255];
+                    void *rs_code = fec_new(k, n);
+                    
                     for (int i = 0; i < n; i++) {
-                        void *data[255];
-                        void *rs_code = fec_new(k, n);
-                        
-                        for (int i = 0; i < n; i++) {
-                            data[i] = g_savestate_transfer_payload_untyped + logical_partition_offset_bytes(j, i, packet_payload_size, packet_groups);
-                        }
-
-                        for (int i = k; i < n; i++) {
-                            fec_encode(rs_code, (void **)data, data[i], i, packet_payload_size);
-                        }
-
-                        fec_free(rs_code);
+                        data[i] = g_savestate_transfer_payload_untyped + logical_partition_offset_bytes(j, i, packet_payload_size, packet_groups);
                     }
+
+                    for (int i = k; i < n; i++) {
+                        fec_encode(rs_code, (void **)data, data[i], i, packet_payload_size);
+                    }
+
+                    fec_free(rs_code);
                 }
 
-                if (agent) {
+                for (int p = 0; p < SAM2_ARRAY_LENGTH(g_agent); p++) {
+                    juice_agent_t *agent = g_agent[p];
+
+                    if (!agent) continue;
                     for (int i = 0; i < n; i++) {
                         for (int j = 0; j < packet_groups; j++) {
-                            // @todo I need to send the rest of the payload
-                            // interchange the for loop as well
                             savestate_transfer_packet2_t packet;
                             packet.channel_and_flags = CHANNEL_SAVESTATE_TRANSFER;
                             if (k == 239) {
@@ -2145,7 +2384,6 @@ int main(int argc, char *argv[]) {
             static sam2_message_e response_tag = SAM2_EMESSAGE_NONE;
             static int response_length = 0;
             for (;;) {
-                // I think we get stuck in an infinite loop here
                 int status = sam2_client_poll(g_sam2_socket, &response, &response_tag, &response_length);
 
                 if (status < 0) {
@@ -2160,6 +2398,12 @@ int main(int argc, char *argv[]) {
                 }
 
                 switch (response_tag) {
+                case SAM2_EMESSAGE_ERROR: {
+                    g_last_sam2_error = response.error_response;
+                    printf("Received error response from SAM2 (%" PRIx64 "): %s\n", g_last_sam2_error.code, g_last_sam2_error.description);
+                    fflush(stdout);
+                    break;
+                }
                 case SAM2_EMESSAGE_LIST: {
                     sam2_room_list_response_t *room_list = &response.room_list_response;
                     printf("Received list of %lld games from SAM2\n", (long long int) room_list->room_count);
@@ -2173,6 +2417,77 @@ int main(int argc, char *argv[]) {
                     memcpy(g_sam2_rooms + g_sam2_room_count, room_list->rooms, rooms_to_copy * sizeof(sam2_room_t));
                     g_sam2_room_count += rooms_to_copy;
                     g_is_refreshing_rooms = g_sam2_room_count != room_list->server_room_count;
+                    break;
+                }
+                case SAM2_EMESSAGE_MAKE: {
+                    sam2_room_make_response_t *room_make = &response.room_make_response;
+                    printf("Received room make response from SAM2\n");
+                    fflush(stdout);
+                    g_our_peer_id = room_make->room.peer_ids[SAM2_AUTHORITY_INDEX];
+                    g_room_we_are_in = room_make->room;
+                    break;
+                }
+                case SAM2_EMESSAGE_JOIN: {
+                    sam2_room_join_response_t *room_join = &response.room_join_response;
+                    if (!g_our_peer_id) {
+                        printf("We were let into the server by the authority\n");
+                        g_room_we_are_in = room_join->room;
+                        g_our_peer_id = room_join->room.peer_ids[g_joining_on_port];
+
+                        printf("Our peer id is %" PRIx64 "\n", g_our_peer_id);
+
+                        for (int p = 0; p < SAM2_ARRAY_LENGTH(room_join->room.peer_ids); p++) {
+                            if (room_join->room.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
+                            if (room_join->room.peer_ids[p] == g_our_peer_id) continue;
+
+                            startup_ice_for_peer(&g_agent[p], &g_signal_message[p], room_join->room.peer_ids[p]);
+                        }
+                    } else {
+                        if (g_our_peer_id == room_join->room.peer_ids[SAM2_AUTHORITY_INDEX]) {
+                            printf("Someone has asked us to change the state of the server in some way e.g. leaving, joining, etc.\n");
+                            fflush(stdout);
+                            
+                            for (int p = 0; p < SAM2_PORT_MAX; p++) {
+                                if (   g_room_we_are_in.peer_ids[p] == SAM2_PORT_AVAILABLE
+                                    && g_room_we_are_in.peer_ids[p] != room_join->room.peer_ids[p]) {
+                                    printf("Peer %" PRIx64 " has joined the room\n", room_join->room.peer_ids[p]);
+                                    fflush(stdout);
+
+                                    g_room_we_are_in.peer_ids[p] = room_join->room.peer_ids[p];
+
+                                    sam2_room_join_response_t response = {0};
+                                    response.room = g_room_we_are_in;
+                                    
+                                    sam2_client_send(g_sam2_socket, (char *) &response, SAM2_EMESSAGE_JOIN);
+
+                                    startup_ice_for_peer(&g_agent[p], &g_signal_message[p], room_join->room.peer_ids[p]);
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+                case SAM2_EMESSAGE_SIGNAL: {
+                    sam2_signal_message_t *room_signal = (sam2_signal_message_t *) &response;
+                    printf("Received signal from peer %" PRIx64 "\n", room_signal->peer_id);
+                    fflush(stdout);
+
+                    int p = 0;
+                    for (; p < SAM2_ARRAY_LENGTH(g_agent); p++) if (room_signal->peer_id == g_room_we_are_in.peer_ids[p]) break;
+
+                    if (p == SAM2_ARRAY_LENGTH(g_agent)) {
+                        printf("Received signal from unknown peer\n");
+                        fflush(stdout);
+                        break;
+                    }
+
+                    if (g_agent[p]) {
+                        juice_set_remote_description(g_agent[p], room_signal->ice_sdp);
+                        juice_set_remote_gathering_done(g_agent[p]);    
+                    } else {
+                        printf("Received signal from peer we don't have an agent for\n");
+                        fflush(stdout);
+                    }
                     break;
                 }
                 default:
@@ -2204,13 +2519,17 @@ int main(int argc, char *argv[]) {
 
 
 	}
-cleanup:
+//cleanup:
 	core_unload();
 	audio_deinit();
 	video_deinit();
 
     // Destroy agent
-    juice_destroy(agent);
+    for (int p = 0; p < SAM2_ARRAY_LENGTH(g_agent); p++) {
+        if (g_agent[p]) {
+            juice_destroy(g_agent[p]);
+        }
+    }
 
     if (g_vars) {
         for (const struct retro_variable *v = g_vars; v->key; ++v) {

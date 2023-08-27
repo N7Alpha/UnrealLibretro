@@ -6,6 +6,12 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(MSVC)
+  add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+  add_definitions(-D_CRT_NONSTDC_NO_DEPRECATE)
+  # Disable warnings about deprecated POSIX functions + warnings relevant to C++ but not C
+  add_definitions("/wd4244 /wd4267 /wd4200 /wd26495")
+endif()
 ## Add an option for enabling ASan.
 #option(ASAN "Enable AddressSanitizer (ASan)" ON)
 
