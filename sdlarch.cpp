@@ -50,11 +50,6 @@ static struct retro_audio_callback audio_callback;
 static float g_scale = 3;
 bool running = true;
 
-static juice_agent_t *g_agent[SAM2_PORT_MAX+1] = {0};
-static sam2_signal_message_t g_signal_message[SAM2_PORT_MAX+1] = {0};
-bool g_netplay_ready = false;
-static sam2_socket_t g_sam2_socket = 0;
-
 
 static struct {
 	GLuint tex_id;
@@ -174,6 +169,10 @@ int64_t frame_counter = 0;
 	} while (0)
 #define load_retro_sym(S) load_sym(g_retro.S, S)
 
+static void logical_partition(int sz, int redundant, int *n, int *out_k, int *packet_size, int *packet_groups);
+
+// This is a little confusing since the lower byte of sequence corresponds to the largest stride
+static int64_t logical_partition_offset_bytes(uint8_t sequence_hi, uint8_t sequence_lo, int block_size_bytes, int block_stride);
 
 static void die(const char *fmt, ...) {
 	char buffer[4096];
@@ -570,15 +569,15 @@ typedef struct {
 
     uint8_t payload[PACKET_MTU_PAYLOAD_BYTES-3]; // Variable size; at most PACKET_MTU_PAYLOAD_BYTES-3
 } savestate_transfer_packet2_t;
-static_assert(sizeof(savestate_transfer_packet2_t) == PACKET_MTU_PAYLOAD_BYTES);
+static_assert(sizeof(savestate_transfer_packet2_t) == PACKET_MTU_PAYLOAD_BYTES, "Savestate transfer is the wrong size");
 
 typedef struct {
-    int64_t total_size_bytes;
+    int64_t total_size_bytes; // @todo This isn't necessary
     int64_t frame;
     uint64_t encoding_chain; // @todo probably won't use this
     uint64_t xxhash;
 
-    int64_t savestate_size;
+    int64_t zipped_savestate_size;
     uint8_t zipped_savestate[];
 } savestate_transfer_payload_t;
 
@@ -591,12 +590,74 @@ static sam2_room_t g_new_room_set_through_gui = {
 static sam2_room_t g_room_we_are_in = {0};
 static sam2_room_t g_sam2_rooms[MAX_ROOMS];
 static int64_t g_sam2_room_count = 0;
-static int g_zstd_compress_level = 0;
+
+// The +1 is for the authority
+struct FLibretroContext {
+    juice_agent_t *agent[SAM2_PORT_MAX+1];
+
+    void FLibretroContext::AuthoritySendSaveState(juice_agent_t *agent);
+};
+
+static struct FLibretroContext g_libretro_context = {0};
+static bool g_waiting_for_savestate = false;
+
+#define INPUT_BUFFERED_BY_US_MAX 4
+#define INPUT_BUFFER_MAX (2 * INPUT_BUFFERED_BY_US_MAX)
+static juice_agent_t **g_agent = g_libretro_context.agent;
+static sam2_signal_message_t g_signal_message[SAM2_PORT_MAX+1] = {0};
+//static input_packet_t g_input_packet[SAM2_PORT_MAX+1][INPUT_BUFFER_MAX] = {0};
+//static int g_input_packet_begin[SAM2_PORT_MAX+1] = {0};
+//static int g_input_packet_end[SAM2_PORT_MAX+1] = {0};
+#include <array>
+#include <stdexcept>
+class CircularQueue {
+private:
+    std::array<input_packet_t, INPUT_BUFFER_MAX> buffer;
+    int begin = 0;
+    int end = 0;
+
+public:
+    void enqueue(const input_packet_t& packet) {
+        buffer[end] = packet;
+        end = (end + 1) % INPUT_BUFFER_MAX;
+#if 1
+        SDL_assert(end != begin);
+#else
+        if (end == begin) {
+            // The buffer is full, so we advance the 'begin' as well, effectively overwriting the oldest element
+            begin = (begin + 1) % INPUT_BUFFER_MAX;
+        }
+#endif
+    }
+
+    input_packet_t dequeue() {
+        if (begin == end) {
+            throw std::runtime_error("Cannot dequeue from an empty buffer");
+        }
+        input_packet_t packet = buffer[begin];
+        begin = (begin + 1) % INPUT_BUFFER_MAX;
+        return packet;
+    }
+
+    bool isEmpty() const {
+        return begin == end;
+    }
+
+    bool isFull() const {
+        return (end + 1) % INPUT_BUFFER_MAX == begin;
+    }
+};
+
+std::array<CircularQueue, SAM2_PORT_MAX+1> g_input_packet_queue;
+static sam2_socket_t g_sam2_socket = 0;
 static sam2_request_u g_sam2_request;
+
+
+static int g_zstd_compress_level = 0;
 #define MAX_SAMPLE_SIZE 128
 static int g_sample_size = MAX_SAMPLE_SIZE/2;
 static uint64_t g_save_cycle_count[MAX_SAMPLE_SIZE] = {0};
-static uint64_t g_zstd_cycle_count[MAX_SAMPLE_SIZE] = {1};
+static uint64_t g_zstd_cycle_count[MAX_SAMPLE_SIZE] = {1}; // The 1 is so we don't divide by 0
 static uint64_t g_zstd_compress_size[MAX_SAMPLE_SIZE] = {0};
 static uint64_t g_reed_solomon_encode_cycle_count[MAX_SAMPLE_SIZE] = {0};
 static uint64_t g_reed_solomon_decode_cycle_count[MAX_SAMPLE_SIZE] = {0};
@@ -614,10 +675,6 @@ unsigned char g_dictionary[256*1024];
 static bool g_use_dictionary = false;
 static bool g_dictionary_is_dirty = true;
 static ZDICT_cover_params_t g_parameters = {0};
-
-
-#define CHANNEL_INPUT              0b00000000
-#define CHANNEL_SAVESTATE_TRANSFER 0b00010000
 
 
 #define MAX_REDUNDANT_PACKETS 32
@@ -864,6 +921,8 @@ void draw_imgui() {
                 ImGui::TextColored(ImVec4(1, 0, 0, 1), "Last error: %s", g_last_sam2_error.description);
             }
 
+            ImGui::Separator();
+
             sam2_room_t *display_room = g_our_peer_id ? &g_room_we_are_in : &g_new_room_set_through_gui;
 
             // Editable text fields for room name and TURN host
@@ -890,7 +949,7 @@ void draw_imgui() {
             ImGui::Text("Our Peer ID: %" PRIx64, g_our_peer_id);
 
             ImGui::SeparatorText("Connection Status");
-            for (int p = 0; p < SAM2_ARRAY_LENGTH(g_agent); p++) {
+            for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
                 if (p != SAM2_AUTHORITY_INDEX) {
                     ImGui::Text("Port %d:", p);
                 } else {
@@ -919,7 +978,7 @@ void draw_imgui() {
                     ImGui::Text("State: %s", juice_state_to_string(juice_get_state(g_agent[p])));
                     ImGui::SameLine();
 
-                    static bool is_open[SAM2_ARRAY_LENGTH(g_agent)] = {0};
+                    static bool is_open[SAM2_PORT_MAX+1] = {0};
                     is_open[p] |= ImGui::Button("Signal Msg");
                     if (is_open[p]) {
                         ImGui::Begin("Sam2 Signal Message", &is_open[p], ImGuiInputTextFlags_ReadOnly);
@@ -945,7 +1004,7 @@ void draw_imgui() {
                 sam2_room_join_request_t request = {0};
                 request.room = g_room_we_are_in;
 
-                for (int p = 0; p < SAM2_ARRAY_LENGTH(g_agent); p++) {
+                for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
                     if (request.room.peer_ids[p] == g_our_peer_id) {
                         request.room.peer_ids[p] = SAM2_PORT_AVAILABLE;
                         break;
@@ -1439,15 +1498,46 @@ static void core_video_refresh(const void *data, unsigned width, unsigned height
 }
 
 
+
+static unsigned g_joy_remote[RETRO_DEVICE_ID_JOYPAD_R3+1] = { 0 };
 static void core_input_poll(void) {
 	int i;
     g_kbd = SDL_GetKeyboardState(NULL);
 
+    juice_agent_t *_debugview_agent[SAM2_ARRAY_LENGTH(FLibretroContext::agent)];
+    memcpy(_debugview_agent, g_libretro_context.agent, sizeof(_debugview_agent));
+
 	for (i = 0; g_binds[i].k || g_binds[i].rk; ++i)
         g_joy[g_binds[i].rk] = g_kbd[g_binds[i].k];
 
+    for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+        if (!g_agent[p]) continue;
+        if (g_room_we_are_in.peer_ids[p] == g_our_peer_id) continue;
+
+        input_packet_t input_packet;
+
+        input_packet.channel_and_flags = CHANNEL_INPUT;
+        input_packet.frame = frame_counter;
+        memcpy(input_packet.joy, g_joy, sizeof(g_joy));
+        juice_send(g_agent[p], (char *) &input_packet, sizeof(input_packet));
+
+        if (g_our_peer_id == g_room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
+
+        }
+
+        if (frame_counter >= g_signal_message[p].frame_counter) {
+            while (g_input_packet_queue[p].isEmpty()) {
+                juice_user_poll(&g_agent[p], 1);
+            }
+            input_packet_t input_packet = g_input_packet_queue[p].dequeue();
+
+            SDL_assert(input_packet.frame == frame_counter);
+            memcpy(g_joy_remote, input_packet.joy, sizeof(g_joy_remote));
+        }
+    }
+
     //printf("Sending Input for frame %d\n", frame_counter);
-#if NETPLAY
+#if NETPLAY && 0
     input_packet_t input_packet;
 
     input_packet.channel_and_flags = CHANNEL_INPUT;
@@ -1455,19 +1545,18 @@ static void core_input_poll(void) {
     memcpy(input_packet.joy, g_joy, sizeof(g_joy));
 
     juice_send(agent, (char *) &input_packet, sizeof(input_packet));
+#endif
     if (g_kbd[SDL_SCANCODE_ESCAPE])
         running = false;
-#endif
 }
 
-static unsigned g_joy_remote[RETRO_DEVICE_ID_JOYPAD_R3+1] = { 0 };
 
 static int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
 	if (port || index || device != RETRO_DEVICE_JOYPAD)
 		return 0;
 
-#if NETPLAY
-    while (g_frame_counter_remote != frame_counter-1) {
+#if NETPLAY && 0
+    while (g_frame_counter_remote != frame_counter) {
 #if JUICE_CONCURRENCY_MODE == JUICE_CONCURRENCY_MODE_USER
     juice_user_poll(&agent, 1);
 #endif
@@ -1616,11 +1705,19 @@ void receive_juice_log(juice_log_level_t level, const char *message) {
     assert(level < JUICE_LOG_LEVEL_ERROR);
 }
 
+static void test_connectivity_on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr) {
+    printf("Candidate: %s\n", sdp);
+
+    strcat(g_sdp, sdp);
+    strcat(g_sdp, "\n");
+}
+
 #if NETPLAY
 int test_connectivity() {
+  juice_agent_t *agent = NULL;
   juice_set_log_handler(receive_juice_log);
 
-  juice_set_log_level(JUICE_LOG_LEVEL_WARN);
+  juice_set_log_level(JUICE_LOG_LEVEL_VERBOSE);
   // Create agent
   juice_config_t config;
   memset(&config, 0, sizeof(config));
@@ -1632,7 +1729,7 @@ int test_connectivity() {
   //config.bind_address = "127.0.0.1";
 
   config.cb_state_changed = on_state_changed;
-  config.cb_candidate = on_candidate;
+  config.cb_candidate = test_connectivity_on_candidate;
   config.cb_gathering_done = on_gathering_done;
   config.cb_recv = on_recv;
   config.user_ptr = NULL;
@@ -1758,15 +1855,83 @@ int test_connectivity() {
   }
 }
 #endif
+
+void FLibretroContext::AuthoritySendSaveState(juice_agent_t *agent) {
+    // Reed Solomon
+    g_savestate_transfer_payload->zipped_savestate_size = ZSTD_compress(g_savestate_transfer_payload->zipped_savestate,
+                                                                        SAVE_STATE_COMPRESSED_BOUND_BYTES,
+                                                                        g_savebuffer[g_save_cycle_count_offset], g_serialize_size, g_zstd_compress_level);
+
+    if (ZSTD_isError(g_savestate_transfer_payload->zipped_savestate_size)) {
+        printf("ZSTD_compress failed: %s\n", ZSTD_getErrorName(g_savestate_transfer_payload->zipped_savestate_size));
+        return; // @todo
+    }
+
+    int packet_payload_size = PACKET_MTU_PAYLOAD_BYTES - sizeof(savestate_transfer_packet_t);
+
+    int n, k, packet_groups;
+    logical_partition(sizeof(savestate_transfer_payload_t) + g_savestate_transfer_payload->zipped_savestate_size, 16, &n, &k, &packet_payload_size, &packet_groups);
+
+    g_savestate_transfer_payload->frame = frame_counter;
+    g_savestate_transfer_payload->zipped_savestate_size = g_savestate_transfer_payload->zipped_savestate_size;
+    g_savestate_transfer_payload->total_size_bytes = sizeof(savestate_transfer_payload_t) + g_savestate_transfer_payload->zipped_savestate_size;
+
+    uint64_t hash = fnv1a_hash(g_savestate_transfer_payload, g_savestate_transfer_payload->total_size_bytes);
+    printf("Sending savestate payload with hash: %llx size: %llu bytes\n", hash, g_savestate_transfer_payload->total_size_bytes);
+
+    for (int j = 0; j < packet_groups; j++) {
+        void *data[255];
+        void *rs_code = fec_new(k, n);
+        
+        for (int i = 0; i < n; i++) {
+            data[i] = g_savestate_transfer_payload_untyped + logical_partition_offset_bytes(j, i, packet_payload_size, packet_groups);
+        }
+
+        for (int i = k; i < n; i++) {
+            fec_encode(rs_code, (void **)data, data[i], i, packet_payload_size);
+        }
+
+        fec_free(rs_code);
+    }
+
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < packet_groups; j++) {
+            savestate_transfer_packet2_t packet;
+            packet.channel_and_flags = CHANNEL_SAVESTATE_TRANSFER;
+            if (k == 239) {
+                packet.channel_and_flags |= SAVESTATE_TRANSFER_FLAG_K_IS_239;
+                if (j == 0) {
+                    packet.channel_and_flags |= SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0;
+                    packet.packet_groups = packet_groups;
+                } else {
+                    packet.sequence_hi = j;
+                }
+            } else {
+                packet.reed_solomon_k = k;
+            }
+
+            packet.sequence_lo = i;
+
+            memcpy(packet.payload, g_savestate_transfer_payload_untyped + logical_partition_offset_bytes(j, i, packet_payload_size, packet_groups), packet_payload_size);
+
+            int status = juice_send(agent, (char *) &packet, sizeof(savestate_transfer_packet_t) + packet_payload_size);
+            SDL_assert(status == 0);
+        }
+    }
+}
+
 // On state changed
 static void on_state_changed(juice_agent_t *agent, juice_state_t state, void *user_ptr) {
-  printf("State: %s\n", juice_state_to_string(state));
+    printf("State: %s\n", juice_state_to_string(state));
+    FLibretroContext *LibretroContext = (FLibretroContext *) user_ptr;
+    
+    if (   state == JUICE_STATE_CONNECTED
+        && g_our_peer_id == g_room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
+        // We are the authority and we are connected to the other peer
 
-  if (state == JUICE_STATE_CONNECTED) {
-    // On connected, send a message
-    //const char *message = "Hello";
-    //juice_send(agent, message, strlen(message));
-  }
+        // Send savestate
+        LibretroContext->AuthoritySendSaveState(agent);
+    }
 }
 
 // On local candidate gathered
@@ -1774,7 +1939,13 @@ static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr) 
     printf("Candidate: %s\n", sdp);
 
     int p = 0;
-    for (; p < SAM2_ARRAY_LENGTH(g_agent); p++) if (agent == g_agent[p]) break;
+    for (; p < SAM2_PORT_MAX+1; p++) if (agent == g_agent[p]) break;
+
+    if (p == SAM2_PORT_MAX+1) {
+        printf("No agent found\n");
+        return;
+    }
+
     sam2_signal_message_t *response = &g_signal_message[p];
 
     strcat(response->ice_sdp, sdp);
@@ -1786,7 +1957,16 @@ static void on_gathering_done(juice_agent_t *agent, void *user_ptr) {
     printf("Gathering done\n");
 
     int p = 0;
-    for (; p < SAM2_ARRAY_LENGTH(g_agent); p++) if (agent == g_agent[p]) break;
+    for (; p < SAM2_PORT_MAX+1; p++) if (agent == g_agent[p]) break;
+
+    if (p == SAM2_PORT_MAX+1) {
+        printf("No agent found\n");
+        return;
+    }
+
+    if (g_our_peer_id == g_room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
+        g_signal_message[p].frame_counter = frame_counter+4; // @todo magic number
+    }
 
     sam2_client_send(g_sam2_socket, (char *) &g_signal_message[p], SAM2_EMESSAGE_SIGNAL);
 }
@@ -1797,11 +1977,37 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
     switch (channel_and_flags & 0xF0) {
     case CHANNEL_INPUT: {
         SDL_assert(size == sizeof(input_packet_t));
-        memcpy(&g_frame_counter_remote, data + offsetof(input_packet_t, frame), sizeof(input_packet_t::frame));
-        memcpy(g_joy_remote, data + offsetof(input_packet_t, joy), sizeof(input_packet_t::joy));
+
+        int p = 0;
+        for (; p < SAM2_PORT_MAX+1; p++) if (agent == g_agent[p]) break;
+
+        if (p == SAM2_PORT_MAX+1) {
+            printf("No agent found for CHANNEL_INPUT packet\n");
+            break;
+        }
+
+        input_packet_t input_packet;
+        memcpy(&input_packet, data, sizeof(input_packet_t)); // Strict-aliasing
+
+        if (   g_our_peer_id == g_room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] // @todo This logic only works for 1 authority and 1 client
+            && input_packet.frame < g_signal_message[p].frame_counter) {
+            printf("Received input packet for frame %" PRId64 " but we agreed the client would start sending input on frame %" PRId64 "\n", input_packet.frame, g_signal_message[p].frame_counter);
+        } else if (input_packet.frame < frame_counter) {
+            printf("Received input packet for frame %" PRId64 " but we are already on frame %" PRId64 "\n", input_packet.frame, frame_counter);
+        } else {
+            g_input_packet_queue[p].enqueue(input_packet);
+        }
+        
+        //memcpy(&g_frame_counter_remote, data + offsetof(input_packet_t, frame), sizeof(input_packet_t::frame));
+        //memcpy(g_joy_remote, data + offsetof(input_packet_t, joy), sizeof(input_packet_t::joy));
         break;
     }
     case CHANNEL_SAVESTATE_TRANSFER: {
+        if (g_agent[SAM2_AUTHORITY_INDEX] != agent) {
+            printf("Received savestate transfer packet from non-authority agent\n");
+            break;
+        }
+
         SDL_assert(size >= sizeof(savestate_transfer_packet_t));
         SDL_assert(size <= PACKET_MTU_PAYLOAD_BYTES);
         uint8_t sequence_hi = 0;
@@ -1858,20 +2064,39 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
                     }
                 }
 
+                // @todo Check the zipped savestate size against the decoded size so we don't OoBs
+
                 g_remote_savestate_hash = fnv1a_hash(g_savestate_transfer_payload, g_savestate_transfer_payload->total_size_bytes);
                 printf("Received savestate payload with hash: %llx size: %llu bytes\n", g_remote_savestate_hash, g_savestate_transfer_payload->total_size_bytes);
+
+                g_zstd_compress_size[0] = ZSTD_decompress(g_savebuffer[0], 
+                                sizeof(g_savebuffer[0]),
+                                g_savestate_transfer_payload->zipped_savestate, 
+                                g_savestate_transfer_payload->zipped_savestate_size);
+                
+                if (ZSTD_isError(g_zstd_compress_size[0])) {
+                    fprintf(stderr, "Error decompressing savestate: %s\n", ZSTD_getErrorName(g_zstd_compress_size[0]));
+                    break;
+                } else {
+                    printf("Loading savestate\n");
+                    fflush(stdout);
+                    if (!g_retro.retro_unserialize(g_savebuffer[0], g_zstd_compress_size[0])) {
+                        fprintf(stderr, "Failed to load savestate\n");
+                    }
+                }
 
                 // Reset the savestate transfer state
                 g_remote_packet_groups = MAX_FEC_PACKET_GROUPS;
                 g_remote_savestate_transfer_offset = 0;
                 memset(g_fec_index_counter, 0, sizeof(g_fec_index_counter));
+                g_waiting_for_savestate = false;
             }
         }
-        break;  
+        break;
     }
     default:
-      fprintf(stderr, "Unknown channel: %d\n", channel_and_flags);
-      break;
+        fprintf(stderr, "Unknown channel: %d\n", channel_and_flags);
+        break;
     }
 
     //printf("Received with size: %lld\nReceived:", size);
@@ -1992,6 +2217,7 @@ static void heuristic_byte_swap(uint32_t *data, size_t size) {
     }
 }
 
+
 void startup_ice_for_peer(juice_agent_t **agent, sam2_signal_message_t *signal_message, uint64_t peer_id) {
     juice_config_t config;
     memset(&config, 0, sizeof(config));
@@ -2006,7 +2232,8 @@ void startup_ice_for_peer(juice_agent_t **agent, sam2_signal_message_t *signal_m
     config.cb_candidate = on_candidate;
     config.cb_gathering_done = on_gathering_done;
     config.cb_recv = on_recv;
-    config.user_ptr = NULL;
+
+    config.user_ptr = (void *) &g_libretro_context;
 
     *agent = juice_create(&config);
 
@@ -2014,17 +2241,31 @@ void startup_ice_for_peer(juice_agent_t **agent, sam2_signal_message_t *signal_m
 
     signal_message->peer_id = peer_id;
 
-    juice_get_local_description(*agent, signal_message->ice_sdp, JUICE_MAX_SDP_STRING_LEN);
+    juice_get_local_description(*agent, signal_message->ice_sdp, sizeof(signal_message->ice_sdp));
 
     // This call starts an asynchronous process that will call the on_candidate callback
     juice_gather_candidates(*agent);
 }
+
+#ifdef _WIN32
+#include <windows.h>
+#include <TraceLoggingProvider.h>
+
+#define TRACELOGGING_GUID 0b11010011, 0b00101101, 0b01010101, 0b10010101, 0b10101010, 0b11110000, 0b11111111, 0b00000000, 0b00000001, 0b00000010, 0b00000011
+
+TRACELOGGING_DEFINE_PROVIDER(
+    g_hProvider,
+    "MyProvider",
+    (TRACELOGGING_GUID)
+);
+#endif
 
 int main(int argc, char *argv[]) {
 	if (argc < 2)
 		die("usage: %s <core> [game]", argv[0]);
 
     SDL_SetMainReady();
+    juice_set_log_level(JUICE_LOG_LEVEL_WARN);
 
     g_parameters.d = 8;
     g_parameters.k = 256;
@@ -2107,18 +2348,29 @@ int main(int argc, char *argv[]) {
     SDL_Event ev;
 
 #if NETPLAY
-    if (test_connectivity() == -1) goto cleanup;
+    if (test_connectivity() == -1) return -1;
 #endif
     while (running) {
 
 #if JUICE_CONCURRENCY_MODE == JUICE_CONCURRENCY_MODE_USER
-        for (int p = 0; p < SAM2_ARRAY_LENGTH(g_agent); p++) {
+        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
             if (!g_agent[p]) continue;
 
-            // Tick the agent... sends ICE keepalives, calls callbacks to give us packets, etc.
-            for (int i = 0; i < 100; i++) {
-                juice_user_poll(&g_agent[p], 1);
-            }
+#ifdef _WIN32
+            //GUID guid = {TRACELOGGING_GUID};
+            //printf("{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}\n", 
+            //    guid.Data1, guid.Data2, guid.Data3,
+            //    guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3],
+            //    guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
+            TraceLoggingRegister(g_hProvider);
+            TraceLoggingWrite(g_hProvider, "Entering problematic_function", TraceLoggingKeyword(0x01));
+#endif
+            juice_user_poll(&g_agent[p], 1);
+#ifdef _WIN32
+            TraceLoggingWrite(g_hProvider, "Exiting problematic_function", TraceLoggingKeyword(0x01));
+            TraceLoggingUnregister(g_hProvider);
+#endif
+            
 
             juice_state_t state = juice_get_state(g_agent[p]);
             switch (state) {
@@ -2141,6 +2393,8 @@ int main(int argc, char *argv[]) {
 
         }
 #endif
+        g_save_cycle_count_offset = (g_save_cycle_count_offset + 1) % g_sample_size;
+        g_save_state_index = (g_save_state_index + 1) % MAX_SAVE_STATES;
 
         // Update the game loop timer.
         if (runloop_frame_time.callback) {
@@ -2178,7 +2432,37 @@ int main(int argc, char *argv[]) {
         struct timespec start_time, end_time;
         clock_gettime(CLOCK_MONOTONIC, &start_time);
 #endif
-        g_retro.retro_run();
+        // @todo Get rid of this
+//        for (;;) {
+//            bool all_peers_connected = true;
+//            for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+//                if (!g_agent[p]) continue;
+//
+//                juice_user_poll(&g_agent[p], 1);
+//
+//                juice_state_t state = juice_get_state(g_agent[p]);
+//                all_peers_connected &= state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED;
+//            }
+//
+//            if (all_peers_connected) break;
+//        }
+
+        bool ready_to_tick = !g_waiting_for_savestate;
+        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+            if (!g_agent[p]) continue;
+            juice_state_t state = juice_get_state(g_agent[p]);
+
+            ready_to_tick &= state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED;
+            //ready_to_tick &= frame_counter >= g_signal_message[p].frame_counter;
+            //if (frame_counter >= g_signal_message[p].frame_counter) {
+            //    ready_to_tick &= !g_input_packet_queue[p].isEmpty();
+            //}
+        }
+
+        if (ready_to_tick) {
+            g_retro.retro_run();
+            frame_counter++;
+        }
 
         g_serialize_size = g_retro.retro_serialize_size();
         if (sizeof(g_savebuffer[0]) >= g_serialize_size) {
@@ -2315,63 +2599,12 @@ int main(int argc, char *argv[]) {
             if (g_send_savestate_next_frame) {
                 g_send_savestate_next_frame = false;
 
-                g_savestate_transfer_payload->frame = frame_counter;
-                g_savestate_transfer_payload->savestate_size = g_zstd_compress_size[g_save_cycle_count_offset];
-                g_savestate_transfer_payload->total_size_bytes = sizeof(savestate_transfer_payload_t) + g_zstd_compress_size[g_save_cycle_count_offset];
-
-                uint64_t hash = fnv1a_hash(g_savestate_transfer_payload, g_savestate_transfer_payload->total_size_bytes);
-                printf("Sending savestate payload with hash: %llx size: %llu bytes\n", hash, g_savestate_transfer_payload->total_size_bytes);
-
-                for (int j = 0; j < packet_groups; j++) {
-                    void *data[255];
-                    void *rs_code = fec_new(k, n);
-                    
-                    for (int i = 0; i < n; i++) {
-                        data[i] = g_savestate_transfer_payload_untyped + logical_partition_offset_bytes(j, i, packet_payload_size, packet_groups);
-                    }
-
-                    for (int i = k; i < n; i++) {
-                        fec_encode(rs_code, (void **)data, data[i], i, packet_payload_size);
-                    }
-
-                    fec_free(rs_code);
-                }
-
-                for (int p = 0; p < SAM2_ARRAY_LENGTH(g_agent); p++) {
-                    juice_agent_t *agent = g_agent[p];
-
-                    if (!agent) continue;
-                    for (int i = 0; i < n; i++) {
-                        for (int j = 0; j < packet_groups; j++) {
-                            savestate_transfer_packet2_t packet;
-                            packet.channel_and_flags = CHANNEL_SAVESTATE_TRANSFER;
-                            if (k == 239) {
-                                packet.channel_and_flags |= SAVESTATE_TRANSFER_FLAG_K_IS_239;
-                                if (j == 0) {
-                                    packet.channel_and_flags |= SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0;
-                                    packet.packet_groups = packet_groups;
-                                } else {
-                                    packet.sequence_hi = j;
-                                }
-                            } else {
-                                packet.reed_solomon_k = k;
-                            }
-
-                            packet.sequence_lo = i;
-
-                            memcpy(packet.payload, g_savestate_transfer_payload_untyped + logical_partition_offset_bytes(j, i, packet_payload_size, packet_groups), packet_payload_size);
-
-                            int status = juice_send(agent, (char *) &packet, sizeof(savestate_transfer_packet_t) + packet_payload_size);
-                            SDL_assert(status == 0);
-                        }
-                    }
+                for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+                    if (!g_libretro_context.agent[p]) continue;
+                    g_libretro_context.AuthoritySendSaveState(g_libretro_context.agent[p]);
                 }
             }
         }
-
-
-        g_save_cycle_count_offset = (g_save_cycle_count_offset + 1) % g_sample_size;
-        g_save_state_index = (g_save_state_index + 1) % MAX_SAVE_STATES;
 
         if (g_sam2_socket == 0) {
             if (sam2_client_connect(&g_sam2_socket, "35.84.2.235") == 0) {
@@ -2431,6 +2664,7 @@ int main(int argc, char *argv[]) {
                     sam2_room_join_response_t *room_join = &response.room_join_response;
                     if (!g_our_peer_id) {
                         printf("We were let into the server by the authority\n");
+                        g_waiting_for_savestate = true;
                         g_room_we_are_in = room_join->room;
                         g_our_peer_id = room_join->room.peer_ids[g_joining_on_port];
 
@@ -2473,19 +2707,23 @@ int main(int argc, char *argv[]) {
                     fflush(stdout);
 
                     int p = 0;
-                    for (; p < SAM2_ARRAY_LENGTH(g_agent); p++) if (room_signal->peer_id == g_room_we_are_in.peer_ids[p]) break;
+                    for (; p < SAM2_PORT_MAX+1; p++) if (room_signal->peer_id == g_room_we_are_in.peer_ids[p]) break;
 
-                    if (p == SAM2_ARRAY_LENGTH(g_agent)) {
+                    if (p == SAM2_PORT_MAX+1) {
                         printf("Received signal from unknown peer\n");
                         fflush(stdout);
                         break;
                     }
+                    
+                    if (room_signal->peer_id == g_room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
+                        frame_counter = room_signal->frame_counter;
+                    }
 
                     if (g_agent[p]) {
                         juice_set_remote_description(g_agent[p], room_signal->ice_sdp);
-                        juice_set_remote_gathering_done(g_agent[p]);    
+                        juice_set_remote_gathering_done(g_agent[p]);
                     } else {
-                        printf("Received signal from peer we don't have an agent for\n");
+                        fprintf(stderr, "Received signal from peer we don't have an agent for\n");
                         fflush(stdout);
                     }
                     break;
@@ -2525,7 +2763,7 @@ int main(int argc, char *argv[]) {
 	video_deinit();
 
     // Destroy agent
-    for (int p = 0; p < SAM2_ARRAY_LENGTH(g_agent); p++) {
+    for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
         if (g_agent[p]) {
             juice_destroy(g_agent[p]);
         }

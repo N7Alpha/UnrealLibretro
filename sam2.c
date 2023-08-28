@@ -437,6 +437,7 @@ typedef struct sam2_signal_message {
     char header[8]; // "SIGN"
 
     uint64_t peer_id; // Set by sam2 server
+    int64_t frame_counter; // Set by authority otherwise meaningless
     char ice_sdp[1024];
 } sam2_signal_message_t;
 
@@ -1145,6 +1146,8 @@ static void write_error(uv_stream_t *client, sam2_error_response_t *response) {
 }
 
 static void on_timeout(uv_timer_t *handle) {
+    // @todo The logic in here is broken client could potentially be freed before this timeout is hit
+    //       Make sure the timer is freed and unregistered and whatever else libuv requires so we can't hit this with stale memory
     uv_stream_t *client = (uv_stream_t *) handle->data;
     client_data_t *client_data = (client_data_t *) client->data;
     LOG_WARN("Client %" PRIx64 " sent incomplete message\n", client_data->peer_id);
