@@ -1046,17 +1046,10 @@ static void on_socket_closed(uv_handle_t *handle) {
     if (client->data) {
         client_data_t *client_data = (client_data_t *) client->data;
         sam2_server_t *server_data = client_data->sig_server;
-        
-        // Linear search remove rooms from array replacing with last element
-        for (int i = 0; i < server_data->room_count;) {
-            if (server_data->rooms[i].peer_ids[SAM2_AUTHORITY_INDEX] != client_data->peer_id) {
-                i++;
-                continue;
-            }
 
-            sam2__remove_room(server_data, &server_data->rooms[i]);
-
-            LOG_INFO("Removed room '%s' owner %" PRIx64 " disconnected\n", server_data->rooms[i].name, server_data->rooms[i].peer_ids[SAM2_AUTHORITY_INDEX]);
+        if (client_data->hosted_room) {
+            sam2__remove_room(server_data, client_data->hosted_room);
+            LOG_INFO("Removed room '%s' owner %" PRIx64 " disconnected\n", client_data->hosted_room->name, client_data->peer_id);
         }
 
         if (client_data->timer) {
@@ -1113,7 +1106,6 @@ static void sam2__write_response(uv_stream_t *client, sam2_response_u *response)
 }
 
 static void on_write_error(uv_write_t *req, int status) {
-    //uv_stream_t *client = req->handle;
 
     if (status < 0) {
         LOG_ERROR("Error sending message to client: %s\n", uv_strerror(status));
@@ -1121,7 +1113,6 @@ static void on_write_error(uv_write_t *req, int status) {
         LOG_INFO("Sent error response to client, closing connection and freeing resources...\n");
     }
 
-    // uv_close((uv_handle_t*)client, on_socket_closed);
     free(req);
 }
 
@@ -1146,8 +1137,6 @@ static void write_error(uv_stream_t *client, sam2_error_response_t *response) {
 }
 
 static void on_timeout(uv_timer_t *handle) {
-    // @todo The logic in here is broken client could potentially be freed before this timeout is hit
-    //       Make sure the timer is freed and unregistered and whatever else libuv requires so we can't hit this with stale memory
     uv_stream_t *client = (uv_stream_t *) handle->data;
     client_data_t *client_data = (client_data_t *) client->data;
     LOG_WARN("Client %" PRIx64 " sent incomplete message\n", client_data->peer_id);
@@ -1172,18 +1161,13 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
     if (nread < 0) {
         // If the client closed the socket
         if (nread != UV_EOF) {
-            fprintf(stderr, "Read error %s\n", uv_err_name((int) nread));
+            LOG_INFO("Read error %s\n", uv_err_name((int) nread));
         }
 
         LOG_VERBOSE("Got EOF\n");
         uv_timer_stop(client_data->timer);
 
-        if (client_data->request_tag == SAM2_EMESSAGE_PART) {
-            //LOG_VERBOSE("Sending");
-            on_timeout(client_data->timer);
-        } else {
-            uv_close((uv_handle_t *) client, on_socket_closed);
-        }
+        uv_close((uv_handle_t *) client, on_socket_closed);
 
         goto cleanup;
     }
@@ -1477,7 +1461,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
 
     // This is basically a courtesy for clients to warn them they only sent a partial message
     if (client_data->request_tag == SAM2_EMESSAGE_PART) {
-        uv_timer_start(client_data->timer, on_timeout, 15, 0);  // 1.5 seconds
+        uv_timer_start(client_data->timer, on_timeout, 500, 0);  // 0.5 seconds
     } else {
         uv_timer_stop(client_data->timer);
     }
@@ -1491,8 +1475,10 @@ error_cleanup: // I am not sure if this makes sense yet
     client_data->request_tag = SAM2_EMESSAGE_NONE;
     client_data->length = 0;
 cleanup:
-    LOG_VERBOSE("Freeing buf\n");
-    free(buf->base);
+    if (buf->base) {
+        LOG_VERBOSE("Freeing buf\n");
+        free(buf->base);
+    }
 }
 
 void on_new_connection(uv_stream_t *server, int status) {
