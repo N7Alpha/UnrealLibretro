@@ -649,6 +649,8 @@ public:
 };
 
 std::array<CircularQueue, SAM2_PORT_MAX+1> g_input_packet_queue;
+
+static const char *g_sam2_address = "35.84.2.235";
 static sam2_socket_t g_sam2_socket = 0;
 static sam2_request_u g_sam2_request;
 
@@ -766,8 +768,6 @@ void draw_imgui() {
 
     // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
     {
-        static float f = 0.0f;
-        static int counter = 0;
         char unit[FORMAT_UNIT_COUNT_SIZE] = {0};
 
         ImGui::Begin("Compression investigation");
@@ -902,18 +902,15 @@ void draw_imgui() {
         
         ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
        // ImGui::Checkbox("Another Window", &show_another_window);
-
-        ImGui::SliderFloat("float", &f, 0.0f, 1.0f);           // Edit 1 float using a slider from 0.0f to 1.0f
-        ImGui::ColorEdit3("clear color", (float*)&clear_color); // Edit 3 floats representing a color
         
         ImGui::End();
         {
-            ImGui::Begin("Sam2 Interface", NULL, ImGuiWindowFlags_AlwaysAutoResize);
+            ImGui::Begin("Signaling Server and a Match Maker", NULL, ImGuiWindowFlags_AlwaysAutoResize);
 
             if (g_connected_to_sam2) {
-                ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to the SAM2");
+                ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to %s", g_sam2_address);
             } else {
-                ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1), "Connecting to the SAM2 %c", spinnerGlyph);
+                ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1), "Connecting to %s %c", g_sam2_address, spinnerGlyph);
                 goto finished_drawning_sam2_interface;
             }
 
@@ -1015,7 +1012,6 @@ void draw_imgui() {
 
                 g_our_peer_id = 0;
             }
-
         } else {
             // Create a "Make" button that sends a make room request when clicked
             if (ImGui::Button("Make")) {
@@ -2607,7 +2603,7 @@ int main(int argc, char *argv[]) {
         }
 
         if (g_sam2_socket == 0) {
-            if (sam2_client_connect(&g_sam2_socket, "35.84.2.235") == 0) {
+            if (sam2_client_connect(&g_sam2_socket, g_sam2_address) == 0) {
                 printf("Socket created successfully SAM2\n");
             }
         }
