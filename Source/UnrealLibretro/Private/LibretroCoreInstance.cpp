@@ -98,14 +98,15 @@ void ULibretroCoreInstance::Launch()
 {
     Shutdown();
     
-    if (this->RomPath.IsEmpty())
+    FString _CorePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::ResolveCorePath(this->CorePath));
+    FString _RomPath = "";
+
+    // White-space only or empty strings are interpreted as not providing a ROM to the core
+    if (!RomPath.TrimStart().IsEmpty())
     {
-        UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Path given for ROM was empty"), *this->CorePath);
-        return;
+        _RomPath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::ResolveROMPath(this->RomPath));
     }
     
-    auto _CorePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::ResolveCorePath(this->CorePath));
-    auto _RomPath  = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::ResolveROMPath (this->RomPath));
 
 #if PLATFORM_WINDOWS
     _RomPath.ReplaceCharInline('/', '\\');
@@ -142,38 +143,55 @@ void ULibretroCoreInstance::Launch()
     this->CoreInstance = FLibretroContext::Launch(this, _CorePath, _RomPath, RenderTarget, static_cast<URawAudioSoundWave*>(AudioBuffer),
         [weakThis = MakeWeakObjectPtr(this), SRAMPath = FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath)]
         (FLibretroContext *_CoreInstance, libretro_api_t &libretro_api) 
-        {   // Core has loaded
-            
-            // Load save data into core @todo this is just a weird place to hook this in
-            auto File = IPlatformFile::GetPlatformPhysical().OpenRead(*SRAMPath);
-            if (File && libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM))
-            {
-                File->Read((uint8*)libretro_api.get_memory_data(RETRO_MEMORY_SAVE_RAM), 
-                                   libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM));
-                File->~IFileHandle(); // must be called explicitly
-            }
-            
-            // Notify delegate
-            FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady(
-                [weakThis, 
-                 bottom_left_origin = _CoreInstance->LibretroThread_bottom_left_origin,
-                 geometry           = _CoreInstance->LibretroThread_geometry]()
-                {
-                    if (weakThis.IsValid())
-                    {
-                        weakThis->OnLaunchComplete.Broadcast(weakThis->RenderTarget,
-                                                             weakThis->AudioBuffer, true);
+        {   
+            bool bCoreLaunchSucceeded = _CoreInstance->CoreState.load(std::memory_order_relaxed) != FLibretroContext::ECoreState::StartFailed;
 
-                        weakThis->bFrameBottomLeftOrigin = bottom_left_origin;
-                        weakThis->FrameWidth  = geometry.base_width;
-                        weakThis->FrameHeight = geometry.base_height;
-                        
-                        weakThis->OnCoreFrameBufferResize.Broadcast();
-                        
-                        weakThis->AudioComponent->SetSound(weakThis->AudioBuffer);
-                        weakThis->AudioComponent->Play();
+            FFunctionGraphTask::CreateAndDispatchWhenReady(
+                [weakThis, bCoreLaunchSucceeded]()
+            {
+                if (weakThis.IsValid())
+                {
+                    if (!bCoreLaunchSucceeded)
+                    {
+                        weakThis->Shutdown();
                     }
-                }, TStatId(), nullptr, ENamedThreads::GameThread);
+
+                    weakThis->OnLaunchComplete.Broadcast(weakThis->RenderTarget,
+                        weakThis->AudioBuffer, bCoreLaunchSucceeded);
+                }
+            }, TStatId(), nullptr, ENamedThreads::GameThread);
+
+            if (bCoreLaunchSucceeded)
+            {
+                // Core has loaded
+                // Load save data into core @todo this is just a weird place to hook this in
+                auto File = IPlatformFile::GetPlatformPhysical().OpenRead(*SRAMPath);
+                if (File && libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM))
+                {
+                    File->Read((uint8*)libretro_api.get_memory_data(RETRO_MEMORY_SAVE_RAM), 
+                                       libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM));
+                    File->~IFileHandle(); // must be called explicitly
+                }
+            
+                // Notify delegate
+                FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady(
+                    [weakThis, 
+                     bottom_left_origin = _CoreInstance->LibretroThread_bottom_left_origin,
+                     geometry           = _CoreInstance->LibretroThread_geometry]()
+                    {
+                        if (weakThis.IsValid())
+                        {
+                            weakThis->bFrameBottomLeftOrigin = bottom_left_origin;
+                            weakThis->FrameWidth  = geometry.base_width;
+                            weakThis->FrameHeight = geometry.base_height;
+                        
+                            weakThis->OnCoreFrameBufferResize.Broadcast();
+                        
+                            weakThis->AudioComponent->SetSound(weakThis->AudioBuffer);
+                            weakThis->AudioComponent->Play();
+                        }
+                    }, TStatId(), nullptr, ENamedThreads::GameThread);
+            }
         });
     
     // @todo theres a data race with how I assign this
@@ -252,13 +270,14 @@ void ULibretroCoreInstance::Pause(bool ShouldPause)
 
 void ULibretroCoreInstance::Shutdown() 
 {
-    
     NOT_LAUNCHED_GUARD
 
     FLibretroContext::Shutdown(CoreInstance.GetValue());
     CoreInstance.Reset();
 }
 
+// @todo Reimplement these to load and save from buffers since right now there is a race condition
+//       Where multiple cores access data from the file system at the same time
 void ULibretroCoreInstance::LoadState(const FString& FilePath)
 {
     NOT_LAUNCHED_GUARD

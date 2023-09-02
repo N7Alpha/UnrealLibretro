@@ -74,6 +74,7 @@ DECLARE_STATS_GROUP(TEXT("UnrealLibretro"), STATGROUP_UnrealLibretro, STATCAT_Ad
 struct libretro_api_t {
     void* handle;
     bool initialized;
+    bool supports_no_game;
 
     void     (*init)(void);
     void     (*deinit)(void);
@@ -147,15 +148,16 @@ public:
      *   +----------+          +-----------+
      *   | Starting |--------->|  Running  |------------+
      *   +----------+          +-----------+            |
-     *                            ^     |               |
-     *                            |     v               v
-     *                         +-----------+       +-----------+
-     *                         |  Paused   |------>|  Shutdown |
-     *                         +-----------+       +-----------+
+     *        |                   ^     |               |
+     *        v                   |     v               v
+     *   +-------------+       +-----------+       +-----------+
+     *   | StartFailed |       |  Paused   |------>|  Shutdown |
+     *   +-------------+       +-----------+       +-----------+
      */
     enum class ECoreState : int8
     {
         Starting,
+        StartFailed,
         Running,
         Paused,
         Shutdown

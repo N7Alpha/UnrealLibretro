@@ -719,7 +719,10 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
         *bval = true;
         return true;
     }
-        
+    case RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME: {
+        libretro_api.supports_no_game = *(bool*)data;
+        return true;
+    }
     case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: {
         const enum retro_pixel_format *format = (enum retro_pixel_format *)data;
 
@@ -887,9 +890,13 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
 int16_t FLibretroContext::core_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
     // To get the core to poll for certain types of input sometimes requires setting particular controllers for compatible ports
     // or changing specific options related to the input you're trying to poll for. If it's not obvious your main resources are
-    // forums, the libretro documentation, or looking through the core's code itself.
+    // experimenting in Retroarch, forums, the libretro documentation, or looking through the core's code itself.
+    // Regarding searching the repo of the core you're having trouble with on github you can search for symbols from libretro.h directly 
+    // in the repo you're browsing with the search bar. You can even change the url from e.g. github.com/libretro/[CORE] to github1s.com/libretro/[CORE]
+    // to get a web based IDE with syntax highlighting and code navigation
+    //
     // Also here are some pitfalls I've encountered:
-    // - The core might need to poll for at least two frames to register an input
+    // - The core/ROM might need to poll an input as active for at least two frames for it to register properly. I know the Zapper in nestopia requires this
     // - Some cores will not poll for any input by default (I fix this by always binding the RETRO_DEVICE_JOYPAD)
     // - The RETRO_DEVICE_POINTER interface is generally preferred over the lightgun and mouse even for things like lightguns and mice although you still use some parts of the lightgun interface for handling lightgun input probably same goes for mouse
 
@@ -970,7 +977,7 @@ void FLibretroContext::load_game(const char* filename) {
     struct retro_game_info info = { filename , nullptr, (size_t)0, "" };
     TArray<uint8> gameBinary;
     
-    if (!system.need_fullpath) {
+    if (filename && !system.need_fullpath) {
         verify(FFileHelper::LoadFileToArray(gameBinary, UTF8_TO_TCHAR(filename)));
 
         info.data = gameBinary.GetData();
@@ -1058,6 +1065,9 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 #endif
             );
 
+            uint64 frames = 0;
+            auto   start = FDateTime::Now();
+
             verify(IPlatformFile::GetPlatformPhysical().CopyFile(*InstancedCorePath, *core));
 
             l->core.hw.version_major = 4;
@@ -1082,13 +1092,20 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                 l->libretro_api.set_controller_port_device(Port, DeviceID);
             }
 
+            if (!l->libretro_api.supports_no_game && game.IsEmpty())
+            {
+                UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Path given for ROM was empty"), *core);
+                l->CoreState.store(ECoreState::StartFailed, std::memory_order_release);
+                goto cleanup;
+            }
+
             // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
-            l->load_game(TCHAR_TO_UTF8(*game));
+            l->load_game(game.IsEmpty() ? nullptr : TCHAR_TO_UTF8(*game));
         
             l->CoreState.store(ECoreState::Running, std::memory_order_release);
             LoadedCallback(l, l->libretro_api);
             
-            // This simplifies the logic in core_video_refresh, It stops us from erroring it doesn't error when we try to unmap this pixel buffer in core_video_refresh
+            // This simplifies the logic in core_video_refresh, It stops us from erroring when we try to unmap this pixel buffer in core_video_refresh
             // You could just move this to the beginning of core_video_refresh and surround it with an if statement that does this the first time through
             if (l->core.using_opengl) {
                 l->glBindBuffer(GL_PIXEL_PACK_BUFFER, l->core.gl.pixel_buffer_objects[l->core.free_framebuffer_index]);
@@ -1100,8 +1117,6 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                 l->glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
             }
 
-            uint64 frames = 0;
-            auto   start = FDateTime::Now();
             while (l->CoreState.load(std::memory_order_relaxed) != ECoreState::Shutdown)
             {
                 DECLARE_SCOPE_CYCLE_COUNTER(TEXT("Frame"), STAT_LibretroFrame, STATGROUP_UnrealLibretro);
@@ -1137,7 +1152,12 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                 }
             }
 
-            // Explicit Cleanup
+cleanup:
+            if (l->CoreState.load(std::memory_order_relaxed) == ECoreState::StartFailed)
+            {
+                LoadedCallback(l, l->libretro_api);
+            }
+
             if (l->libretro_api.initialized)
             {
                 l->libretro_api.deinit();
