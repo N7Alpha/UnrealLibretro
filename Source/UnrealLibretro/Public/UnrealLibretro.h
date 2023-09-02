@@ -129,6 +129,8 @@ public:
                 ControllerDescriptions[port].Add({ controller_description.desc,
                                                    controller_description.id });
             }
+
+            ControllerDescriptions[port].Add({ "None", RETRO_DEVICE_NONE });
         }
 
         return ControllerDescriptions;
