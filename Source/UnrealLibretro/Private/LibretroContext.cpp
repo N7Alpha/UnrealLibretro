@@ -900,7 +900,7 @@ int16_t FLibretroContext::core_input_state(unsigned port, unsigned device, unsig
     // - Some cores will not poll for any input by default (I fix this by always binding the RETRO_DEVICE_JOYPAD)
     // - The RETRO_DEVICE_POINTER interface is generally preferred over the lightgun and mouse even for things like lightguns and mice although you still use some parts of the lightgun interface for handling lightgun input probably same goes for mouse
 
-    switch (device) {
+    switch (device & RETRO_DEVICE_MASK) {
     case RETRO_DEVICE_JOYPAD:   return InputState[port][to_integral(ERetroDeviceID::JoypadB)     + id];
     case RETRO_DEVICE_LIGHTGUN: return InputState[port][to_integral(ERetroDeviceID::LightgunX)   + id];
     case RETRO_DEVICE_ANALOG:   return InputState[port][to_integral(ERetroDeviceID::AnalogLeftX) + 2 * index + (id % RETRO_DEVICE_ID_JOYPAD_L2)]; // The indexing logic is broken and might OOBs if we're queried for something that isn't an analog trigger or stick
