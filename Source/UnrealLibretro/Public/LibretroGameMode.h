@@ -1,11 +1,5 @@
 #pragma once
 
-#if    ENGINE_MAJOR_VERSION == 5 \
-    && ENGINE_MINOR_VERSION >= 1 \
-    && WITH_EDITOR
-#include "Misc/MessageDialog.h"
-#include "OpenXRInputSettings.h"
-#endif
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
@@ -14,6 +8,12 @@
 #include "UObject/ConstructorHelpers.h"
 #include "GameFramework/HUD.h"
 #include "HeadMountedDisplayFunctionLibrary.h"
+#if    ENGINE_MAJOR_VERSION == 5 \
+    && ENGINE_MINOR_VERSION >= 1 \
+    && WITH_EDITOR
+#include "Misc/MessageDialog.h"
+#include "OpenXRInputSettings.h"
+#endif
 #include "LibretroGameMode.generated.h"
 
 
