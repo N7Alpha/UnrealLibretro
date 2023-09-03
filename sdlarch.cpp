@@ -1,3 +1,7 @@
+#ifdef _WIN32
+#define NOMINMAX  1
+#endif
+
 #include "sam2.c"
 #include "glad.h"
 #include "imgui.h"
@@ -19,8 +23,6 @@
 #include <time.h>
 
 #ifdef _WIN32
-#include <windows.h>
-static void sleep(unsigned int secs) { Sleep(secs * 1000); }
 #else
 #include <unistd.h> // for sleep
 #endif
@@ -30,13 +32,13 @@ static void sleep(unsigned int secs) { Sleep(secs * 1000); }
 #include <SDL_opengl.h>
 #include "libretro.h"
 
+// The payload here is regarding the max payload that *we* can use
+// We don't want to exceed the MTU because that can result in guranteed lost packets under certain conditions
 // Considering various things like UDP/IP headers, STUN/TURN headers, and additional junk 
 // load-balancers/routers might add I keep this conservative
-#define PACKET_MTU_PAYLOAD_BYTES 1408
+#define PACKET_MTU_PAYLOAD_SIZE_BYTES 1408
 
 #define JUICE_CONCURRENCY_MODE JUICE_CONCURRENCY_MODE_USER
-
-#define NETPLAY 0
 
 static SDL_Window *g_win = NULL;
 static SDL_GLContext g_ctx = NULL;
@@ -136,6 +138,103 @@ static struct {
 //	size_t retro_get_memory_size(unsigned id);
 } g_retro;
 
+#define UMETA(...)
+
+enum class ERetroDeviceID : uint8_t
+{
+    // RETRO_DEVICE_ID_JOYPAD
+    JoypadB,
+    JoypadY,
+    JoypadSelect,
+    JoypadStart,
+    JoypadUp,
+    JoypadDown,
+    JoypadLeft,
+    JoypadRight,
+    JoypadA,
+    JoypadX,
+    JoypadL,
+    JoypadR,
+    JoypadL2,
+    JoypadR2,
+    JoypadL3,
+    JoypadR3,
+
+    // RETRO_DEVICE_ID_LIGHTGUN
+    LightgunX UMETA(Hidden), // The Lightgun entries marked UMETA(Hidden) here are deprecated according to libretro.h
+    LightgunY UMETA(Hidden),
+    LightgunTrigger,
+    LightgunAuxA,
+    LightgunAuxB,
+    LightgunPause UMETA(Hidden),
+    LightgunStart,
+    LightgunSelect,
+    LightgunAuxC,
+    LightgunDpadUp,
+    LightgunDpadDown,
+    LightgunDpadLeft,
+    LightgunDpadRight,
+    LightgunScreenX,
+    LightgunScreenY,
+    LightgunIsOffscreen,
+    LightgunReload,
+
+    // RETRO_DEVICE_ID_ANALOG                                       (For triggers)
+    // CartesianProduct(RETRO_DEVICE_ID_ANALOG, RETRO_DEVICE_INDEX) (For stick input)
+    AnalogLeftX,
+    AnalogLeftY,
+    AnalogRightX,
+    AnalogRightY,
+    AnalogL2,
+    AnalogR2,
+
+    // RETRO_DEVICE_ID_POINTER
+    PointerX,
+    PointerY,
+    PointerPressed,
+    PointerCount,
+    PointerX1         UMETA(Hidden),
+    PointerY1         UMETA(Hidden),
+    PointerPressed1   UMETA(Hidden),
+    PointerCountVoid1 UMETA(Hidden),
+    PointerX2         UMETA(Hidden),
+    PointerY2         UMETA(Hidden),
+    PointerPressed2   UMETA(Hidden),
+    PointerCountVoid2 UMETA(Hidden),
+    PointerX3         UMETA(Hidden),
+    PointerY3         UMETA(Hidden),
+    PointerPressed3   UMETA(Hidden),
+
+    Size UMETA(Hidden),
+};
+
+#include <type_traits>
+// std alchemy that converts enum class variables to their integer type
+template<typename E>
+static constexpr auto to_integral(E e) -> typename std::underlying_type<E>::type
+{
+    return static_cast<typename std::underlying_type<E>::type>(e);
+}
+
+constexpr int PortCount = 4;
+
+typedef int16_t FLibretroInputState[64];
+
+static_assert(to_integral(ERetroDeviceID::Size) < sizeof(FLibretroInputState) / sizeof((*(FLibretroInputState *) (0x0))[0]), "FLibretroInputState is too small");
+
+struct FLibretroContext {
+    // The +1 is for the authority
+    juice_agent_t *agent[SAM2_PORT_MAX+1] = {0};
+    FLibretroInputState InputState[4] = {0};
+    int64_t frame_counter = 0;
+
+    void AuthoritySendSaveState(juice_agent_t *agent);
+
+    int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id);
+};
+
+static struct FLibretroContext g_libretro_context = {0}; 
+static int64_t &frame_counter = g_libretro_context.frame_counter;
 
 struct keymap {
 	unsigned k;
@@ -143,25 +242,21 @@ struct keymap {
 };
 
 static struct keymap g_binds[] = {
-    { SDL_SCANCODE_X, RETRO_DEVICE_ID_JOYPAD_A },
-    { SDL_SCANCODE_Z, RETRO_DEVICE_ID_JOYPAD_B },
-    { SDL_SCANCODE_A, RETRO_DEVICE_ID_JOYPAD_Y },
-    { SDL_SCANCODE_S, RETRO_DEVICE_ID_JOYPAD_X },
-    { SDL_SCANCODE_UP, RETRO_DEVICE_ID_JOYPAD_UP },
-    { SDL_SCANCODE_DOWN, RETRO_DEVICE_ID_JOYPAD_DOWN },
-    { SDL_SCANCODE_LEFT, RETRO_DEVICE_ID_JOYPAD_LEFT },
-    { SDL_SCANCODE_RIGHT, RETRO_DEVICE_ID_JOYPAD_RIGHT },
-    { SDL_SCANCODE_RETURN, RETRO_DEVICE_ID_JOYPAD_START },
-    { SDL_SCANCODE_BACKSPACE, RETRO_DEVICE_ID_JOYPAD_SELECT },
-    { SDL_SCANCODE_Q, RETRO_DEVICE_ID_JOYPAD_L },
-    { SDL_SCANCODE_W, RETRO_DEVICE_ID_JOYPAD_R },
+    { SDL_SCANCODE_X, to_integral(ERetroDeviceID::JoypadA) },
+    { SDL_SCANCODE_Z, to_integral(ERetroDeviceID::JoypadB) },
+    { SDL_SCANCODE_A, to_integral(ERetroDeviceID::JoypadY) },
+    { SDL_SCANCODE_S, to_integral(ERetroDeviceID::JoypadX) },
+    { SDL_SCANCODE_UP, to_integral(ERetroDeviceID::JoypadUp) },
+    { SDL_SCANCODE_DOWN, to_integral(ERetroDeviceID::JoypadDown) },
+    { SDL_SCANCODE_LEFT, to_integral(ERetroDeviceID::JoypadLeft) },
+    { SDL_SCANCODE_RIGHT, to_integral(ERetroDeviceID::JoypadRight) },
+    { SDL_SCANCODE_RETURN, to_integral(ERetroDeviceID::JoypadStart) },
+    { SDL_SCANCODE_BACKSPACE, to_integral(ERetroDeviceID::JoypadSelect) },
+    { SDL_SCANCODE_Q, to_integral(ERetroDeviceID::JoypadL) },
+    { SDL_SCANCODE_W, to_integral(ERetroDeviceID::JoypadR) },
     { 0, 0 }
 };
 
-static unsigned g_joy[RETRO_DEVICE_ID_JOYPAD_R3 + 1 /* Null terminator */] = { 0 };
-
-static int64_t g_frame_counter_remote{-1};
-int64_t frame_counter = 0;
 
 #define load_sym(V, S) do {\
     if (!((*(void**)&V) = SDL_LoadFunction(g_retro.handle, #S))) \
@@ -537,9 +632,12 @@ double format_unit_count(double count, char *unit)
 #define MAX_ROOMS 1024
 typedef struct {
     uint8_t channel_and_flags;
+    uint8_t spacing[7];
     int64_t frame;
-    unsigned joy[RETRO_DEVICE_ID_JOYPAD_R3 + 1 /* Null terminator */];
-} input_packet_t; // @todo get this to have the no padding
+    FLibretroInputState joy;
+} input_packet_t;
+
+static_assert(sizeof(input_packet_t) == sizeof(input_packet_t::channel_and_flags) + sizeof(input_packet_t::spacing) + sizeof(input_packet_t::frame) + sizeof(input_packet_t::joy), "Input packet is not packed");
 
 #define SAVESTATE_TRANSFER_FLAG_K_IS_239         0b0001
 #define SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0 0b0010
@@ -554,7 +652,7 @@ typedef struct {
 
     uint8_t sequence_lo;
 
-    uint8_t payload[]; // Variable size; at most PACKET_MTU_PAYLOAD_BYTES-3
+    uint8_t payload[]; // Variable size; at most PACKET_MTU_PAYLOAD_SIZE_BYTES-3
 } savestate_transfer_packet_t;
 
 typedef struct {
@@ -567,13 +665,13 @@ typedef struct {
 
     uint8_t sequence_lo;
 
-    uint8_t payload[PACKET_MTU_PAYLOAD_BYTES-3]; // Variable size; at most PACKET_MTU_PAYLOAD_BYTES-3
+    uint8_t payload[PACKET_MTU_PAYLOAD_SIZE_BYTES-3]; // Variable size; at most PACKET_MTU_PAYLOAD_SIZE_BYTES-3
 } savestate_transfer_packet2_t;
-static_assert(sizeof(savestate_transfer_packet2_t) == PACKET_MTU_PAYLOAD_BYTES, "Savestate transfer is the wrong size");
+static_assert(sizeof(savestate_transfer_packet2_t) == PACKET_MTU_PAYLOAD_SIZE_BYTES, "Savestate transfer is the wrong size");
 
 typedef struct {
     int64_t total_size_bytes; // @todo This isn't necessary
-    int64_t frame;
+    int64_t frame_counter;
     uint64_t encoding_chain; // @todo probably won't use this
     uint64_t xxhash;
 
@@ -591,14 +689,6 @@ static sam2_room_t g_room_we_are_in = {0};
 static sam2_room_t g_sam2_rooms[MAX_ROOMS];
 static int64_t g_sam2_room_count = 0;
 
-// The +1 is for the authority
-struct FLibretroContext {
-    juice_agent_t *agent[SAM2_PORT_MAX+1];
-
-    void FLibretroContext::AuthoritySendSaveState(juice_agent_t *agent);
-};
-
-static struct FLibretroContext g_libretro_context = {0};
 static bool g_waiting_for_savestate = false;
 
 #define INPUT_BUFFERED_BY_US_MAX 4
@@ -663,7 +753,8 @@ static uint64_t g_zstd_cycle_count[MAX_SAMPLE_SIZE] = {1}; // The 1 is so we don
 static uint64_t g_zstd_compress_size[MAX_SAMPLE_SIZE] = {0};
 static uint64_t g_reed_solomon_encode_cycle_count[MAX_SAMPLE_SIZE] = {0};
 static uint64_t g_reed_solomon_decode_cycle_count[MAX_SAMPLE_SIZE] = {0};
-static uint64_t g_save_cycle_count_offset = 0;
+static float g_frame_time_milliseconds[MAX_SAMPLE_SIZE];
+static uint64_t g_frame_cyclic_offset = 0; // Between 0 and g_sample_size-1
 static size_t g_serialize_size = 0;
 static bool g_do_zstd_compress = false;
 static bool g_do_zstd_delta_compress = false;
@@ -684,7 +775,7 @@ static bool g_do_reed_solomon = false;
 static int g_redundant_packets = MAX_REDUNDANT_PACKETS - 1;
 static int g_lost_packets = 0;
 
-uint64_t g_remote_savestate_hash = 0x6AEBEEF1EDADD1E5;
+uint64_t g_remote_savestate_hash = 0x0; // 0x6AEBEEF1EDADD1E5;
 
 #define MAX_SAVE_STATES 64
 static unsigned char g_savebuffer[MAX_SAVE_STATES][20 * 1024 * 1024] = {0};
@@ -709,11 +800,10 @@ uint8_t g_remote_packet_groups = MAX_FEC_PACKET_GROUPS;
 static bool g_send_savestate_next_frame = false;
 
 static bool g_is_refreshing_rooms = false;
-char g_sdp[JUICE_MAX_SDP_STRING_LEN] = {0};
-char g_sdp_remote[JUICE_MAX_SDP_STRING_LEN] = {0};
 int g_joining_on_port = -1;
 uint64_t g_our_peer_id = 0;
 static int g_volume = 3;
+static bool g_vsync_enabled = true;
 
 static ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 static bool g_connected_to_sam2 = false;
@@ -758,13 +848,6 @@ void draw_imgui() {
     // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
     if (show_demo_window)
         ImGui::ShowDemoWindow(&show_demo_window);
-
-    {
-        ImGui::Begin("ICE");
-        ImGui::InputTextMultiline("Local SDP", g_sdp, sizeof(g_sdp), ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
-        ImGui::InputTextMultiline("Remote SDP", g_sdp_remote, sizeof(g_sdp_remote), ImVec2(0, 0), ImGuiInputTextFlags_None);
-        ImGui::End();
-    }
 
     // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
     {
@@ -849,7 +932,7 @@ void draw_imgui() {
 
         { // Show a graph of one of the data sets
             // Add a combo box for buffer selection
-            static const char* items[] = {"cycle_count", "cycle_count", "compress_size"};
+            static const char* items[] = {"save_cycle_count", "cycle_count", "compress_size"};
             static int current_item = 0;  // default selection
             ImGui::Combo("Buffers", &current_item, items, IM_ARRAYSIZE(items));
 
@@ -859,32 +942,15 @@ void draw_imgui() {
             // Based on the selection, copy data to the temp array and draw the graph for the corresponding buffer.
             if (current_item == 0) {
                 for (int i = 0; i < g_sample_size; ++i) {
-                    temp[i] = static_cast<float>(g_save_cycle_count[(i+g_save_cycle_count_offset)%g_sample_size]);
+                    temp[i] = static_cast<float>(g_save_cycle_count[(i+g_frame_cyclic_offset)%g_sample_size]);
                 }
-                ImGui::PlotLines("save_cycle_count", temp, g_sample_size);
             } else if (current_item == 1) {
                 for (int i = 0; i < g_sample_size; ++i) {
-                    temp[i] = static_cast<float>(g_zstd_cycle_count[(i+g_save_cycle_count_offset)%g_sample_size]);
+                    temp[i] = static_cast<float>(g_zstd_cycle_count[(i+g_frame_cyclic_offset)%g_sample_size]);
                 }
-                ImGui::PlotLines("cycle_count", temp, g_sample_size);
             } else if (current_item == 2) {
                 for (int i = 0; i < g_sample_size; ++i) {
-                    temp[i] = static_cast<float>(g_zstd_compress_size[(i+g_save_cycle_count_offset)%g_sample_size]);
-                }
-                ImGui::PlotLines("compress_size", temp, g_sample_size);
-            }
-
-            // Add a toggle for switching between histogram and line plot
-            static bool show_histogram = false;
-            ImGui::Checkbox("Show as Histogram", &show_histogram);
-
-            if (show_histogram) {
-                if (current_item == 0) {
-                    ImGui::PlotHistogram("save_cycle_count", temp, g_sample_size);
-                } else if (current_item == 1) {
-                    ImGui::PlotHistogram("cycle_count", temp, g_sample_size);
-                } else if (current_item == 2) {
-                    ImGui::PlotHistogram("compress_size", temp, g_sample_size);
+                    temp[i] = static_cast<float>(g_zstd_compress_size[(i+g_frame_cyclic_offset)%g_sample_size]);
                 }
             }
         }
@@ -911,7 +977,7 @@ void draw_imgui() {
                 ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to %s", g_sam2_address);
             } else {
                 ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1), "Connecting to %s %c", g_sam2_address, spinnerGlyph);
-                goto finished_drawning_sam2_interface;
+                goto finished_drawing_sam2_interface;
             }
 
             if (g_last_sam2_error.code) {
@@ -1096,14 +1162,73 @@ void draw_imgui() {
                 }
             }
         }
+finished_drawing_sam2_interface:
+        ImGui::End();
+    }        
+    
+    {
+        ImGui::Begin("Timing", NULL, ImGuiWindowFlags_AlwaysAutoResize);
+        static bool old_vsync_enabled = true;
 
-finished_drawning_sam2_interface:
+        if (g_vsync_enabled != old_vsync_enabled) {
+            printf("Toggled vsync\n");
+            if (SDL_GL_SetSwapInterval((int) g_vsync_enabled) < 0) {
+                SDL_Log("Unable to set VSync off: %s", SDL_GetError());
+                g_vsync_enabled = true;
+            }
+        }
+
+        old_vsync_enabled = g_vsync_enabled;
+
+        if (old_vsync_enabled) {
+            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 0, 0, 255)); // Red color
+        }
+        ImGui::Checkbox("vsync", &g_vsync_enabled);
+        if (old_vsync_enabled) {
+            ImGui::PopStyleColor(); // Reset to default color
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("vsync causes stuttering in the core because it blocks and we're single-threaded");
+            }
+        }
+
+        {
+            float temp[MAX_SAMPLE_SIZE];
+
+            for (int i = 0; i < g_sample_size; ++i) {
+                temp[i] = static_cast<float>(g_frame_time_milliseconds[(i+g_frame_cyclic_offset)%g_sample_size]);
+            }
+
+            ImGui::Text("Core tick time (ms)");
+            ImGui::PlotHistogram("", temp, g_sample_size, 0, NULL, 0.0f, 33.33f, ImVec2(0, 80));
+        }
+        
         ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
         ImGui::End();
     }
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+}
+
+static int g_h, g_w;
+static void draw_core_frame() {
+    int w = 0, h = 0;
+    SDL_GetWindowSize(g_win, &w, &h);
+    glViewport(0, 0, w, h);
+
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glUseProgram(g_shader.program);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
+
+
+    glBindVertexArray(g_shader.vao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+
+    glUseProgram(0);
 }
 
 static void video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
@@ -1126,24 +1251,6 @@ static void video_refresh(const void *data, unsigned width, unsigned height, uns
 		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
 						g_video.pixtype, g_video.pixfmt, data);
 	}
-
-    int w = 0, h = 0;
-    SDL_GetWindowSize(g_win, &w, &h);
-    glViewport(0, 0, w, h);
-
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    glUseProgram(g_shader.program);
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
-
-
-    glBindVertexArray(g_shader.vao);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
-
-    glUseProgram(0);
 }
 
 static void video_deinit() {
@@ -1489,15 +1596,11 @@ static bool core_environment(unsigned cmd, void *data) {
 
 static void core_video_refresh(const void *data, unsigned width, unsigned height, size_t pitch) {
     video_refresh(data, width, height, pitch);
-    draw_imgui();
-    SDL_GL_SwapWindow(g_win);
 }
 
-
-
-static unsigned g_joy_remote[RETRO_DEVICE_ID_JOYPAD_R3+1] = { 0 };
 static void core_input_poll(void) {
 	int i;
+    auto &g_joy = g_libretro_context.InputState[0];
     g_kbd = SDL_GetKeyboardState(NULL);
 
     juice_agent_t *_debugview_agent[SAM2_ARRAY_LENGTH(FLibretroContext::agent)];
@@ -1528,41 +1631,39 @@ static void core_input_poll(void) {
             input_packet_t input_packet = g_input_packet_queue[p].dequeue();
 
             SDL_assert(input_packet.frame == frame_counter);
-            memcpy(g_joy_remote, input_packet.joy, sizeof(g_joy_remote));
+            for (int i = 0; i < 16; i++) {
+                g_joy[i] |= input_packet.joy[i];
+            }
         }
     }
 
-    //printf("Sending Input for frame %d\n", frame_counter);
-#if NETPLAY && 0
-    input_packet_t input_packet;
-
-    input_packet.channel_and_flags = CHANNEL_INPUT;
-    input_packet.frame = frame_counter++;
-    memcpy(input_packet.joy, g_joy, sizeof(g_joy));
-
-    juice_send(agent, (char *) &input_packet, sizeof(input_packet));
-#endif
     if (g_kbd[SDL_SCANCODE_ESCAPE])
         running = false;
 }
 
 
-static int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
-	if (port || index || device != RETRO_DEVICE_JOYPAD)
-		return 0;
+int16_t FLibretroContext::core_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
+    // To get the core to poll for certain types of input sometimes requires setting particular controllers for compatible ports
+    // or changing specific options related to the input you're trying to poll for. If it's not obvious your main resources are
+    // forums, the libretro documentation, or looking through the core's code itself.
+    // Also here are some pitfalls I've encountered:
+    // - The core might need to poll for at least two frames to register an input
+    // - Some cores will not poll for any input by default (I fix this by always binding the RETRO_DEVICE_JOYPAD)
+    // - The RETRO_DEVICE_POINTER interface is generally preferred over the lightgun and mouse even for things like lightguns and mice although you still use some parts of the lightgun interface for handling lightgun input probably same goes for mouse
 
-#if NETPLAY && 0
-    while (g_frame_counter_remote != frame_counter) {
-#if JUICE_CONCURRENCY_MODE == JUICE_CONCURRENCY_MODE_USER
-    juice_user_poll(&agent, 1);
-#endif
-        _mm_pause();
-        _mm_pause();
+    switch (device) {
+    case RETRO_DEVICE_JOYPAD:   return InputState[port][to_integral(ERetroDeviceID::JoypadB)     + id];
+    case RETRO_DEVICE_LIGHTGUN: return InputState[port][to_integral(ERetroDeviceID::LightgunX)   + id];
+    case RETRO_DEVICE_ANALOG:   return InputState[port][to_integral(ERetroDeviceID::AnalogLeftX) + 2 * index + (id % RETRO_DEVICE_ID_JOYPAD_L2)]; // The indexing logic is broken and might OOBs if we're queried for something that isn't an analog trigger or stick
+    case RETRO_DEVICE_POINTER:  return InputState[port][to_integral(ERetroDeviceID::PointerX)    + 4 * index + id];
+    case RETRO_DEVICE_MOUSE:
+    case RETRO_DEVICE_KEYBOARD:
+    default:                    return 0;
     }
-#endif
-    //printf("frame_counter: %d\n", frame_counter);
-    //fflush(stdout);
-	return g_joy[id] > g_joy_remote[id] ? g_joy[id] : g_joy_remote[id];
+}
+
+static int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
+	return g_libretro_context.core_input_state(port, device, index, id);
 }
 
 
@@ -1701,174 +1802,23 @@ void receive_juice_log(juice_log_level_t level, const char *message) {
     assert(level < JUICE_LOG_LEVEL_ERROR);
 }
 
-static void test_connectivity_on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr) {
-    printf("Candidate: %s\n", sdp);
-
-    strcat(g_sdp, sdp);
-    strcat(g_sdp, "\n");
-}
-
-#if NETPLAY
-int test_connectivity() {
-  juice_agent_t *agent = NULL;
-  juice_set_log_handler(receive_juice_log);
-
-  juice_set_log_level(JUICE_LOG_LEVEL_VERBOSE);
-  // Create agent
-  juice_config_t config;
-  memset(&config, 0, sizeof(config));
-
-  // STUN server example*
-  config.concurrency_mode = JUICE_CONCURRENCY_MODE;
-  config.stun_server_host = "stun.l.google.com";
-  config.stun_server_port = 19302;
-  //config.bind_address = "127.0.0.1";
-
-  config.cb_state_changed = on_state_changed;
-  config.cb_candidate = test_connectivity_on_candidate;
-  config.cb_gathering_done = on_gathering_done;
-  config.cb_recv = on_recv;
-  config.user_ptr = NULL;
-
-  agent = juice_create(&config);
-
-  // Generate local description
-  
-  juice_get_local_description(agent, g_sdp, JUICE_MAX_SDP_STRING_LEN);
-  printf("Local description:\n%s\n", g_sdp);
-
-  // Gather candidates
-  juice_gather_candidates(agent);
-
-  bool remote_candidates_aquired = false;
-  while (!remote_candidates_aquired) {
-    for (SDL_Event ev; SDL_PollEvent(&ev);) {
-        ImGui_ImplSDL2_ProcessEvent(&ev);
-
-        if (ev.type == SDL_WINDOWEVENT) {
-            switch (ev.window.event) {
-            case SDL_WINDOWEVENT_CLOSE: 
-                return -1;
-            case SDL_WINDOWEVENT_RESIZED:
-                resize_cb(ev.window.data1, ev.window.data2);
-                break;
-            }
-        }
-    }
-
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplSDL2_NewFrame(g_win);
-    ImGui::NewFrame();
-
-    ImGuiIO& io = ImGui::GetIO();
-    glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
-    glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    // Show ImGui window
-    ImGui::Begin("SDP Connectivity Test");
-    ImGui::Text("Local SDP:");
-    ImGui::InputTextMultiline("Local SDP", g_sdp, sizeof(g_sdp), ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
-    ImGui::InputTextMultiline("Remote SDP", g_sdp_remote, sizeof(g_sdp_remote), ImVec2(0, 0), ImGuiInputTextFlags_None);
-
-    // ImGui::InputTextMultiline("Local Candidates", candidates, sizeof(candidates), ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
-    // ImGui::InputTextMultiline("Remote Candidates", remote_candidates, sizeof(remote_candidates), ImVec2(0, 0), ImGuiInputTextFlags_None);
-    
-    if (ImGui::Button("Submit")) {
-        auto status = juice_set_remote_description(agent, g_sdp_remote);
-        assert(JUICE_ERR_SUCCESS == status);
-        remote_candidates_aquired = true;
-    }
-    ImGui::End();
-
-    ImGui::Render();
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-    SDL_GL_SwapWindow(g_win);
-  }
-
-#if 0
-  for (char *p = remote_candidates; p[0] != '\0'; p++) {
-     char *base = p;
-
-     while (p[0] != '\0' && p[0] != '\n') p++;
-     if (p[0] == '\n') p[0] = '\0';
-
-     int status = juice_add_remote_candidate(agent, base);
-     assert(status == JUICE_ERR_SUCCESS);
-  }
-#endif
-
-  juice_set_remote_gathering_done(agent);
-  #if JUICE_CONCURRENCY_MODE == JUICE_CONCURRENCY_MODE_USER
-  // Poll for two seconds sleeping 20ms between polls
-  for(int i = 0; i < 100; ++i) {
-    juice_user_poll(&agent, 1);
-    #ifdef _WIN32
-      Sleep(20);
-    #else
-      usleep(20000);
-    #endif
-  }
-  #else
-  sleep(2);
-  #endif
-  // -- Connection should be finished --
-
-  juice_state_t state = juice_get_state(agent);
-  bool success = (state == JUICE_STATE_COMPLETED);
-  
-  if (!success) {
-    printf("Connection failed: %d\n", state);
-    return -1;
-  }
-
-  // Retrieve candidates
-  char local[JUICE_MAX_CANDIDATE_SDP_STRING_LEN];
-  char remote[JUICE_MAX_CANDIDATE_SDP_STRING_LEN];
-  if (success &= (juice_get_selected_candidates(agent, local, JUICE_MAX_CANDIDATE_SDP_STRING_LEN, remote,
-                                                JUICE_MAX_CANDIDATE_SDP_STRING_LEN) == 0)) {
-    printf("Local candidate: %s\n", local);
-    printf("Remote candidate: %s\n", remote);
-  }
-  assert(success);
-
-  // Retrieve addresses
-  char localAddr[JUICE_MAX_ADDRESS_STRING_LEN];
-  char remoteAddr[JUICE_MAX_ADDRESS_STRING_LEN];
-  if (success &= (juice_get_selected_addresses(agent, localAddr, JUICE_MAX_ADDRESS_STRING_LEN, remoteAddr, JUICE_MAX_ADDRESS_STRING_LEN) == 0)) {
-    printf("Local address: %s\n", localAddr);
-    printf("Remote address: %s\n", remoteAddr);
-  }
-  assert(success);
-
-  if (success) {
-    printf("Success\n");
-    return 0;
-  } else {
-    printf("Failure\n");
-    return -1;
-  }
-}
-#endif
-
 void FLibretroContext::AuthoritySendSaveState(juice_agent_t *agent) {
     // Reed Solomon
     g_savestate_transfer_payload->zipped_savestate_size = ZSTD_compress(g_savestate_transfer_payload->zipped_savestate,
                                                                         SAVE_STATE_COMPRESSED_BOUND_BYTES,
-                                                                        g_savebuffer[g_save_cycle_count_offset], g_serialize_size, g_zstd_compress_level);
+                                                                        g_savebuffer[g_frame_cyclic_offset], g_serialize_size, g_zstd_compress_level);
 
     if (ZSTD_isError(g_savestate_transfer_payload->zipped_savestate_size)) {
         printf("ZSTD_compress failed: %s\n", ZSTD_getErrorName(g_savestate_transfer_payload->zipped_savestate_size));
         return; // @todo
     }
 
-    int packet_payload_size = PACKET_MTU_PAYLOAD_BYTES - sizeof(savestate_transfer_packet_t);
+    int packet_payload_size = PACKET_MTU_PAYLOAD_SIZE_BYTES - sizeof(savestate_transfer_packet_t);
 
     int n, k, packet_groups;
     logical_partition(sizeof(savestate_transfer_payload_t) + g_savestate_transfer_payload->zipped_savestate_size, 16, &n, &k, &packet_payload_size, &packet_groups);
 
-    g_savestate_transfer_payload->frame = frame_counter;
+    g_savestate_transfer_payload->frame_counter = frame_counter;
     g_savestate_transfer_payload->zipped_savestate_size = g_savestate_transfer_payload->zipped_savestate_size;
     g_savestate_transfer_payload->total_size_bytes = sizeof(savestate_transfer_payload_t) + g_savestate_transfer_payload->zipped_savestate_size;
 
@@ -1969,6 +1919,8 @@ static void on_gathering_done(juice_agent_t *agent, void *user_ptr) {
 
 // On message received
 static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *user_ptr) {
+    FLibretroContext *LibretroContext = (FLibretroContext *) user_ptr;
+
     uint8_t channel_and_flags = data[0];
     switch (channel_and_flags & 0xF0) {
     case CHANNEL_INPUT: {
@@ -2005,7 +1957,7 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         }
 
         SDL_assert(size >= sizeof(savestate_transfer_packet_t));
-        SDL_assert(size <= PACKET_MTU_PAYLOAD_BYTES);
+        SDL_assert(size <= PACKET_MTU_PAYLOAD_SIZE_BYTES);
         uint8_t sequence_hi = 0;
         int k = 239;
         if (channel_and_flags & SAVESTATE_TRANSFER_FLAG_K_IS_239) {
@@ -2078,6 +2030,9 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
                     fflush(stdout);
                     if (!g_retro.retro_unserialize(g_savebuffer[0], g_zstd_compress_size[0])) {
                         fprintf(stderr, "Failed to load savestate\n");
+                        // goto savestate_transfer_failed;
+                    } else {
+                        LibretroContext->frame_counter = g_savestate_transfer_payload->frame_counter;
                     }
                 }
 
@@ -2239,22 +2194,36 @@ void startup_ice_for_peer(juice_agent_t **agent, sam2_signal_message_t *signal_m
 
     juice_get_local_description(*agent, signal_message->ice_sdp, sizeof(signal_message->ice_sdp));
 
-    // This call starts an asynchronous process that will call the on_candidate callback
+    // This call starts an asynchronous task that requires periodic polling via juice_user_poll to complete
+    // it will call the on_gathering_done callback once it's finished
     juice_gather_candidates(*agent);
 }
 
-#ifdef _WIN32
-#include <windows.h>
-#include <TraceLoggingProvider.h>
+#include <chrono>
+#include <thread>
 
-#define TRACELOGGING_GUID 0b11010011, 0b00101101, 0b01010101, 0b10010101, 0b10101010, 0b11110000, 0b11111111, 0b00000000, 0b00000001, 0b00000010, 0b00000011
-
-TRACELOGGING_DEFINE_PROVIDER(
-    g_hProvider,
-    "MyProvider",
-    (TRACELOGGING_GUID)
-);
-#endif
+void usleep_busy_wait(unsigned int usec) {
+    if (usec >= 10000) {
+        std::this_thread::sleep_for(std::chrono::microseconds(usec));
+    } else {
+        auto start = std::chrono::high_resolution_clock::now();
+        auto end = start + std::chrono::microseconds(usec);
+        while (std::chrono::high_resolution_clock::now() < end) {
+            // Yield resources to other thread on our core for ~40 * 10 cycles
+            // This also saves a little energy
+            _mm_pause();
+            _mm_pause();
+            _mm_pause();
+            _mm_pause();
+            _mm_pause();
+            _mm_pause();
+            _mm_pause();
+            _mm_pause();
+            _mm_pause();
+            _mm_pause();
+        }
+    }
+}
 
 int main(int argc, char *argv[]) {
 	if (argc < 2)
@@ -2343,54 +2312,15 @@ int main(int argc, char *argv[]) {
 
     SDL_Event ev;
 
-#if NETPLAY
-    if (test_connectivity() == -1) return -1;
-#endif
     while (running) {
-
+        auto work_start_time = std::chrono::high_resolution_clock::now();
 #if JUICE_CONCURRENCY_MODE == JUICE_CONCURRENCY_MODE_USER
         for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
             if (!g_agent[p]) continue;
 
-#ifdef _WIN32
-            //GUID guid = {TRACELOGGING_GUID};
-            //printf("{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}\n", 
-            //    guid.Data1, guid.Data2, guid.Data3,
-            //    guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3],
-            //    guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
-            TraceLoggingRegister(g_hProvider);
-            TraceLoggingWrite(g_hProvider, "Entering problematic_function", TraceLoggingKeyword(0x01));
-#endif
             juice_user_poll(&g_agent[p], 1);
-#ifdef _WIN32
-            TraceLoggingWrite(g_hProvider, "Exiting problematic_function", TraceLoggingKeyword(0x01));
-            TraceLoggingUnregister(g_hProvider);
-#endif
-            
-
-            juice_state_t state = juice_get_state(g_agent[p]);
-            switch (state) {
-            case JUICE_STATE_DISCONNECTED: break;
-            case JUICE_STATE_GATHERING: break;
-            case JUICE_STATE_CONNECTING: {
-                break;
-            }
-            case JUICE_STATE_CONNECTED: {
-                printf("Connected\n");
-            }
-            case JUICE_STATE_COMPLETED: {
-
-            }
-            case JUICE_STATE_FAILED: {
-
-            }
-            }
-
-
         }
 #endif
-        g_save_cycle_count_offset = (g_save_cycle_count_offset + 1) % g_sample_size;
-        g_save_state_index = (g_save_state_index + 1) % MAX_SAVE_STATES;
 
         // Update the game loop timer.
         if (runloop_frame_time.callback) {
@@ -2443,28 +2373,73 @@ int main(int argc, char *argv[]) {
 //            if (all_peers_connected) break;
 //        }
 
-        bool ready_to_tick = !g_waiting_for_savestate;
+        bool netplay_ready_to_tick = !g_waiting_for_savestate;
         for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
             if (!g_agent[p]) continue;
             juice_state_t state = juice_get_state(g_agent[p]);
 
-            ready_to_tick &= state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED;
-            //ready_to_tick &= frame_counter >= g_signal_message[p].frame_counter;
+            netplay_ready_to_tick &= state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED;
+            //netplay_ready_to_tick &= frame_counter >= g_signal_message[p].frame_counter;
             //if (frame_counter >= g_signal_message[p].frame_counter) {
-            //    ready_to_tick &= !g_input_packet_queue[p].isEmpty();
+            //    netplay_ready_to_tick &= !g_input_packet_queue[p].isEmpty();
             //}
         }
 
-        if (ready_to_tick) {
+
+        //std::chrono::duration<double, std::milli> elapsed_time_milliseconds = current_time - last_frame_time;
+        bool core_ready_to_tick = false;
+        double core_wants_tick_in_seconds = 0.0;
+        {
+            static auto start = std::chrono::high_resolution_clock::now();
+            static int64_t frames = 0;
+            double target_frame_time_seconds = 1.0 / g_av.timing.fps - 1e-3;
+
+            auto current_time = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> elapsed_time_milliseconds = current_time - start;
+            double elapsed_time_seconds = elapsed_time_milliseconds.count() / 1000.0;
+            double sleep = (frames / g_av.timing.fps) - elapsed_time_seconds;
+            if (sleep > 0.0) {
+                core_wants_tick_in_seconds = sleep;
+            } else {
+                frames++;
+                core_ready_to_tick = true;
+                if (sleep < -target_frame_time_seconds) { // If over a frame behind don't try to catch up to the next frame
+                    start = std::chrono::high_resolution_clock::now();
+                    frames = 0;
+                }
+            }
+        }
+
+        if (netplay_ready_to_tick && core_ready_to_tick) {
             g_retro.retro_run();
             frame_counter++;
+
+            // Keep track of frame-times for plotting purposes
+            static auto last_tick_time = std::chrono::high_resolution_clock::now();
+            auto current_time = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> elapsed_time_milliseconds = current_time - last_tick_time;
+            g_frame_time_milliseconds[g_frame_cyclic_offset] = (float) elapsed_time_milliseconds.count();
+            last_tick_time = current_time;
+
+            g_frame_cyclic_offset = (g_frame_cyclic_offset + 1) % g_sample_size;
+            g_save_state_index = (g_save_state_index + 1) % MAX_SAVE_STATES;
         }
+
+        // The imgui frame is updated at the monitor refresh cadence
+        // So the core frame needs to be redrawn or you'll get the Windows XP infinite window thing
+        draw_core_frame();
+        draw_imgui();
+
+        // We hope vsync is disabled or else this will block
+        // I think you have to write platform specific code / not use OpenGL if you want this to be non-blocking
+        // and still try to update on vertical sync
+        SDL_GL_SwapWindow(g_win);
 
         g_serialize_size = g_retro.retro_serialize_size();
         if (sizeof(g_savebuffer[0]) >= g_serialize_size) {
             uint64_t start = rdtsc();
             g_retro.retro_serialize(g_savebuffer[g_save_state_index], sizeof(g_savebuffer[0]));
-            g_save_cycle_count[g_save_cycle_count_offset] = rdtsc() - start;
+            g_save_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
         } else {
             fprintf(stderr, "Save buffer too small to save state\n");
         }
@@ -2484,10 +2459,10 @@ int main(int argc, char *argv[]) {
             if (g_use_rle) {
                 // If we're 4 byte aligned use the 4-byte wordsize rle that gives us the highest gains in 32-bit consoles (where we need it the most)
                 if (g_serialize_size % 4 == 0) {
-                    rle_encode32(buffer, g_serialize_size / 4, g_savebuffer_compressed, g_zstd_compress_size + g_save_cycle_count_offset);
-                    g_zstd_compress_size[g_save_cycle_count_offset] *= 4;
+                    rle_encode32(buffer, g_serialize_size / 4, g_savebuffer_compressed, g_zstd_compress_size + g_frame_cyclic_offset);
+                    g_zstd_compress_size[g_frame_cyclic_offset] *= 4;
                 } else {
-                    rle_encode8(buffer, g_serialize_size, g_savebuffer_compressed, g_zstd_compress_size + g_save_cycle_count_offset);
+                    rle_encode8(buffer, g_serialize_size, g_savebuffer_compressed, g_zstd_compress_size + g_frame_cyclic_offset);
                 }
             } else {
                 if (g_use_dictionary) {
@@ -2531,62 +2506,62 @@ int main(int argc, char *argv[]) {
                     //ZSTD_CCtx_setParameter(cctx, ZSTD_c_ldmHashLog, 0);
 
                     if (cdict) {
-                        g_zstd_compress_size[g_save_cycle_count_offset] = ZSTD_compress_usingCDict(cctx, 
+                        g_zstd_compress_size[g_frame_cyclic_offset] = ZSTD_compress_usingCDict(cctx, 
                                                                                                    g_savebuffer_compressed, SAVE_STATE_COMPRESSED_BOUND_BYTES,
                                                                                                    buffer, g_serialize_size, 
                                                                                                    cdict);
                     }
                 } else {
-                    g_zstd_compress_size[g_save_cycle_count_offset] = ZSTD_compress(g_savebuffer_compressed,
+                    g_zstd_compress_size[g_frame_cyclic_offset] = ZSTD_compress(g_savebuffer_compressed,
                                                                                     SAVE_STATE_COMPRESSED_BOUND_BYTES,
                                                                                     buffer, g_serialize_size, g_zstd_compress_level);
                 }
 
             }
 
-            if (ZSTD_isError(g_zstd_compress_size[g_save_cycle_count_offset])) {
-                fprintf(stderr, "Error compressing: %s\n", ZSTD_getErrorName(g_zstd_compress_size[g_save_cycle_count_offset]));
-                g_zstd_compress_size[g_save_cycle_count_offset] = 0;
+            if (ZSTD_isError(g_zstd_compress_size[g_frame_cyclic_offset])) {
+                fprintf(stderr, "Error compressing: %s\n", ZSTD_getErrorName(g_zstd_compress_size[g_frame_cyclic_offset]));
+                g_zstd_compress_size[g_frame_cyclic_offset] = 0;
             }
 
-            g_zstd_cycle_count[g_save_cycle_count_offset] = rdtsc() - start;
+            g_zstd_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
 
             // Reed Solomon
-            int packet_payload_size = PACKET_MTU_PAYLOAD_BYTES - sizeof(savestate_transfer_packet_t);
+            int packet_payload_size = PACKET_MTU_PAYLOAD_SIZE_BYTES - sizeof(savestate_transfer_packet_t);
 
             int n, k, packet_groups;
-            logical_partition(sizeof(savestate_transfer_payload_t) + g_zstd_compress_size[g_save_cycle_count_offset], 16, &n, &k, &packet_payload_size, &packet_groups);
-            //int k = g_zstd_compress_size[g_save_cycle_count_offset]/PACKET_MTU_PAYLOAD_BYTES+1;
+            logical_partition(sizeof(savestate_transfer_payload_t) + g_zstd_compress_size[g_frame_cyclic_offset], 16, &n, &k, &packet_payload_size, &packet_groups);
+            //int k = g_zstd_compress_size[g_frame_cyclic_offset]/PACKET_MTU_PAYLOAD_SIZE_BYTES+1;
             //int n = k + g_redundant_packets;
             if (g_do_reed_solomon) {
                 #if 0
-                char *data[(SAVE_STATE_COMPRESSED_BOUND_BYTES/PACKET_MTU_PAYLOAD_BYTES+1+MAX_REDUNDANT_PACKETS)];
-                uint64_t remaining = g_zstd_compress_size[g_save_cycle_count_offset];
+                char *data[(SAVE_STATE_COMPRESSED_BOUND_BYTES/PACKET_MTU_PAYLOAD_SIZE_BYTES+1+MAX_REDUNDANT_PACKETS)];
+                uint64_t remaining = g_zstd_compress_size[g_frame_cyclic_offset];
                 int i = 0;
                 for (; i < k; i++) {
-                    uint64_t consume = SAM2_MIN(PACKET_MTU_PAYLOAD_BYTES, remaining);
-                    memcpy(g_savebuffer_compressed_packetized[i], &g_savebuffer_compressed[i * PACKET_MTU_PAYLOAD_BYTES], consume);
+                    uint64_t consume = SAM2_MIN(PACKET_MTU_PAYLOAD_SIZE_BYTES, remaining);
+                    memcpy(g_savebuffer_compressed_packetized[i], &g_savebuffer_compressed[i * PACKET_MTU_PAYLOAD_SIZE_BYTES], consume);
                     remaining -= consume;
                     data[i] = (char *) g_savebuffer_compressed_packetized[i];
                 }
 
-                memset(&g_savebuffer_compressed_packetized[i + PACKET_MTU_PAYLOAD_BYTES - remaining], 0, remaining);
+                memset(&g_savebuffer_compressed_packetized[i + PACKET_MTU_PAYLOAD_SIZE_BYTES - remaining], 0, remaining);
 
                 for (; i < n; i++) {
                     data[i] = (char *) g_savebuffer_compressed_packetized[i];
                 }
 
                 uint64_t start = rdtsc();
-                rs_encode2(k, n, data, PACKET_MTU_PAYLOAD_BYTES);
-                g_reed_solomon_encode_cycle_count[g_save_cycle_count_offset] = rdtsc() - start;
+                rs_encode2(k, n, data, PACKET_MTU_PAYLOAD_SIZE_BYTES);
+                g_reed_solomon_encode_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
 
                 for (i = 0; i < g_lost_packets; i++) {
                     data[i] = NULL;
                 }
 
                 start = rdtsc();
-                rs_decode2(k, n, data, PACKET_MTU_PAYLOAD_BYTES);
-                g_reed_solomon_decode_cycle_count[g_save_cycle_count_offset] = rdtsc() - start;
+                rs_decode2(k, n, data, PACKET_MTU_PAYLOAD_SIZE_BYTES);
+                g_reed_solomon_decode_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
                 #else
 
                 #endif
@@ -2750,8 +2725,37 @@ int main(int argc, char *argv[]) {
             nanosleep(&sleep_duration, NULL);
         }
 #endif
+        double monitor_wants_refresh_seconds = 0.0;
+        if (!g_vsync_enabled) {
+            // Handle timing for refreshing the OS window
+            // this has been separated from ticking the core as nowadays many PC monitors aren't 60Hz
+            static SDL_DisplayMode mode = {0};
+            if (mode.refresh_rate == 0) {
+                if (SDL_GetCurrentDisplayMode(0, &mode) != 0) {
+                    SDL_Log("SDL_GetCurrentDisplayMode failed: %s", SDL_GetError());
+                    // We might be on a linux server or something without a display
+                    // Just set are refresh rate to 60 since this will make timing better
+                    mode.refresh_rate = 60;
+                }
+            }
 
+            double frameDelay = 1e6 / mode.refresh_rate;
+            static auto lastSwap = std::chrono::high_resolution_clock::now();
 
+            auto now = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(now - lastSwap);
+            monitor_wants_refresh_seconds = SAM2_MAX(0.0, (frameDelay - duration.count()) / 1e6);
+            lastSwap = now;
+        }
+
+        // Poor man's coroutine's/scheduler
+        double work_elapsed_time_microseconds = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - work_start_time).count();
+        double sleep = SAM2_MIN(core_wants_tick_in_seconds, monitor_wants_refresh_seconds);
+        sleep = SAM2_MAX(sleep - (work_elapsed_time_microseconds / 1e6), 0.0);
+
+        //printf("%g\n", sleep);
+        //fflush(stdout);
+        usleep_busy_wait((unsigned int) (sleep * 1e6));
 	}
 //cleanup:
 	core_unload();

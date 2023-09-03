@@ -20,6 +20,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+// I think using a splay tree would be slightly better, but this implmentation of an AVL tree was really good
 //#include "kavl-lite.h"
 // Copyright (c) 2018 by Attractive Chaos <attractor@live.co.uk> provided under the MIT License
 #ifndef KAVL_LITE_H
@@ -267,12 +268,14 @@
 	KAVLL_INIT2(pre,, __type, __head, __cmp)
 
 #endif
+// Manual include of kavl-lite.h ends here
 
 // Signaling Server and a Match Maker
 #ifndef SAM2_H
 #define SAM2_H
 #include <stdint.h>
 #include <inttypes.h>
+#include <stdlib.h>
 
 #define str(s) _str(s)
 #define _str(s) #s
@@ -312,10 +315,7 @@
 
 #define SAM2_ARRAY_LENGTH(arr) (sizeof(arr) / sizeof((arr)[0]))
 
-#define SAM2_MAX(a,b) \
-   ({  __typeof__ (a) _a = (a); \
-       __typeof__ (b) _b = (b); \
-     _a > _b ? _a : _b; })
+#define SAM2_MAX(a,b) ((a) < (b) ? (b) : (a))
 
 #define SAM2_MIN(a, b) ((a) < (b) ? (a) : (b))
 
@@ -492,6 +492,10 @@ typedef int sam2_message_e;
 #define SAM2_EMESSAGE_VOID   6
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN 1
+#endif
+#include <windows.h>
 #include <winsock2.h>
 //#pragma comment(lib, "ws2_32.lib")
 typedef SOCKET sam2_socket_t;
@@ -659,7 +663,6 @@ static int sam2__resolve_hostname(const char* hostname) {
 #endif
 
 #ifdef _WIN32
-    #include <winsock2.h>
     #define SAM2_SOCKET_INVALID (INVALID_SOCKET)
     #define SAM2_CLOSESOCKET closesocket
     #define SAM2_SOCKERRNO ((int)WSAGetLastError())
@@ -671,7 +674,6 @@ static int sam2__resolve_hostname(const char* hostname) {
     #include <fcntl.h>
     #include <sys/socket.h>
     #include <sys/ioctl.h>
-    #include <stdlib.h>
     #include <netinet/in.h>
     #include <arpa/inet.h>
     #define SAM2_SOCKET_INVALID (-1)
