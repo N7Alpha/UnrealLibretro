@@ -700,13 +700,11 @@ static sam2_signal_message_t g_signal_message[SAM2_PORT_MAX+1] = {0};
 //static int g_input_packet_end[SAM2_PORT_MAX+1] = {0};
 #include <array>
 #include <stdexcept>
-class CircularQueue {
-private:
+struct CircularQueue {
     std::array<input_packet_t, INPUT_BUFFER_MAX> buffer;
     int begin = 0;
     int end = 0;
 
-public:
     void enqueue(const input_packet_t& packet) {
         buffer[end] = packet;
         end = (end + 1) % INPUT_BUFFER_MAX;
@@ -1198,6 +1196,7 @@ finished_drawing_sam2_interface:
                 temp[i] = static_cast<float>(g_frame_time_milliseconds[(i+g_frame_cyclic_offset)%g_sample_size]);
             }
 
+            ImGui::Text("Core ticks %" PRId64, frame_counter);
             ImGui::Text("Core tick time (ms)");
             ImGui::PlotHistogram("", temp, g_sample_size, 0, NULL, 0.0f, 33.33f, ImVec2(0, 80));
         }
@@ -1803,14 +1802,20 @@ void receive_juice_log(juice_log_level_t level, const char *message) {
 }
 
 void FLibretroContext::AuthoritySendSaveState(juice_agent_t *agent) {
+    size_t serialize_size = g_retro.retro_serialize_size();
+    void *savebuffer = malloc(serialize_size);
+
+    if (!g_retro.retro_serialize(savebuffer, serialize_size)) {
+        die("Failed to serialize\n");
+    }
+
     // Reed Solomon
     g_savestate_transfer_payload->zipped_savestate_size = ZSTD_compress(g_savestate_transfer_payload->zipped_savestate,
                                                                         SAVE_STATE_COMPRESSED_BOUND_BYTES,
-                                                                        g_savebuffer[g_frame_cyclic_offset], g_serialize_size, g_zstd_compress_level);
+                                                                        savebuffer, serialize_size, g_zstd_compress_level);
 
     if (ZSTD_isError(g_savestate_transfer_payload->zipped_savestate_size)) {
-        printf("ZSTD_compress failed: %s\n", ZSTD_getErrorName(g_savestate_transfer_payload->zipped_savestate_size));
-        return; // @todo
+        die("ZSTD_compress failed: %s\n", ZSTD_getErrorName(g_savestate_transfer_payload->zipped_savestate_size));
     }
 
     int packet_payload_size = PACKET_MTU_PAYLOAD_SIZE_BYTES - sizeof(savestate_transfer_packet_t);
@@ -2225,6 +2230,149 @@ void usleep_busy_wait(unsigned int usec) {
     }
 }
 
+// I pulled this out of main because it kind of clutters the logic and to get back some indentation
+void tick_compression_investigation(void *rom_data, size_t rom_size) {
+    g_serialize_size = g_retro.retro_serialize_size();
+    if (sizeof(g_savebuffer[0]) >= g_serialize_size) {
+        uint64_t start = rdtsc();
+        g_retro.retro_serialize(g_savebuffer[g_save_state_index], sizeof(g_savebuffer[0]));
+        g_save_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
+    } else {
+        fprintf(stderr, "Save buffer too small to save state\n");
+    }
+
+    uint64_t start = rdtsc();
+    unsigned char *buffer = g_savebuffer[g_save_state_index];
+    static unsigned char g_savebuffer_delta[sizeof(g_savebuffer[0])];
+    if (g_do_zstd_delta_compress) {
+        buffer = g_savebuffer_delta;
+        for (int i = 0; i < g_serialize_size; i++) {
+            int delta_index = (g_save_state_index - g_save_state_used_for_delta_index_offset + MAX_SAVE_STATES) % MAX_SAVE_STATES;
+            g_savebuffer_delta[i] = g_savebuffer[delta_index][i] ^ g_savebuffer[g_save_state_index][i];
+        } 
+    }
+
+    if (g_use_rle) {
+        // If we're 4 byte aligned use the 4-byte wordsize rle that gives us the highest gains in 32-bit consoles (where we need it the most)
+        if (g_serialize_size % 4 == 0) {
+            rle_encode32(buffer, g_serialize_size / 4, g_savebuffer_compressed, g_zstd_compress_size + g_frame_cyclic_offset);
+            g_zstd_compress_size[g_frame_cyclic_offset] *= 4;
+        } else {
+            rle_encode8(buffer, g_serialize_size, g_savebuffer_compressed, g_zstd_compress_size + g_frame_cyclic_offset);
+        }
+    } else {
+        if (g_use_dictionary) {
+
+            // There is a lot of ceremony to use the dictionary
+            static ZSTD_CDict *cdict = NULL;
+            if (g_dictionary_is_dirty) {
+                size_t partition_size = rom_size / 8;
+                size_t samples_sizes[8] = { partition_size, partition_size, partition_size, partition_size, 
+                                            partition_size, partition_size, partition_size, partition_size };
+                size_t dictionary_size = ZDICT_optimizeTrainFromBuffer_cover(
+                    g_dictionary, sizeof(g_dictionary),
+                    rom_data, samples_sizes, sizeof(samples_sizes)/sizeof(samples_sizes[0]),
+                    &g_parameters);
+
+                if (cdict) {
+                    ZSTD_freeCDict(cdict);
+                }
+
+                if (ZDICT_isError(dictionary_size)) {
+                    fprintf(stderr, "Error optimizing dictionary: %s\n", ZDICT_getErrorName(dictionary_size));
+                    cdict = NULL;
+                } else {
+                    cdict = ZSTD_createCDict(g_dictionary, sizeof(g_dictionary), g_zstd_compress_level);
+                }
+
+                g_dictionary_is_dirty = false;
+            }
+
+            static ZSTD_CCtx *cctx = NULL;
+            if (cctx == NULL) {
+                cctx = ZSTD_createCCtx();
+            }
+
+            ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, g_zstd_compress_level);
+            //ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 0);
+            ZSTD_CCtx_setParameter(cctx, ZSTD_c_nbWorkers, g_zstd_thread_count);
+            //ZSTD_CCtx_setParameter(cctx, ZSTD_c_jobSize, 0);
+            //ZSTD_CCtx_setParameter(cctx, ZSTD_c_overlapLog, 0);
+            //ZSTD_CCtx_setParameter(cctx, ZSTD_c_enableLdm, 0);
+            //ZSTD_CCtx_setParameter(cctx, ZSTD_c_ldmHashLog, 0);
+
+            if (cdict) {
+                g_zstd_compress_size[g_frame_cyclic_offset] = ZSTD_compress_usingCDict(cctx, 
+                                                                                       g_savebuffer_compressed, SAVE_STATE_COMPRESSED_BOUND_BYTES,
+                                                                                       buffer, g_serialize_size, 
+                                                                                       cdict);
+            }
+        } else {
+            g_zstd_compress_size[g_frame_cyclic_offset] = ZSTD_compress(g_savebuffer_compressed,
+                                                                        SAVE_STATE_COMPRESSED_BOUND_BYTES,
+                                                                        buffer, g_serialize_size, g_zstd_compress_level);
+        }
+
+    }
+
+    if (ZSTD_isError(g_zstd_compress_size[g_frame_cyclic_offset])) {
+        fprintf(stderr, "Error compressing: %s\n", ZSTD_getErrorName(g_zstd_compress_size[g_frame_cyclic_offset]));
+        g_zstd_compress_size[g_frame_cyclic_offset] = 0;
+    }
+
+    g_zstd_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
+
+    // Reed Solomon
+    int packet_payload_size = PACKET_MTU_PAYLOAD_SIZE_BYTES - sizeof(savestate_transfer_packet_t);
+
+    int n, k, packet_groups;
+    logical_partition(sizeof(savestate_transfer_payload_t) + g_zstd_compress_size[g_frame_cyclic_offset], 16, &n, &k, &packet_payload_size, &packet_groups);
+    //int k = g_zstd_compress_size[g_frame_cyclic_offset]/PACKET_MTU_PAYLOAD_SIZE_BYTES+1;
+    //int n = k + g_redundant_packets;
+    if (g_do_reed_solomon) {
+        #if 0
+        char *data[(SAVE_STATE_COMPRESSED_BOUND_BYTES/PACKET_MTU_PAYLOAD_SIZE_BYTES+1+MAX_REDUNDANT_PACKETS)];
+        uint64_t remaining = g_zstd_compress_size[g_frame_cyclic_offset];
+        int i = 0;
+        for (; i < k; i++) {
+            uint64_t consume = SAM2_MIN(PACKET_MTU_PAYLOAD_SIZE_BYTES, remaining);
+            memcpy(g_savebuffer_compressed_packetized[i], &g_savebuffer_compressed[i * PACKET_MTU_PAYLOAD_SIZE_BYTES], consume);
+            remaining -= consume;
+            data[i] = (char *) g_savebuffer_compressed_packetized[i];
+        }
+
+        memset(&g_savebuffer_compressed_packetized[i + PACKET_MTU_PAYLOAD_SIZE_BYTES - remaining], 0, remaining);
+
+        for (; i < n; i++) {
+            data[i] = (char *) g_savebuffer_compressed_packetized[i];
+        }
+
+        uint64_t start = rdtsc();
+        rs_encode2(k, n, data, PACKET_MTU_PAYLOAD_SIZE_BYTES);
+        g_reed_solomon_encode_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
+
+        for (i = 0; i < g_lost_packets; i++) {
+            data[i] = NULL;
+        }
+
+        start = rdtsc();
+        rs_decode2(k, n, data, PACKET_MTU_PAYLOAD_SIZE_BYTES);
+        g_reed_solomon_decode_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
+        #else
+
+        #endif
+    }
+
+    if (g_send_savestate_next_frame) {
+        g_send_savestate_next_frame = false;
+
+        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+            if (!g_libretro_context.agent[p]) continue;
+            g_libretro_context.AuthoritySendSaveState(g_libretro_context.agent[p]);
+        }
+    }
+}
+
 int main(int argc, char *argv[]) {
 	if (argc < 2)
 		die("usage: %s <core> [game]", argv[0]);
@@ -2421,8 +2569,13 @@ int main(int argc, char *argv[]) {
             g_frame_time_milliseconds[g_frame_cyclic_offset] = (float) elapsed_time_milliseconds.count();
             last_tick_time = current_time;
 
+            if (g_do_zstd_compress) {
+                tick_compression_investigation(rom_data, rom_size);
+
+                g_save_state_index = (g_save_state_index + 1) % MAX_SAVE_STATES;
+            }
+
             g_frame_cyclic_offset = (g_frame_cyclic_offset + 1) % g_sample_size;
-            g_save_state_index = (g_save_state_index + 1) % MAX_SAVE_STATES;
         }
 
         // The imgui frame is updated at the monitor refresh cadence
@@ -2434,148 +2587,6 @@ int main(int argc, char *argv[]) {
         // I think you have to write platform specific code / not use OpenGL if you want this to be non-blocking
         // and still try to update on vertical sync
         SDL_GL_SwapWindow(g_win);
-
-        g_serialize_size = g_retro.retro_serialize_size();
-        if (sizeof(g_savebuffer[0]) >= g_serialize_size) {
-            uint64_t start = rdtsc();
-            g_retro.retro_serialize(g_savebuffer[g_save_state_index], sizeof(g_savebuffer[0]));
-            g_save_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
-        } else {
-            fprintf(stderr, "Save buffer too small to save state\n");
-        }
-
-        if (g_do_zstd_compress) {
-            uint64_t start = rdtsc();
-            unsigned char *buffer = g_savebuffer[g_save_state_index];
-            static unsigned char g_savebuffer_delta[sizeof(g_savebuffer[0])];
-            if (g_do_zstd_delta_compress) {
-                buffer = g_savebuffer_delta;
-                for (int i = 0; i < g_serialize_size; i++) {
-                    int delta_index = (g_save_state_index - g_save_state_used_for_delta_index_offset + MAX_SAVE_STATES) % MAX_SAVE_STATES;
-                    g_savebuffer_delta[i] = g_savebuffer[delta_index][i] ^ g_savebuffer[g_save_state_index][i];
-                } 
-            }
-
-            if (g_use_rle) {
-                // If we're 4 byte aligned use the 4-byte wordsize rle that gives us the highest gains in 32-bit consoles (where we need it the most)
-                if (g_serialize_size % 4 == 0) {
-                    rle_encode32(buffer, g_serialize_size / 4, g_savebuffer_compressed, g_zstd_compress_size + g_frame_cyclic_offset);
-                    g_zstd_compress_size[g_frame_cyclic_offset] *= 4;
-                } else {
-                    rle_encode8(buffer, g_serialize_size, g_savebuffer_compressed, g_zstd_compress_size + g_frame_cyclic_offset);
-                }
-            } else {
-                if (g_use_dictionary) {
-
-                    // There is a lot of ceremony to use the dictionary
-                    static ZSTD_CDict *cdict = NULL;
-                    if (g_dictionary_is_dirty) {
-                        size_t partition_size = rom_size / 8;
-                        size_t samples_sizes[8] = { partition_size, partition_size, partition_size, partition_size, 
-                                                    partition_size, partition_size, partition_size, partition_size };
-                        size_t dictionary_size = ZDICT_optimizeTrainFromBuffer_cover(
-                            g_dictionary, sizeof(g_dictionary),
-                            rom_data, samples_sizes, sizeof(samples_sizes)/sizeof(samples_sizes[0]),
-                            &g_parameters);
-
-                        if (cdict) {
-                            ZSTD_freeCDict(cdict);
-                        }
-
-                        if (ZDICT_isError(dictionary_size)) {
-                            fprintf(stderr, "Error optimizing dictionary: %s\n", ZDICT_getErrorName(dictionary_size));
-                            cdict = NULL;
-                        } else {
-                            cdict = ZSTD_createCDict(g_dictionary, sizeof(g_dictionary), g_zstd_compress_level);
-                        }
-
-                        g_dictionary_is_dirty = false;
-                    }
-
-                    static ZSTD_CCtx *cctx = NULL;
-                    if (cctx == NULL) {
-                        cctx = ZSTD_createCCtx();
-                    }
-
-                    ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, g_zstd_compress_level);
-                    //ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 0);
-                    ZSTD_CCtx_setParameter(cctx, ZSTD_c_nbWorkers, g_zstd_thread_count);
-                    //ZSTD_CCtx_setParameter(cctx, ZSTD_c_jobSize, 0);
-                    //ZSTD_CCtx_setParameter(cctx, ZSTD_c_overlapLog, 0);
-                    //ZSTD_CCtx_setParameter(cctx, ZSTD_c_enableLdm, 0);
-                    //ZSTD_CCtx_setParameter(cctx, ZSTD_c_ldmHashLog, 0);
-
-                    if (cdict) {
-                        g_zstd_compress_size[g_frame_cyclic_offset] = ZSTD_compress_usingCDict(cctx, 
-                                                                                                   g_savebuffer_compressed, SAVE_STATE_COMPRESSED_BOUND_BYTES,
-                                                                                                   buffer, g_serialize_size, 
-                                                                                                   cdict);
-                    }
-                } else {
-                    g_zstd_compress_size[g_frame_cyclic_offset] = ZSTD_compress(g_savebuffer_compressed,
-                                                                                    SAVE_STATE_COMPRESSED_BOUND_BYTES,
-                                                                                    buffer, g_serialize_size, g_zstd_compress_level);
-                }
-
-            }
-
-            if (ZSTD_isError(g_zstd_compress_size[g_frame_cyclic_offset])) {
-                fprintf(stderr, "Error compressing: %s\n", ZSTD_getErrorName(g_zstd_compress_size[g_frame_cyclic_offset]));
-                g_zstd_compress_size[g_frame_cyclic_offset] = 0;
-            }
-
-            g_zstd_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
-
-            // Reed Solomon
-            int packet_payload_size = PACKET_MTU_PAYLOAD_SIZE_BYTES - sizeof(savestate_transfer_packet_t);
-
-            int n, k, packet_groups;
-            logical_partition(sizeof(savestate_transfer_payload_t) + g_zstd_compress_size[g_frame_cyclic_offset], 16, &n, &k, &packet_payload_size, &packet_groups);
-            //int k = g_zstd_compress_size[g_frame_cyclic_offset]/PACKET_MTU_PAYLOAD_SIZE_BYTES+1;
-            //int n = k + g_redundant_packets;
-            if (g_do_reed_solomon) {
-                #if 0
-                char *data[(SAVE_STATE_COMPRESSED_BOUND_BYTES/PACKET_MTU_PAYLOAD_SIZE_BYTES+1+MAX_REDUNDANT_PACKETS)];
-                uint64_t remaining = g_zstd_compress_size[g_frame_cyclic_offset];
-                int i = 0;
-                for (; i < k; i++) {
-                    uint64_t consume = SAM2_MIN(PACKET_MTU_PAYLOAD_SIZE_BYTES, remaining);
-                    memcpy(g_savebuffer_compressed_packetized[i], &g_savebuffer_compressed[i * PACKET_MTU_PAYLOAD_SIZE_BYTES], consume);
-                    remaining -= consume;
-                    data[i] = (char *) g_savebuffer_compressed_packetized[i];
-                }
-
-                memset(&g_savebuffer_compressed_packetized[i + PACKET_MTU_PAYLOAD_SIZE_BYTES - remaining], 0, remaining);
-
-                for (; i < n; i++) {
-                    data[i] = (char *) g_savebuffer_compressed_packetized[i];
-                }
-
-                uint64_t start = rdtsc();
-                rs_encode2(k, n, data, PACKET_MTU_PAYLOAD_SIZE_BYTES);
-                g_reed_solomon_encode_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
-
-                for (i = 0; i < g_lost_packets; i++) {
-                    data[i] = NULL;
-                }
-
-                start = rdtsc();
-                rs_decode2(k, n, data, PACKET_MTU_PAYLOAD_SIZE_BYTES);
-                g_reed_solomon_decode_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
-                #else
-
-                #endif
-            }
-
-            if (g_send_savestate_next_frame) {
-                g_send_savestate_next_frame = false;
-
-                for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-                    if (!g_libretro_context.agent[p]) continue;
-                    g_libretro_context.AuthoritySendSaveState(g_libretro_context.agent[p]);
-                }
-            }
-        }
 
         if (g_sam2_socket == 0) {
             if (sam2_client_connect(&g_sam2_socket, g_sam2_address) == 0) {
