@@ -591,6 +591,7 @@ static bool video_set_pixel_format(unsigned format) {
 
 #define CHANNEL_INPUT              0b00000000
 #define CHANNEL_SAVESTATE_TRANSFER 0b00010000
+#define CHANNEL_INPUT_DEBUG        0b11110000
 
 #define FORMAT_UNIT_COUNT_SIZE 64
 double format_unit_count(double count, char *unit)
@@ -708,14 +709,16 @@ struct CircularQueue {
     void enqueue(const input_packet_t& packet) {
         buffer[end] = packet;
         end = (end + 1) % INPUT_BUFFER_MAX;
-#if 1
         SDL_assert(end != begin);
-#else
+    }
+
+    void enqueue_with_overwrite(const input_packet_t& packet) {
+        buffer[end] = packet;
+        end = (end + 1) % INPUT_BUFFER_MAX;
         if (end == begin) {
             // The buffer is full, so we advance the 'begin' as well, effectively overwriting the oldest element
             begin = (begin + 1) % INPUT_BUFFER_MAX;
         }
-#endif
     }
 
     input_packet_t dequeue() {
@@ -798,7 +801,7 @@ uint8_t g_remote_packet_groups = MAX_FEC_PACKET_GROUPS;
 static bool g_send_savestate_next_frame = false;
 
 static bool g_is_refreshing_rooms = false;
-int g_joining_on_port = -1;
+int g_joining_on_port = 8;
 uint64_t g_our_peer_id = 0;
 static int g_volume = 3;
 static bool g_vsync_enabled = true;
@@ -1636,6 +1639,21 @@ static void core_input_poll(void) {
         }
     }
 
+    if (g_our_peer_id) {
+        input_packet_t input_packet = {CHANNEL_INPUT_DEBUG};
+        input_packet.frame = frame_counter;
+        memcpy(input_packet.joy, g_joy, sizeof(g_joy));
+
+        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+            if (!g_agent[p]) continue;
+            if (g_room_we_are_in.peer_ids[p] == g_our_peer_id) continue;
+
+            juice_send(g_agent[p], (char *) &input_packet, sizeof(input_packet));
+        }
+
+        g_input_packet_queue[g_joining_on_port].enqueue_with_overwrite(input_packet);
+    }
+
     if (g_kbd[SDL_SCANCODE_ESCAPE])
         running = false;
 }
@@ -1926,18 +1944,17 @@ static void on_gathering_done(juice_agent_t *agent, void *user_ptr) {
 static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *user_ptr) {
     FLibretroContext *LibretroContext = (FLibretroContext *) user_ptr;
 
+    int p = 0;
+    for (; p < SAM2_PORT_MAX+1; p++) if (agent == g_agent[p]) break;
+
+    if (p == SAM2_PORT_MAX+1) {
+        die("No agent associated for packet on channel 0x%" PRIx8 "\n", data[0] & 0xF0);
+    }
+
     uint8_t channel_and_flags = data[0];
     switch (channel_and_flags & 0xF0) {
     case CHANNEL_INPUT: {
         SDL_assert(size == sizeof(input_packet_t));
-
-        int p = 0;
-        for (; p < SAM2_PORT_MAX+1; p++) if (agent == g_agent[p]) break;
-
-        if (p == SAM2_PORT_MAX+1) {
-            printf("No agent found for CHANNEL_INPUT packet\n");
-            break;
-        }
 
         input_packet_t input_packet;
         memcpy(&input_packet, data, sizeof(input_packet_t)); // Strict-aliasing
@@ -1953,6 +1970,30 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         
         //memcpy(&g_frame_counter_remote, data + offsetof(input_packet_t, frame), sizeof(input_packet_t::frame));
         //memcpy(g_joy_remote, data + offsetof(input_packet_t, joy), sizeof(input_packet_t::joy));
+        break;
+    }
+    case CHANNEL_INPUT_DEBUG: {
+        SDL_assert(size == sizeof(input_packet_t));
+
+        input_packet_t their_input_packet;
+        memcpy(&their_input_packet, data, sizeof(input_packet_t)); // Strict-aliasing
+
+        for (input_packet_t &our_input_packet : g_input_packet_queue[g_joining_on_port].buffer) {
+            if (their_input_packet.frame == our_input_packet.frame) {
+                if (memcmp(our_input_packet.joy, their_input_packet.joy, sizeof(int16_t) * 16)) {
+                    printf("Input mismatch for frame %" PRId64 "\n", their_input_packet.frame);
+                    for (int i = 0; i < 16; i++) {
+                        printf("%d ", their_input_packet.joy[i]);
+                    }
+                    printf("\n");
+                    for (int i = 0; i < 16; i++) {
+                        printf("%d ", our_input_packet.joy[i]);
+                    }
+                    printf("\n");
+                }
+            }
+        }
+        
         break;
     }
     case CHANNEL_SAVESTATE_TRANSFER: {
