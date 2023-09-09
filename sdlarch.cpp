@@ -227,10 +227,12 @@ struct FLibretroContext {
     juice_agent_t *agent[SAM2_PORT_MAX+1] = {0};
     FLibretroInputState InputState[4] = {0};
     int64_t frame_counter = 0;
+    bool fuzz_input = false;
 
     void AuthoritySendSaveState(juice_agent_t *agent);
 
     int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id);
+    void core_input_poll();
 };
 
 static struct FLibretroContext g_libretro_context = {0}; 
@@ -702,22 +704,23 @@ static sam2_signal_message_t g_signal_message[SAM2_PORT_MAX+1] = {0};
 #include <array>
 #include <stdexcept>
 struct CircularQueue {
-    std::array<input_packet_t, INPUT_BUFFER_MAX> buffer;
+    static const int buffer_size = INPUT_BUFFER_MAX + 1;
+    std::array<input_packet_t, buffer_size> buffer;
     int begin = 0;
     int end = 0;
 
     void enqueue(const input_packet_t& packet) {
         buffer[end] = packet;
-        end = (end + 1) % INPUT_BUFFER_MAX;
+        end = (end + 1) % buffer_size;
         SDL_assert(end != begin);
     }
 
     void enqueue_with_overwrite(const input_packet_t& packet) {
         buffer[end] = packet;
-        end = (end + 1) % INPUT_BUFFER_MAX;
+        end = (end + 1) % buffer_size;
         if (end == begin) {
             // The buffer is full, so we advance the 'begin' as well, effectively overwriting the oldest element
-            begin = (begin + 1) % INPUT_BUFFER_MAX;
+            begin = (begin + 1) % buffer_size;
         }
     }
 
@@ -726,8 +729,13 @@ struct CircularQueue {
             throw std::runtime_error("Cannot dequeue from an empty buffer");
         }
         input_packet_t packet = buffer[begin];
-        begin = (begin + 1) % INPUT_BUFFER_MAX;
+        begin = (begin + 1) % buffer_size;
         return packet;
+    }
+
+    size_t size() const {
+        if (end >= begin)  return end - begin;
+        else return buffer_size + end - begin;
     }
 
     bool isEmpty() const {
@@ -735,7 +743,7 @@ struct CircularQueue {
     }
 
     bool isFull() const {
-        return (end + 1) % INPUT_BUFFER_MAX == begin;
+        return (end + 1) % buffer_size == begin;
     }
 };
 
@@ -1038,10 +1046,22 @@ void draw_imgui() {
                 }
 
                 if (g_agent[p]) {
-                    ImGui::SameLine();
-                    ImGui::Text("State: %s", juice_state_to_string(juice_get_state(g_agent[p])));
-                    ImGui::SameLine();
+                    juice_state_t connection_state = juice_get_state(g_agent[p]);
 
+                    ImGui::SameLine();
+                    if (connection_state == JUICE_STATE_COMPLETED) {
+                        char buffer_depth[] = "00000000";
+
+                        for (int i = 0; i < g_input_packet_queue[p].size(); i++) {
+                            buffer_depth[i] = 'X';
+                        }
+
+                        ImGui::Text("Queue: %s", buffer_depth);
+                    } else {
+                        ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1), "State: %s %c", juice_state_to_string(connection_state), spinnerGlyph);
+                    }
+
+                    ImGui::SameLine();
                     static bool is_open[SAM2_PORT_MAX+1] = {0};
                     is_open[p] |= ImGui::Button("Signal Msg");
                     if (is_open[p]) {
@@ -1169,6 +1189,9 @@ finished_drawing_sam2_interface:
     
     {
         ImGui::Begin("Timing", NULL, ImGuiWindowFlags_AlwaysAutoResize);
+        
+        ImGui::Checkbox("Fuzz Input", &g_libretro_context.fuzz_input);
+        
         static bool old_vsync_enabled = true;
 
         if (g_vsync_enabled != old_vsync_enabled) {
@@ -1600,8 +1623,8 @@ static void core_video_refresh(const void *data, unsigned width, unsigned height
     video_refresh(data, width, height, pitch);
 }
 
-static void core_input_poll(void) {
-	int i;
+void FLibretroContext::core_input_poll() {
+    int i;
     auto &g_joy = g_libretro_context.InputState[0];
     g_kbd = SDL_GetKeyboardState(NULL);
 
@@ -1610,6 +1633,11 @@ static void core_input_poll(void) {
 
 	for (i = 0; g_binds[i].k || g_binds[i].rk; ++i)
         g_joy[g_binds[i].rk] = g_kbd[g_binds[i].k];
+
+    if (fuzz_input) {
+        for (i = 0; i < 16; ++i)
+            g_joy[i] = rand() & 0x0001;
+    }
 
     for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
         if (!g_agent[p]) continue;
@@ -1626,13 +1654,14 @@ static void core_input_poll(void) {
 
         }
 
+        // If the peer was supposed to join on this frame
         if (frame_counter >= g_signal_message[p].frame_counter) {
             while (g_input_packet_queue[p].isEmpty()) {
                 juice_user_poll(&g_agent[p], 1);
             }
             input_packet_t input_packet = g_input_packet_queue[p].dequeue();
 
-            SDL_assert(input_packet.frame == frame_counter);
+            SDL_assert(input_packet.frame == frame_counter); // This assert failed with 328 == 332
             for (int i = 0; i < 16; i++) {
                 g_joy[i] |= input_packet.joy[i];
             }
@@ -1656,6 +1685,10 @@ static void core_input_poll(void) {
 
     if (g_kbd[SDL_SCANCODE_ESCAPE])
         running = false;
+}
+
+static void core_input_poll(void) {
+    g_libretro_context.core_input_poll();
 }
 
 
@@ -2249,7 +2282,7 @@ void startup_ice_for_peer(juice_agent_t **agent, sam2_signal_message_t *signal_m
 #include <thread>
 
 void usleep_busy_wait(unsigned int usec) {
-    if (usec >= 10000) {
+    if (usec >= 500) {
         std::this_thread::sleep_for(std::chrono::microseconds(usec));
     } else {
         auto start = std::chrono::high_resolution_clock::now();
