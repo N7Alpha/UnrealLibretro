@@ -798,14 +798,15 @@ static uint8_t *g_savebuffer_compressed = g_savestate_transfer_payload->zipped_s
 static int g_save_state_index = 0;
 static int g_save_state_used_for_delta_index_offset = 1;
 
-#define MAX_FEC_PACKET_GROUPS 16
-#define FEC_REDUNDANT_BLOCKS 16
-static void* g_fec_packet[MAX_FEC_PACKET_GROUPS][255 - FEC_REDUNDANT_BLOCKS];
-static int g_fec_index[MAX_FEC_PACKET_GROUPS][255 - FEC_REDUNDANT_BLOCKS];
-static int g_fec_index_counter[MAX_FEC_PACKET_GROUPS] = {0};
-static unsigned char g_remote_savestate_transfer_packets[SAVE_STATE_COMPRESSED_BOUND_WITH_REDUNDANCY_BYTES + MAX_FEC_PACKET_GROUPS * (255 - FEC_REDUNDANT_BLOCKS) * sizeof(savestate_transfer_packet_t)];
+#define FEC_PACKET_GROUPS_MAX 16
+#define FEC_REDUNDANT_BLOCKS 16 // ULNET is hardcoded based on this value so it can't really be changed
+const static int savestate_transfer_max_payload = FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * PACKET_MTU_PAYLOAD_SIZE_BYTES;
+static void* g_fec_packet[FEC_PACKET_GROUPS_MAX][GF_SIZE - FEC_REDUNDANT_BLOCKS];
+static int g_fec_index[FEC_PACKET_GROUPS_MAX][GF_SIZE - FEC_REDUNDANT_BLOCKS];
+static int g_fec_index_counter[FEC_PACKET_GROUPS_MAX] = {0}; // Counts packets received in each "packet group"
+static unsigned char g_remote_savestate_transfer_packets[SAVE_STATE_COMPRESSED_BOUND_WITH_REDUNDANCY_BYTES + FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * sizeof(savestate_transfer_packet_t)];
 static int64_t g_remote_savestate_transfer_offset = 0;
-uint8_t g_remote_packet_groups = MAX_FEC_PACKET_GROUPS;
+uint8_t g_remote_packet_groups = FEC_PACKET_GROUPS_MAX;
 static bool g_send_savestate_next_frame = false;
 
 static bool g_is_refreshing_rooms = false;
@@ -1860,42 +1861,56 @@ void FLibretroContext::AuthoritySendSaveState(juice_agent_t *agent) {
         die("Failed to serialize\n");
     }
 
-    // Reed Solomon
-    g_savestate_transfer_payload->zipped_savestate_size = ZSTD_compress(g_savestate_transfer_payload->zipped_savestate,
-                                                                        SAVE_STATE_COMPRESSED_BOUND_BYTES,
-                                                                        savebuffer, serialize_size, g_zstd_compress_level);
+    int packet_payload_size_bytes = PACKET_MTU_PAYLOAD_SIZE_BYTES - sizeof(savestate_transfer_packet_t);
+    int n, k, packet_groups;
+    logical_partition(sizeof(savestate_transfer_payload_t) /* Header */ + ZSTD_COMPRESSBOUND(serialize_size),
+                      FEC_REDUNDANT_BLOCKS, &n, &k, &packet_payload_size_bytes, &packet_groups);
 
-    if (ZSTD_isError(g_savestate_transfer_payload->zipped_savestate_size)) {
-        die("ZSTD_compress failed: %s\n", ZSTD_getErrorName(g_savestate_transfer_payload->zipped_savestate_size));
+    size_t savestate_transfer_payload_plus_parity_bound_bytes = packet_groups * n * packet_payload_size_bytes;
+
+    // This points to the savestate transfer payload, but also the remaining bytes at the end hold our parity blocks
+    // Having this data in a single contiguous buffer makes indexing easier
+    savestate_transfer_payload_t *savestate_transfer_payload = (savestate_transfer_payload_t *) malloc(savestate_transfer_payload_plus_parity_bound_bytes);
+
+    savestate_transfer_payload->zipped_savestate_size = ZSTD_compress(savestate_transfer_payload->zipped_savestate,
+                                                                      SAVE_STATE_COMPRESSED_BOUND_BYTES,
+                                                                      savebuffer, serialize_size, g_zstd_compress_level);
+
+    if (ZSTD_isError(savestate_transfer_payload->zipped_savestate_size)) {
+        die("ZSTD_compress failed: %s\n", ZSTD_getErrorName(savestate_transfer_payload->zipped_savestate_size));
     }
 
-    int packet_payload_size = PACKET_MTU_PAYLOAD_SIZE_BYTES - sizeof(savestate_transfer_packet_t);
+    logical_partition(sizeof(savestate_transfer_payload_t) /* Header */ + savestate_transfer_payload->zipped_savestate_size,
+                      FEC_REDUNDANT_BLOCKS, &n, &k, &packet_payload_size_bytes, &packet_groups);
+    SDL_assert(savestate_transfer_payload_plus_parity_bound_bytes >= packet_groups * n * packet_payload_size_bytes); // If this fails my logic calculating the bounds was just wrong
 
-    int n, k, packet_groups;
-    logical_partition(sizeof(savestate_transfer_payload_t) + g_savestate_transfer_payload->zipped_savestate_size, 16, &n, &k, &packet_payload_size, &packet_groups);
+    savestate_transfer_payload->frame_counter = frame_counter;
+    savestate_transfer_payload->zipped_savestate_size = savestate_transfer_payload->zipped_savestate_size;
+    savestate_transfer_payload->total_size_bytes = sizeof(savestate_transfer_payload_t) + savestate_transfer_payload->zipped_savestate_size;
 
-    g_savestate_transfer_payload->frame_counter = frame_counter;
-    g_savestate_transfer_payload->zipped_savestate_size = g_savestate_transfer_payload->zipped_savestate_size;
-    g_savestate_transfer_payload->total_size_bytes = sizeof(savestate_transfer_payload_t) + g_savestate_transfer_payload->zipped_savestate_size;
+    uint64_t hash = fnv1a_hash(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes);
+    printf("Sending savestate payload with hash: %llx size: %llu bytes\n", hash, savestate_transfer_payload->total_size_bytes);
 
-    uint64_t hash = fnv1a_hash(g_savestate_transfer_payload, g_savestate_transfer_payload->total_size_bytes);
-    printf("Sending savestate payload with hash: %llx size: %llu bytes\n", hash, g_savestate_transfer_payload->total_size_bytes);
-
+    // Create parity blocks for Reed-Solomon. n - k in total for each packet group
+    // We have "packet grouping" because pretty much every implementation of Reed-Solomon doesn't support more than 255 blocks
+    // and unfragmented UDP packets over ethernet are limited to PACKET_MTU_PAYLOAD_SIZE_BYTES
+    // This makes the code more complicated and the error correcting properties slightly worse but it's a practical tradeoff
+    void *rs_code = fec_new(k, n);
     for (int j = 0; j < packet_groups; j++) {
         void *data[255];
-        void *rs_code = fec_new(k, n);
         
         for (int i = 0; i < n; i++) {
-            data[i] = g_savestate_transfer_payload_untyped + logical_partition_offset_bytes(j, i, packet_payload_size, packet_groups);
+            data[i] = (unsigned char *) savestate_transfer_payload + logical_partition_offset_bytes(j, i, packet_payload_size_bytes, packet_groups);
         }
 
         for (int i = k; i < n; i++) {
-            fec_encode(rs_code, (void **)data, data[i], i, packet_payload_size);
+            fec_encode(rs_code, (void **)data, data[i], i, packet_payload_size_bytes);
         }
-
-        fec_free(rs_code);
     }
+    fec_free(rs_code);
 
+    // Send original data blocks and parity blocks
+    // @todo I wrote this in such a way that you can do a zero-copy when creating the packets to send
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < packet_groups; j++) {
             savestate_transfer_packet2_t packet;
@@ -1914,12 +1929,15 @@ void FLibretroContext::AuthoritySendSaveState(juice_agent_t *agent) {
 
             packet.sequence_lo = i;
 
-            memcpy(packet.payload, g_savestate_transfer_payload_untyped + logical_partition_offset_bytes(j, i, packet_payload_size, packet_groups), packet_payload_size);
+            memcpy(packet.payload, (unsigned char *) savestate_transfer_payload + logical_partition_offset_bytes(j, i, packet_payload_size_bytes, packet_groups), packet_payload_size_bytes);
 
-            int status = juice_send(agent, (char *) &packet, sizeof(savestate_transfer_packet_t) + packet_payload_size);
+            int status = juice_send(agent, (char *) &packet, sizeof(savestate_transfer_packet_t) + packet_payload_size_bytes);
             SDL_assert(status == 0);
         }
     }
+
+    free(savebuffer);
+    free(savestate_transfer_payload);
 }
 
 // On state changed
@@ -2066,7 +2084,7 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         g_fec_index[sequence_hi][g_fec_index_counter[sequence_hi]++] = sequence_lo;
 
         if (g_fec_index_counter[sequence_hi] == k) {
-            int redudant_blocks_sent = k * FEC_REDUNDANT_BLOCKS / (255 - FEC_REDUNDANT_BLOCKS);
+            int redudant_blocks_sent = k * FEC_REDUNDANT_BLOCKS / (GF_SIZE - FEC_REDUNDANT_BLOCKS);
             void *rs_code = fec_new(k, k + redudant_blocks_sent);
             int rs_block_size = (int) (size - sizeof(savestate_transfer_packet_t));
             int status = fec_decode(rs_code, g_fec_packet[sequence_hi], g_fec_index[sequence_hi], rs_block_size);
@@ -2116,7 +2134,7 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
                 }
 
                 // Reset the savestate transfer state
-                g_remote_packet_groups = MAX_FEC_PACKET_GROUPS;
+                g_remote_packet_groups = FEC_PACKET_GROUPS_MAX;
                 g_remote_savestate_transfer_offset = 0;
                 memset(g_fec_index_counter, 0, sizeof(g_fec_index_counter));
                 g_waiting_for_savestate = false;
@@ -2400,7 +2418,7 @@ void tick_compression_investigation(void *rom_data, size_t rom_size) {
     int packet_payload_size = PACKET_MTU_PAYLOAD_SIZE_BYTES - sizeof(savestate_transfer_packet_t);
 
     int n, k, packet_groups;
-    logical_partition(sizeof(savestate_transfer_payload_t) + g_zstd_compress_size[g_frame_cyclic_offset], 16, &n, &k, &packet_payload_size, &packet_groups);
+    logical_partition(sizeof(savestate_transfer_payload_t) + g_zstd_compress_size[g_frame_cyclic_offset], FEC_REDUNDANT_BLOCKS, &n, &k, &packet_payload_size, &packet_groups);
     //int k = g_zstd_compress_size[g_frame_cyclic_offset]/PACKET_MTU_PAYLOAD_SIZE_BYTES+1;
     //int n = k + g_redundant_packets;
     if (g_do_reed_solomon) {
