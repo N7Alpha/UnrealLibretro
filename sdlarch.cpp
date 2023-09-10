@@ -2223,18 +2223,14 @@ void rle_encode8(void *input_typeless, size_t inputSize, void *output_typeless, 
 }
 
 static void logical_partition(int sz, int redundant, int *n, int *out_k, int *packet_size, int *packet_groups) {
-    int k_max = 255 - redundant;
+    int k_max = GF_SIZE - redundant;
     *packet_groups = 1;
-    int k;
-    for (;;) {
-        k = (sz - 1) / (*packet_groups * *packet_size) + 1;
+    int k = (sz - 1) / (*packet_groups * *packet_size) + 1;
 
-        if (k > k_max) {
-            *packet_groups = (k - 1) / k_max + 1;
-            *packet_size = (sz - 1) / (k_max * *packet_groups) + 1;
-        } else {
-            break;
-        }
+    if (k > k_max) {
+        *packet_groups = (k - 1) / k_max + 1;
+        *packet_size = (sz - 1) / (k_max * *packet_groups) + 1;
+        k = (sz - 1) / (*packet_groups * *packet_size) + 1;
     }
 
     *n = k + k * redundant / k_max;
