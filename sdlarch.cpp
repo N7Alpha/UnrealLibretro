@@ -49,7 +49,7 @@ static const uint8_t *g_kbd = NULL;
 struct retro_system_av_info g_av = {0};
 static struct retro_audio_callback audio_callback;
 
-static float g_scale = 3;
+static float g_scale = 2;
 bool running = true;
 
 
@@ -218,7 +218,7 @@ static constexpr auto to_integral(E e) -> typename std::underlying_type<E>::type
 
 constexpr int PortCount = 4;
 
-typedef int16_t FLibretroInputState[64];
+typedef int16_t FLibretroInputState[64]; // This must be a POD for putting into packets
 
 static_assert(to_integral(ERetroDeviceID::Size) < sizeof(FLibretroInputState) / sizeof((*(FLibretroInputState *) (0x0))[0]), "FLibretroInputState is too small");
 
@@ -636,11 +636,12 @@ double format_unit_count(double count, char *unit)
 typedef struct {
     uint8_t channel_and_flags;
     uint8_t spacing[7];
+    int64_t savestate_hash;
     int64_t frame;
     FLibretroInputState joy;
 } input_packet_t;
 
-static_assert(sizeof(input_packet_t) == sizeof(input_packet_t::channel_and_flags) + sizeof(input_packet_t::spacing) + sizeof(input_packet_t::frame) + sizeof(input_packet_t::joy), "Input packet is not packed");
+static_assert(sizeof(input_packet_t) == sizeof(input_packet_t::savestate_hash) + sizeof(input_packet_t::channel_and_flags) + sizeof(input_packet_t::spacing) + sizeof(input_packet_t::frame) + sizeof(input_packet_t::joy), "Input packet is not packed");
 
 #define SAVESTATE_TRANSFER_FLAG_K_IS_239         0b0001
 #define SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0 0b0010
@@ -682,6 +683,8 @@ typedef struct {
     uint8_t zipped_savestate[];
 } savestate_transfer_payload_t;
 
+int g_argc; 
+char **g_argv;
 
 static sam2_room_t g_new_room_set_through_gui = { 
     "My Room Name",
@@ -694,17 +697,16 @@ static int64_t g_sam2_room_count = 0;
 
 static bool g_waiting_for_savestate = false;
 
-#define INPUT_BUFFERED_BY_US_MAX 4
-#define INPUT_BUFFER_MAX (2 * INPUT_BUFFERED_BY_US_MAX)
+#define INPUT_BUFFER_DELAY_MAX 4 // This should be based on the ping time
+#define ULNET_INPUT_BUFFER_MAX 128 // This gives ~2 seconds for a peer to receive a savestate before we pause execution for all peers so 16 Mibibits assuming they have a 8 Mibibits/s connection to the authority
 static juice_agent_t **g_agent = g_libretro_context.agent;
 static sam2_signal_message_t g_signal_message[SAM2_PORT_MAX+1] = {0};
 //static input_packet_t g_input_packet[SAM2_PORT_MAX+1][INPUT_BUFFER_MAX] = {0};
 //static int g_input_packet_begin[SAM2_PORT_MAX+1] = {0};
 //static int g_input_packet_end[SAM2_PORT_MAX+1] = {0};
 #include <array>
-#include <stdexcept>
 struct CircularQueue {
-    static const int buffer_size = INPUT_BUFFER_MAX + 1;
+    static const int buffer_size = ULNET_INPUT_BUFFER_MAX + 1; // +1 element is wasted to distinguish between empty and full
     std::array<input_packet_t, buffer_size> buffer;
     int begin = 0;
     int end = 0;
@@ -715,7 +717,7 @@ struct CircularQueue {
         SDL_assert(end != begin);
     }
 
-    void enqueue_with_overwrite(const input_packet_t& packet) {
+    void enqueue_allow_overwrite(const input_packet_t& packet) {
         buffer[end] = packet;
         end = (end + 1) % buffer_size;
         if (end == begin) {
@@ -725,9 +727,7 @@ struct CircularQueue {
     }
 
     input_packet_t dequeue() {
-        if (begin == end) {
-            throw std::runtime_error("Cannot dequeue from an empty buffer");
-        }
+        assert(begin != end && "Cannot dequeue from an empty buffer");
         input_packet_t packet = buffer[begin];
         begin = (begin + 1) % buffer_size;
         return packet;
@@ -806,7 +806,7 @@ static int g_fec_index[FEC_PACKET_GROUPS_MAX][GF_SIZE - FEC_REDUNDANT_BLOCKS];
 static int g_fec_index_counter[FEC_PACKET_GROUPS_MAX] = {0}; // Counts packets received in each "packet group"
 static unsigned char g_remote_savestate_transfer_packets[SAVE_STATE_COMPRESSED_BOUND_WITH_REDUNDANCY_BYTES + FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * sizeof(savestate_transfer_packet_t)];
 static int64_t g_remote_savestate_transfer_offset = 0;
-uint8_t g_remote_packet_groups = FEC_PACKET_GROUPS_MAX;
+uint8_t g_remote_packet_groups = FEC_PACKET_GROUPS_MAX; // This is used to bookkeep how much data we actually need to receive to reform the complete savestate
 static bool g_send_savestate_next_frame = false;
 
 static bool g_is_refreshing_rooms = false;
@@ -1190,6 +1190,10 @@ finished_drawing_sam2_interface:
     
     {
         ImGui::Begin("Timing", NULL, ImGuiWindowFlags_AlwaysAutoResize);
+
+        for (int i = 0; i < g_argc; i++) {
+            ImGui::Text("argv[%d]=%s", i, g_argv[i]);
+        }
         
         ImGui::Checkbox("Fuzz Input", &g_libretro_context.fuzz_input);
         
@@ -1465,7 +1469,7 @@ static void core_perf_stop(struct retro_perf_counter* counter) {
  */
 static void core_perf_log() {
     // TODO: Use a linked list of counters, and loop through them all.
-    core_log(RETRO_LOG_INFO, "[timer] %s: %i - %i", g_retro.perf_counter_last->ident, g_retro.perf_counter_last->start, g_retro.perf_counter_last->total);
+    //core_log(RETRO_LOG_INFO, "[timer] %s: %i - %i", g_retro.perf_counter_last->ident, g_retro.perf_counter_last->start, g_retro.perf_counter_last->total); This resulted in a nullptr access at one point
 }
 
 static bool core_environment(unsigned cmd, void *data) {
@@ -1624,42 +1628,58 @@ static void core_video_refresh(const void *data, unsigned width, unsigned height
     video_refresh(data, width, height, pitch);
 }
 
+int64_t byte_swap_int64(int64_t val) {
+    int64_t swapped = ((val & 0x00000000000000ffLL) << 56) |
+                      ((val & 0x000000000000ff00LL) << 40) |
+                      ((val & 0x0000000000ff0000LL) << 24) |
+                      ((val & 0x00000000ff000000LL) << 8)  |
+                      ((val & 0x000000ff00000000LL) >> 8)  |
+                      ((val & 0x0000ff0000000000LL) >> 24) |
+                      ((val & 0x00ff000000000000LL) >> 40) |
+                      ((val & 0xff00000000000000LL) >> 56);
+    return swapped;
+}
+
 void FLibretroContext::core_input_poll() {
-    int i;
     auto &g_joy = g_libretro_context.InputState[0];
     g_kbd = SDL_GetKeyboardState(NULL);
+    
+    if (g_kbd[SDL_SCANCODE_ESCAPE])
+        running = false;
 
-    juice_agent_t *_debugview_agent[SAM2_ARRAY_LENGTH(FLibretroContext::agent)];
-    memcpy(_debugview_agent, g_libretro_context.agent, sizeof(_debugview_agent));
-
-	for (i = 0; g_binds[i].k || g_binds[i].rk; ++i)
-        g_joy[g_binds[i].rk] = g_kbd[g_binds[i].k];
+    
+    if (   !g_our_peer_id
+        || g_waiting_for_savestate
+        || frame_counter >= g_signal_message[g_joining_on_port].frame_counter
+        || g_joining_on_port == SAM2_AUTHORITY_INDEX) {
+        for (int i = 0; g_binds[i].k || g_binds[i].rk; ++i) {
+            g_joy[g_binds[i].rk] = g_kbd[g_binds[i].k];
+        }
+    }
 
     if (fuzz_input) {
-        for (i = 0; i < 16; ++i)
+        for (int i = 0; i < 16; ++i) {
             g_joy[i] = rand() & 0x0001;
+        }
     }
+
+    input_packet_t our_input_packet = {CHANNEL_INPUT};
+    our_input_packet.frame = frame_counter;
+    memcpy(our_input_packet.joy, g_joy, sizeof(g_joy));
 
     for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
         if (!g_agent[p]) continue;
-        if (g_room_we_are_in.peer_ids[p] == g_our_peer_id) continue;
 
-        input_packet_t input_packet;
-
-        input_packet.channel_and_flags = CHANNEL_INPUT;
-        input_packet.frame = frame_counter;
-        memcpy(input_packet.joy, g_joy, sizeof(g_joy));
-        juice_send(g_agent[p], (char *) &input_packet, sizeof(input_packet));
-
-        if (g_our_peer_id == g_room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
-
-        }
+        juice_send(g_agent[p], (const char *) &our_input_packet, sizeof(our_input_packet));
+        LOG_VERBOSE("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64 "\n", our_input_packet.frame, p, g_room_we_are_in.peer_ids[p]);
 
         // If the peer was supposed to join on this frame
         if (frame_counter >= g_signal_message[p].frame_counter) {
             while (g_input_packet_queue[p].isEmpty()) {
-                juice_user_poll(&g_agent[p], 1);
+                char buffer[4096];
+                while (juice_user_poll(g_agent[p], buffer, sizeof(buffer))) {}
             }
+
             input_packet_t input_packet = g_input_packet_queue[p].dequeue();
 
             SDL_assert(input_packet.frame == frame_counter); // This assert failed with 328 == 332
@@ -1668,24 +1688,6 @@ void FLibretroContext::core_input_poll() {
             }
         }
     }
-
-    if (g_our_peer_id) {
-        input_packet_t input_packet = {CHANNEL_INPUT_DEBUG};
-        input_packet.frame = frame_counter;
-        memcpy(input_packet.joy, g_joy, sizeof(g_joy));
-
-        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-            if (!g_agent[p]) continue;
-            if (g_room_we_are_in.peer_ids[p] == g_our_peer_id) continue;
-
-            juice_send(g_agent[p], (char *) &input_packet, sizeof(input_packet));
-        }
-
-        g_input_packet_queue[g_joining_on_port].enqueue_with_overwrite(input_packet);
-    }
-
-    if (g_kbd[SDL_SCANCODE_ESCAPE])
-        running = false;
 }
 
 static void core_input_poll(void) {
@@ -1857,9 +1859,13 @@ void FLibretroContext::AuthoritySendSaveState(juice_agent_t *agent) {
     size_t serialize_size = g_retro.retro_serialize_size();
     void *savebuffer = malloc(serialize_size);
 
+    LOG_INFO("Before serialize\n");
+    fflush(stdout);
     if (!g_retro.retro_serialize(savebuffer, serialize_size)) {
         die("Failed to serialize\n");
     }
+    LOG_INFO("After serialize\n");
+    fflush(stdout);
 
     int packet_payload_size_bytes = PACKET_MTU_PAYLOAD_SIZE_BYTES - sizeof(savestate_transfer_packet_t);
     int n, k, packet_groups;
@@ -1949,7 +1955,6 @@ static void on_state_changed(juice_agent_t *agent, juice_state_t state, void *us
         && g_our_peer_id == g_room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
         // We are the authority and we are connected to the other peer
 
-        // Send savestate
         LibretroContext->AuthoritySendSaveState(agent);
     }
 }
@@ -1985,7 +1990,7 @@ static void on_gathering_done(juice_agent_t *agent, void *user_ptr) {
     }
 
     if (g_our_peer_id == g_room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
-        g_signal_message[p].frame_counter = frame_counter+4; // @todo magic number
+        g_signal_message[p].frame_counter = frame_counter+16; // @todo magic number
     }
 
     sam2_client_send(g_sam2_socket, (char *) &g_signal_message[p], SAM2_EMESSAGE_SIGNAL);
@@ -2010,9 +2015,14 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         input_packet_t input_packet;
         memcpy(&input_packet, data, sizeof(input_packet_t)); // Strict-aliasing
 
+        LOG_VERBOSE("Recv input packet for frame %" PRId64 " from peer_ids[%d]=%" PRIx64 "\n", input_packet.frame, p, g_room_we_are_in.peer_ids[p]);
+
         if (   g_our_peer_id == g_room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] // @todo This logic only works for 1 authority and 1 client
             && input_packet.frame < g_signal_message[p].frame_counter) {
             printf("Received input packet for frame %" PRId64 " but we agreed the client would start sending input on frame %" PRId64 "\n", input_packet.frame, g_signal_message[p].frame_counter);
+        } else if (g_waiting_for_savestate) {
+            // @todo You can use normal enqueue if you'd overflow that means a client broke protocol and you should just drop the connection probably
+            g_input_packet_queue[p].enqueue_allow_overwrite(input_packet);
         } else if (input_packet.frame < frame_counter) {
             printf("Received input packet for frame %" PRId64 " but we are already on frame %" PRId64 "\n", input_packet.frame, frame_counter);
         } else {
@@ -2042,6 +2052,11 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
                     }
                     printf("\n");
                 }
+
+                if (our_input_packet.savestate_hash != their_input_packet.savestate_hash) {
+                    LOG_ERROR("Savestate hash mismatch for frame %" PRId64 " Our hash: %" PRIx64 "Their hash: %" PRIx64 "\n", 
+                        their_input_packet.frame, our_input_packet.savestate_hash, their_input_packet.savestate_hash);
+                }
             }
         }
         
@@ -2053,18 +2068,28 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
             break;
         }
 
-        SDL_assert(size >= sizeof(savestate_transfer_packet_t));
-        SDL_assert(size <= PACKET_MTU_PAYLOAD_SIZE_BYTES);
+        if (size < sizeof(savestate_transfer_packet_t)) {
+            LOG_WARN("Recv savestate transfer packet with size smaller than header\n");
+            break;
+        }
+
+        if (size > PACKET_MTU_PAYLOAD_SIZE_BYTES) {
+            LOG_WARN("Recv savestate transfer packet potentially larger than MTU\n");
+        }
+
+        savestate_transfer_packet_t savestate_transfer_header;
+        memcpy(&savestate_transfer_header, data, sizeof(savestate_transfer_packet_t)); // Strict-aliasing
+
         uint8_t sequence_hi = 0;
         int k = 239;
         if (channel_and_flags & SAVESTATE_TRANSFER_FLAG_K_IS_239) {
             if (channel_and_flags & SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0) {
-                g_remote_packet_groups = data[1];
+                g_remote_packet_groups = savestate_transfer_header.packet_groups;
             } else {
-                sequence_hi = data[1];
+                sequence_hi = savestate_transfer_header.sequence_hi;
             }
         } else {
-            k = data[1];
+            k = savestate_transfer_header.reed_solomon_k;
             g_remote_packet_groups = 1; // k != 239 => 1 packet group
         }
 
@@ -2073,9 +2098,10 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
             break;
         }
 
-        uint8_t sequence_lo = data[2];
+        uint8_t sequence_lo = savestate_transfer_header.sequence_lo;
 
         LOG_VERBOSE("Received savestate packet sequence_hi: %hhu sequence_lo: %hhu\n", sequence_hi, sequence_lo);
+        fflush(stdout);
 
         uint8_t *copied_packet_ptr = (uint8_t *) memcpy(g_remote_savestate_transfer_packets + g_remote_savestate_transfer_offset, data, size);
         g_fec_packet[sequence_hi][sequence_lo] = copied_packet_ptr + sizeof(savestate_transfer_packet_t);
@@ -2084,6 +2110,8 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         g_fec_index[sequence_hi][g_fec_index_counter[sequence_hi]++] = sequence_lo;
 
         if (g_fec_index_counter[sequence_hi] == k) {
+            LOG_VERBOSE("Received all the savestate data for packet group: %hhu\n", sequence_hi);
+
             int redudant_blocks_sent = k * FEC_REDUNDANT_BLOCKS / (GF_SIZE - FEC_REDUNDANT_BLOCKS);
             void *rs_code = fec_new(k, k + redudant_blocks_sent);
             int rs_block_size = (int) (size - sizeof(savestate_transfer_packet_t));
@@ -2093,22 +2121,21 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
 
             bool all_data_decoded = true;
             for (int i = 0; i < g_remote_packet_groups; i++) {
-                all_data_decoded &= g_fec_index_counter[i] == k;
+                all_data_decoded &= g_fec_index_counter[i] >= k;
             }
 
             if (all_data_decoded) { 
-                printf("All the savestate data has been decoded\n");
-
                 uint8_t *savestate_transfer_payload_untyped = (uint8_t *) g_savestate_transfer_payload;
                 int64_t remote_payload_size = 0;
-                
-                for (int j = 0; j < g_remote_packet_groups; j++) {
-                    for (int i = 0; i < k; i++) {
+                // The last packet contains some number of garbage bytes probably add the size thing back?
+                for (int i = 0; i < k; i++) {
+                    for (int j = 0; j < g_remote_packet_groups; j++) {
                         memcpy(savestate_transfer_payload_untyped + remote_payload_size, g_fec_packet[j][i], rs_block_size);
                         remote_payload_size += rs_block_size;
                     }
                 }
 
+                LOG_INFO("Received savestate transfer payload for frame %" PRId64 "\n", g_savestate_transfer_payload->frame_counter);
                 // @todo Check the zipped savestate size against the decoded size so we don't OoBs
 
                 g_remote_savestate_hash = fnv1a_hash(g_savestate_transfer_payload, g_savestate_transfer_payload->total_size_bytes);
@@ -2123,13 +2150,52 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
                     fprintf(stderr, "Error decompressing savestate: %s\n", ZSTD_getErrorName(g_zstd_compress_size[0]));
                     break;
                 } else {
-                    printf("Loading savestate\n");
-                    fflush(stdout);
                     if (!g_retro.retro_unserialize(g_savebuffer[0], g_zstd_compress_size[0])) {
                         fprintf(stderr, "Failed to load savestate\n");
                         // goto savestate_transfer_failed;
                     } else {
+                        LOG_VERBOSE("Save state loaded\n");
                         LibretroContext->frame_counter = g_savestate_transfer_payload->frame_counter;
+
+                        int64_t max_frames_we_can_advance = INT64_MAX;
+                        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+                            if (!g_agent[p]) continue;
+
+                            CircularQueue &peer_input_queue = g_input_packet_queue[p];
+                            if (peer_input_queue.isEmpty()) {
+                                LOG_INFO("We had no input buffered for peer_ids[%d]=%" PRIx64 " after we finished receiving the savestate from the authority\n", p, g_room_we_are_in.peer_ids[p]);
+                                max_frames_we_can_advance = 0;
+                                break;
+                            }
+
+                            // Initialize the frame variable with the frame of the first element in the queue
+                            int64_t last_frame = peer_input_queue.buffer[peer_input_queue.begin].frame;
+
+                            // @todo This loop guards against a dumb assumption that UDP packets arrive in order. The solution without this assumption requires more refactoring I don't want to do currently
+                            for (int i = (peer_input_queue.begin + 1) % peer_input_queue.buffer_size; i != peer_input_queue.end; i = (i + 1) % peer_input_queue.buffer_size) {
+                                // Check if the frame field is increasing by 1
+                                SDL_assert(peer_input_queue.buffer[i].frame == last_frame + 1);
+                                last_frame = peer_input_queue.buffer[i].frame;
+                            }
+
+                            // Toss out any input that is older than the frame we're on this is needed or it breaks the polling logic @todo That should be fixable
+                            while (peer_input_queue.buffer[peer_input_queue.begin].frame < LibretroContext->frame_counter) {
+                                peer_input_queue.dequeue();
+                            }
+
+                            max_frames_we_can_advance = SAM2_MIN(max_frames_we_can_advance, last_frame - LibretroContext->frame_counter);
+                        }
+
+#if 0
+                        // @todo Fix the max frames we can advance changes dynamically since we'll be receiving packets while we're advancing
+                        // Probably we should be polling and sending out our own input even though we can't see the results of it yet...
+                        // Not doing this doesn't break logic but it creates potential for peers to stall while we're catching up
+                        LibretroContext->ignore_user_input = true; // Implicitly while we were connecting all our input is considered to be zero
+                        for (int f = 0; f < max_frames_we_can_advance; f++) {
+                            g_retro.retro_run();
+                        }
+                        LibretroContext->ignore_user_input = false;
+#endif
                     }
                 }
 
@@ -2268,7 +2334,7 @@ void startup_ice_for_peer(juice_agent_t **agent, sam2_signal_message_t *signal_m
 
     // STUN server example*
     config.concurrency_mode = JUICE_CONCURRENCY_MODE;
-    config.stun_server_host = "stun.l.google.com";
+    config.stun_server_host = "stun2.l.google.com"; // @todo Put a bad url here to test how to handle that
     config.stun_server_port = 19302;
     //config.bind_address = "127.0.0.1";
 
@@ -2462,6 +2528,9 @@ void tick_compression_investigation(void *rom_data, size_t rom_size) {
 }
 
 int main(int argc, char *argv[]) {
+    g_argc = argc;
+    g_argv = argv;
+
 	if (argc < 2)
 		die("usage: %s <core> [game]", argv[0]);
 
@@ -2554,7 +2623,8 @@ int main(int argc, char *argv[]) {
         for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
             if (!g_agent[p]) continue;
 
-            juice_user_poll(&g_agent[p], 1);
+            char buffer[4096];
+            while (juice_user_poll(g_agent[p], buffer, sizeof(buffer))) {}
         }
 #endif
 
@@ -2657,10 +2727,28 @@ int main(int argc, char *argv[]) {
             g_frame_time_milliseconds[g_frame_cyclic_offset] = (float) elapsed_time_milliseconds.count();
             last_tick_time = current_time;
 
+            int64_t savestate_hash = 0;
             if (g_do_zstd_compress) {
                 tick_compression_investigation(rom_data, rom_size);
 
+                savestate_hash = fnv1a_hash(g_savebuffer[g_save_state_index], g_serialize_size);
+
                 g_save_state_index = (g_save_state_index + 1) % MAX_SAVE_STATES;
+            }
+
+            if (g_our_peer_id) {
+                input_packet_t input_packet = {CHANNEL_INPUT_DEBUG};
+                input_packet.frame = frame_counter;
+                memcpy(input_packet.joy, g_libretro_context.InputState[0], sizeof(input_packet.joy));
+                input_packet.savestate_hash = savestate_hash;
+
+                for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+                    if (!g_agent[p]) continue;
+
+                    juice_send(g_agent[p], (char *) &input_packet, sizeof(input_packet));
+                }
+
+                g_input_packet_queue[g_joining_on_port].enqueue_allow_overwrite(input_packet);
             }
 
             g_frame_cyclic_offset = (g_frame_cyclic_offset + 1) % g_sample_size;
@@ -2786,7 +2874,7 @@ int main(int argc, char *argv[]) {
                     }
                     
                     if (room_signal->peer_id == g_room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
-                        frame_counter = room_signal->frame_counter;
+                        //frame_counter = room_signal->frame_counter;
                     }
 
                     if (g_agent[p]) {
