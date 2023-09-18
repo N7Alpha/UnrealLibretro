@@ -319,7 +319,7 @@
 
 #define SAM2_MIN(a, b) ((a) < (b) ? (a) : (b))
 
-#define SAM2_SERVER_PORT 9001
+#define SAM2_SERVER_DEFAULT_PORT 9218
 #define SAM2_DEFAULT_BACKLOG 128
 
 // @todo move some of these into the UDP netcode file
@@ -580,7 +580,7 @@ SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_response_u *respons
 
 // Connnects to host which is either an IPv4/IPv6 Address or domain name
 // Will bias IPv6 if connecting via domain name and also block
-SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host);
+SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host, int port);
 
 #define SAM2_IMPLEMENTATION
 #if defined(SAM2_IMPLEMENTATION)
@@ -603,7 +603,6 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
 #include <string.h>
 
 
-#if 0
 static int sam2__addr_is_numeric_hostname(const char *hostname) {
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
@@ -620,14 +619,17 @@ static int sam2__addr_is_numeric_hostname(const char *hostname) {
     return 1;
 }
 
-static int sam2__resolve_hostname(const char* hostname) {
-    struct addrinfo hints, *res, *p;
-    char addrstr[INET6_ADDRSTRLEN];
+// Resolve hostname with DNS query and prioritize IPv6
+static int sam2__resolve_hostname(const char *hostname, char *ip) {
+    struct addrinfo hints, *res, *p, desired_address;
     void *ptr;
 
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
+
+    memset(&desired_address, 0, sizeof(desired_address));
+    desired_address.ai_family = AF_UNSPEC;
 
     if (getaddrinfo(hostname, NULL, &hints, &res)) {
         LOG_ERROR("Address resolution failed for %s", hostname);
@@ -645,22 +647,23 @@ static int sam2__resolve_hostname(const char* hostname) {
             continue;
         }
 
-        if (inet_ntop(p->ai_family, ptr, addrstr, INET6_ADDRSTRLEN) == NULL) {
-            perror("inet_ntop");
+        char ipvx[INET6_ADDRSTRLEN];
+        if (inet_ntop(p->ai_family, ptr, ipvx, INET6_ADDRSTRLEN) == NULL) {
+            LOG_ERROR("Couldn't convert IP Address to string\n");
             continue;
         }
-        
-        //if () {
-        //    
-        //}
-        LOG_INFO("IPv%d address: %s\n", p->ai_family == AF_INET6 ? 6 : 4, addrstr);
+
+        LOG_INFO("%s hosted on IPv%d address: %s\n", hostname, p->ai_family == AF_INET6 ? 6 : 4, ipvx);
+        if (desired_address.ai_family != AF_INET6) {
+            memcpy(ip, ipvx, INET6_ADDRSTRLEN);
+            memcpy(&desired_address, p, sizeof(desired_address));
+        }
     }
 
     freeaddrinfo(res);
 
-    return 0;
+    return desired_address.ai_family;
 }
-#endif
 
 #ifdef _WIN32
     #define SAM2_SOCKET_INVALID (INVALID_SOCKET)
@@ -684,7 +687,7 @@ static int sam2__resolve_hostname(const char* hostname) {
     #define ioctlsocket_fn(sockfd, cmd, argp) fcntl(sockfd, cmd, *argp)
 #endif
 
-SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host) {
+SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host, int port) {
     // Initialize winsock / Increment winsock reference count
 #ifdef _WIN32
     WSADATA wsaData;
@@ -694,8 +697,20 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
     }
 #endif
 
+    // Resolve host through DNS if it's not a numeric address
+    char ip[INET6_ADDRSTRLEN];
+    int family = AF_INET;
+    if (!sam2__addr_is_numeric_hostname(host)) {
+        family = sam2__resolve_hostname(host, ip); // This blocks
+        if (family < 0) {
+            LOG_ERROR("Failed to resolve hostname");
+            return -1;
+        }
+        host = ip;
+    }
+
     // Create a socket
-    sam2_socket_t sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    sam2_socket_t sockfd = socket(family, SOCK_STREAM, 0);
     if (sockfd == SAM2_SOCKET_INVALID) {
         LOG_ERROR("Failed to create socket");
         return -1;
@@ -710,27 +725,42 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
     }
 
     // Specify the numerical address of the server we're trying to connnect to
-    struct sockaddr_in server_addr = {0};
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(SAM2_SERVER_PORT);
-    int pton_result = inet_pton(AF_INET, host, &server_addr.sin_addr);
-    if (pton_result <= 0) {
-        if (pton_result == 0) {
-            LOG_ERROR("The provided string does not contain a valid network address: %s\n", host);
-        } else if (pton_result < 0) {
-            LOG_ERROR("An error occurred with inet_pton when processing the address: %s\n", host);
-        }
-        SAM2_CLOSESOCKET(sockfd);
-        return -1;
-    }
-
-    if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
- 
-        if (SAM2_SOCKERRNO != SAM2_EINPROGRESS) {
-            LOG_ERROR("Failed to connect to server");
+    if (family == AF_INET) {
+        struct sockaddr_in server_addr = {0};
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(port);
+        if (inet_pton(AF_INET, host, &server_addr.sin_addr) <= 0) {
+            LOG_ERROR("Failed to convert IPv4 address");
             SAM2_CLOSESOCKET(sockfd);
             return -1;
         }
+        if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+            if (SAM2_SOCKERRNO != SAM2_EINPROGRESS) {
+                LOG_ERROR("Failed to connect to server");
+                SAM2_CLOSESOCKET(sockfd);
+                return -1;
+            }
+        }
+    } else if (family == AF_INET6) {
+        struct sockaddr_in6 server_addr = {0};
+        server_addr.sin6_family = AF_INET6;
+        server_addr.sin6_port = htons(port);
+        if (inet_pton(AF_INET6, host, &server_addr.sin6_addr) <= 0) {
+            LOG_ERROR("Failed to convert IPv6 address");
+            SAM2_CLOSESOCKET(sockfd);
+            return -1;
+        }
+        if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+            if (SAM2_SOCKERRNO != SAM2_EINPROGRESS) {
+                LOG_ERROR("Failed to connect to server");
+                SAM2_CLOSESOCKET(sockfd);
+                return -1;
+            }
+        }
+    } else {
+        LOG_ERROR("Unknown address family");
+        SAM2_CLOSESOCKET(sockfd);
+        return -1;
     }
 
     *sockfd_ptr = sockfd;
@@ -1593,7 +1623,7 @@ int main() {
     uv_tcp_init(loop, &server);
 
     struct sockaddr_in addr;
-    uv_ip4_addr("0.0.0.0", SAM2_SERVER_PORT, &addr);
+    uv_ip4_addr("0.0.0.0", SAM2_SERVER_DEFAULT_PORT, &addr);
 
     uv_tcp_bind(&server, (const struct sockaddr*)&addr, 0);
     int r = uv_listen((uv_stream_t*) &server, SAM2_DEFAULT_BACKLOG, on_new_connection);

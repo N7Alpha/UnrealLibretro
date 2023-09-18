@@ -749,7 +749,7 @@ struct CircularQueue {
 
 std::array<CircularQueue, SAM2_PORT_MAX+1> g_input_packet_queue;
 
-static const char *g_sam2_address = "35.84.2.235";
+static const char *g_sam2_address = "sam2.cornbass.com";
 static sam2_socket_t g_sam2_socket = 0;
 static sam2_request_u g_sam2_request;
 
@@ -2677,7 +2677,7 @@ int main(int argc, char *argv[]) {
         SDL_GL_SwapWindow(g_win);
 
         if (g_sam2_socket == 0) {
-            if (sam2_client_connect(&g_sam2_socket, g_sam2_address) == 0) {
+            if (sam2_client_connect(&g_sam2_socket, g_sam2_address, SAM2_SERVER_DEFAULT_PORT) == 0) {
                 printf("Socket created successfully SAM2\n");
             }
         }
