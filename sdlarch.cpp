@@ -984,9 +984,9 @@ void draw_imgui() {
             ImGui::Begin("Signaling Server and a Match Maker", NULL, ImGuiWindowFlags_AlwaysAutoResize);
 
             if (g_connected_to_sam2) {
-                ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to %s", g_sam2_address);
+                ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to %s:%d", g_sam2_address, SAM2_SERVER_DEFAULT_PORT);
             } else {
-                ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1), "Connecting to %s %c", g_sam2_address, spinnerGlyph);
+                ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1), "Connecting to %s:%d %c", g_sam2_address, SAM2_SERVER_DEFAULT_PORT, spinnerGlyph);
                 goto finished_drawing_sam2_interface;
             }
 
@@ -994,7 +994,12 @@ void draw_imgui() {
                 ImGui::TextColored(ImVec4(1, 0, 0, 1), "Last error: %s", g_last_sam2_error.description);
             }
 
-            ImGui::Separator();
+            if (g_our_peer_id) {
+                ImGui::SeparatorText("In Room");
+            } else {
+                ImGui::SeparatorText("Create a Room");
+            }
+            
 
             sam2_room_t *display_room = g_our_peer_id ? &g_room_we_are_in : &g_new_room_set_through_gui;
 
@@ -1019,7 +1024,11 @@ void draw_imgui() {
         }
 
         if (g_our_peer_id) {
-            ImGui::Text("Our Peer ID: %" PRIx64, g_our_peer_id);
+            ImGui::Text("Our Peer ID:");
+            ImGui::SameLine();
+            //0xe0 0xc9 0x1b
+            const ImVec4 GOLD(1.0f, 0.843f, 0.0f, 1.0f);
+            ImGui::TextColored(GOLD, "%" PRIx64, g_our_peer_id);
 
             ImGui::SeparatorText("Connection Status");
             for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
@@ -1031,20 +1040,11 @@ void draw_imgui() {
 
                 ImGui::SameLine();
 
-                switch (g_room_we_are_in.peer_ids[p]) {
-                case SAM2_PORT_UNAVAILABLE:
-                    ImGui::Text("Unavailable");
-                    break;
-                case SAM2_PORT_AVAILABLE:
-                    ImGui::Text("Available");
-                    break;
-                case SAM2_PORT_RESERVE:
-                    ImGui::Text("Reserved");
-                    break;
-                default:
-                    ImGui::Text("Peer ID %" PRIx64, g_room_we_are_in.peer_ids[p]);
-                    break;
-                }
+                if      (g_room_we_are_in.peer_ids[p] == SAM2_PORT_UNAVAILABLE) { ImGui::Text("Unavailable"); }
+                else if (g_room_we_are_in.peer_ids[p] == SAM2_PORT_AVAILABLE)   { ImGui::Text("Available"); }
+                else if (g_room_we_are_in.peer_ids[p] == SAM2_PORT_RESERVE)     { ImGui::Text("Reserved"); }
+                else if (g_room_we_are_in.peer_ids[p] == g_our_peer_id)         { ImGui::TextColored(GOLD, "%" PRIx64, g_room_we_are_in.peer_ids[p]); }      
+                else                                                            { ImGui::Text("%" PRIx64, g_room_we_are_in.peer_ids[p]); }
 
                 if (g_agent[p]) {
                     juice_state_t connection_state = juice_get_state(g_agent[p]);
