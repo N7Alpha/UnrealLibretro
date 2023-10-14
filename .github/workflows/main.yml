@@ -1,5 +1,3 @@
-# This is a basic workflow to help you get started with Actions
-
 name: CI
 
 # Controls when the action will run. Triggers the workflow on push or pull request
@@ -8,93 +6,75 @@ on:
   workflow_dispatch:
   push:
     branches: [ master ]
-  # Would be cool to have this but since I'm self hosting this would be a major security hole
-  #merge:
-  #  branches: [ master ]
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
   build:
-    # The type of runner that the job will run on
     runs-on: self-hosted
-    
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v3.5.2
-        
-      # Runs setup.sh in the root of the project directory. 
       - name: Run Setup Script
         run: C:\msys64\msys2_shell.cmd -defterm -here -no-start -mingw64 -shell bash setup.sh
-
-      # Lots of copying and pasting since we build for many unreal engine versions
       - name: Package for Unreal Engine 4.24 
         run: python package.py "$env:UE_4_24"
-          
-      - name: Upload Build-Artifact
+      - name: Package for Unreal Engine 4.25
+        run: python package.py "$env:UE_4_25"
+      - name: Package for Unreal Engine 4.26 
+        run: python package.py "$env:UE_4_26"
+      - name: Package for Unreal Engine 4.27
+        run: python package.py "$env:UE_4_27"
+      - name: Package for Unreal Engine 5.0
+        run: python package.py "$env:UE_5_0"
+      - name: Package for Unreal Engine 5.1
+        run: python package.py "$env:UE_5_1"
+      - name: Package for Unreal Engine 5.2
+        run: python package.py "$env:UE_5_2"
+      - name: Package for Unreal Engine 5.3
+        run: python package.py "$env:UE_5_3"
+      - name: Upload Build-Artifact 4.24
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-4.24
           path: UE_4.24
           if-no-files-found: error
-
-      - name: Package for Unreal Engine 4.25
-        run: python package.py "$env:UE_4_25"
-          
-      - name: Upload Build-Artifact
+      - name: Upload Build-Artifact 4.25
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-4.25
           path: UE_4.25
           if-no-files-found: error
-
-      - name: Package for Unreal Engine 4.26 
-        run: python package.py "$env:UE_4_26"
-          
-      - name: Upload Build-Artifact
+      - name: Upload Build-Artifact 4.26
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-4.26
           path: UE_4.26
           if-no-files-found: error
-
-      - name: Package for Unreal Engine 4.27
-        run: python package.py "$env:UE_4_27"
-          
-      - name: Upload Build-Artifact
+      - name: Upload Build-Artifact 4.27
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-4.27
           path: UE_4.27
           if-no-files-found: error
-
-      - name: Package for Unreal Engine 5.0
-        run: python package.py "$env:UE_5_0"
-          
-      - name: Upload Build-Artifact
+      - name: Upload Build-Artifact 5.0
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-5.0
           path: UE_5.0
           if-no-files-found: error
-
-      - name: Package for Unreal Engine 5.1
-        run: python package.py "$env:UE_5_1"
-          
-      - name: Upload Build-Artifact
+      - name: Upload Build-Artifact 5.1
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-5.1
           path: UE_5.1
           if-no-files-found: error
-
-      - name: Package for Unreal Engine 5.2
-        run: python package.py "$env:UE_5_2"
-          
-      - name: Upload Build-Artifact
+      - name: Upload Build-Artifact 5.2
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-5.2
           path: UE_5.2
+          if-no-files-found: error
+      - name: Upload Build-Artifact 5.3
+        uses: actions/upload-artifact@v3.1.2
+        with:
+          name: UnrealLibretro-5.3
+          path: UE_5.3
           if-no-files-found: error

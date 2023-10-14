@@ -5,6 +5,7 @@
 /Source/UnrealLibretro/Private/*/SDL2
 /System
 *.pdb
+UnrealLibretro.uplugin
 
 
 ###### GITHUB PROVIDED FILTERS  ######

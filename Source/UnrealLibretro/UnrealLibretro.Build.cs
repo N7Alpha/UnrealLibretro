@@ -42,6 +42,12 @@ public class UnrealLibretro : ModuleRules
 			}
 			);
 
+		if (   Target.Version.MajorVersion == 5
+		    && Target.Version.MinorVersion >= 3)
+		{
+			PublicDependencyModuleNames.Add("XRBase");
+		}
+
 		if (   Target.Version.MajorVersion == 4
 		    || Target.Version.MinorVersion == 0)
         {

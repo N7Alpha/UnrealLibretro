@@ -293,14 +293,30 @@ static bool GLLogCall(const char* function, const char* file, int line)
                     ENQUEUE_RENDER_COMMAND(LibretroInitDummyRHIFramebuffer)
                         ([this](FRHICommandListImmediate& RHICmdList)
                             {
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 2
+                                FRHITextureCreateDesc TextureDesc;
+                                TextureDesc.Extent = FIntPoint(core.av.geometry.max_width, core.av.geometry.max_height);
+                                TextureDesc.Format = UnrealPixelFormat;
+                                TextureDesc.NumMips = 1;
+                                TextureDesc.NumSamples = 1;
+                                TextureDesc.Flags = ETextureCreateFlags::CPUWritable | ETextureCreateFlags::Dynamic;
+                                TextureDesc.Dimension = ETextureDimension::Texture2D;
+
+                                TextureDesc.DebugName = TEXT("Dummy Texture for now");
+
+                                this->Unreal.TextureRHI = RHICreateTexture(TextureDesc);
+#else
                                 FRHIResourceCreateInfo Info{ TEXT("Dummy Texture for now") };
-                                this->Unreal.TextureRHI = RHICreateTexture2D(core.av.geometry.max_width,
-                                                                             core.av.geometry.max_height,
-                                                                             UnrealPixelFormat,
-                                                                             1,
-                                                                             1,
-                                                                             TexCreate_CPUWritable | TexCreate_Dynamic,
-                                                                             Info);
+
+                                this->Unreal.TextureRHI =
+                                    RHICreateTexture2D(core.av.geometry.max_width,
+                                        core.av.geometry.max_height,
+                                        UnrealPixelFormat,
+                                        1,
+                                        1,
+                                        TexCreate_CPUWritable | TexCreate_Dynamic,
+                                        Info);
+#endif
                             });
                 }
                 else
@@ -458,7 +474,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
             {
                 check(this->Unreal.TextureRHI.GetReference());
 
-                RHICmdList.EnqueueLambda([=](FRHICommandList& RHICmdList)
+                RHICmdList.EnqueueLambda([=, this](FRHICommandList& RHICmdList)
                     {
                         // Potentially this should be a TryLock() so you don't preempt the render thread although it's unlikely that would happen
                         FScopeLock UploadTextureToRenderHardware(&this->Unreal.FrameUpload.CriticalSection);
@@ -953,13 +969,13 @@ void FLibretroContext::load(const char *sofile) {
     load_sym(set_audio_sample, retro_set_audio_sample);
     load_sym(set_audio_sample_batch, retro_set_audio_sample_batch);
 
-    libretro_callbacks->video_refresh = [=](const void* data, unsigned width, unsigned height, size_t pitch) { return core_video_refresh(data, width, height, pitch); };
-    libretro_callbacks->audio_write = [=](const int16_t *data, size_t frames) { return core_audio_write(data, frames); };
-    libretro_callbacks->audio_sample = [=](int16_t left, int16_t right) { return core_audio_sample(left, right); };
-    libretro_callbacks->input_state = [=](unsigned port, unsigned device, unsigned index, unsigned id) { return core_input_state(port, device, index, id); };
+    libretro_callbacks->video_refresh = [this](const void* data, unsigned width, unsigned height, size_t pitch) { return core_video_refresh(data, width, height, pitch); };
+    libretro_callbacks->audio_write = [this](const int16_t *data, size_t frames) { return core_audio_write(data, frames); };
+    libretro_callbacks->audio_sample = [this](int16_t left, int16_t right) { return core_audio_sample(left, right); };
+    libretro_callbacks->input_state = [this](unsigned port, unsigned device, unsigned index, unsigned id) { return core_input_state(port, device, index, id); };
     libretro_callbacks->input_poll = [=]() { };
-    libretro_callbacks->environment = [=](unsigned cmd, void* data) { return core_environment(cmd, data); };
-     libretro_callbacks->get_current_framebuffer = [=]() { return core.gl.framebuffer; };
+    libretro_callbacks->environment = [this](unsigned cmd, void* data) { return core_environment(cmd, data); };
+     libretro_callbacks->get_current_framebuffer = [this]() { return core.gl.framebuffer; };
 
     set_environment(libretro_callbacks->c_environment);
     set_video_refresh(libretro_callbacks->c_video_refresh);
@@ -1245,7 +1261,7 @@ void FLibretroContext::Pause(bool ShouldPause)
 {
     // We enqueue the state change because otherwise we might prematurely unset the Starting state
     // Alternatively you could add one more state to accomplish this, but this is fine for now
-    EnqueueTask([=](auto&&)
+    EnqueueTask([this, ShouldPause](auto&&)
         {
             if (CoreState.load(std::memory_order_relaxed) != ECoreState::Shutdown) 
             {

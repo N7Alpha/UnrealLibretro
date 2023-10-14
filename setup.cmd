@@ -1,8 +1,5 @@
 @echo off
-echo I will fetch required binaries and create user folders.
-echo When done, drag the echo UnrealLibretro folder into your project's Plugins folder.
-echo Enable "Show Plugin Content", then try the example map in the plugin's content folder.
-echo.
+setlocal enabledelayedexpansion
 
 REM Add 7zip to the path incase it's not already there
 set "PATH=%PATH%;C:\Program Files\7-Zip;C:\Program Filesx86\7-Zip"
@@ -35,3 +32,31 @@ if %errorlevel% neq 0 (
 echo - Unpacking & copying file
 call 7z x -aoa -o"%TEMP%" %TMPFILE%
 move /y "%TEMP%\RetroArch-Win64\*.dll" Binaries\Win64\ThirdParty\libretro
+
+REM Detect .uproject version
+for /R ../../ %%f in (*.uproject) do (
+    set "uproject=%%f"
+    goto founduproject
+)
+
+:defaulttoUE5.3
+copy "UnrealLibretro.uplugin.UE5.3" "UnrealLibretro.uplugin"
+exit /b
+
+:founduproject
+echo Found .uproject: !uproject!
+
+for /f "tokens=2 delims=:" %%a in ('findstr "EngineAssociation" "!uproject!"') do set "version=%%a"
+set version=!version:~2,-2!
+for /f "tokens=1,2 delims=." %%a in ("!version!") do (
+    set major=%%a
+    set minor=%%b
+)
+
+echo Detected Engine Version: !major!.!minor!
+
+if !major! == 4 copy "UnrealLibretro.uplugin.UE5.2" "UnrealLibretro.uplugin"
+if !major! == 5 if !minor! LEQ 2 copy "UnrealLibretro.uplugin.UE5.2" "UnrealLibretro.uplugin"
+if !major! == 5 if !minor! GEQ 3 copy "UnrealLibretro.uplugin.UE5.3" "UnrealLibretro.uplugin"
+
+echo Success^^! Now in the Unreal Engine Editor make sure you enable 'Show Plugin Content', then open the example map in the plugin's content folder
