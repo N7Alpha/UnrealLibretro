@@ -690,7 +690,7 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
         // atomic<>::exchange is necessary otherwise we could miss newly set options because of a race condition
         *core_should_query_for_options = OptionsHaveBeenModified.exchange(false, std::memory_order_acquire);
 
-        return false;
+        return true;
     }
     case RETRO_ENVIRONMENT_SET_VARIABLES: {
         // Queuing this and synchronizing on the game thread prevents a data race
