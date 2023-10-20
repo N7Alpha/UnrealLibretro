@@ -20,18 +20,21 @@ jobs:
         id: create_release
         uses: actions/create-release@v1
         with:
-          tag_name: ${{ github.ref_name }}
-          release_name: Release ${{ github.ref_name }}
+          tag_name: ${{ github.event.inputs.tag }}
+          release_name: Release ${{ github.event.inputs.tag }}
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: List files
+        run: ls -al
+
       - name: Upload Release Asset 4.24
         uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: UnrealLibretro-4.24.zip
+          asset_path: UnrealLibretro-4.24
           asset_name: UnrealLibretro-4.24.zip
           asset_content_type: application/zip
 
