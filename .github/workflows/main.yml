@@ -16,65 +16,94 @@ jobs:
         run: C:\msys64\msys2_shell.cmd -defterm -here -no-start -mingw64 -shell bash setup.sh
       - name: Package for Unreal Engine 4.24 
         run: python package.py "$env:UE_4_24"
-      - name: Package for Unreal Engine 4.25
-        run: python package.py "$env:UE_4_25"
-      - name: Package for Unreal Engine 4.26 
-        run: python package.py "$env:UE_4_26"
-      - name: Package for Unreal Engine 4.27
-        run: python package.py "$env:UE_4_27"
-      - name: Package for Unreal Engine 5.0
-        run: python package.py "$env:UE_5_0"
-      - name: Package for Unreal Engine 5.1
-        run: python package.py "$env:UE_5_1"
-      - name: Package for Unreal Engine 5.2
-        run: python package.py "$env:UE_5_2"
-      - name: Package for Unreal Engine 5.3
-        run: python package.py "$env:UE_5_3"
+#      - name: Package for Unreal Engine 4.25
+#        run: python package.py "$env:UE_4_25"
+#      - name: Package for Unreal Engine 4.26 
+#        run: python package.py "$env:UE_4_26"
+#      - name: Package for Unreal Engine 4.27
+#        run: python package.py "$env:UE_4_27"
+#      - name: Package for Unreal Engine 5.0
+#        run: python package.py "$env:UE_5_0"
+#      - name: Package for Unreal Engine 5.1
+#        run: python package.py "$env:UE_5_1"
+#      - name: Package for Unreal Engine 5.2
+#        run: python package.py "$env:UE_5_2"
+#      - name: Package for Unreal Engine 5.3
+#        run: python package.py "$env:UE_5_3"
       - name: Upload Build-Artifact 4.24
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-4.24
           path: UE_4.24
           if-no-files-found: error
-      - name: Upload Build-Artifact 4.25
-        uses: actions/upload-artifact@v3.1.2
+#      - name: Upload Build-Artifact 4.25
+#        uses: actions/upload-artifact@v3.1.2
+#        with:
+#          name: UnrealLibretro-4.25
+#          path: UE_4.25
+#          if-no-files-found: error
+#      - name: Upload Build-Artifact 4.26
+#        uses: actions/upload-artifact@v3.1.2
+#        with:
+#          name: UnrealLibretro-4.26
+#          path: UE_4.26
+#          if-no-files-found: error
+#      - name: Upload Build-Artifact 4.27
+#        uses: actions/upload-artifact@v3.1.2
+#        with:
+#          name: UnrealLibretro-4.27
+#          path: UE_4.27
+#          if-no-files-found: error
+#      - name: Upload Build-Artifact 5.0
+#        uses: actions/upload-artifact@v3.1.2
+#        with:
+#          name: UnrealLibretro-5.0
+#          path: UE_5.0
+#          if-no-files-found: error
+#      - name: Upload Build-Artifact 5.1
+#        uses: actions/upload-artifact@v3.1.2
+#        with:
+#          name: UnrealLibretro-5.1
+#          path: UE_5.1
+#          if-no-files-found: error
+#      - name: Upload Build-Artifact 5.2
+#        uses: actions/upload-artifact@v3.1.2
+#        with:
+#          name: UnrealLibretro-5.2
+#          path: UE_5.2
+#          if-no-files-found: error
+#      - name: Upload Build-Artifact 5.3
+#        uses: actions/upload-artifact@v3.1.2
+#        with:
+#          name: UnrealLibretro-5.3
+#          path: UE_5.3
+#          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v3.5.2
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+      
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
         with:
-          name: UnrealLibretro-4.25
-          path: UE_4.25
-          if-no-files-found: error
-      - name: Upload Build-Artifact 4.26
-        uses: actions/upload-artifact@v3.1.2
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+          
+      - name: Upload Release Asset 4.24
+        uses: actions/upload-release-asset@v1
         with:
-          name: UnrealLibretro-4.26
-          path: UE_4.26
-          if-no-files-found: error
-      - name: Upload Build-Artifact 4.27
-        uses: actions/upload-artifact@v3.1.2
-        with:
-          name: UnrealLibretro-4.27
-          path: UE_4.27
-          if-no-files-found: error
-      - name: Upload Build-Artifact 5.0
-        uses: actions/upload-artifact@v3.1.2
-        with:
-          name: UnrealLibretro-5.0
-          path: UE_5.0
-          if-no-files-found: error
-      - name: Upload Build-Artifact 5.1
-        uses: actions/upload-artifact@v3.1.2
-        with:
-          name: UnrealLibretro-5.1
-          path: UE_5.1
-          if-no-files-found: error
-      - name: Upload Build-Artifact 5.2
-        uses: actions/upload-artifact@v3.1.2
-        with:
-          name: UnrealLibretro-5.2
-          path: UE_5.2
-          if-no-files-found: error
-      - name: Upload Build-Artifact 5.3
-        uses: actions/upload-artifact@v3.1.2
-        with:
-          name: UnrealLibretro-5.3
-          path: UE_5.3
-          if-no-files-found: error
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./UE_4.24.zip
+          asset_name: UnrealLibretro-4.24.zip
+          asset_content_type: application/zip
+      
+      # Repeat the above step for other versions 4.25, 4.26, and so on...
