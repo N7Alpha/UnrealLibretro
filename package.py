@@ -53,3 +53,5 @@ def unix_touch(path):
 
 unix_touch("{packaged_plugin_path}/MyROMs/Place Your ROMs in this Directory".format(**locals()))
 unix_touch("{packaged_plugin_path}/MyCores/Place Your Libretro Cores in this Directory".format(**locals()))
+
+os.system(f'tar -acf UE_{major}.{minor}.zip {packaged_plugin_path}')
