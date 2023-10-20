@@ -13,7 +13,7 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v3.5.2
 
-      - name: Download artifact
+      - name: Download all artifacts
         id: download-artifact
         uses: dawidd6/action-download-artifact@v2
         with:
@@ -30,29 +30,9 @@ jobs:
           skip_unpack: true
           if_no_artifact_found: fail
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1.1.4
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
         with:
-          tag_name: ${{ github.event.inputs.tag }}
-          release_name: Release ${{ github.event.inputs.tag }}
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: List files
-        run: ls -al
-
-      - name: Upload Release Asset 4.24
-        uses: actions/upload-release-asset@v1.0.2
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: UnrealLibretro-4.24.zip
-          asset_name: UnrealLibretro-4.24
-          asset_content_type: application/zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-
-      # Repeat the above step for other versions 4.25, 4.26, and so on...
+          files: |
+            UnrealLibretro-4.24.zip
