@@ -1,8 +1,11 @@
 name: Release
-
-# Controls when the action will run. Triggers the workflow manually from the GitHub Actions UI
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag for the release'
+        required: true
+  pull_request:
 
 jobs:
   release:
@@ -18,8 +21,8 @@ jobs:
         id: create_release
         uses: actions/create-release@v1
         with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
+          tag_name: ${{ github.event.inputs.tag }}
+          release_name: Release ${{ github.event.inputs.tag }}
           draft: false
           prerelease: false
 
