@@ -32,6 +32,7 @@ jobs:
 
       - name: Release
         uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/') # Only release when there is a tag
         with:
           files: |
             UnrealLibretro-4.24.zip
