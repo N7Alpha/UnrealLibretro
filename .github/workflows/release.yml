@@ -32,7 +32,7 @@ jobs:
 
       - name: Create Release
         id: create_release
-        uses: actions/create-release@v1
+        uses: actions/create-release@v1.1.4
         with:
           tag_name: ${{ github.event.inputs.tag }}
           release_name: Release ${{ github.event.inputs.tag }}
@@ -45,7 +45,7 @@ jobs:
         run: ls -al
 
       - name: Upload Release Asset 4.24
-        uses: actions/upload-release-asset@v1
+        uses: actions/upload-release-asset@v1.0.2
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: UnrealLibretro-4.24.zip
