@@ -28,7 +28,7 @@ jobs:
           check_artifacts: true
           # Optional, choose to skip unpacking the downloaded artifact(s)
           # default false
-          skip_unpack: false
+          skip_unpack: true
           if_no_artifact_found: fail
 
       - name: Create Release
@@ -49,7 +49,7 @@ jobs:
         uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: UnrealLibretro-4.24
+          asset_path: UnrealLibretro-4.24.zip
           asset_name: UnrealLibretro-4.24.zip
           asset_content_type: application/zip
 
