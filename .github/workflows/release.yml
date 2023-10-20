@@ -13,8 +13,22 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v3.5.2
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v3
+      - name: Download artifact
+        id: download-artifact
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          github_token: ${{secrets.GITHUB_TOKEN}}
+          workflow: main.yml
+          workflow_conclusion: success
+          commit: ${{github.event.pull_request.head.sha}}
+          # Optional, check the workflow run to whether it has an artifact
+          # then will get the last available artifact from the previous workflow
+          # default false, just try to download from the last one
+          check_artifacts: true
+          # Optional, choose to skip unpacking the downloaded artifact(s)
+          # default false
+          skip_unpack: false
+          if_no_artifact_found: fail
 
       - name: Create Release
         id: create_release
