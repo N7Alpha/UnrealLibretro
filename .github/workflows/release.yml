@@ -49,7 +49,10 @@ jobs:
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: UnrealLibretro-4.24.zip
-          asset_name: UnrealLibretro-4.24.zip
+          asset_name: UnrealLibretro-4.24
           asset_content_type: application/zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 
       # Repeat the above step for other versions 4.25, 4.26, and so on...
