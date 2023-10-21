@@ -34,15 +34,19 @@ plugin_path = os.path.dirname(os.path.abspath(__file__))
 major, minor = get_unreal_version(ue_path)
 
 if major == 4 or minor <= 2:
-    shutil.copy2(f"{plugin_path}/UnrealLibretro.uplugin.UE5.2", f"{plugin_path}/UnrealLibretro.uplugin")
+    shutil.copy2(f"{plugin_path}/UnrealLibretro.uplugin.UE5.2", 
+                 f"{plugin_path}/UnrealLibretro.uplugin")
 else:
-    shutil.copy2(f"{plugin_path}/UnrealLibretro.uplugin.UE5.3", f"{plugin_path}/UnrealLibretro.uplugin")
+    shutil.copy2(f"{plugin_path}/UnrealLibretro.uplugin.UE5.3", 
+                 f"{plugin_path}/UnrealLibretro.uplugin")
 
-packaged_plugin_path = f'{plugin_path}/UE_{major}.{minor}/UnrealLibretro'
+packaged_plugin_path = f'{plugin_path}/UnrealLibretro-{major}.{minor}/UnrealLibretro'
 
-status = os.system('"{ue_path}/Engine/Build/BatchFiles/RunUAT" BuildPlugin -Rocket -Plugin={plugin_path}/UnrealLibretro.uplugin -TargetPlatforms=Win64 -Package={packaged_plugin_path} -VS2019'.format(
-    **locals()
-))
+status = os.system(
+    f'"{ue_path}/Engine/Build/BatchFiles/RunUAT" BuildPlugin -Rocket'
+    f' -Plugin={plugin_path}/UnrealLibretro.uplugin -TargetPlatforms=Win64'
+    f' -Package={packaged_plugin_path} -VS2019'
+)
 
 if status:
     exit(status)
@@ -51,7 +55,7 @@ def unix_touch(path):
     Path(os.path.dirname(path)).mkdir()
     Path(path).touch()
 
-unix_touch("{packaged_plugin_path}/MyROMs/Place Your ROMs in this Directory".format(**locals()))
-unix_touch("{packaged_plugin_path}/MyCores/Place Your Libretro Cores in this Directory".format(**locals()))
+unix_touch(f"{packaged_plugin_path}/MyROMs/Place Your ROMs in this Directory")
+unix_touch(f"{packaged_plugin_path}/MyCores/Place Your Libretro Cores in this Directory")
 
-os.system(f'tar -acf UE_{major}.{minor}.zip {packaged_plugin_path}')
+os.system(f'tar -acf UnrealLibretro-{major}.{minor}.zip {packaged_plugin_path}')
