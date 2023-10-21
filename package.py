@@ -2,15 +2,13 @@
 
 import os
 import sys
-import re
-from pathlib import Path
-import tempfile
+import subprocess
 import shutil
 import json
+import argparse
 
-def get_unreal_version(install_directory):
-    # Path to the BaseEngine.ini file
-    version_path = os.path.join(install_directory, "Engine", "Build", "Build.version")
+def get_unreal_version(engine_install_directory="C:/Program Files/Epic Games/UE_X.XX"):
+    version_path = os.path.join(engine_install_directory, "Engine", "Build", "Build.version")
 
     # Check if the file exists
     if not os.path.exists(version_path):
@@ -27,29 +25,60 @@ def get_unreal_version(install_directory):
         else:
             raise Exception("Could not find Unreal Engine version in 'Build.version'")
 
-ue_path = sys.argv[1]
+def git_get_tag_or_short_hash(revision="HEAD"):
+    try:
+        # If on a tagged commit, this will return just the tag
+        # If not on a tagged commit, this will return <last tag>-<rev>-<short hash>
+        result = subprocess.check_output(
+            ["git", "describe", "--tags", "--always", "--abbrev=7", revision],
+            stderr=subprocess.STDOUT
+        ).decode("utf-8").strip()
+    except subprocess.CalledProcessError:
+        # This shouldn't really happen given the flags used above, 
+        # but in case of some other unexpected error, fallback to just the short hash
+        result = subprocess.check_output(
+            ["git", "rev-parse", "--short", revision],
+            stderr=subprocess.STDOUT
+        ).decode("utf-8").strip()
 
-plugin_path = os.path.dirname(os.path.abspath(__file__))
+    return result
 
-major, minor = get_unreal_version(ue_path)
+if __name__ == "__main__":
+    # This logic in here is a little confusing because we package the plugin as UnrealLibretro
+    # in folder UnrealLibretro so the packaged plugin is at UnrealLibretro/UnrealLibretro
+    plugin_path = os.path.dirname(os.path.abspath(__file__))
 
-if major == 4 or minor <= 2:
-    shutil.copy2(f"{plugin_path}/UnrealLibretro.uplugin.UE5.2", f"{plugin_path}/UnrealLibretro.uplugin")
-else:
-    shutil.copy2(f"{plugin_path}/UnrealLibretro.uplugin.UE5.3", f"{plugin_path}/UnrealLibretro.uplugin")
+    parser = argparse.ArgumentParser(description="Build and package UnrealLibretro plugin.")
+    parser.add_argument("ue_path", type=str, help="Path to an Unreal Engine installation you want to build the plugin for.")
+    
+    ue_path = parser.parse_args().ue_path
 
-packaged_plugin_path = f'{plugin_path}/UE_{major}.{minor}/UnrealLibretro'
+    major, minor = get_unreal_version(ue_path)
 
-status = os.system('"{ue_path}/Engine/Build/BatchFiles/RunUAT" BuildPlugin -Rocket -Plugin={plugin_path}/UnrealLibretro.uplugin -TargetPlatforms=Win64 -Package={packaged_plugin_path} -VS2019'.format(
-    **locals()
-))
+    if major == 4 or minor <= 2:
+        uplugin_json = json.load(open(f"UnrealLibretro.uplugin.UE5.2"))
+    else:
+        uplugin_json = json.load(open(f"UnrealLibretro.uplugin.UE5.3"))
 
-if status:
-    exit(status)
+    uplugin_json["VersionName"] = git_get_tag_or_short_hash(revision="HEAD")
+    json.dump(uplugin_json, open("UnrealLibretro.uplugin", "w"), indent=4)
 
-def unix_touch(path):
-    Path(os.path.dirname(path)).mkdir()
-    Path(path).touch()
+    status = os.system(
+        f'"{ue_path}/Engine/Build/BatchFiles/RunUAT" BuildPlugin -Rocket'
+        f' -Plugin={plugin_path}/UnrealLibretro.uplugin -TargetPlatforms=Win64'
+        f' -Package={plugin_path}/UnrealLibretro -VS2019'
+    )
 
-unix_touch("{packaged_plugin_path}/MyROMs/Place Your ROMs in this Directory".format(**locals()))
-unix_touch("{packaged_plugin_path}/MyCores/Place Your Libretro Cores in this Directory".format(**locals()))
+    if status:
+        exit(status)
+
+    def unix_touch(path):
+        from pathlib import Path
+        Path(os.path.dirname(path)).mkdir()
+        Path(path).touch()
+
+    unix_touch(f'UnrealLibretro/MyROMs/Place Your ROMs in this Directory')
+    unix_touch(f'UnrealLibretro/MyCores/Place Your Libretro Cores in this Directory')
+
+    os.system(f'tar -acf UnrealLibretro-{major}.{minor}.zip -C {plugin_path} UnrealLibretro')
+    shutil.rmtree(f'UnrealLibretro')

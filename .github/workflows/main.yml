@@ -5,8 +5,12 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [ master ]
+    branches: [ master, github-workflow-test ]
+    tags:
+      - 'v*.*.*'
 
+# Everything has to be in the same job, otherwise technically speaking you have to rely 
+# on uploading/downloading artifacts which is very slow when running a self-hosted runner
 jobs:
   build:
     runs-on: self-hosted
@@ -14,67 +18,105 @@ jobs:
       - uses: actions/checkout@v3.5.2
       - name: Run Setup Script
         run: C:\msys64\msys2_shell.cmd -defterm -here -no-start -mingw64 -shell bash setup.sh
+
       - name: Package for Unreal Engine 4.24 
         run: python package.py "$env:UE_4_24"
+
       - name: Package for Unreal Engine 4.25
         run: python package.py "$env:UE_4_25"
+
       - name: Package for Unreal Engine 4.26 
         run: python package.py "$env:UE_4_26"
+
       - name: Package for Unreal Engine 4.27
         run: python package.py "$env:UE_4_27"
+
       - name: Package for Unreal Engine 5.0
         run: python package.py "$env:UE_5_0"
+
       - name: Package for Unreal Engine 5.1
         run: python package.py "$env:UE_5_1"
+
       - name: Package for Unreal Engine 5.2
         run: python package.py "$env:UE_5_2"
+
       - name: Package for Unreal Engine 5.3
         run: python package.py "$env:UE_5_3"
+
       - name: Upload Build-Artifact 4.24
+        if: startsWith(github.ref, 'refs/heads/') # Upload artifacts when commits (not tags) are pushed
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-4.24
-          path: UE_4.24
+          path: UnrealLibretro-4.24.zip
           if-no-files-found: error
+
       - name: Upload Build-Artifact 4.25
+        if: startsWith(github.ref, 'refs/heads/')
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-4.25
-          path: UE_4.25
+          path: UnrealLibretro-4.25.zip
           if-no-files-found: error
+
       - name: Upload Build-Artifact 4.26
+        if: startsWith(github.ref, 'refs/heads/')
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-4.26
-          path: UE_4.26
+          path: UnrealLibretro-4.26.zip
           if-no-files-found: error
+
       - name: Upload Build-Artifact 4.27
+        if: startsWith(github.ref, 'refs/heads/')
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-4.27
-          path: UE_4.27
+          path: UnrealLibretro-4.27.zip
           if-no-files-found: error
+
       - name: Upload Build-Artifact 5.0
+        if: startsWith(github.ref, 'refs/heads/')
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-5.0
-          path: UE_5.0
+          path: UnrealLibretro-5.0.zip
           if-no-files-found: error
+
       - name: Upload Build-Artifact 5.1
+        if: startsWith(github.ref, 'refs/heads/')
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-5.1
-          path: UE_5.1
+          path: UnrealLibretro-5.1.zip
           if-no-files-found: error
+
       - name: Upload Build-Artifact 5.2
+        if: startsWith(github.ref, 'refs/heads/')
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-5.2
-          path: UE_5.2
+          path: UnrealLibretro-5.2.zip
           if-no-files-found: error
+
       - name: Upload Build-Artifact 5.3
+        if: startsWith(github.ref, 'refs/heads/')
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-5.3
-          path: UE_5.3
+          path: UnrealLibretro-5.3.zip
           if-no-files-found: error
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/') # Only release when a tag is pushed
+        with:
+          files: |
+            UnrealLibretro-4.24.zip
+            UnrealLibretro-4.25.zip
+            UnrealLibretro-4.26.zip
+            UnrealLibretro-4.27.zip
+            UnrealLibretro-5.0.zip 
+            UnrealLibretro-5.1.zip 
+            UnrealLibretro-5.2.zip 
+            UnrealLibretro-5.3.zip
