@@ -33,7 +33,7 @@ jobs:
   upload_artifacts:
     runs-on: self-hosted
     needs: build
-    if: ! startsWith(github.ref, 'refs/tags/') # I think this prevents uploading artifacts when pushing a tag
+    if: startsWith(github.ref, 'refs/heads/') # I think this prevents uploading artifacts when pushing a tag
     steps:
       - name: Upload Build-Artifact 4.24
         uses: actions/upload-artifact@v3.1.2
