@@ -30,7 +30,7 @@ jobs:
 #        run: python package.py "$env:UE_5_2"
 #      - name: Package for Unreal Engine 5.3
 #        run: python package.py "$env:UE_5_3"
-  upload_artifacts:
+  upload-artifacts:
     runs-on: self-hosted
     needs: build
     if: startsWith(github.ref, 'refs/heads/') # I think this prevents uploading artifacts when pushing a tag
