@@ -66,7 +66,7 @@ if __name__ == "__main__":
     status = os.system(
         f'"{ue_path}/Engine/Build/BatchFiles/RunUAT" BuildPlugin -Rocket'
         f' -Plugin={plugin_path}/UnrealLibretro.uplugin -TargetPlatforms=Win64'
-        f' -Package={plugin_path}/UnrealLibretro-{major}.{minor}/UnrealLibretro -VS2019'
+        f' -Package={plugin_path}/UE_{major}.{minor}/UnrealLibretro -VS2019'
     )
 
     if status:
@@ -77,7 +77,7 @@ if __name__ == "__main__":
         Path(os.path.dirname(path)).mkdir()
         Path(path).touch()
 
-    unix_touch(f'{plugin_path}/UnrealLibretro-{major}.{minor}/UnrealLibretro/MyROMs/Place Your ROMs in this Directory')
-    unix_touch(f'{plugin_path}/UnrealLibretro-{major}.{minor}/UnrealLibretro/MyCores/Place Your Libretro Cores in this Directory')
+    unix_touch(f'{plugin_path}/UE_{major}.{minor}/UnrealLibretro/MyROMs/Place Your ROMs in this Directory')
+    unix_touch(f'{plugin_path}/UE_{major}.{minor}/UnrealLibretro/MyCores/Place Your Libretro Cores in this Directory')
 
-    os.system(f'tar -acf UnrealLibretro-{major}.{minor}.zip -C {plugin_path}/UnrealLibretro-{major}.{minor} UnrealLibretro')
+    os.system(f'tar -acf UnrealLibretro-{major}.{minor}.zip -C {plugin_path}/UE_{major}.{minor} UnrealLibretro')
