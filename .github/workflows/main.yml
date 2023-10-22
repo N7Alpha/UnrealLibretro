@@ -48,7 +48,7 @@ jobs:
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-4.24
-          path: UnrealLibretro-4.24.zip
+          path: UnrealLibretro-4.24
           if-no-files-found: error
 
       - name: Upload Build-Artifact 4.25
@@ -56,7 +56,7 @@ jobs:
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-4.25
-          path: UnrealLibretro-4.25.zip
+          path: UnrealLibretro-4.25
           if-no-files-found: error
 
       - name: Upload Build-Artifact 4.26
@@ -64,7 +64,7 @@ jobs:
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-4.26
-          path: UnrealLibretro-4.26.zip
+          path: UnrealLibretro-4.26
           if-no-files-found: error
 
       - name: Upload Build-Artifact 4.27
@@ -72,7 +72,7 @@ jobs:
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-4.27
-          path: UnrealLibretro-4.27.zip
+          path: UnrealLibretro-4.27
           if-no-files-found: error
 
       - name: Upload Build-Artifact 5.0
@@ -80,7 +80,7 @@ jobs:
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-5.0
-          path: UnrealLibretro-5.0.zip
+          path: UnrealLibretro-5.0
           if-no-files-found: error
 
       - name: Upload Build-Artifact 5.1
@@ -88,7 +88,7 @@ jobs:
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-5.1
-          path: UnrealLibretro-5.1.zip
+          path: UnrealLibretro-5.1
           if-no-files-found: error
 
       - name: Upload Build-Artifact 5.2
@@ -96,7 +96,7 @@ jobs:
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-5.2
-          path: UnrealLibretro-5.2.zip
+          path: UnrealLibretro-5.2
           if-no-files-found: error
 
       - name: Upload Build-Artifact 5.3
@@ -104,7 +104,7 @@ jobs:
         uses: actions/upload-artifact@v3.1.2
         with:
           name: UnrealLibretro-5.3
-          path: UnrealLibretro-5.3.zip
+          path: UnrealLibretro-5.3
           if-no-files-found: error
 
       - name: Release
