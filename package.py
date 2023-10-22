@@ -84,4 +84,4 @@ if __name__ == "__main__":
     unix_touch(f'{package_path}/UnrealLibretro-{major}.{minor}/UnrealLibretro/MyROMs/Place Your ROMs in this Directory')
     unix_touch(f'{package_path}/UnrealLibretro-{major}.{minor}/UnrealLibretro/MyCores/Place Your Libretro Cores in this Directory')
 
-    os.system(f'tar -acf UnrealLibretro-{major}.{minor}.zip -C {package_path}/UnrealLibretro-{major}.{minor} UnrealLibretro')
+    os.system(f'tar -acf {package_path}/UnrealLibretro-{major}.{minor}.zip -C {package_path}/UnrealLibretro-{major}.{minor} UnrealLibretro')
