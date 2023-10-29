@@ -24,6 +24,7 @@
 #include "PlatformHttp.h"
 #include "Interfaces/IHttpResponse.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformTime.h"  // For FPlatformTime
 #include "Misc/FileHelper.h"
 #include "EditorStyleSet.h"
 
@@ -672,19 +673,37 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
 
                     auto MyROMsPath = FUnrealLibretroModule::ResolveROMPath("");
                     TArray<FString> RomPaths;
-                    
-                    IFileManager::Get().FindFiles(RomPaths, *MyROMsPath);
-                    
+                    {
+                        double StartTime = FPlatformTime::Seconds();
+
+                        IFileManager::Get().FindFilesRecursive(RomPaths, *MyROMsPath, TEXT("*.*"), true, false);
+
+                        double TimeTakenSeconds = FPlatformTime::Seconds() - StartTime;
+
+                        if (TimeTakenSeconds > 0.25)
+                        {
+                            UE_LOG(Libretro, Warning, TEXT("FindFilesRecursive took %g seconds to find %i files"), TimeTakenSeconds, RomPaths.Num());
+                        }
+                    }
+
                     // Remove all ROMs with an incompatible extension... FilterByPredicate is O(n) and simple
                     RomPaths = RomPaths.FilterByPredicate([&](FString RomPath) {
                         return ValidExtensions.ContainsByPredicate([&](FString ValidExtension) {
                             return ValidExtension.Compare(FPaths::GetExtension(RomPath), ESearchCase::IgnoreCase) == 0; });
                         });
-                    
-                    RomPathsText.Empty();
-                    for (auto& Path : RomPaths) 
+
+                    // Make paths relative instead of absolute
+                    for (int i = 0; i < RomPaths.Num(); i++)
                     {
-                        RomPathsText.Add(MakeShared<FText>(FText::FromString(FPaths::GetCleanFilename(Path))));
+                        FString RomRelativePath = FPaths::GetPath(RomPaths[i]).RightChop(MyROMsPath.Len()) + TEXT("/") + FPaths::GetCleanFilename(RomPaths[i]);
+                        RomPaths[i] = MoveTemp(RomRelativePath);
+                        continue;
+                    }
+
+                    RomPathsText.Empty();
+                    for (auto& Path : RomPaths)
+                    {
+                        RomPathsText.Add(MakeShared<FText>(FText::FromString(Path)));
                     }
                     
                     MenuBuilder.AddWidget(
