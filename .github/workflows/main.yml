@@ -1,7 +1,5 @@
 name: CI
 
-# Controls when the action will run. Triggers the workflow on push or pull request
-# events but only for the master branch
 on:
   workflow_dispatch:
   push:
@@ -9,114 +7,33 @@ on:
     tags:
       - 'v*.*.*'
 
-# Everything has to be in the same job, otherwise technically speaking you have to rely 
-# on uploading/downloading artifacts which is very slow when running a self-hosted runner
 jobs:
   build:
     runs-on: self-hosted
+    strategy:
+      matrix:
+        version: ["4.24", "4.25", "4.26", "4.27", "5.0", "5.1", "5.2", "5.3"]
+
     steps:
       - uses: actions/checkout@v3.5.2
+
       - name: Run Setup Script
         run: C:\msys64\msys2_shell.cmd -defterm -here -no-start -mingw64 -shell bash setup.sh
 
-      - name: Package for Unreal Engine 4.24 
-        run: python package.py "$env:UE_4_24" "$env:RUNNER_TEMP"
+      - name: Package for Unreal Engine
+        run: python package.py "$env:UE_${{ matrix.version }}" "$env:RUNNER_TEMP"
 
-      - name: Package for Unreal Engine 4.25
-        run: python package.py "$env:UE_4_25" "$env:RUNNER_TEMP"
-
-      - name: Package for Unreal Engine 4.26 
-        run: python package.py "$env:UE_4_26" "$env:RUNNER_TEMP"
-
-      - name: Package for Unreal Engine 4.27
-        run: python package.py "$env:UE_4_27" "$env:RUNNER_TEMP"
-
-      - name: Package for Unreal Engine 5.0
-        run: python package.py "$env:UE_5_0" "$env:RUNNER_TEMP"
-
-      - name: Package for Unreal Engine 5.1
-        run: python package.py "$env:UE_5_1" "$env:RUNNER_TEMP"
-
-      - name: Package for Unreal Engine 5.2
-        run: python package.py "$env:UE_5_2" "$env:RUNNER_TEMP"
-
-      - name: Package for Unreal Engine 5.3
-        run: python package.py "$env:UE_5_3" "$env:RUNNER_TEMP"
-
-      - name: Upload Build-Artifact 4.24
+      - name: Upload Build-Artifact
         if: startsWith(github.ref, 'refs/heads/') # Upload artifacts when commits (not tags) are pushed
         uses: actions/upload-artifact@v3.1.2
         with:
-          name: UnrealLibretro-4.24
-          path: ${{ runner.temp }}/UnrealLibretro-4.24
-          if-no-files-found: error
-
-      - name: Upload Build-Artifact 4.25
-        if: startsWith(github.ref, 'refs/heads/')
-        uses: actions/upload-artifact@v3.1.2
-        with:
-          name: UnrealLibretro-4.25
-          path: ${{ runner.temp }}/UnrealLibretro-4.25
-          if-no-files-found: error
-
-      - name: Upload Build-Artifact 4.26
-        if: startsWith(github.ref, 'refs/heads/')
-        uses: actions/upload-artifact@v3.1.2
-        with:
-          name: UnrealLibretro-4.26
-          path: ${{ runner.temp }}/UnrealLibretro-4.26
-          if-no-files-found: error
-
-      - name: Upload Build-Artifact 4.27
-        if: startsWith(github.ref, 'refs/heads/')
-        uses: actions/upload-artifact@v3.1.2
-        with:
-          name: UnrealLibretro-4.27
-          path: ${{ runner.temp }}/UnrealLibretro-4.27
-          if-no-files-found: error
-
-      - name: Upload Build-Artifact 5.0
-        if: startsWith(github.ref, 'refs/heads/')
-        uses: actions/upload-artifact@v3.1.2
-        with:
-          name: UnrealLibretro-5.0
-          path: ${{ runner.temp }}/UnrealLibretro-5.0
-          if-no-files-found: error
-
-      - name: Upload Build-Artifact 5.1
-        if: startsWith(github.ref, 'refs/heads/')
-        uses: actions/upload-artifact@v3.1.2
-        with:
-          name: UnrealLibretro-5.1
-          path: ${{ runner.temp }}/UnrealLibretro-5.1
-          if-no-files-found: error
-
-      - name: Upload Build-Artifact 5.2
-        if: startsWith(github.ref, 'refs/heads/')
-        uses: actions/upload-artifact@v3.1.2
-        with:
-          name: UnrealLibretro-5.2
-          path: ${{ runner.temp }}/UnrealLibretro-5.2
-          if-no-files-found: error
-
-      - name: Upload Build-Artifact 5.3
-        if: startsWith(github.ref, 'refs/heads/')
-        uses: actions/upload-artifact@v3.1.2
-        with:
-          name: UnrealLibretro-5.3
-          path: ${{ runner.temp }}/UnrealLibretro-5.3
+          name: UnrealLibretro-${{ matrix.version }}
+          path: ${{ runner.temp }}/UnrealLibretro-${{ matrix.version }}
           if-no-files-found: error
 
       - name: Release
-        uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/') # Only release when a tag is pushed
+        uses: softprops/action-gh-release@v1
         with:
           files: |
-            ${{ runner.temp }}/UnrealLibretro-4.24.zip
-            ${{ runner.temp }}/UnrealLibretro-4.25.zip
-            ${{ runner.temp }}/UnrealLibretro-4.26.zip
-            ${{ runner.temp }}/UnrealLibretro-4.27.zip
-            ${{ runner.temp }}/UnrealLibretro-5.0.zip 
-            ${{ runner.temp }}/UnrealLibretro-5.1.zip 
-            ${{ runner.temp }}/UnrealLibretro-5.2.zip 
-            ${{ runner.temp }}/UnrealLibretro-5.3.zip
+            ${{ runner.temp }}/UnrealLibretro-*.zip
