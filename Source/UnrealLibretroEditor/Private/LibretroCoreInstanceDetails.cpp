@@ -520,14 +520,13 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                             [
                                 SNew(SImage)
                                 .Image(FEditorStyle::GetBrush(CoreLibMetadata[PlatformIndex].ImageName))
-                                .ToolTipText(FText::FromString(bForBuildbot ? CoreLibMetadata[PlatformIndex].BuildbotPath 
-                                                                            : CoreLibMetadata[PlatformIndex].DistributionPath))
+                                .ToolTipText(FText::FromString(bForBuildbot ?              CoreLibMetadata[PlatformIndex].BuildbotPath 
+                                                                            : "MyCores/" + CoreLibMetadata[PlatformIndex].DistributionPath))
                             ];
                     }
 
                     FText RowText = FText::FromString(FString(RowDataSource.DownloadsPending == 0 ? "" : "Downloading... ") + Item.Get().ToString());
-                    return
-                    SNew(STableRow< TSharedRef<FText> >, OwnerTable)
+                    return SNew(STableRow< TSharedRef<FText> >, OwnerTable)
                     [
                         SNew(SBox) // Use this to coherce height
                         .HAlign(HAlign_Fill)
