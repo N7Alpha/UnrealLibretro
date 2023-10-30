@@ -646,8 +646,9 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
            ]
         ];
 
-    TArray<FString> ValidExtensions;
-    RomPathValidExtensionsDelimited.ParseIntoArray(ValidExtensions, TEXT("|"), false);
+    // This section just handles displaying ROMs for the current core
+    TArray<FString> RomPathValidExtensions;
+    RomPathValidExtensionsDelimited.ParseIntoArray(RomPathValidExtensions, TEXT("|"), false);
 
     TSharedRef<IPropertyHandle> RomPathProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ULibretroCoreInstance, RomPath));
     FDetailWidgetRow& RomPathWidget = LibretroCategory.AddProperty("RomPath").CustomWidget();
@@ -667,7 +668,7 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
         .ValueContent()
         [
             SAssignNew(PresentRomListDropdownButton, SComboButton)
-            .OnGetMenuContent_Lambda([this, ValidExtensions, RomPathProperty]()
+            .OnGetMenuContent_Lambda([this, RomPathValidExtensions, RomPathProperty]()
                 {
                     FMenuBuilder MenuBuilder(true, nullptr, TSharedPtr<FExtender>(), false, &FCoreStyle::Get(), true);
 
@@ -688,7 +689,7 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
 
                     // Remove all ROMs with an incompatible extension... FilterByPredicate is O(n) and simple
                     RomPaths = RomPaths.FilterByPredicate([&](FString RomPath) {
-                        return ValidExtensions.ContainsByPredicate([&](FString ValidExtension) {
+                        return RomPathValidExtensions.ContainsByPredicate([&](FString ValidExtension) {
                             return ValidExtension.Compare(FPaths::GetExtension(RomPath), ESearchCase::IgnoreCase) == 0; });
                         });
 
@@ -705,14 +706,45 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                     {
                         RomPathsText.Add(MakeShared<FText>(FText::FromString(Path)));
                     }
+
+                    FilteredRomPathsText = RomPathsText; // Initially, both lists are the same.
+
+                    // Add a search box
+                    MenuBuilder.AddWidget(
+                        SNew(SBox) // Use this to coherce width
+                        .WidthOverride(300.0f)
+                        [
+                            SAssignNew(SearchBox, SSearchBox)
+                            .DelayChangeNotificationsWhileTyping(true)
+                            .OnTextChanged_Lambda([this](const FText& SearchText)
+                            {
+                                FilteredRomPathsText.Empty();
+                                if (RomPathsListView.IsValid())
+                                {
+                                    for (const auto& Path : RomPathsText)
+                                    {
+                                        if (   Path->ToString().Contains(SearchText.ToString())
+                                            || SearchText.ToString().IsEmpty())
+                                        {
+                                            FilteredRomPathsText.Add(Path);
+                                        }
+                                    }
+                                }
+
+                                UE_LOG(Libretro, Warning, TEXT("Search text size %i files %i"), RomPathsText.Num(), FilteredRomPathsText.Num());
+                                RomPathsListView->RequestListRefresh();
+                            })
+                        ],
+                        FText(), false
+                    );
                     
                     MenuBuilder.AddWidget(
                         SNew(SBox) // Use this to coherce height
                         .MaxDesiredHeight(300.f)
                         .Padding(4.f)
                         [
-                            SNew(SListView<TSharedRef<FText>>)
-                            .ListItemsSource(&RomPathsText)
+                            SAssignNew(RomPathsListView, SListView<TSharedRef<FText>>)
+                            .ListItemsSource(&FilteredRomPathsText)
                             .SelectionMode(ESelectionMode::Single)
                             .OnGenerateRow_Lambda([this](TSharedRef<FText> Item, const TSharedRef<STableViewBase>& OwnerTable)
                                 {
@@ -736,7 +768,24 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                                 })
                         ], FText(), false);
 
-                    return MenuBuilder.MakeWidget();
+                    // Copied boilerplate that focuses the keyboard on the search box when the drop down is presented
+                    TSharedRef<SWidget> RomDropdownWidget = MenuBuilder.MakeWidget();
+                    RomDropdownWidget->RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateLambda([this](double InCurrentTime, float InDeltaTime)
+                        {
+                            if (SearchBox.IsValid())
+                            {
+                                FWidgetPath WidgetToFocusPath;
+                                FSlateApplication::Get().GeneratePathToWidgetUnchecked(SearchBox.ToSharedRef(), WidgetToFocusPath);
+                                FSlateApplication::Get().SetKeyboardFocus(WidgetToFocusPath, EFocusCause::SetDirectly);
+                                WidgetToFocusPath.GetWindow()->SetWidgetToFocusOnActivate(SearchBox);
+
+                                return EActiveTimerReturnType::Stop;
+                            }
+
+                            return EActiveTimerReturnType::Continue;
+                        }));
+
+                    return RomDropdownWidget;
                 })
             .ToolTipText(RomPathText)
             .ButtonContent()
@@ -748,12 +797,12 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                     {
                         RomPathProperty->SetValueFromFormattedString(NewText.ToString());
                     })
-                .ForegroundColor_Lambda([RomPathProperty, ValidExtensions]()
+                .ForegroundColor_Lambda([RomPathProperty, RomPathValidExtensions]()
                 {    
                     FString RomPath;
                     RomPathProperty->GetValueAsFormattedString(RomPath);
 
-                    bool bExtensionIsValid = ValidExtensions.ContainsByPredicate([&](FString Extension) 
+                    bool bExtensionIsValid = RomPathValidExtensions.ContainsByPredicate([&](FString Extension)
                         { return Extension.Compare(FPaths::GetExtension(RomPath), ESearchCase::IgnoreCase) == 0; });
 
                     if (bExtensionIsValid && FPaths::FileExists(FUnrealLibretroModule::ResolveROMPath(RomPath)))

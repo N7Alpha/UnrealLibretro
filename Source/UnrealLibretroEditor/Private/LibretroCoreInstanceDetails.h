@@ -39,7 +39,9 @@ public:
     TSharedPtr<SListView<TSharedRef<FText>>> CoreAlreadyDownloadedListView;
     TSharedPtr<SListView<TSharedRef<FText>>> CoreAvailableOnBuildbotListView;
 
+    TSharedPtr<SListView<TSharedRef<FText>>> RomPathsListView;
     TArray<TSharedRef<FText>> RomPathsText;
+    TArray<TSharedRef<FText>> FilteredRomPathsText;
 
     TSharedPtr<SComboButton> PresentBuildbotDropdownButton;
     TSharedPtr<SComboButton> PresentRomListDropdownButton;
