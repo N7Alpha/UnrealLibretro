@@ -39,8 +39,7 @@ jobs:
         run: C:\msys64\msys2_shell.cmd -defterm -here -no-start -mingw64 -shell bash setup.sh
 
       - name: Package for Unreal Engine
-        run: python package.py "${{ env['UE_' + matrix.version] }}" "${{ env.RUNNER_TEMP }}"
-
+        run: python package.py "$env:UE_${{ matrix.version[0] }}.${{ matrix.version[2] }}${{ matrix.version[3] }}" "$env:RUNNER_TEMP"
 
       - name: Upload Build-Artifact
         if: startsWith(github.ref, 'refs/heads/') # Upload artifacts when commits (not tags) are pushed
