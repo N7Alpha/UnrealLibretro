@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Discord](https://img.shields.io/discord/810332877577125899?label=Discord&logo=discord)](https://discord.gg/nSTy2jyJmh)
-![engine](https://img.shields.io/static/v1?label=engine&message=4.24-5.3&color=black)
+[![engine](https://img.shields.io/static/v1?label=engine&message=4.24-5.3&color=black)](https://github.com/N7Alpha/UnrealLibretro/releases/latest)
 [![CI](https://github.com/N7Alpha/UnrealLibretro/actions/workflows/main.yml/badge.svg)](https://github.com/N7Alpha/UnrealLibretro/actions/workflows/main.yml)
 
 UnrealLibretro is a Libretro Frontend for Unreal Engine. It is a Blueprint compatible library that lets you run emulators within Unreal Engine. More Technically it allows you to run [Libretro Cores](https://docs.libretro.com/meta/core-list/).
