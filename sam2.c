@@ -276,21 +276,27 @@
 #include <stdint.h>
 #include <inttypes.h>
 #include <stdlib.h>
+#include <string.h>
 
-#define str(s) _str(s)
-#define _str(s) #s
+#define SAM2__STR(s) _SAM2__STR(s)
+#define _SAM2__STR(s) #s
 
 #define SAM2_VERSION_MAJOR 1
 #define SAM2_VERSION_MINOR 0
-#define SAM2_PROTOCOL_STRING ("SM" str(SAM2_VERSION_MAJOR) str(SAM2_VERSION_MINOR))
+#define SAM2_PROTOCOL_STRING "SM" SAM2__STR(SAM2_VERSION_MAJOR) SAM2__STR(SAM2_VERSION_MINOR)
 
 
 #define SAM2_HEADER_SIZE 8
 
-//static const char *sam2_error_header = "FAIL" SAM2_PROTOCOL_STRING;
+#define sam2_fail_header "FAIL" SAM2_PROTOCOL_STRING
+#define sam2_sync_header "SYNC" SAM2_PROTOCOL_STRING
+#define sam2_conn_header "CONN" SAM2_PROTOCOL_STRING
 
 // Although this literal is less flexible it explicitly tells the compiler that you're making a non-null terminated string so it doesn't throw up warnings
-#define SAM2__ERROR_HEADER { 'F', 'A', 'I', 'L', SAM2_PROTOCOL_STRING[0], SAM2_PROTOCOL_STRING[1], SAM2_PROTOCOL_STRING[2], SAM2_PROTOCOL_STRING[3] }
+#define SAM2__ERROR_HEADER { sam2_fail_header[0], 'A', 'I', 'L', SAM2_PROTOCOL_STRING[0], SAM2_PROTOCOL_STRING[1], SAM2_PROTOCOL_STRING[2], SAM2_PROTOCOL_STRING[3] }
+//#define SAM2__ERROR_HEADER { sam2_fail_header[0], sam2_fail_header[1], sam2_fail_header[2], sam2_fail_header[3], sam2_fail_header[4], sam2_fail_header[5], sam2_fail_header[6], sam2_fail_header[7] }
+#define SAM2__SYNC_HEADER { sam2_sync_header[0], sam2_sync_header[1], sam2_sync_header[2], sam2_sync_header[3], sam2_sync_header[4], sam2_sync_header[5], sam2_sync_header[6], sam2_sync_header[7] }
+#define SAM2__CONN_HEADER { sam2_conn_header[0], sam2_conn_header[1], sam2_conn_header[2], sam2_conn_header[3], sam2_conn_header[4], sam2_conn_header[5], sam2_conn_header[6], sam2_conn_header[7] }
 
 #ifndef SAM2_LINKAGE
 #ifdef __cplusplus
@@ -323,21 +329,33 @@
 #define SAM2_DEFAULT_BACKLOG 128
 
 // @todo move some of these into the UDP netcode file
-#define SAM2_FLAG_NO_FIXED_PORT            0b00000001 // Clients aren't limited to setting input on bound port
-#define SAM2_FLAG_ALLOW_SHOW_IP            0b00000010
-#define SAM2_FLAG_FORCE_TURN               0b00000100
-#define SAM2_FLAG_SPECTATOR                0b00001000
-#define SAM2_FLAG_ROOM_NEEDS_AUTHORIZATION 0b00010000
-#define SAM2_FLAG_AUTHORITY_IPv6           0b00100000
+#define SAM2_FLAG_NO_FIXED_PORT            0b00000001ULL // Clients aren't limited to setting input on bound port
+#define SAM2_FLAG_ALLOW_SHOW_IP            0b00000010ULL
+#define SAM2_FLAG_FORCE_TURN               0b00000100ULL
+#define SAM2_FLAG_SPECTATOR                0b00001000ULL
+#define SAM2_FLAG_ROOM_NEEDS_AUTHORIZATION 0b00010000ULL
+#define SAM2_FLAG_AUTHORITY_IPv6           0b00100000ULL
+#define SAM2_FLAG_ROOM_IS_INITIALIZED      0b01000000ULL
 
-#define SAM2_FLAG_PORT0_CAN_SET_ALL_INPUTS (0b00000001 << 8)
-#define SAM2_FLAG_PORT1_CAN_SET_ALL_INPUTS (0b00000010 << 8)
-#define SAM2_FLAG_PORT2_CAN_SET_ALL_INPUTS (0b00000100 << 8)
-#define SAM2_FLAG_PORT3_CAN_SET_ALL_INPUTS (0b00001000 << 8)
-#define SAM2_FLAG_PORT4_CAN_SET_ALL_INPUTS (0b00010000 << 8)
-#define SAM2_FLAG_PORT5_CAN_SET_ALL_INPUTS (0b00100000 << 8)
-#define SAM2_FLAG_PORT6_CAN_SET_ALL_INPUTS (0b01000000 << 8)
-#define SAM2_FLAG_PORT7_CAN_SET_ALL_INPUTS (0b10000000 << 8)
+#define SAM2_FLAG_PORT0_CAN_SET_ALL_INPUTS (0b00000001ULL << 8)
+#define SAM2_FLAG_PORT1_CAN_SET_ALL_INPUTS (0b00000010ULL << 8)
+#define SAM2_FLAG_PORT2_CAN_SET_ALL_INPUTS (0b00000100ULL << 8)
+#define SAM2_FLAG_PORT3_CAN_SET_ALL_INPUTS (0b00001000ULL << 8)
+#define SAM2_FLAG_PORT4_CAN_SET_ALL_INPUTS (0b00010000ULL << 8)
+#define SAM2_FLAG_PORT5_CAN_SET_ALL_INPUTS (0b00100000ULL << 8)
+#define SAM2_FLAG_PORT6_CAN_SET_ALL_INPUTS (0b01000000ULL << 8)
+#define SAM2_FLAG_PORT7_CAN_SET_ALL_INPUTS (0b10000000ULL << 8)
+
+#define SAM2_FLAG_PORT0_PEER_IS_INACTIVE (0b00000001ULL << 16)
+#define SAM2_FLAG_PORT1_PEER_IS_INACTIVE (0b00000010ULL << 16)
+#define SAM2_FLAG_PORT2_PEER_IS_INACTIVE (0b00000100ULL << 16)
+#define SAM2_FLAG_PORT3_PEER_IS_INACTIVE (0b00001000ULL << 16)
+#define SAM2_FLAG_PORT4_PEER_IS_INACTIVE (0b00010000ULL << 16)
+#define SAM2_FLAG_PORT5_PEER_IS_INACTIVE (0b00100000ULL << 16)
+#define SAM2_FLAG_PORT6_PEER_IS_INACTIVE (0b01000000ULL << 16)
+#define SAM2_FLAG_PORT7_PEER_IS_INACTIVE (0b10000000ULL << 16)
+
+#define SAM2_FLAG_AUTHORITY_IS_INACTIVE (0b00000001ULL << 24)
 
 #define SAM2_FLAG_SERVER_PERMISSION_MASK (SAM2_FLAG_AUTHORITY_IPv6)
 #define SAM2_FLAG_AUTHORITY_PERMISSION_MASK (SAM2_FLAG_NO_FIXED_PORT | SAM2_FLAG_ALLOW_SHOW_IP)
@@ -345,7 +363,7 @@
 
 #define SAM2_RESPONSE_SUCCESS                 0
 #define SAM2_RESPONSE_SERVER_ERROR            1 // Emitted by signaling server when there was an internal error
-#define SIG_RESPONSE_AUTHORITY_ERROR          2 // Emitted by authority when there isn't a code for what went wrong
+#define SAM2_RESPONSE_AUTHORITY_ERROR         2 // Emitted by authority when there isn't a code for what went wrong
 #define SIG_RESPONSE_INVALID_ARGS             3 // Emitted by signaling server when arguments are invalid
 #define SIG_RESPONSE_ROOM_ALREADY_EXISTS      4 // Emitted by signaling server when trying to create a room that already exists
 #define SIG_RESPONSE_ROOM_DOES_NOT_EXIST      5 // Emitted by signaling server when a room does not exist
@@ -362,17 +380,17 @@
 
 #define SAM2_PORT_UNAVAILABLE                 0
 #define SAM2_PORT_AVAILABLE                   1
-#define SAM2_PORT_RESERVE                     2
+#define SAM2_PORT_RESERVE                     2 // @todo This isn't needed anymore I think
 #define SAM2_PORT_SENTINELS_MAX               SAM2_PORT_RESERVE
 
 #define SAM2_PORT_MAX 8
 #define SAM2_AUTHORITY_INDEX SAM2_PORT_MAX
 
-#define LOG_FATAL(...) printf(__FILE__ ":" str(__LINE__) ": " __VA_ARGS__); exit(1);
-#define LOG_ERROR(...) printf(__FILE__ ":" str(__LINE__) ": " __VA_ARGS__)
-#define LOG_WARN(...) printf(__FILE__ ":" str(__LINE__) ": " __VA_ARGS__)
-#define LOG_INFO(...) printf(__FILE__ ":" str(__LINE__) ": " __VA_ARGS__)
-#define LOG_VERBOSE(...) printf(__FILE__ ":" str(__LINE__) ": " __VA_ARGS__)
+#define LOG_FATAL(...) printf(__FILE__ ":" SAM2__STR(__LINE__) ": " __VA_ARGS__); exit(1);
+#define LOG_ERROR(...) printf(__FILE__ ":" SAM2__STR(__LINE__) ": " __VA_ARGS__)
+#define LOG_WARN(...) printf(__FILE__ ":" SAM2__STR(__LINE__) ": " __VA_ARGS__)
+#define LOG_INFO(...) printf(__FILE__ ":" SAM2__STR(__LINE__) ": " __VA_ARGS__)
+#define LOG_VERBOSE(...) printf(__FILE__ ":" SAM2__STR(__LINE__) ": " __VA_ARGS__)
 
 // All data is sent in little-endian format
 // All strings are utf-8 encoded unless stated otherwise
@@ -388,6 +406,7 @@ typedef struct sig_room {
 
 static void sanitize_room(sam2_room_t *associated_room, sam2_room_t *room, uint64_t peer_id) {
     room->flags &= ~SAM2_FLAG_SERVER_PERMISSION_MASK;
+    // The logic in here doesn't work for disabled flags
     if (peer_id == room->peer_ids[SAM2_AUTHORITY_INDEX]) {
         room->flags |= SAM2_FLAG_AUTHORITY_PERMISSION_MASK;
     } else {
@@ -444,6 +463,7 @@ typedef struct sam2_signal_message {
 typedef struct sam2_room_join_response {
     char header[8]; // "ROOMJOIN"
 
+    uint64_t peer_id; // Peer id of sender set by sam2 server
     char room_secret[64]; // optional peers know this so use it to determine authorization?
     sam2_room_t room; // Set desired ports to PORT_RESERVE to request a port from the server
 //    char header[8]; // "ROOMJOIN"
@@ -452,10 +472,17 @@ typedef struct sam2_room_join_response {
 //    char ice_sdp[4096];
 } sam2_room_join_response_t;
 
-typedef struct sam2_error_response_t {
+typedef struct sam2_connect_message {
+    char header[8];
+    uint64_t peer_id;
+    uint64_t flags;
+} sam2_connect_message_t;
+
+typedef struct sam2_error_response {
     char header[8];
     int64_t code;
     char description[128];
+    uint64_t peer_id;
 } sam2_error_response_t;
 
 typedef union sam2_response {
@@ -465,6 +492,7 @@ typedef union sam2_response {
     sam2_room_make_response_t room_make_response;
     sam2_room_list_response_t room_list_response;
     sam2_room_join_response_t room_join_response;
+    sam2_connect_message_t connect_message;
     sam2_signal_message_t signal_message;
     sam2_error_response_t error_response;
 } sam2_response_u;
@@ -487,9 +515,10 @@ typedef int sam2_message_e;
 #define SAM2_EMESSAGE_MAKE   1
 #define SAM2_EMESSAGE_LIST   2
 #define SAM2_EMESSAGE_JOIN   3
-#define SAM2_EMESSAGE_SIGNAL 4
-#define SAM2_EMESSAGE_ERROR  5
-#define SAM2_EMESSAGE_VOID   6
+#define SAM2_EMESSAGE_CONN   4
+#define SAM2_EMESSAGE_SIGNAL 5
+#define SAM2_EMESSAGE_ERROR  6
+#define SAM2_EMESSAGE_VOID   7
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -539,7 +568,7 @@ typedef struct client_data {
     sam2_room_t *hosted_room;
     sam2_message_e request_tag;
     union {
-        char buffer[sizeof(sig_room_make_request_t)];
+        char buffer[sizeof(sig_room_make_request_t)]; // @todo Remove this
         sig_room_make_request_t room_make_request;
         sig_room_list_request_t room_list_request;
         sam2_room_join_request_t room_join_request;
@@ -557,6 +586,27 @@ typedef struct sam2_node {
 
 #define sam2__cmp(p, q) (((q)->peer_id < (p)->peer_id) - ((p)->peer_id < (q)->peer_id))
 KAVLL_INIT2(sam2_avl, static, struct sam2_node, head, sam2__cmp)
+
+static uv_tcp_t* sam2__find_client(sam2_server_t *server, uint64_t peer_id) {
+    sam2_avl_node_t key_only_node = { peer_id };
+    sam2_avl_node_t *node = sam2_avl_find(server->peer_id_tree, &key_only_node);
+
+    if (node) {
+        return node->client;
+    } else {
+        return NULL;
+    }
+}
+
+static client_data_t* sam2__find_client_data(sam2_server_t *server, uint64_t peer_id) {
+    uv_tcp_t *client = sam2__find_client(server, peer_id);
+
+    if (client) {
+        return (client_data_t *) client->data;
+    } else {
+        return NULL;
+    }
+}
 
 // ===============================================
 // == Server interface - Depends on libuv       ==
@@ -582,6 +632,17 @@ SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_response_u *respons
 // Will bias IPv6 if connecting via domain name and also block
 SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host, int port);
 
+
+// ===============================================
+// == Helper functions                          ==
+// ===============================================
+
+// This is a test for identity not equality
+SAM2_LINKAGE int sam2_same_room(sam2_room_t *a, sam2_room_t *b) {
+    return    a->peer_ids[SAM2_AUTHORITY_INDEX] == b->peer_ids[SAM2_AUTHORITY_INDEX]
+           && strcmp(a->name, b->name) == 0;
+}
+
 #define SAM2_IMPLEMENTATION
 #if defined(SAM2_IMPLEMENTATION)
 
@@ -599,8 +660,6 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
 #include <fcntl.h>
 #include <sys/types.h>
 #endif
-
-#include <string.h>
 
 
 static int sam2__addr_is_numeric_hostname(const char *hostname) {
@@ -868,6 +927,7 @@ static struct {
     {"ROOMMAKE", sizeof(sig_room_make_request_t)},
     {"ROOMLIST", sizeof(sig_room_list_request_t)},
     {"ROOMJOIN", sizeof(sam2_room_join_request_t)},
+    {sam2_conn_header, sizeof(sam2_connect_message_t)},
     {"SIGNSM10", sizeof(sam2_signal_message_t)},
     {"FAILSM10", sizeof(sam2_error_response_t)},
 };
@@ -880,6 +940,7 @@ static struct {
     {"ROOMMAKE", sizeof(sam2_room_make_response_t)},
     {"ROOMLIST", sizeof(sam2_room_list_response_t)},
     {"ROOMJOIN", sizeof(sam2_room_join_response_t)},
+    {sam2_conn_header, sizeof(sam2_connect_message_t)},
     {"SIGNSM10", sizeof(sam2_signal_message_t)},
     {"FAILSM10", sizeof(sam2_error_response_t)},
 };
@@ -949,7 +1010,7 @@ successful_read:
             *response_tag = SAM2_EMESSAGE_PART;
             *response_length += bytes_read;
 
-            if (header_tag == SAM2_EMESSAGE_NONE) break; // Go back to the top of the loop to determine header tag and read message body
+            if (header_tag == SAM2_EMESSAGE_NONE) continue; // Go back to the top of the loop to determine header tag and read message body
 
             if (*response_length < SAM2_HEADER_SIZE) {
                 LOG_VERBOSE("Received %d/%d bytes of header\n", *response_length, SAM2_HEADER_SIZE);
@@ -960,7 +1021,7 @@ successful_read:
                 // the response_tag to the current header_tag, indicating a complete message of this type.
                 if (*response_length == sam2__response_map[header_tag].message_size) {
                     *response_tag = header_tag;
-                    LOG_VERBOSE("Received complete message\n");
+                    LOG_VERBOSE("Received complete message with header '%.8s'\n", (char *) response);
                     return 1;
                 } else {
                     LOG_VERBOSE("Received %d/%d bytes of message\n", *response_length, sam2__response_map[header_tag].message_size);
@@ -1006,7 +1067,7 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *headerless_request
         total_bytes_written += bytes_written;
     }
 
-    LOG_VERBOSE("Message sent successfully\n");
+    LOG_VERBOSE("Message with header '%.8s' sent successfully\n", headerless_request);
     return 0;
 }
 #endif
@@ -1067,6 +1128,8 @@ static void sam2__remove_room(sam2_server_t *server_data, sam2_room_t *room) {
     if (i != server_data->room_count - 1) {
         server_data->rooms[i] = server_data->rooms[server_data->room_count - 1];
     }
+
+    // @todo Kick everyone in room
 
     --server_data->room_count;
 }
@@ -1205,7 +1268,12 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
     }
 
     if (client_data->request_tag == SAM2_EMESSAGE_INVALID) {
-        static sam2_error_response_t response = { SAM2__ERROR_HEADER, SAM2_RESPONSE_CONNECTION_INVALID, "Client must disconnect then reconnnet" };
+        static sam2_error_response_t response = { 
+            SAM2__ERROR_HEADER,
+            SAM2_RESPONSE_CONNECTION_INVALID,
+            "Client must disconnect then reconnect"
+        };
+
         write_error(client, &response);
         goto cleanup;
     }
@@ -1293,12 +1361,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                 memcpy(room, &request->room, sizeof(*room));
                 room->name[sizeof(room->name) - 1] = '\0';
                 room->turn_hostname[sizeof(room->turn_hostname) - 1] = '\0';
-
-                for (int p = 0; p < SAM2_PORT_MAX; p++) {
-                    if (room->peer_ids[p] == SAM2_PORT_RESERVE) {
-                        room->peer_ids[p] = client_data->peer_id;
-                    }
-                }
+                room->flags |= SAM2_FLAG_ROOM_IS_INITIALIZED;
 
                 sam2_room_make_response_t *response = (sam2_room_make_response_t *) sam2__alloc_response(client_data->request_tag);
                 memcpy(&response->room, room, sizeof(*room));
@@ -1366,6 +1429,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                             p_modified = p;
                             associated_room->peer_ids[p] = request->room.peer_ids[p];
                         }
+
                         if (request->room.peer_ids[p] == SAM2_PORT_RESERVE) {
                             LOG_INFO("Authority %" PRIx64 " requested to join on port %d for room '%s'\n", client_data->peer_id, p, associated_room->name);
                             static sam2_error_response_t response = { SAM2__ERROR_HEADER, SAM2_RESPONSE_SERVER_ERROR, "Authority cannot join their own room"};
@@ -1374,14 +1438,13 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                         }
                     }
 
-                    // If the authority changed their own id then just kick everyone...
-                    // @todo This really sucks just make a dedicated kill server message
-                    if (request->room.peer_ids[SAM2_AUTHORITY_INDEX] != associated_room->peer_ids[SAM2_AUTHORITY_INDEX]) {
+                    if (request->room.peer_ids[SAM2_AUTHORITY_INDEX] == SAM2_PORT_AVAILABLE) {
+                        LOG_INFO("Authority %" PRIx64 " abandoned the room '%s'\n", client_data->peer_id, associated_room->name);
                         for (int p = 0; p < SAM2_PORT_MAX; p++) {
-                            request->room.peer_ids[SAM2_AUTHORITY_INDEX] = SAM2_PORT_UNAVAILABLE;
+                            request->room.peer_ids[SAM2_AUTHORITY_INDEX] = SAM2_PORT_AVAILABLE;
                         }
 
-                        //sam2__remove_room(sig_server, associated_room);
+                        sam2__remove_room(sig_server, associated_room);
                     }
 
                     LOG_INFO("Broadcasting new room state for room %s\n", associated_room->name);
@@ -1390,16 +1453,15 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
 
                         LOG_INFO("Sending room state change for room %s to peer %" PRIx64 "\n", associated_room->name, associated_room->peer_ids[p]);
 
-                        sam2_avl_node_t key_only_node = { request->room.peer_ids[p] };
-                        sam2_avl_node_t *peer_node = sam2_avl_find(sig_server->peer_id_tree, &key_only_node);
+                        uv_tcp_t *client_socket = sam2__find_client(sig_server, request->room.peer_ids[p]);
 
-                        if (peer_node) {
+                        if (client_socket) {
                             sam2_room_join_response_t *response = (sam2_room_join_response_t *) sam2__alloc_response(client_data->request_tag);
-
+                            response->peer_id = client_data->peer_id;
                             memcpy(&response->room, &request->room, sizeof(*associated_room));
                             //memcpy(response->room_secret, request->room_secret, sizeof(response->room_secret));
 
-                            sam2__write_response((uv_stream_t*) peer_node->client, (sam2_response_u *) response);
+                            sam2__write_response((uv_stream_t*) client_socket, (sam2_response_u *) response);
                         } else {
                             // @todo
                             LOG_WARN("No peer found for id %" PRIx64 "\n", request->room.peer_ids[p]);
@@ -1423,19 +1485,23 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                     
                     //bool client_wants_to_join_room = p != SAM2_PORT_MAX;
 
-                    for (int p = 0; p < SAM2_ARRAY_LENGTH(request->room.peer_ids); p++) {
-                        if (request->room.peer_ids[p] == client_data->peer_id) {
-                            LOG_INFO("Client attempted to join room they are already in\n");
-                            static sam2_error_response_t response = { SAM2__ERROR_HEADER, SAM2_RESPONSE_ALREADY_IN_ROOM, "Already in room"};
-                            write_error((uv_stream_t *) client, &response);
-                            goto error_cleanup;
+                    for (int p = 0; p < SAM2_ARRAY_LENGTH(associated_room->peer_ids); p++) {
+                        if (associated_room->peer_ids[p] == client_data->peer_id) {
+                            if (request->room.peer_ids[p] == SAM2_PORT_AVAILABLE) {
+                                LOG_INFO("Client requested to leave room '%s'\n", associated_room->name);
+                                associated_room->peer_ids[p] = SAM2_PORT_AVAILABLE;
+                            } else {
+                                LOG_INFO("Client attempted to join room they are already in\n");
+                                static sam2_error_response_t response = { SAM2__ERROR_HEADER, SAM2_RESPONSE_ALREADY_IN_ROOM, "Already in room"};
+                                write_error((uv_stream_t *) client, &response);
+                                goto error_cleanup;
+                            }
                         }
                     }
  
                     LOG_INFO("Forwarding join request to room authority\n");
-                    sam2_avl_node_t key_only_node = { request->room.peer_ids[SAM2_AUTHORITY_INDEX] };
-                    sam2_avl_node_t *authority_node = sam2_avl_find(sig_server->peer_id_tree, &key_only_node);
-                    if (!authority_node) {
+                    uv_tcp_t *authority = sam2__find_client(sig_server, associated_room->peer_ids[SAM2_AUTHORITY_INDEX]);
+                    if (!authority) {
                         LOG_ERROR("Room authority not found even though room was associated. This is a bug\n");
                         static sam2_error_response_t response = { SAM2__ERROR_HEADER, SAM2_RESPONSE_SERVER_ERROR, "Room authority not found"};
                         write_error((uv_stream_t *) client, &response);
@@ -1444,9 +1510,9 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
 
                     sam2_room_join_response_t *response = (sam2_room_join_response_t *) sam2__alloc_response(client_data->request_tag);
                     memcpy(&response->room, associated_room, sizeof(*associated_room));
-                    response->room.peer_ids[p_join] = client_data->peer_id;
+                    response->room.peer_ids[p_join] = response->peer_id = client_data->peer_id;
                     memcpy(response->room_secret, request->room_secret, sizeof(response->room_secret));
-                    sam2__write_response((uv_stream_t*) authority_node->client, (sam2_response_u *) response);
+                    sam2__write_response((uv_stream_t*) authority, (sam2_response_u *) response);
                 }
 
                 break;
@@ -1566,6 +1632,13 @@ void on_new_connection(uv_stream_t *server, int status) {
             LOG_WARN("Failed to connnect to client %" PRIx64 " uv_read_start error: %s\n", client_data->peer_id, uv_strerror(status));
         } else {
             LOG_INFO("Successfully connected to client %" PRIx64 "\n", client_data->peer_id);
+
+            sam2_connect_message_t *connect_message = (sam2_connect_message_t *) sam2__alloc_response(SAM2_EMESSAGE_CONN);
+            memcpy(connect_message->header, sam2_conn_header, SAM2_HEADER_SIZE);
+
+            connect_message->peer_id = client_data->peer_id;
+
+            sam2__write_response((uv_stream_t*) client, (sam2_response_u *) connect_message);
         }
     } else {
         uv_close((uv_handle_t*) client, on_socket_closed);
@@ -1706,6 +1779,6 @@ SAM2_STATIC_ASSERT(sizeof(sam2_room_make_response_t) == 8 + sizeof(sam2_room_t),
 SAM2_STATIC_ASSERT(sizeof(sig_room_list_request_t) == 8, "sig_room_list_request_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_list_response_t) == 8 + sizeof(int64_t) + sizeof(int64_t) + 8 * sizeof(sam2_room_t), "sam2_room_list_response_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_join_request_t) == 8 + 64 + sizeof(sam2_room_t), "sam2_room_join_request_t is not packed");
-SAM2_STATIC_ASSERT(sizeof(sam2_room_join_request_t) == sizeof(sam2_room_join_response_t), "sam2_room_join_request_t is not packed");
+SAM2_STATIC_ASSERT(sizeof(sam2_room_join_response_t) == 8 + 8 + 64 + sizeof(sam2_room_t), "sam2_room_join_request_t is not packed");
 //SAM2_STATIC_ASSERT(sizeof(sam2_room_join_response_t) == 8 + 4096 + sizeof(sam2_room_t), "sam2_room_join_response_t is not packed");
 #endif

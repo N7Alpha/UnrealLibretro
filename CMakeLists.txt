@@ -11,44 +11,35 @@ if(MSVC)
   add_definitions(-D_CRT_NONSTDC_NO_DEPRECATE)
   # Disable warnings about deprecated POSIX functions + warnings relevant to C++ but not C
   add_definitions("/wd4244 /wd4267 /wd4200 /wd26495")
-endif()
-## Add an option for enabling ASan.
-#option(ASAN "Enable AddressSanitizer (ASan)" ON)
-
-if(ASAN)
-  if(CMAKE_C_COMPILER_ID MATCHES "AppleClang|GNU|Clang")
-    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-omit-frame-pointer -fsanitize=address")
-    set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fno-omit-frame-pointer -fsanitize=address")
-    set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fno-omit-frame-pointer -fsanitize=address")
-  elseif(MSVC)
-    add_compile_options(/fsanitize=address)
-  else()
-    message(SEND_ERROR "AddressSanitizer support requires clang, gcc, or msvc. Try again with -DCMAKE_C_COMPILER.")
-  endif()
+else()
+  add_compile_options(-Wsizeof-pointer-div)
 endif()
 
 # Set Compiler Flags
 if(MSVC)
-#  if(ASAN)
-#    set(SDL_ASAN ON)
-#    add_compile_options(/fsanitize=address /MD)
-#    add_link_options(/fsanitize=address)
-#  endif()
 else()
-  # Only add the -fsanitize=address flags if ASan is enabled.
-#  if(ASAN)
-#    set(SDL_ASAN ON)
-#    add_compile_options(-fsanitize=address -fpermissive -Wall -O1 -g3)
-#    link_libraries(-fsanitize=address)
-#  else()
-#    add_compile_options(-fpermissive -Wall -O1 -g3)
-#  endif()
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    set_source_files_properties(sdlarch.cpp PROPERTIES COMPILE_OPTIONS "-fsanitize=safe-stack")
+  endif()
 
   if(APPLE)
       link_libraries(-static-libstdc++)
   else()
       link_libraries(-static-libgcc)
   endif()
+endif()
+
+# Enable hardware safe stack for x86_64 and software for aarch64 clang (this won't work if compiled in a dll)
+if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "amd64|x86_64")
+  # Apply flags for MSVC
+  if(MSVC)
+    set_source_files_properties(sdlarch.cpp PROPERTIES COMPILE_OPTIONS "/CETCOMPAT")
+  # Apply flags for GCC/Clang
+  elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(sdlarch.cpp PROPERTIES COMPILE_OPTIONS "-mshstk")
+  endif()
+elseif()
+  set_source_files_properties(sdlarch.cpp PROPERTIES COMPILE_OPTIONS "-fsanitize=safe-stack")
 endif()
 
 # Include Directories
