@@ -894,9 +894,6 @@ static void peer_ids_to_string(uint64_t peer_ids[], char *output) {
             case SAM2_PORT_AVAILABLE:
                 output[i] = 'A';
                 break;
-            case SAM2_PORT_RESERVE:
-                output[i] = 'R';
-                break;
             default:
                 output[i] = 'P';
                 break;
@@ -1112,7 +1109,6 @@ void draw_imgui() {
 
                 if      (g_room_we_are_in.peer_ids[p] == SAM2_PORT_UNAVAILABLE) { ImGui::Text("Unavailable"); }
                 else if (g_room_we_are_in.peer_ids[p] == SAM2_PORT_AVAILABLE)   { ImGui::Text("Available"); }
-                else if (g_room_we_are_in.peer_ids[p] == SAM2_PORT_RESERVE)     { ImGui::Text("Reserved"); }
                 else if (g_room_we_are_in.peer_ids[p] == g_our_peer_id)         { ImGui::TextColored(GOLD, "%" PRIx64, g_room_we_are_in.peer_ids[p]); }      
                 else {
                     if (g_agent[p]) {
@@ -1300,7 +1296,7 @@ void draw_imgui() {
                     int p = 0;
                     for (p = 0; p < SAM2_PORT_MAX; p++) {
                         if (request.room.peer_ids[p] == SAM2_PORT_AVAILABLE) {
-                            request.room.peer_ids[p] = SAM2_PORT_RESERVE;
+                            request.room.peer_ids[p] = g_libretro_context.our_peer_id;
                             break;
                         }
                     }
@@ -3070,8 +3066,19 @@ int main(int argc, char *argv[]) {
 
                             int p = 0;
                             for (; p < SAM2_PORT_MAX; p++) {
-                                if (   g_room_we_are_in.peer_ids[p] == SAM2_PORT_AVAILABLE
-                                    && g_room_we_are_in.peer_ids[p] != room_join->room.peer_ids[p]) {
+                                if (g_room_we_are_in.peer_ids[p] != room_join->room.peer_ids[p]) {
+                                    if (g_room_we_are_in.peer_ids[p] != SAM2_PORT_AVAILABLE) {
+                                        sam2_error_response_t error = {
+                                            SAM2__ERROR_HEADER,
+                                            SAM2_RESPONSE_AUTHORITY_ERROR,
+                                            "Client tried to join on unavailable port",
+                                            room_join->peer_id
+                                        };
+
+                                        sam2_client_send(g_sam2_socket, (char *) &error, SAM2_EMESSAGE_ERROR);
+                                        break;
+                                    }
+
                                     printf("Peer %" PRIx64 " has joined the room\n", room_join->room.peer_ids[p]);
                                     fflush(stdout);
 
