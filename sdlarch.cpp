@@ -1246,7 +1246,13 @@ void draw_imgui() {
             }
 
             if (g_room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] == g_our_peer_id) {
-                ImGui::BeginChild("SpectatorsTableWindow", ImVec2(ImGui::GetWindowContentRegionWidth(), ImGui::GetWindowContentRegionMax().y/4), true);
+
+                ImGui::BeginChild("SpectatorsTableWindow", 
+                    ImVec2(
+                        ImGui::GetContentRegionAvail().x,
+                        ImGui::GetWindowContentRegionMax().y / 4
+                     ), true);
+
                 ImGui::SeparatorText("Spectators");
                 if (ImGui::BeginTable("SpectatorsTable", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
                     ImGui::TableSetupColumn("Peer ID");
@@ -1351,7 +1357,12 @@ void draw_imgui() {
                 // Run your "Stop" code here
             }
 
-            ImGui::BeginChild("TableWindow", ImVec2(ImGui::GetWindowContentRegionWidth(), ImGui::GetWindowContentRegionMax().y/2), true);
+            ImGui::BeginChild("TableWindow",
+                ImVec2(
+                    ImGui::GetContentRegionAvail().x,
+                    ImGui::GetWindowContentRegionMax().y/2
+                ), true);
+
             static int selected_room_index = -1;  // Initialize as -1 to indicate no selection
             // Table
             if (ImGui::BeginTable("Rooms", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
