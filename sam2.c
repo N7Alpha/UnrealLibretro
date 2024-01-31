@@ -510,8 +510,6 @@ typedef union sam2_request {
     sam2_signal_message_t signal_message;
 } sam2_request_u;
 
-#define FREE_RESPONSE(req) free(req)
-
 typedef int sam2_message_e;
 #define SAM2_EMESSAGE_INVALID -2
 #define SAM2_EMESSAGE_PART  -1
@@ -541,6 +539,12 @@ typedef int sam2_socket_t;
 #if defined(SAM2_SERVER)
 #include <uv.h>
 
+typedef struct sam2_node {
+    uint64_t key;
+    uv_tcp_t *client;
+
+    KAVLL_HEAD(struct sam2_node) head;
+} sam2_avl_node_t;
 
 typedef struct sam2_server {
     int64_t room_capacity; // Capacity of rooms and rooms_internal array
@@ -549,9 +553,9 @@ typedef struct sam2_server {
 
     struct client_data *clients;
 
-    void *_debug_address_of_last_response_sent_since_handling_current_request;
+    sam2_avl_node_t *_debug_allocated_response_set;
 
-    struct sam2_node *peer_id_tree;
+    sam2_avl_node_t *peer_id_map;
     int64_t room_count; 
     sam2_room_t rooms[];
 } sam2_server_t;
@@ -577,19 +581,12 @@ typedef struct client_data {
     int64_t length;
 } client_data_t;
 
-typedef struct sam2_node {
-    uint64_t peer_id;
-    uv_tcp_t *client;
-
-    KAVLL_HEAD(struct sam2_node) head;
-} sam2_avl_node_t;
-
-#define sam2__cmp(p, q) (((q)->peer_id < (p)->peer_id) - ((p)->peer_id < (q)->peer_id))
+#define sam2__cmp(p, q) (((q)->key < (p)->key) - ((p)->key < (q)->key))
 KAVLL_INIT2(sam2_avl, static, struct sam2_node, head, sam2__cmp)
 
 static uv_tcp_t* sam2__find_client(sam2_server_t *server, uint64_t peer_id) {
     sam2_avl_node_t key_only_node = { peer_id };
-    sam2_avl_node_t *node = sam2_avl_find(server->peer_id_tree, &key_only_node);
+    sam2_avl_node_t *node = sam2_avl_find(server->peer_id_map, &key_only_node);
 
     if (node) {
         return node->client;
@@ -1095,20 +1092,44 @@ static uint64_t fnv1a_hash(void* data, size_t len) {
     return hash;
 }
 
-sam2_response_u *sam2__alloc_response(sam2_message_e tag) {
+sam2_response_u *sam2__alloc_response(sam2_server_t *server, sam2_message_e tag) {
     sam2_response_u *response = (sam2_response_u *) calloc(1, sizeof(sam2_response_u));
 
+    // @todo
     //sam2_response_u *response = NULL;
     //if (response_freelist) {
     //    response = response_freelist;
     //    response_freelist = response_freelist->next;
     //} else {
-    //    response = ALLOC_RESPONSE();
+    //    assert(0); // Just check we have ample responses to send out >~32 in case of broadcast. This beats checking for NULL from an allocator every single time we make an allocation
     //}
 
+    sam2_avl_node_t *response_node = (sam2_avl_node_t *) SAM2_MALLOC(sizeof(sam2_avl_node_t));
+    response_node->key = (uint64_t) response;
+
+    if (response_node != sam2_avl_insert(&server->_debug_allocated_response_set, response_node)) {
+        SAM2_FREE(response_node);
+        LOG_ERROR(
+            "Somehow we allocated the same block of memory for different responses twice in one on_recv call."
+            " Probably this debug bookkeeping logic is broken or the allocator."
+        );
+    }
+
     memcpy(response->buffer, sam2__response_map[tag].header, SAM2_HEADER_SIZE);
-    
+
     return response;
+}
+
+static void sam2__free_response(sam2_server_t *server, void *response) {
+    //response->next = response_freelist;
+    //response_freelist = response;
+    free(response);
+
+    sam2_avl_node_t key_only_node = { (uint64_t) response };
+    sam2_avl_node_t *node = sam2_avl_erase(&server->_debug_allocated_response_set, &key_only_node);
+    if (node) {
+        SAM2_FREE(node);
+    }
 }
 
 int sam2__get_port_of_peer(sam2_room_t *room, uint64_t peer_id) {
@@ -1169,7 +1190,7 @@ static void on_socket_closed(uv_handle_t *handle) {
         }
 
         struct sam2_node key_only_node = { client_data->peer_id };
-        struct sam2_node *node = sam2_avl_erase(&server_data->peer_id_tree, &key_only_node);
+        struct sam2_node *node = sam2_avl_erase(&server_data->peer_id_map, &key_only_node);
 
         if (node) {
             SAM2_FREE(node);
@@ -1181,28 +1202,40 @@ static void on_socket_closed(uv_handle_t *handle) {
     free(client);
 }
 
+typedef struct {
+    uv_write_t req;
+    sam2_server_t *server;
+} sam2_ext_write_t;
+
 static void on_write(uv_write_t *req, int status) {
     if (status) {
         fprintf(stderr, "uv_write error: %s\n", uv_strerror(status));
     }
 
-    FREE_RESPONSE(req->data);
+    // Generally this is a legal cast even in old compilers [ISO C11, section 6.5.2.3]
+    sam2_ext_write_t *ext_req = (sam2_ext_write_t *) req;
+
+    sam2__free_response(ext_req->server, req->data);
 
     free(req);
 }
 
+// This procedure owns the lifetime of response
 static void sam2__write_response(uv_stream_t *client, sam2_response_u *response) {
     client_data_t *client_data = (client_data_t *) client->data;
     sam2_server_t *server = client_data->sig_server;
 
-    if (response == server->_debug_address_of_last_response_sent_since_handling_current_request) {
+    sam2_avl_node_t key_only_node = { (uint64_t) response };
+
+    sam2_avl_node_t *node = sam2_avl_erase(&server->_debug_allocated_response_set, &key_only_node);
+    if (node) {
+        SAM2_FREE(node);
+    } else {
         LOG_ERROR(
-            "The memory for the last response sent was immediately reused. This is almost certainly an error. If you are"
+            "The memory for a response sent was reused within the same on_recv call. This is almost certainly an error. If you are"
             " broadcasting a message you have to individually allocate each response since libuv sends them asynchronously\n"
         );
     }
-
-    server->_debug_address_of_last_response_sent_since_handling_current_request = response;
 
     sam2_message_e tag = SAM2_EMESSAGE_MAKE;
     for (; tag < SAM2_EMESSAGE_VOID; tag++) {
@@ -1212,17 +1245,19 @@ static void sam2__write_response(uv_stream_t *client, sam2_response_u *response)
 
     if (tag == SAM2_EMESSAGE_VOID) {
         LOG_ERROR("We tried to send a response with invalid header to a client '%.8s'\n", (char *) response);
-        FREE_RESPONSE(response);
+        sam2__free_response(server, response);
         return;
     }
 
     uv_buf_t buffer;
     buffer.len = sam2__response_map[tag].message_size;
     buffer.base = (char *) response;
-    uv_write_t *write_req = (uv_write_t*) malloc(sizeof(uv_write_t));
-    write_req->data = response;
 
-    int status = uv_write(write_req, client, &buffer, 1, on_write);
+    sam2_ext_write_t *write_req = (sam2_ext_write_t*) malloc(sizeof(sam2_ext_write_t));
+    write_req->req.data = response;
+    write_req->server = server;
+
+    int status = uv_write((uv_write_t *) write_req, client, &buffer, 1, on_write);
     if (status < 0) {
         LOG_ERROR("uv_write error: %s\n", uv_strerror(status));
     }
@@ -1280,7 +1315,11 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
     client_data_t *client_data = (client_data_t *) client->data;
     sam2_server_t *sig_server = (sam2_server_t *) client_data->sig_server;
 
-    sig_server->_debug_address_of_last_response_sent_since_handling_current_request = NULL;
+    if (sig_server->_debug_allocated_response_set != NULL) {
+        LOG_ERROR("We had leftover unsent responses this means we're probably leaking memory\n");
+        kavll_free(sam2_avl_node_t, head, sig_server->_debug_allocated_response_set, SAM2_FREE);
+        sig_server->_debug_allocated_response_set = NULL;
+    }
 
     LOG_VERBOSE("nread=%lld\n", (long long int)nread);
     if (nread < 0) {
@@ -1352,7 +1391,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
             // Send the appropriate response
             switch(client_data->request_tag) {
             case SAM2_EMESSAGE_LIST: {
-                sam2_room_list_response_t *response = &sam2__alloc_response(client_data->request_tag)->room_list_response;
+                sam2_room_list_response_t *response = &sam2__alloc_response(sig_server, client_data->request_tag)->room_list_response;
 
                 response->server_room_count = sig_server->room_count;
                 response->room_count = SAM2_MIN((int64_t) SAM2_ARRAY_LENGTH(response->rooms), sig_server->room_count); 
@@ -1392,7 +1431,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                 new_room->turn_hostname[sizeof(new_room->turn_hostname) - 1] = '\0';
                 new_room->flags |= SAM2_FLAG_ROOM_IS_INITIALIZED;
 
-                sam2_room_make_message_t *response = (sam2_room_make_message_t *) sam2__alloc_response(client_data->request_tag);
+                sam2_room_make_message_t *response = (sam2_room_make_message_t *) sam2__alloc_response(sig_server, client_data->request_tag);
                 memcpy(&response->room, new_room, sizeof(*new_room));
 
                 sam2__write_response(client, (sam2_response_u *) response);
@@ -1476,7 +1515,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                         uv_tcp_t *client_socket = sam2__find_client(sig_server, request->room.peer_ids[p]);
 
                         if (client_socket) {
-                            sam2_room_join_message_t *response = (sam2_room_join_message_t *) sam2__alloc_response(client_data->request_tag);
+                            sam2_room_join_message_t *response = (sam2_room_join_message_t *) sam2__alloc_response(sig_server, client_data->request_tag);
                             response->peer_id = client_data->peer_id;
                             memcpy(&response->room, &request->room, sizeof(*associated_room));
                             //memcpy(response->room_secret, request->room_secret, sizeof(response->room_secret));
@@ -1546,7 +1585,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                         goto error_cleanup;
                     }
 
-                    sam2_room_join_message_t *response = (sam2_room_join_message_t *) sam2__alloc_response(client_data->request_tag);
+                    sam2_room_join_message_t *response = (sam2_room_join_message_t *) sam2__alloc_response(sig_server, client_data->request_tag);
                     memcpy(&response->room, associated_room, sizeof(*associated_room));
                     response->peer_id = client_data->peer_id;
                     if (p_join != -1) {
@@ -1602,7 +1641,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                             uv_tcp_t *peer_socket = sam2__find_client(sig_server, associated_room->peer_ids[p]);
 
                             if (peer_socket) {
-                                sam2_room_acknowledge_join_message_t *response = (sam2_room_acknowledge_join_message_t *) sam2__alloc_response(client_data->request_tag);
+                                sam2_room_acknowledge_join_message_t *response = (sam2_room_acknowledge_join_message_t *) sam2__alloc_response(sig_server, client_data->request_tag);
                                 memcpy(response, &response_value, sizeof(*response));
 
                                 sam2__write_response((uv_stream_t*) peer_socket, (sam2_response_u *) response);
@@ -1617,7 +1656,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                     } else {
                         LOG_INFO("Client %" PRIx64 " acknowledged peer %" PRIx64 " joining room '%s'\n", client_data->peer_id, request->joiner_peer_id, associated_room->name);
                         uv_tcp_t *authority = sam2__find_client(sig_server, associated_room->peer_ids[SAM2_AUTHORITY_INDEX]);
-                        sam2_room_acknowledge_join_message_t *response = (sam2_room_acknowledge_join_message_t *) sam2__alloc_response(client_data->request_tag);
+                        sam2_room_acknowledge_join_message_t *response = (sam2_room_acknowledge_join_message_t *) sam2__alloc_response(sig_server, client_data->request_tag);
                         memcpy(response, &response_value, sizeof(*response));
                         sam2__write_response((uv_stream_t *) authority, (sam2_response_u *) response);
                     }
@@ -1636,7 +1675,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                 }
 
                 sam2_avl_node_t key_only_node = { request->peer_id };
-                sam2_avl_node_t *peer_node = sam2_avl_find(sig_server->peer_id_tree, &key_only_node);
+                sam2_avl_node_t *peer_node = sam2_avl_find(sig_server->peer_id_map, &key_only_node);
 
                 if (!peer_node) {
                     LOG_INFO("Client attempted to send sdp information to non-existent peer\n");
@@ -1646,7 +1685,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                 }
 
                 LOG_INFO("Forward sdp information from peer %" PRIx64 " to peer %" PRIx64 "\n", client_data->peer_id, request->peer_id);
-                sam2_signal_message_t *response = (sam2_signal_message_t *) sam2__alloc_response(client_data->request_tag);
+                sam2_signal_message_t *response = (sam2_signal_message_t *) sam2__alloc_response(sig_server, client_data->request_tag);
 
                 memcpy(response, request, sizeof(*response));
                 response->peer_id = client_data->peer_id;
@@ -1659,7 +1698,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                 uv_tcp_t *target_peer = sam2__find_client(sig_server, client_data->error_response.peer_id);
 
                 if (target_peer) {
-                    sam2_error_response_t *response = (sam2_error_response_t *) sam2__alloc_response(client_data->request_tag);
+                    sam2_error_response_t *response = (sam2_error_response_t *) sam2__alloc_response(sig_server, client_data->request_tag);
                     memcpy(response, &client_data->error_response, sizeof(*response));
                     sam2__write_response((uv_stream_t *) target_peer, (sam2_response_u *) response);
                 } else {
@@ -1694,8 +1733,6 @@ cleanup:
         LOG_VERBOSE("Freeing buf\n");
         free(buf->base);
     }
-
-    sig_server->_debug_address_of_last_response_sent_since_handling_current_request = NULL; // Set this here since an asynchronous timeouts sending responses could potentially cause a false postive
 }
 
 void on_new_connection(uv_stream_t *server, int status) {
@@ -1737,9 +1774,9 @@ void on_new_connection(uv_stream_t *server, int status) {
         client->data = client_data;
 
         sam2_avl_node_t *node = (sam2_avl_node_t *) SAM2_MALLOC(sizeof(sam2_avl_node_t));
-        node->peer_id = client_data->peer_id;
+        node->key = client_data->peer_id;
         node->client = client;
-        sam2_avl_insert(&server_data->peer_id_tree, node);
+        sam2_avl_insert(&server_data->peer_id_map, node);
 
         uv_timer_init(uv_default_loop(), client_data->timer);
         // Reading the request sent by the client
@@ -1749,7 +1786,7 @@ void on_new_connection(uv_stream_t *server, int status) {
         } else {
             LOG_INFO("Successfully connected to client %" PRIx64 "\n", client_data->peer_id);
 
-            sam2_connect_message_t *connect_message = (sam2_connect_message_t *) sam2__alloc_response(SAM2_EMESSAGE_CONN);
+            sam2_connect_message_t *connect_message = (sam2_connect_message_t *) sam2__alloc_response(server_data, SAM2_EMESSAGE_CONN);
             memcpy(connect_message->header, sam2_conn_header, SAM2_HEADER_SIZE);
 
             connect_message->peer_id = client_data->peer_id;
