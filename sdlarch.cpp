@@ -9,6 +9,7 @@
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_opengl3.h"
+#include "implot.h"
 
 #include "juice/juice.h"
 #include "zstd.h"
@@ -1481,9 +1482,23 @@ finished_drawing_sam2_interface:
 
             ImGui::Text("Core ticks %" PRId64, frame_counter);
             ImGui::Text("Core tick time (ms)");
-            ImGui::PlotHistogram("", temp, g_sample_size, 0, NULL, 0.0f, 33.33f, ImVec2(0, 80));
+
+            ImVec2 plotSize = ImVec2(ImGui::GetContentRegionAvail().x, 150); // Adjust the height as needed
+
+            // Set the axis limits before beginning the plot
+            ImPlot::SetNextAxisLimits(ImAxis_X1, 0, g_sample_size, ImGuiCond_Always);
+            ImPlot::SetNextAxisLimits(ImAxis_Y1, 0.0f, 33.33f, ImGuiCond_Always);
+
+            if (ImPlot::BeginPlot("Frame Time Plot", plotSize)) {
+                // Plot the histogram
+                ImPlot::PlotBars("Frame Times", temp, g_sample_size, 0.67f, -0.5f);
+
+                // End the plot
+                ImPlot::EndPlot();
+            }
         }
-        
+
+
         ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
         ImGui::End();
     }
@@ -2856,6 +2871,7 @@ int main(int argc, char *argv[]) {
 
     //IMGUI_CHECKVERSION();
     ImGui::SetCurrentContext(ImGui::CreateContext());
+    ImPlot::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     //io.IniFilename = NULL; // Don't write an ini file that caches window positions
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls

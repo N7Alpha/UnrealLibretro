@@ -43,7 +43,7 @@ elseif()
 endif()
 
 # Include Directories
-include_directories(libjuice/include zstd/lib imgui/ imgui/backends/)
+include_directories(libjuice/include zstd/lib imgui/ imgui/backends/ implot/ implot/internal/)
 
 # Source Files
 set(SOURCE_FILES 
@@ -57,7 +57,9 @@ set(SOURCE_FILES
     imgui/imgui_draw.cpp
     imgui/imgui_demo.cpp
     imgui/imgui_tables.cpp
-    imgui/imgui_widgets.cpp)
+    imgui/imgui_widgets.cpp
+    implot/implot.cpp
+    implot/implot_items.cpp)
 
 # Add SDL and libuv subdirectories
 set(SDL_SHARED_ENABLED_BY_DEFAULT OFF)
