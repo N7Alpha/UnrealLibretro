@@ -309,7 +309,6 @@ struct FLibretroContext {
     desync_debug_packet_t desync_debug_packet = { CHANNEL_DESYNC_DEBUG };
 
     int64_t frame_counter = 0;
-    int64_t updated_input_frame = 0;
     FLibretroInputState InputState[PortCount] = {0};
     bool fuzz_input = false;
 
@@ -884,8 +883,10 @@ static uint64_t g_zstd_cycle_count[MAX_SAMPLE_SIZE] = {1}; // The 1 is so we don
 static uint64_t g_zstd_compress_size[MAX_SAMPLE_SIZE] = {0};
 static uint64_t g_reed_solomon_encode_cycle_count[MAX_SAMPLE_SIZE] = {0};
 static uint64_t g_reed_solomon_decode_cycle_count[MAX_SAMPLE_SIZE] = {0};
-static float g_frame_time_milliseconds[MAX_SAMPLE_SIZE];
+static float g_frame_time_milliseconds[MAX_SAMPLE_SIZE] = {0};
+static float g_core_wants_tick_in_milliseconds[MAX_SAMPLE_SIZE] = {0};
 static uint64_t g_frame_cyclic_offset = 0; // Between 0 and g_sample_size-1
+static uint64_t g_main_loop_cyclic_offset = 0;
 static size_t g_serialize_size = 0;
 static bool g_do_zstd_compress = true;
 static bool g_do_zstd_delta_compress = false;
@@ -1469,35 +1470,68 @@ finished_drawing_sam2_interface:
         if (old_vsync_enabled) {
             ImGui::PopStyleColor(); // Reset to default color
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("vsync causes stuttering in the core because it blocks and we're single-threaded");
+                ImGui::SetTooltip(
+                    "vsync can cause stuttering during netplay because it blocks and thus during that time we're not polling for input"
+                    " ,\n ticking the core, etc."
+                );
             }
         }
 
-        {
+        ImGui::Text("Core ticks %" PRId64, frame_counter);
+        ImGui::Text("Core tick time (ms)");
+
+        float *frame_time_dataset[] = {
+            g_frame_time_milliseconds,
+            g_core_wants_tick_in_milliseconds,
+        };
+
+        for (int datasetIndex = 0; datasetIndex < SAM2_ARRAY_LENGTH(frame_time_dataset); datasetIndex++) {
             float temp[MAX_SAMPLE_SIZE];
+            float maxVal, minVal, sum, avgVal;
+            ImVec2 plotSize = ImVec2(ImGui::GetContentRegionAvail().x, 150);
+
+            uint64_t cyclic_offset[] = {
+                g_frame_cyclic_offset,
+                g_main_loop_cyclic_offset,
+            };
+
+            maxVal = -FLT_MAX;
+            minVal = FLT_MAX;
+            sum = 0.0f;
 
             for (int i = 0; i < g_sample_size; ++i) {
-                temp[i] = static_cast<float>(g_frame_time_milliseconds[(i+g_frame_cyclic_offset)%g_sample_size]);
+                float value = frame_time_dataset[datasetIndex][(i + cyclic_offset[datasetIndex]) % g_sample_size];
+                temp[i] = value;
+                maxVal = (value > maxVal) ? value : maxVal;
+                minVal = (value < minVal) ? value : minVal;
+                sum += value;
             }
+            avgVal = sum / g_sample_size;
 
-            ImGui::Text("Core ticks %" PRId64, frame_counter);
-            ImGui::Text("Core tick time (ms)");
-
-            ImVec2 plotSize = ImVec2(ImGui::GetContentRegionAvail().x, 150); // Adjust the height as needed
+            if (datasetIndex == 0) {
+                ImGui::Text("Max: %.3f ms  Min: %.3f ms", maxVal, minVal);
+                ImGui::Text("Average: %.3f ms  Ideal: %.3f ms", avgVal, 1000.0f / g_av.timing.fps);
+            }
 
             // Set the axis limits before beginning the plot
             ImPlot::SetNextAxisLimits(ImAxis_X1, 0, g_sample_size, ImGuiCond_Always);
-            ImPlot::SetNextAxisLimits(ImAxis_Y1, 0.0f, 33.33f, ImGuiCond_Always);
+            ImPlot::SetNextAxisLimits(ImAxis_Y1, 0.0f, 50.0f, ImGuiCond_Always);
 
-            if (ImPlot::BeginPlot("Frame Time Plot", plotSize)) {
+            const char* plotTitles[] = {"Frame Time Plot", "Core Wants Tick Plot"};
+            if (ImPlot::BeginPlot(plotTitles[datasetIndex], plotSize)) {
                 // Plot the histogram
-                ImPlot::PlotBars("Frame Times", temp, g_sample_size, 0.67f, -0.5f);
+                const char* barTitles[] = {"Frame Times", "Time until core wants to tick"};
+                ImPlot::PlotBars(barTitles[datasetIndex], temp, g_sample_size, 0.67f, -0.5f);
+
+                // Plot max, min, and average lines without changing their colors
+                ImPlot::PlotInfLines("Max", &maxVal, 1, ImPlotInfLinesFlags_Horizontal); // Red line for max
+                ImPlot::PlotInfLines("Min", &minVal, 1, ImPlotInfLinesFlags_Horizontal); // Blue line for min
+                ImPlot::PlotInfLines("Avg", &avgVal, 1, ImPlotInfLinesFlags_Horizontal); // Green line for avg
 
                 // End the plot
                 ImPlot::EndPlot();
             }
         }
-
 
         ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
         ImGui::End();
@@ -2469,34 +2503,9 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
                         LOG_VERBOSE("Save state loaded\n");
                         LibretroContext->frame_counter = g_savestate_transfer_payload->frame_counter;
 
-//                        int64_t max_frames_we_can_advance = INT64_MAX;
-//                        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-//                            if (!g_agent[p]) continue;
-//
-//                            CircularQueue &peer_input_queue = g_input_packet_queue[p];
-//                            if (peer_input_queue.isEmpty()) {
-//                                LOG_INFO("We had no input buffered for peer_ids[%d]=%" PRIx64 " after we finished receiving the savestate from the authority\n", p, g_room_we_are_in.peer_ids[p]);
-//                                max_frames_we_can_advance = 0;
-//                                break;
-//                            }
-//
-//                            // Initialize the frame variable with the frame of the first element in the queue
-//                            int64_t last_frame = peer_input_queue.buffer[peer_input_queue.begin].frame;
-//
-//                            // @todo This loop guards against a dumb assumption that UDP packets arrive in order. The solution without this assumption requires more refactoring I don't want to do currently
-//                            for (int i = (peer_input_queue.begin + 1) % peer_input_queue.buffer_size; i != peer_input_queue.end; i = (i + 1) % peer_input_queue.buffer_size) {
-//                                // Check if the frame field is increasing by 1
-//                                SDL_assert(peer_input_queue.buffer[i].frame == last_frame + 1);
-//                                last_frame = peer_input_queue.buffer[i].frame;
-//                            }
-//
-//                            // Toss out any input that is older than the frame we're on this is needed or it breaks the polling logic @todo That should be fixable
-//                            while (peer_input_queue.buffer[peer_input_queue.begin].frame < LibretroContext->frame_counter) {
-//                                peer_input_queue.dequeue();
-//                            }
-//
-//                            max_frames_we_can_advance = SAM2_MIN(max_frames_we_can_advance, last_frame - LibretroContext->frame_counter);
-//                        }
+                        LibretroContext->input_packet[LibretroContext->OurPort()].frame = 0;
+                        memset(&LibretroContext->input_packet[LibretroContext->OurPort()].input_state, 0, 
+                         sizeof(LibretroContext->input_packet[LibretroContext->OurPort()].input_state));
 
 #if 0
                         // @todo Fix the max frames we can advance changes dynamically since we'll be receiving packets while we're advancing
@@ -2906,22 +2915,8 @@ int main(int argc, char *argv[]) {
 
     SDL_Event ev;
 
-    while (running) {
+    for (g_main_loop_cyclic_offset = 0; running; g_main_loop_cyclic_offset = (g_main_loop_cyclic_offset + 1) % MAX_SAMPLE_SIZE) {
         auto work_start_time = std::chrono::high_resolution_clock::now();
-#if JUICE_CONCURRENCY_MODE == JUICE_CONCURRENCY_MODE_USER
-        // We need to poll agents to make progress on the ICE connection
-        for (int p = 0; p < SAM2_ARRAY_LENGTH(g_libretro_context.agent); p++) {
-            if (!g_libretro_context.agent[p]) continue;
-
-            int ret;
-            char buffer[4096];
-            while (ret = juice_user_poll(g_agent[p], buffer, sizeof(buffer))) {
-                if (ret < 0) {
-                    die("Error polling agent (%d)\n", ret);
-                }
-            }
-        }
-#endif
 
         // Update the game loop timer.
         if (runloop_frame_time.callback) {
@@ -2960,24 +2955,6 @@ int main(int argc, char *argv[]) {
         clock_gettime(CLOCK_MONOTONIC, &start_time);
 #endif
 
-        bool netplay_ready_to_tick = !g_waiting_for_savestate;
-        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-            if (g_libretro_context.OurPort() == p) continue;
-            if (g_libretro_context.room_we_are_in.peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
-                netplay_ready_to_tick &= g_libretro_context.AllPeersReadyForPeerToJoin(g_libretro_context.room_we_are_in.peer_ids[p]);
-
-                if (!g_agent[p]) {
-                    netplay_ready_to_tick = false;
-                } else {
-                    juice_state_t state = juice_get_state(g_agent[p]);
-
-                    // Wait until we can send netplay messages to everyone without fail
-                    netplay_ready_to_tick &= state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED;
-                    netplay_ready_to_tick &= g_libretro_context.input_packet[p].frame >= frame_counter;
-                }
-            }
-        }
-
         //std::chrono::duration<double, std::milli> elapsed_time_milliseconds = current_time - last_frame_time;
         bool core_ready_to_tick = false;
         double core_wants_tick_in_seconds = 0.0;
@@ -3005,22 +2982,21 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
+        g_core_wants_tick_in_milliseconds[g_main_loop_cyclic_offset] = core_wants_tick_in_seconds * 1000.0;
 
         // Always send an input packet if the core is ready to tick. This subsumes retransmission logic and generally makes protocol logic less strict
-        if (core_ready_to_tick) {
+        if (true) {
             g_kbd = SDL_GetKeyboardState(NULL);
             
             if (g_kbd[SDL_SCANCODE_ESCAPE])
                 running = false;
 
-            if (   !g_our_peer_id
-                || g_waiting_for_savestate
-                || frame_counter >= g_libretro_context.peer_joining_on_frame[g_libretro_context.OurPort()]
-                || g_our_peer_id == g_room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
+            // Poll input to apply to the next frame if we haven't yet
+            if (g_libretro_context.input_packet[g_libretro_context.OurPort()].frame < frame_counter) {
+                g_libretro_context.input_packet[g_libretro_context.OurPort()].frame = frame_counter;
 
-                if (g_libretro_context.updated_input_frame < frame_counter) {
-                    g_libretro_context.updated_input_frame = frame_counter;
-
+                if (   (!(g_libretro_context.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED))
+                    || frame_counter >= g_libretro_context.peer_joining_on_frame[g_libretro_context.OurPort()]) {
                     for (int i = 0; g_binds[i].k || g_binds[i].rk; ++i) {
                         g_libretro_context.input_packet[g_libretro_context.OurPort()].input_state[frame_counter % INPUT_DELAY_FRAMES_MAX][0][g_binds[i].rk] = g_kbd[g_binds[i].k];
                     }
@@ -3035,7 +3011,8 @@ int main(int argc, char *argv[]) {
 
             if (   g_libretro_context.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED
                 && g_libretro_context.AllPeersReadyForPeerToJoin(g_libretro_context.our_peer_id)
-                && frame_counter >= g_libretro_context.peer_joining_on_frame[g_libretro_context.OurPort()]) {
+                && (!g_waiting_for_savestate // If we were waiting this would mean our frame_counter is invalid and break the next check
+                && frame_counter >= g_libretro_context.peer_joining_on_frame[g_libretro_context.OurPort()])) {
                 g_libretro_context.input_packet[g_libretro_context.OurPort()].frame = frame_counter;
 
                 for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
@@ -3047,6 +3024,48 @@ int main(int argc, char *argv[]) {
                         juice_send(g_agent[p], (const char *) &g_libretro_context.input_packet[g_libretro_context.OurPort()], sizeof(g_libretro_context.input_packet[0]));
                         LOG_VERBOSE("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64 "\n", g_libretro_context.input_packet.frame, p, g_room_we_are_in.peer_ids[p]);
                         fflush(stdout);
+                    }
+                }
+            }
+        }
+
+#if JUICE_CONCURRENCY_MODE == JUICE_CONCURRENCY_MODE_USER
+        // We need to poll agents to make progress on the ICE connection
+        juice_agent_t *agent[SAM2_PORT_MAX+1] = {0};
+        int agent_count = 0;
+        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+            if (g_libretro_context.agent[p]) {
+                agent[agent_count++] = g_libretro_context.agent[p];
+            }
+        }
+
+        int timeout_milliseconds = 1e3 * core_wants_tick_in_seconds;
+
+        auto start = std::chrono::high_resolution_clock::now();
+        int ret;
+        if (ret = juice_user_poll(agent, agent_count, timeout_milliseconds)) {
+            die("Error polling agent (%d)\n", ret);
+        }
+        std::chrono::duration<double, std::milli> elapsed_time_milliseconds = std::chrono::high_resolution_clock::now() - start;
+        core_ready_to_tick = core_wants_tick_in_seconds < (elapsed_time_milliseconds.count()) / 1e3;
+#endif
+
+        bool netplay_ready_to_tick = !g_waiting_for_savestate;
+        if (g_libretro_context.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
+            for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+                if (g_libretro_context.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
+                netplay_ready_to_tick &= g_libretro_context.input_packet[p].frame >= frame_counter;
+
+                if (g_libretro_context.OurPort() != p) {
+                    // Wait until we can send UDP packets to peer without fail @todo Now that I think about it this is probably redundant so I can remove it or change it to asserts once I figure out the logic better
+                    netplay_ready_to_tick &= g_libretro_context.AllPeersReadyForPeerToJoin(g_libretro_context.room_we_are_in.peer_ids[p]);
+
+                    if (!g_agent[p]) {
+                        netplay_ready_to_tick = false;
+                    } else {
+                        juice_state_t state = juice_get_state(g_agent[p]);
+
+                        netplay_ready_to_tick &= state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED;
                     }
                 }
             }
@@ -3127,7 +3146,7 @@ int main(int argc, char *argv[]) {
                 switch (response_tag) {
                 case SAM2_EMESSAGE_ERROR: {
                     g_last_sam2_error = response.error_response;
-                    printf("Received error response from SAM2 (%" PRIx64 "): %s\n", g_last_sam2_error.code, g_last_sam2_error.description);
+                    printf("Received error response from SAM2 (%" PRId64 "): %s\n", g_last_sam2_error.code, g_last_sam2_error.description);
                     fflush(stdout);
                     break;
                 }
@@ -3181,6 +3200,7 @@ int main(int argc, char *argv[]) {
                         fflush(stdout);
 
                         g_waiting_for_savestate = true;
+                        frame_counter = 123456789000; // Our frame_counter is invalid before we get a savestate this should make logic issues more obvious
                         g_room_we_are_in = room_join->room;
                         g_libretro_context.peer_joining_on_frame[g_libretro_context.OurPort()] = INT64_MAX; // Upper bound
 
@@ -3481,12 +3501,10 @@ int main(int argc, char *argv[]) {
 
         // Poor man's coroutine's/scheduler
         double work_elapsed_time_microseconds = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - work_start_time).count();
-        double sleep = SAM2_MIN(core_wants_tick_in_seconds, monitor_wants_refresh_seconds);
-        sleep = SAM2_MAX(sleep - (work_elapsed_time_microseconds / 1e6), 0.0);
 
         //printf("%g\n", sleep);
         //fflush(stdout);
-        usleep_busy_wait((unsigned int) (sleep * 1e6));
+        //usleep_busy_wait((unsigned int) (sleep * 1e6));
     }
 //cleanup:
     core_unload();
