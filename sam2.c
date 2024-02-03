@@ -1069,7 +1069,8 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *headerless_request
         total_bytes_written += bytes_written;
     }
 
-    LOG_VERBOSE("Message with header '%.8s' sent successfully\n", headerless_request);
+    LOG_INFO("Message with header '%.8s' and size %d bytes sent successfully\n", headerless_request, message_size);
+    fflush(stdout);
     return 0;
 }
 #endif
@@ -1263,11 +1264,14 @@ static void sam2__write_response(uv_stream_t *client, sam2_response_u *response)
 }
 
 static void on_write_error(uv_write_t *req, int status) {
+    uv_stream_t *client = (uv_stream_t *) req->data;
+    client_data_t *client_data = (client_data_t *) client->data;
 
     if (status < 0) {
-        LOG_ERROR("Error sending message to client: %s\n", uv_strerror(status));
+        LOG_WARN("Failed to send error message to client: %s\n", uv_strerror(status));
+        // @todo Probably just close the connection here
     } else {
-        LOG_INFO("Sent error response to client, closing connection and freeing resources...\n");
+        LOG_INFO("Sent error response to client %016" PRIx64 "\n", client_data->peer_id);
     }
 
     free(req);
@@ -1287,6 +1291,7 @@ static void write_error(uv_stream_t *client, sam2_error_response_t *response) {
     buffer.len = sam2__response_map[SAM2_EMESSAGE_ERROR].message_size;
     buffer.base = (char *) response;
     uv_write_t *write_req = (uv_write_t*) malloc(sizeof(uv_write_t));
+    write_req->data = client;
     int status = uv_write(write_req, client, &buffer, 1, on_write_error);
     if (status < 0) {
         LOG_ERROR("uv_write error: %s\n", uv_strerror(status));
@@ -1294,6 +1299,7 @@ static void write_error(uv_stream_t *client, sam2_error_response_t *response) {
 }
 
 static void on_timeout(uv_timer_t *handle) {
+    // Dereferencing client should be fine here since before we free the client we close the timer which prevents this callback from triggering
     uv_stream_t *client = (uv_stream_t *) handle->data;
     client_data_t *client_data = (client_data_t *) client->data;
 
@@ -1302,12 +1308,11 @@ static void on_timeout(uv_timer_t *handle) {
         LOG_INFO("Client %" PRIx64 " connection is already closing or closed\n", client_data->peer_id);
     } else {
         client_data->buffer[SAM2_MIN(client_data->length, SAM2_HEADER_SIZE)] = '\0'; // @todo(GPT-X) You can do really tricky format string things instead of resorting to this
-        LOG_WARN("Client %" PRIx64 " sent incomplete message with header '%s'\n", client_data->peer_id, client_data->buffer);
+        LOG_WARN("Client %" PRIx64 " sent incomplete message with header '%s' and size %" PRId64 "\n", client_data->peer_id, client_data->buffer, client_data->length);
         static sam2_error_response_t response = { SAM2__ERROR_HEADER, SIG_RESPONSE_INVALID_HEADER, "An incomplete TCP message was received before timing out" };
 
         write_error(client, &response);
     }
-
 }
 
 static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
@@ -1315,7 +1320,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
     sam2_server_t *sig_server = (sam2_server_t *) client_data->sig_server;
 
     if (sig_server->_debug_allocated_response_set != NULL) {
-        LOG_ERROR("We had leftover unsent responses this means we're probably leaking memory\n");
+        LOG_ERROR("We had allocated unsent responses this means we probably leaked memory handling the last response\n");
         kavll_free(sam2_avl_node_t, head, sig_server->_debug_allocated_response_set, SAM2_FREE);
         sig_server->_debug_allocated_response_set = NULL;
     }
@@ -1509,7 +1514,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                     for (int p = 0; p < SAM2_PORT_MAX; p++) {
                         if (associated_room->peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
 
-                        LOG_INFO("Sending room state change for room %s to peer %" PRIx64 "\n", associated_room->name, associated_room->peer_ids[p]);
+                        LOG_INFO("Sending room state change for room '%s' to peer %" PRIx64 "\n", associated_room->name, associated_room->peer_ids[p]);
 
                         uv_tcp_t *client_socket = sam2__find_client(sig_server, request->room.peer_ids[p]);
 
@@ -1673,23 +1678,22 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                     goto error_cleanup;
                 }
 
-                sam2_avl_node_t key_only_node = { request->peer_id };
-                sam2_avl_node_t *peer_node = sam2_avl_find(sig_server->peer_id_map, &key_only_node);
+                uv_tcp_t *peer = sam2__find_client(sig_server, request->peer_id);
 
-                if (!peer_node) {
-                    LOG_INFO("Client attempted to send sdp information to non-existent peer\n");
+                LOG_INFO("Forwarding sdp information from peer %" PRIx64 " to peer %" PRIx64 "\n", client_data->peer_id, request->peer_id);
+                if (!peer) {
+                    LOG_WARN("Forwarding failed Client attempted to send sdp information to non-existent peer\n");
                     static sam2_error_response_t response = { SAM2__ERROR_HEADER, SAM2_RESPONSE_PEER_DOES_NOT_EXIST, "Peer not found"};
                     write_error((uv_stream_t *) client, &response);
                     goto error_cleanup;
                 }
 
-                LOG_INFO("Forward sdp information from peer %" PRIx64 " to peer %" PRIx64 "\n", client_data->peer_id, request->peer_id);
                 sam2_signal_message_t *response = (sam2_signal_message_t *) sam2__alloc_response(sig_server, client_data->request_tag);
 
                 memcpy(response, request, sizeof(*response));
                 response->peer_id = client_data->peer_id;
 
-                sam2__write_response((uv_stream_t *) peer_node->client, (sam2_response_u *) response);
+                sam2__write_response((uv_stream_t *) peer, (sam2_response_u *) response);
                 break;
             }
             case SAM2_EMESSAGE_ERROR: {
