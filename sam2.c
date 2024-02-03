@@ -283,16 +283,19 @@
 
 #define SAM2_VERSION_MAJOR 1
 #define SAM2_VERSION_MINOR 0
-#define SAM2_PROTOCOL_STRING "SM" SAM2__STR(SAM2_VERSION_MAJOR) SAM2__STR(SAM2_VERSION_MINOR)
+#define SAM2_PROTOCOL_STRING "v" SAM2__STR(SAM2_VERSION_MAJOR) "." SAM2__STR(SAM2_VERSION_MINOR)
 
 
 #define SAM2_HEADER_SIZE 8
 
-#define sam2_fail_header "FAIL" SAM2_PROTOCOL_STRING
-#define sam2_sync_header "SYNC" SAM2_PROTOCOL_STRING
-#define sam2_conn_header "CONN" SAM2_PROTOCOL_STRING
+#define sam2_make_header "MAKE" SAM2_PROTOCOL_STRING
+#define sam2_list_header "LIST" SAM2_PROTOCOL_STRING
 #define sam2_join_header "JOIN" SAM2_PROTOCOL_STRING
 #define sam2_ackj_header "ACKJ" SAM2_PROTOCOL_STRING
+#define sam2_sync_header "SYNC" SAM2_PROTOCOL_STRING
+#define sam2_conn_header "CONN" SAM2_PROTOCOL_STRING
+#define sam2_sign_header "SIGN" SAM2_PROTOCOL_STRING
+#define sam2_fail_header "FAIL" SAM2_PROTOCOL_STRING
 
 // Although this literal is less flexible it explicitly tells the compiler that you're making a non-null terminated string so it doesn't throw up warnings
 //#define SAM2__ERROR_HEADER { sam2_fail_header[0], 'A', 'I', 'L', SAM2_PROTOCOL_STRING[0], SAM2_PROTOCOL_STRING[1], SAM2_PROTOCOL_STRING[2], SAM2_PROTOCOL_STRING[3] }
@@ -427,7 +430,7 @@ static void sanitize_room(sam2_room_t *associated_room, sam2_room_t *room, uint6
 }
 
 typedef struct sam2_room_acknowledge_join_message {
-    char header[8]; // "ACKJSMxx"
+    char header[8];
     sam2_room_t room;
 
     uint64_t sender_peer_id; // Set by sam2
@@ -436,7 +439,7 @@ typedef struct sam2_room_acknowledge_join_message {
 } sam2_room_acknowledge_join_message_t;
 
 typedef struct sig_room_make_message {
-    char header[8]; // "MAKESMxx"
+    char header[8];
     sam2_room_t room;
 
     // char crypto_signature[64]; // optional
@@ -444,12 +447,12 @@ typedef struct sig_room_make_message {
 } sam2_room_make_message_t;
 
 typedef struct sig_room_list_request {
-    char header[8]; // "LISTSMxx"
+    char header[8];
 } sig_room_list_request_t;
 
 // These are sent at a fixed rate until the client receives all the messages
 typedef struct sig_room_list_response {
-    char header[8]; // "LISTSMxx"
+    char header[8];
 
     int64_t server_room_count;  // Set by server to total number of rooms listed on the server
     int64_t room_count; // Actual number of rooms inside of rooms
@@ -457,32 +460,28 @@ typedef struct sig_room_list_response {
 } sam2_room_list_response_t;
 
 typedef struct sam2_signal_message {
-    char header[8]; // "SIGNSMxx"
+    char header[8];
 
     uint64_t peer_id; // Set by sam2 server
     char ice_sdp[1024];
 } sam2_signal_message_t;
 
 typedef struct sam2_room_join_message {
-    char header[8]; // "JOINSMxx"
+    char header[8];
 
     uint64_t peer_id; // Peer id of sender set by sam2 server
     char room_secret[64]; // optional peers know this so use it to determine authorization?
     sam2_room_t room; // Set desired ports to PORT_RESERVE to request a port from the server
-//    char header[8]; // "ROOMJOIN"
-//
-//    sam2_room_t room;
-//    char ice_sdp[4096];
 } sam2_room_join_message_t;
 
 typedef struct sam2_connect_message {
-    char header[8]; // "CONNSMxx"
+    char header[8];
     uint64_t peer_id;
     uint64_t flags;
 } sam2_connect_message_t;
 
 typedef struct sam2_error_response {
-    char header[8]; // "FAILSMxx"
+    char header[8];
     int64_t code;
     char description[128];
     uint64_t peer_id;
@@ -924,28 +923,28 @@ static struct {
     const char *header;
     const int message_size;
 } sam2__request_map[] = {
-    {/* SAM2_EMESSAGE_NONE */},
-    {"ROOMMAKE", sizeof(sam2_room_make_message_t)},
-    {"ROOMLIST", sizeof(sig_room_list_request_t)},
-    {"ROOMJOIN", sizeof(sam2_room_join_message_t)},
+    {"GOTOFAIL", SAM2_HEADER_SIZE}, /* SAM2_EMESSAGE_NONE */
+    {sam2_make_header, sizeof(sam2_room_make_message_t)},
+    {sam2_list_header, sizeof(sig_room_list_request_t)},
+    {sam2_join_header, sizeof(sam2_room_join_message_t)},
     {sam2_ackj_header, sizeof(sam2_room_acknowledge_join_message_t)},
     {sam2_conn_header, sizeof(sam2_connect_message_t)},
-    {"SIGNSM10", sizeof(sam2_signal_message_t)},
-    {"FAILSM10", sizeof(sam2_error_response_t)},
+    {sam2_sign_header, sizeof(sam2_signal_message_t)},
+    {sam2_fail_header, sizeof(sam2_error_response_t)},
 };
 
 static struct {
     const char *header;
-    int message_size;
+    const int message_size;
 } sam2__response_map[] = {
-    {/* SAM2_EMESSAGE_NONE */},
-    {"ROOMMAKE", sizeof(sam2_room_make_message_t)},
-    {"ROOMLIST", sizeof(sam2_room_list_response_t)},
-    {"ROOMJOIN", sizeof(sam2_room_join_message_t)},
+    {"GOTOFAIL", SAM2_HEADER_SIZE}, /* SAM2_EMESSAGE_NONE */
+    {sam2_make_header, sizeof(sam2_room_make_message_t)},
+    {sam2_list_header, sizeof(sam2_room_list_response_t)},
+    {sam2_join_header, sizeof(sam2_room_join_message_t)},
     {sam2_ackj_header, sizeof(sam2_room_acknowledge_join_message_t)},
     {sam2_conn_header, sizeof(sam2_connect_message_t)},
-    {"SIGNSM10", sizeof(sam2_signal_message_t)},
-    {"FAILSM10", sizeof(sam2_error_response_t)},
+    {sam2_sign_header, sizeof(sam2_signal_message_t)},
+    {sam2_fail_header, sizeof(sam2_error_response_t)},
 };
 
 // NOTE: Initialize response_tag to SAM2_EMESSAGE_NONE and response_length to 0 before calling sam2_client_poll and only ever read from it
