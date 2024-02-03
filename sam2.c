@@ -1715,19 +1715,19 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
         }
     }
 
-    // This is basically a courtesy for clients to warn them they only sent a partial message
-    if (client_data->request_tag == SAM2_EMESSAGE_PART) {
-        uv_timer_start(client_data->timer, on_timeout, 500, 0);  // 0.5 seconds
-    } else {
-        uv_timer_stop(client_data->timer);
-    }
-    
     goto cleanup;
 error_cleanup: // I am not sure if this makes sense yet
 
     client_data->request_tag = SAM2_EMESSAGE_NONE;
     client_data->length = 0;
 cleanup:
+    // This is basically a courtesy for clients to warn them they only sent a partial message
+    if (client_data->request_tag == SAM2_EMESSAGE_PART) {
+        uv_timer_start(client_data->timer, on_timeout, 500, 0);  // 0.5 seconds
+    } else {
+        uv_timer_stop(client_data->timer);
+    }
+
     if (buf->base) {
         LOG_VERBOSE("Freeing buf\n");
         free(buf->base);
