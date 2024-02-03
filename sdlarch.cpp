@@ -2245,36 +2245,55 @@ static void on_state_changed(juice_agent_t *agent, juice_state_t state, void *us
     }
 }
 
+int concatenate_if_there_is_enough_space(char *concatenatee, int concatenatee_capacity, const char *concatenator, char delimiter) {
+    size_t current_length = strlen(concatenatee);
+    size_t add_length = strlen(concatenator);
+    size_t total_length = current_length + add_length + 2; // +1 for the delimiter, +1 for the null terminator
+
+    if (total_length > concatenatee_capacity) {
+        return -1; // Indicate failure due to insufficient space
+    }
+
+    // Perform concatenation
+    strcpy(concatenatee + current_length, concatenator);
+    concatenatee[current_length + add_length] = delimiter; // Place delimiter after the concatenator
+    concatenatee[total_length - 1] = '\0'; // Ensure null termination
+
+    return 0; // Indicate success
+}
+
 // On local candidate gathered
 static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr) {
     printf("Candidate: %s\n", sdp);
 
-    int p = 0;
-    // @todo Factor this out to find_first_occurence_linear_search maybe
-    for (; p < SAM2_ARRAY_LENGTH(FLibretroContext::agent); p++) if (agent == g_agent[p]) break;
-    if (p == SAM2_ARRAY_LENGTH(FLibretroContext::agent)) {
-        printf("No agent found\n");
+    int p = locate(g_libretro_context.agent, agent);
+    if (p == -1) {
+        LOG_ERROR("No agent found\n");
         return;
     }
 
     sam2_signal_message_t *response = &g_signal_message[p];
 
-    strcat(response->ice_sdp, sdp);
-    strcat(response->ice_sdp, "\n");
+    // @todo Remove this once we do candidate streaming
+    int status = concatenate_if_there_is_enough_space(response->ice_sdp, sizeof(response->ice_sdp), sdp, '\n');
+
+    if (status < 0) {
+        LOG_WARN("Not enough space to store append new ICE candidate this may prevent us from connecting\n");
+    }
 }
 
 // On local candidates gathering done
 static void on_gathering_done(juice_agent_t *agent, void *user_ptr) {
     printf("Gathering done\n");
 
-    int p = 0;
-    for (; p < SAM2_ARRAY_LENGTH(FLibretroContext::agent); p++) if (agent == g_agent[p]) break;
-    if (p == SAM2_ARRAY_LENGTH(FLibretroContext::agent)) {
-        printf("No agent found\n");
+    int p = locate(g_libretro_context.agent, agent);
+    if (p == -1) {
+        LOG_ERROR("No agent found\n");
         return;
     }
 
-    sam2_client_send(g_sam2_socket, (char *) &g_signal_message[p], SAM2_EMESSAGE_SIGNAL);
+    int status = sam2_client_send(g_sam2_socket, (char *) &g_signal_message[p], SAM2_EMESSAGE_SIGNAL);
+    assert(status >= 0);
 }
 
 // On message received
