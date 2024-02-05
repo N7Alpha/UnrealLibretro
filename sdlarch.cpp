@@ -47,6 +47,72 @@ void startup_ice_for_peer(juice_agent_t **agent, sam2_signal_message_t *signal_m
 #include <chrono>
 #include <thread>
 
+#define RLE8_ENCODE_UPPER_BOUND(N) 3 * ((N+1) / 2) + (N) / 2
+
+// Encodes input array of uint8_t into a byte stream with RLE for zeros.
+int64_t rle8_encode(const uint8_t* input, int64_t input_size, uint8_t* output) {
+    int64_t output_index = 0;
+    for (int64_t i = 0; i < input_size; ++i) {
+        if (input[i] == 0) {
+            uint16_t count = 1;
+            while (i + 1 < input_size && input[i + 1] == 0) {
+                count++;
+                i++;
+            }
+
+            output[output_index++] = 0; // Mark the start of a zero run
+            // Encode count as little endian
+            output[output_index++] = (uint8_t)(count & 0xFF);
+            output[output_index++] = (uint8_t)((count >> 8) & 0xFF);
+        } else {
+            output[output_index++] = input[i]; // Copy non-zero values directly
+        }
+    }
+    return output_index; // Return the size of the encoded data
+}
+
+// Decodes the encoded byte stream back into uint8_t values.
+int64_t rle8_decode(const uint8_t* input, int64_t input_size, uint8_t* output, int64_t output_capacity) {
+    int64_t output_index = 0;
+    int64_t i = 0;
+    while (i < input_size) {
+        if (input[i] == 0) {
+            i++; // Move past the zero marker
+            uint16_t count = input[i] | (input[i + 1] << 8); // Decode count as little endian
+            i += 2; // Move past the count bytes
+
+            while (count-- > 0) {
+                output[output_index++] = 0;
+                if (output_index >= output_capacity) return output_index;
+            }
+        } else {
+            output[output_index++] = input[i++];
+            if (output_index >= output_capacity) return output_index;
+        }
+    }
+    return output_index; // Return the size of the decoded data
+}
+
+// Calculates the decoded size from the encoded byte stream.
+int64_t rle8_decode_size(const uint8_t* input, int64_t input_size) {
+    int64_t decoded_size = 0;
+    int64_t i = 0;
+    while (i < input_size) {
+        if (input[i] == 0) {
+            i++; // Move past the zero marker
+            uint16_t count = input[i] | (input[i + 1] << 8); // Decode count as little endian
+            i += 2; // Move past the count bytes
+
+            decoded_size += count;
+        } else {
+            decoded_size++;
+            i++;
+        }
+    }
+    return decoded_size;
+}
+
+
 void usleep_busy_wait(unsigned int usec) {
     if (usec >= 500) {
         std::this_thread::sleep_for(std::chrono::microseconds(usec));
@@ -263,8 +329,9 @@ typedef int16_t FLibretroInputState[64]; // This must be a POD for putting into 
 
 static_assert(to_integral(ERetroDeviceID::Size) < sizeof(FLibretroInputState) / sizeof((*(FLibretroInputState *) (0x0))[0]), "FLibretroInputState is too small");
 
+#define FLAGS_MASK                      0b00001111
 #define CHANNEL_MASK                    0b11110000
-#define CHANNEL_VOID                    0b00000000
+#define CHANNEL_EXTRA                   0b00000000
 #define CHANNEL_INPUT                   0b00010000
 #define CHANNEL_INPUT_AUDIT_CONSISTENCY 0b00100000
 #define CHANNEL_SAVESTATE_TRANSFER      0b00110000
@@ -274,10 +341,13 @@ static_assert(to_integral(ERetroDeviceID::Size) < sizeof(FLibretroInputState) / 
 #define INPUT_DELAY_FRAMES_MAX 2
 
 typedef struct {
-    uint8_t channel_and_flags;
-    uint8_t spacing[7];
     int64_t frame;
     FLibretroInputState input_state[INPUT_DELAY_FRAMES_MAX][PortCount];
+} netplay_input_state_t;
+
+typedef struct {
+    uint8_t channel_and_port;
+    uint8_t coded_netplay_input_state[];
 } input_packet_t;
 
 typedef struct {
@@ -302,7 +372,7 @@ struct FLibretroContext {
     sam2_room_t room_we_are_in = {0};
     uint64_t our_peer_id = 0;
 
-    input_packet_t input_packet[SAM2_PORT_MAX+1] = {
+    netplay_input_state_t netplay_input_state[SAM2_PORT_MAX+1] = {
         { CHANNEL_INPUT }, { CHANNEL_INPUT }, { CHANNEL_INPUT }, { CHANNEL_INPUT },
         { CHANNEL_INPUT }, { CHANNEL_INPUT }, { CHANNEL_INPUT }, { CHANNEL_INPUT }, { CHANNEL_INPUT }
     };
@@ -812,7 +882,7 @@ double format_unit_count(double count, char *unit)
 
 #define MAX_ROOMS 1024
 
-static_assert(sizeof(input_packet_t) == sizeof(int64_t) + sizeof(input_packet_t::frame) + sizeof(input_packet_t::input_state), "Input packet is not packed");
+static_assert(sizeof(netplay_input_state_t) == sizeof(netplay_input_state_t::frame) + sizeof(netplay_input_state_t::input_state), "Input packet is not packed");
 #define SAVESTATE_TRANSFER_FLAG_K_IS_239         0b0001
 #define SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0 0b0010
 
@@ -1220,9 +1290,9 @@ void draw_imgui() {
                             if (g_libretro_context.peer_desynced_frame[p]) {
                                 ImGui::TextColored(color, "Peer desynced (frame %" PRId64 ")", g_libretro_context.peer_desynced_frame[p]);
                             } else {
-                                char buffer_depth[INPUT_DELAY_FRAMES_MAX+1] = {0};
+                                char buffer_depth[INPUT_DELAY_FRAMES_MAX] = {0};
 
-                                int64_t peer_num_frames_ahead = g_libretro_context.input_packet[p].frame - g_libretro_context.frame_counter;
+                                int64_t peer_num_frames_ahead = g_libretro_context.netplay_input_state[p].frame - g_libretro_context.frame_counter;
                                 for (int f = 0; f < sizeof(buffer_depth)-1; f++) {
                                     buffer_depth[f] = f < peer_num_frames_ahead ? 'X' : 'O';
                                 }
@@ -1950,7 +2020,7 @@ void FLibretroContext::core_input_poll() {
     // @todo You can barely just not handle this as a special case. My offline input handling just needs more consideration
     if (   frame_counter >= peer_joining_on_frame[OurPort()] 
         && !Spectating()) {
-        memcpy(InputState, input_packet[OurPort()].input_state[frame_counter % INPUT_DELAY_FRAMES_MAX][0], sizeof(InputState));
+        memcpy(InputState, netplay_input_state[OurPort()].input_state[frame_counter % INPUT_DELAY_FRAMES_MAX][0], sizeof(InputState));
     }
 
     FLibretroInputState &g_joy = g_libretro_context.InputState[0];
@@ -1964,10 +2034,10 @@ void FLibretroContext::core_input_poll() {
             if (frame_counter >= g_libretro_context.peer_joining_on_frame[p]) {
 
                 assert(g_libretro_context.AllPeersReadyForPeerToJoin(room_we_are_in.peer_ids[p]));
-                assert(input_packet[p].frame <= frame_counter + (INPUT_DELAY_FRAMES_MAX-1));
-                assert(input_packet[p].frame >= frame_counter);
+                assert(netplay_input_state[p].frame <= frame_counter + (INPUT_DELAY_FRAMES_MAX-1));
+                assert(netplay_input_state[p].frame >= frame_counter);
                 for (int i = 0; i < 16; i++) {
-                    g_joy[i] |= input_packet[p].input_state[frame_counter % INPUT_DELAY_FRAMES_MAX][0][i];
+                    g_joy[i] |= netplay_input_state[p].input_state[frame_counter % INPUT_DELAY_FRAMES_MAX][0][i];
                 }
             }
         }
@@ -1981,7 +2051,7 @@ void FLibretroContext::core_input_poll() {
         int i = 0;
         for (; i < max_polls; i++) {
             int64_t smallest_frame = INT64_MAX;
-            for (input_packet_t &packet : debug_input_packet_queue.buffer) {
+            for (netplay_input_state_t &packet : debug_input_packet_queue.buffer) {
                 smallest_frame = std::min(smallest_frame, packet.frame);
 
                 if (packet.frame == frame_counter) {
@@ -2334,10 +2404,14 @@ static void on_gathering_done(juice_agent_t *agent, void *user_ptr) {
 static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *user_ptr) {
     FLibretroContext *LibretroContext = (FLibretroContext *) user_ptr;
 
-    int p = 0;
-    for (; p < SAM2_ARRAY_LENGTH(FLibretroContext::agent); p++) if (agent == g_agent[p]) break;
-    if (p == SAM2_ARRAY_LENGTH(FLibretroContext::agent)) {
+    int p = locate(LibretroContext->agent, agent);
+    if (p == -1) {
         die("No agent associated for packet on channel 0x%" PRIx8 "\n", data[0] & 0xF0);
+    }
+
+    if (size == 0) {
+        LOG_WARN("Received a UDP packet with no payload\n");
+        return;
     }
 
     if (p >= SAM2_PORT_MAX+1) {
@@ -2347,23 +2421,39 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
 
     uint8_t channel_and_flags = data[0];
     switch (channel_and_flags & CHANNEL_MASK) {
+    case CHANNEL_EXTRA: {
+        assert("This is an error currently\n");
+    }
     case CHANNEL_INPUT: {
-        assert(size == sizeof(input_packet_t));
+        assert(size <= PACKET_MTU_PAYLOAD_SIZE_BYTES);
 
-        input_packet_t input_packet;
-        memcpy(&input_packet, data, sizeof(input_packet_t)); // Strict-aliasing
+        input_packet_t *input_packet = (input_packet_t *) data;
+        int8_t port = input_packet->channel_and_port & FLAGS_MASK;
+
+        if (port >= SAM2_PORT_MAX+1) {
+            LOG_WARN("Received input packet for port %d which is out of range\n", port);
+            break;
+        }
+
+        if (rle8_decode_size(input_packet->coded_netplay_input_state, size - 1) != sizeof(netplay_input_state_t)) {
+            LOG_WARN("Received input packet with an invalid decode size\n");
+            break;
+        }
+
+        int64_t frame;
+        rle8_decode(input_packet->coded_netplay_input_state, size - 1, (uint8_t *) &frame, sizeof(frame));
 
         LOG_VERBOSE("Recv input packet for frame %" PRId64 " from peer_ids[%d]=%" PRIx64 "\n", input_packet.frame, p, g_room_we_are_in.peer_ids[p]);
 
         if (   LibretroContext->IsAuthority()
-            && input_packet.frame < g_libretro_context.peer_joining_on_frame[p]) {
+            && frame < g_libretro_context.peer_joining_on_frame[p]) {
             LOG_WARN("Received input packet for frame %" PRId64 " but we agreed the client would start sending input on frame %" PRId64 "\n",
-                input_packet.frame, LibretroContext->peer_joining_on_frame[p]);
-        } else if (input_packet.frame < LibretroContext->input_packet[p].frame) {
+                frame, LibretroContext->peer_joining_on_frame[p]);
+        } else if (frame < LibretroContext->netplay_input_state[p].frame) {
             // UDP packets can arrive out of order this is normal
-            LOG_VERBOSE("Received outdated input packet for frame %" PRId64 ". We are already on frame %" PRId64 ". Dropping it\n", input_packet.frame, frame_counter);
+            LOG_VERBOSE("Received outdated input packet for frame %" PRId64 ". We are already on frame %" PRId64 ". Dropping it\n", frame, frame_counter);
         } else {
-            memcpy(&LibretroContext->input_packet[p], data, sizeof(input_packet_t));
+            rle8_decode(input_packet->coded_netplay_input_state, size - 1, (uint8_t *) &LibretroContext->netplay_input_state[p], sizeof(netplay_input_state_t));
         }
 
         break;
@@ -2503,9 +2593,9 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
                         LOG_VERBOSE("Save state loaded\n");
                         LibretroContext->frame_counter = g_savestate_transfer_payload->frame_counter;
 
-                        LibretroContext->input_packet[LibretroContext->OurPort()].frame = 0;
-                        memset(&LibretroContext->input_packet[LibretroContext->OurPort()].input_state, 0, 
-                         sizeof(LibretroContext->input_packet[LibretroContext->OurPort()].input_state));
+                        LibretroContext->netplay_input_state[LibretroContext->OurPort()].frame = 0;
+                        memset(&LibretroContext->netplay_input_state[LibretroContext->OurPort()].input_state, 0, 
+                         sizeof(LibretroContext->netplay_input_state[LibretroContext->OurPort()].input_state));
 
 #if 0
                         // @todo Fix the max frames we can advance changes dynamically since we'll be receiving packets while we're advancing
@@ -2580,33 +2670,6 @@ void rle_encode32(void *input_typeless, size_t inputSize, void *output_typeless,
     }
 
     *outputSize = writeIndex;
-}
-
-void rle_encode8(void *input_typeless, size_t inputSize, void *output_typeless, uint64_t *outputUsed) {
-    size_t writeIndex = 0;
-    size_t readIndex = 0;
-
-    unsigned char *input = (unsigned char *)input_typeless;
-    unsigned char *output = (unsigned char *)output_typeless;
-
-    while (readIndex < inputSize) {
-        if (input[readIndex] == 0) {
-            while (readIndex < inputSize && input[readIndex] == 0) {
-                unsigned char zeroCount = 0;
-                while (zeroCount < 255 && readIndex < inputSize && input[readIndex] == 0) {
-                    zeroCount++;
-                    readIndex++;
-                }
-
-                output[writeIndex++] = 0; // write a zero to mark the start of a run
-                output[writeIndex++] = zeroCount; // write the count of zeros
-            }
-        } else {
-            output[writeIndex++] = input[readIndex++];
-        }
-    }
-
-    *outputUsed = writeIndex;
 }
 
 static void logical_partition(int sz, int redundant, int *n, int *out_k, int *packet_size, int *packet_groups) {
@@ -2709,7 +2772,7 @@ void tick_compression_investigation(void *rom_data, size_t rom_size) {
             rle_encode32(buffer, g_serialize_size / 4, g_savebuffer_compressed, g_zstd_compress_size + g_frame_cyclic_offset);
             g_zstd_compress_size[g_frame_cyclic_offset] *= 4;
         } else {
-            rle_encode8(buffer, g_serialize_size, g_savebuffer_compressed, g_zstd_compress_size + g_frame_cyclic_offset);
+            g_zstd_compress_size[g_frame_cyclic_offset] = rle8_encode(buffer, g_serialize_size, g_savebuffer_compressed); // @todo Technically this can overflow I don't really plan to use it though and I find the odds unlikely
         }
     } else {
         if (g_use_dictionary) {
@@ -2973,7 +3036,8 @@ int main(int argc, char *argv[]) {
                 frames++;
                 core_ready_to_tick = true;
 
-                int64_t authority_is_on_frame = g_libretro_context.input_packet[SAM2_AUTHORITY_INDEX].frame;
+                // @todo I don't think this makes sense you should keep reasonable timing yourself if you can't the authority should just kick you
+                int64_t authority_is_on_frame = g_libretro_context.netplay_input_state[SAM2_AUTHORITY_INDEX].frame;
 
                 if (   sleep < -target_frame_time_seconds
                     || frame_counter < authority_is_on_frame) { // If over a frame behind don't try to catch up to the next frame
@@ -2992,18 +3056,18 @@ int main(int argc, char *argv[]) {
                 running = false;
 
             // Poll input to apply to the next frame if we haven't yet
-            if (g_libretro_context.input_packet[g_libretro_context.OurPort()].frame < frame_counter) {
-                g_libretro_context.input_packet[g_libretro_context.OurPort()].frame = frame_counter;
+            if (g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].frame < frame_counter) {
+                g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].frame = frame_counter;
 
                 if (   (!(g_libretro_context.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED))
                     || frame_counter >= g_libretro_context.peer_joining_on_frame[g_libretro_context.OurPort()]) {
                     for (int i = 0; g_binds[i].k || g_binds[i].rk; ++i) {
-                        g_libretro_context.input_packet[g_libretro_context.OurPort()].input_state[frame_counter % INPUT_DELAY_FRAMES_MAX][0][g_binds[i].rk] = g_kbd[g_binds[i].k];
+                        g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].input_state[frame_counter % INPUT_DELAY_FRAMES_MAX][0][g_binds[i].rk] = g_kbd[g_binds[i].k];
                     }
 
                     if (g_libretro_context.fuzz_input) {
                         for (int i = 0; i < 16; ++i) {
-                            g_libretro_context.input_packet[g_libretro_context.OurPort()].input_state[frame_counter % INPUT_DELAY_FRAMES_MAX][0][i] = rand() & 0x0001;
+                            g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].input_state[frame_counter % INPUT_DELAY_FRAMES_MAX][0][i] = rand() & 0x0001;
                         }
                     }
                 }
@@ -3013,7 +3077,7 @@ int main(int argc, char *argv[]) {
                 && g_libretro_context.AllPeersReadyForPeerToJoin(g_libretro_context.our_peer_id)
                 && (!g_waiting_for_savestate // If we were waiting this would mean our frame_counter is invalid and break the next check
                 && frame_counter >= g_libretro_context.peer_joining_on_frame[g_libretro_context.OurPort()])) {
-                g_libretro_context.input_packet[g_libretro_context.OurPort()].frame = frame_counter;
+                g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].frame = frame_counter;
 
                 for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
                     if (!g_agent[p]) continue;
@@ -3021,9 +3085,20 @@ int main(int argc, char *argv[]) {
 
                     // Wait until we can send netplay messages to everyone without fail
                     if (state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED) {
-                        juice_send(g_agent[p], (const char *) &g_libretro_context.input_packet[g_libretro_context.OurPort()], sizeof(g_libretro_context.input_packet[0]));
-                        LOG_VERBOSE("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64 "\n", g_libretro_context.input_packet.frame, p, g_room_we_are_in.peer_ids[p]);
-                        fflush(stdout);
+                        union {
+                            uint8_t _[1 /* Packet Header */ + RLE8_ENCODE_UPPER_BOUND(PACKET_MTU_PAYLOAD_SIZE_BYTES)];
+                            input_packet_t input_packet;
+                        };
+                        input_packet.channel_and_port = CHANNEL_INPUT | g_libretro_context.OurPort();
+                        int64_t actual_payload_size = rle8_encode((uint8_t *)&g_libretro_context.netplay_input_state[g_libretro_context.OurPort()], sizeof(g_libretro_context.netplay_input_state[0]), input_packet.coded_netplay_input_state);
+
+                        if (sizeof(input_packet_t) + actual_payload_size > PACKET_MTU_PAYLOAD_SIZE_BYTES) {
+                            die("Input packet too large to send");
+                        } else {
+                            juice_send(g_agent[p], (const char *) &input_packet, sizeof(input_packet_t) + actual_payload_size);
+                            LOG_VERBOSE("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64 "\n", g_libretro_context.netplay_input_state.frame, p, g_room_we_are_in.peer_ids[p]);
+                            fflush(stdout);
+                        }
                     }
                 }
             }
@@ -3054,7 +3129,7 @@ int main(int argc, char *argv[]) {
         if (g_libretro_context.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
             for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
                 if (g_libretro_context.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
-                netplay_ready_to_tick &= g_libretro_context.input_packet[p].frame >= frame_counter;
+                netplay_ready_to_tick &= g_libretro_context.netplay_input_state[p].frame >= frame_counter;
 
                 if (g_libretro_context.OurPort() != p) {
                     // Wait until we can send UDP packets to peer without fail @todo Now that I think about it this is probably redundant so I can remove it or change it to asserts once I figure out the logic better
