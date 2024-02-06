@@ -1805,9 +1805,8 @@ void on_new_connection(uv_stream_t *server, int status) {
 static void on_close(uv_handle_t* handle) {
     LOG_INFO("Server closing\n");
     sam2_server_t *server_data = (sam2_server_t *) handle->data;
-    //if (sig_server->rooms_internal) {
-    //    free(sig_server->rooms_internal);
-    //}
+    kavll_free(sam2_avl_node_t, head, server_data->peer_id_map, SAM2_FREE);
+
     free(server_data);
 }
 
