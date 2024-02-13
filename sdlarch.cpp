@@ -369,13 +369,12 @@ struct FLibretroContext {
     sam2_signal_message_t *spectator_signal_message = signal_message + SAM2_PORT_MAX + 1;
 
     sam2_socket_t sam2_socket = 0;
+    int sent_requests = 0;
+    sam2_request_u requests[1024] = {0};
     sam2_room_t room_we_are_in = {0};
     uint64_t our_peer_id = 0;
 
-    netplay_input_state_t netplay_input_state[SAM2_PORT_MAX+1] = {
-        { CHANNEL_INPUT }, { CHANNEL_INPUT }, { CHANNEL_INPUT }, { CHANNEL_INPUT },
-        { CHANNEL_INPUT }, { CHANNEL_INPUT }, { CHANNEL_INPUT }, { CHANNEL_INPUT }, { CHANNEL_INPUT }
-    };
+    netplay_input_state_t netplay_input_state[SAM2_PORT_MAX+1] = {0};
     desync_debug_packet_t desync_debug_packet = { CHANNEL_DESYNC_DEBUG };
 
     int64_t frame_counter = 0;
@@ -384,6 +383,23 @@ struct FLibretroContext {
 
     uint64_t peer_ready_to_join_bitfield = 0b0;
     int64_t peer_joining_on_frame[SAM2_PORT_MAX+1] = {0};
+
+    int SAM2Send(char *headerless_request, sam2_message_e request_tag) {
+        // Do some sanity checks on the request
+        if (request_tag == SAM2_EMESSAGE_SIGNAL) {
+            sam2_signal_message_t *signal_message = (sam2_signal_message_t *) headerless_request;
+            assert(signal_message->peer_id > SAM2_PORT_SENTINELS_MAX);
+        }
+
+        int ret = sam2_client_send(sam2_socket, headerless_request, request_tag);
+
+        // Bookkeep all sent requests for debugging purposes
+        if (sent_requests < SAM2_ARRAY_LENGTH(requests)) {
+            memcpy(&requests[sent_requests++], headerless_request, sam2__request_map[request_tag].message_size);
+        }
+
+        return ret;
+    }
 
     void AuthoritySendSaveState(juice_agent_t *agent);
 
@@ -398,7 +414,7 @@ struct FLibretroContext {
 
     juice_agent_t *LocateAgent(uint64_t peer_id) {
         for (int p = 0; p < SAM2_ARRAY_LENGTH(agent); p++) {
-            if (agent[p] && signal_message[p].peer_id == peer_id) {
+            if (agent[p] && room_we_are_in.peer_ids[p] == peer_id) {
                 return agent[p];
             }
         }
@@ -406,7 +422,7 @@ struct FLibretroContext {
 
     bool FindPeer(juice_agent_t** peer_agent, int* peer_existing_port, uint64_t peer_id) {
         for (int p = 0; p < SAM2_ARRAY_LENGTH(agent); p++) {
-            if (agent[p] && signal_message[p].peer_id == peer_id) {
+            if (agent[p] && room_we_are_in.peer_ids[p] == peer_id) {
                 *peer_agent = agent[p];
                 *peer_existing_port = p;
                 return true;
@@ -454,7 +470,13 @@ struct FLibretroContext {
 
     bool AllPeersReadyForPeerToJoin(uint64_t joiner_peer_id) {
         int joiner_port = locate(room_we_are_in.peer_ids, joiner_peer_id);
-        assert(joiner_port != -1);
+
+        if (joiner_port == -1) {
+            assert(   our_peer_id == joiner_peer_id 
+                   || our_peer_id == room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]);
+            LOG_VERBOSE("Assuming %016" PRIx64 " is a spectator\n", joiner_peer_id);
+            return true;
+        }
 
         if (joiner_port == SAM2_AUTHORITY_INDEX) {
             return true;
@@ -1011,7 +1033,7 @@ static bool g_vsync_enabled = true;
 static ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 static bool g_connected_to_sam2 = false;
 static sam2_response_u g_received_response[2048];
-static int64_t g_num_received_response = 0;
+static int g_num_received_response = 0;
 static sam2_error_response_t g_last_sam2_error = {SAM2_RESPONSE_SUCCESS};
 
 static void peer_ids_to_string(uint64_t peer_ids[], char *output) {
@@ -1184,22 +1206,61 @@ void draw_imgui() {
 
             if (g_last_sam2_error.code) {
                 ImGui::TextColored(ImVec4(1, 0, 0, 1), "Last error: %s", g_last_sam2_error.description);
+                ImGui::SameLine();
+                if (ImGui::Button("Clear")) {
+                    g_last_sam2_error.code = 0;
+                }
             }
 
-            if (ImGui::CollapsingHeader("Responses")) {
-                // Create a table with one column for the headers
-                if (ImGui::BeginTable("MessagesTable", 1, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
-                    ImGui::TableSetupColumn("Header", ImGuiTableColumnFlags_WidthFixed, 150.0f);
-                    ImGui::TableHeadersRow();
+            const char *title[]         = { "Requests", "Responses" };
+            int num_received[]          = { g_libretro_context.sent_requests, g_num_received_response };
+            static bool isWindowOpen[]  = { false, false };
+            static int response_index[] = { 0, 0 };
+            for (int j = 0; j < SAM2_ARRAY_LENGTH(title); j++) {
+                if (ImGui::CollapsingHeader(title[j])) {
+                    if (ImGui::BeginTable("MessagesTable", 1, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+                        ImGui::TableSetupColumn("Header", ImGuiTableColumnFlags_WidthFixed, 150.0f);
+                        ImGui::TableHeadersRow();
 
-                    for (int64_t i = 0; i < g_num_received_response; ++i) {
-                        ImGui::TableNextRow();
-                        ImGui::TableSetColumnIndex(0);
+                        for (int i = 0; i < num_received[j]; ++i) {
+                            char *message = j == 0 ? (char *) &g_libretro_context.requests[i] : (char *) &g_received_response[i];
+                            ImGui::TableNextRow();
+                            ImGui::TableSetColumnIndex(0);
 
-                        ImGui::Text("%.8s", g_received_response[i]);
+                            ImGui::Text("%.8s", message);
+                            ImGui::SameLine();
+                            char button_label[64] = {0};
+                            snprintf(button_label, sizeof(button_label), "Show##%d_%d", j, i);
+
+                            if (ImGui::Button(button_label)) {
+                                response_index[j] = i;
+                                isWindowOpen[j] = true;
+                            }
+                        }
+
+                        ImGui::EndTable();
+                    }
+                }
+
+                if (isWindowOpen[j] && response_index[j] != -1) {
+                    ImGui::Begin(title[j], &isWindowOpen[j]); // Use isWindowOpen to allow closing the window{
+
+                    char *message = j == 0 ? (char *) &g_libretro_context.requests[response_index[j]] : (char *) &g_received_response[response_index[j]];
+
+                    ImGui::Text("Header: %.8s", (char *) message);
+
+                    if (memcmp(message, sam2_sign_header, SAM2_HEADER_SIZE) == 0) {
+                        sam2_signal_message_t *signal_message = (sam2_signal_message_t *) message;
+                        ImGui::Text("Peer ID: %016" PRIx64, signal_message->peer_id);
+                        ImGui::InputTextMultiline("ICE SDP", signal_message->ice_sdp, sizeof(signal_message->ice_sdp), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 16), ImGuiInputTextFlags_ReadOnly);
                     }
 
-                    ImGui::EndTable();
+                    // Optionally, provide a way to close the window manually
+                    if (ImGui::Button("Close")) {
+                        isWindowOpen[j] = false; // Close the window
+                    }
+
+                    ImGui::End();
                 }
             }
 
@@ -1264,7 +1325,7 @@ void draw_imgui() {
                             request.room = g_room_we_are_in;
                             request.room.peer_ids[p] = g_our_peer_id;
                             g_libretro_context.peer_joining_on_frame[p] = g_libretro_context.frame_counter; // Lower bound
-                            sam2_client_send(g_sam2_socket, (char *) &request, SAM2_EMESSAGE_JOIN);
+                            g_libretro_context.SAM2Send((char *) &request, SAM2_EMESSAGE_JOIN);
                         }
                     }
                 }
@@ -1398,7 +1459,7 @@ void draw_imgui() {
                     }
                 }
 
-                sam2_client_send(g_sam2_socket, (char *) &request, SAM2_EMESSAGE_JOIN);
+                g_libretro_context.SAM2Send((char *) &request, SAM2_EMESSAGE_JOIN);
 
                 g_our_peer_id = 0;
             }
@@ -1409,7 +1470,7 @@ void draw_imgui() {
                 sam2_room_make_message_t *request = &g_sam2_request.room_make_request;
                 request->room = g_new_room_set_through_gui;
                 // Fill in the rest of the request fields appropriately...
-                sam2_client_send(g_sam2_socket, (char *) &g_sam2_request, SAM2_EMESSAGE_MAKE);
+                g_libretro_context.SAM2Send((char *) &g_sam2_request, SAM2_EMESSAGE_MAKE);
             }
             if (ImGui::Button(g_is_refreshing_rooms ? "Stop" : "Refresh")) {
                 // Toggle the state
@@ -1418,7 +1479,7 @@ void draw_imgui() {
                 if (g_is_refreshing_rooms) {
                     g_sam2_room_count = 0;
                     // The list message is only a header
-                    sam2_client_send(g_sam2_socket, (char *) &g_sam2_request, SAM2_EMESSAGE_LIST);
+                    g_libretro_context.SAM2Send((char *) &g_sam2_request, SAM2_EMESSAGE_LIST);
                 } else {
 
                 }
@@ -1488,7 +1549,7 @@ void draw_imgui() {
 
                     g_libretro_context.peer_joining_on_frame[p] = g_libretro_context.frame_counter; // Lower bound
 
-                    sam2_client_send(g_sam2_socket, (char *) &request, SAM2_EMESSAGE_JOIN);
+                    g_libretro_context.SAM2Send((char *) &request, SAM2_EMESSAGE_JOIN);
                 }
 
                 ImGui::SameLine();
@@ -1501,7 +1562,6 @@ void draw_imgui() {
                     );
 
                     g_room_we_are_in = g_sam2_rooms[selected_room_index];
-                    //sam2_client_send(g_sam2_socket, (char *) &request, SAM2_EMESSAGE_JOIN);
                 }
             }
         }
@@ -2015,67 +2075,23 @@ int64_t byte_swap_int64(int64_t val) {
 void FLibretroContext::core_input_poll() {
     memset(InputState, 0, sizeof(InputState));
 
-    // In the intervening time after we've received a save state, but we haven't joined the room we don't apply our inputs
-    // This is so we don't desync since other peers won't apply our inputs either
-    // @todo You can barely just not handle this as a special case. My offline input handling just needs more consideration
-    if (   frame_counter >= peer_joining_on_frame[OurPort()] 
-        && !Spectating()) {
-        memcpy(InputState, netplay_input_state[OurPort()].input_state[frame_counter % INPUT_DELAY_FRAMES_MAX][0], sizeof(InputState));
-    }
 
     FLibretroInputState &g_joy = g_libretro_context.InputState[0];
     g_kbd = SDL_GetKeyboardState(NULL);
 
-    if (!Spectating()) {
-        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-            if (room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
+    for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+        if (room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
 
-            // If the peer was supposed to join on this frame
-            if (frame_counter >= g_libretro_context.peer_joining_on_frame[p]) {
+        // If the peer was supposed to join on this frame
+        if (frame_counter >= g_libretro_context.peer_joining_on_frame[p]) {
 
-                assert(g_libretro_context.AllPeersReadyForPeerToJoin(room_we_are_in.peer_ids[p]));
-                assert(netplay_input_state[p].frame <= frame_counter + (INPUT_DELAY_FRAMES_MAX-1));
-                assert(netplay_input_state[p].frame >= frame_counter);
-                for (int i = 0; i < 16; i++) {
-                    g_joy[i] |= netplay_input_state[p].input_state[frame_counter % INPUT_DELAY_FRAMES_MAX][0][i];
-                }
+            assert(g_libretro_context.AllPeersReadyForPeerToJoin(room_we_are_in.peer_ids[p]));
+            assert(netplay_input_state[p].frame <= frame_counter + (INPUT_DELAY_FRAMES_MAX-1));
+            assert(netplay_input_state[p].frame >= frame_counter);
+            for (int i = 0; i < 16; i++) {
+                g_joy[i] |= netplay_input_state[p].input_state[frame_counter % INPUT_DELAY_FRAMES_MAX][0][i];
             }
         }
-    } else {
-        // @todo I broke spectating when I changed the protocol this should be easy to add back though just by relaying packets from the authority
-#if 1
-        assert(!"Spectating not implemented");
-#elif
-        int timeout_milliseconds = 400;
-        int max_polls = 100;
-        int i = 0;
-        for (; i < max_polls; i++) {
-            int64_t smallest_frame = INT64_MAX;
-            for (netplay_input_state_t &packet : debug_input_packet_queue.buffer) {
-                smallest_frame = std::min(smallest_frame, packet.frame);
-
-                if (packet.frame == frame_counter) {
-                    memcpy(InputState, packet.input_state, sizeof(packet.input_state));
-
-                    goto exit_loop;
-                }
-            }
-
-            char buffer[4096];
-            while (juice_user_poll(g_agent[SAM2_AUTHORITY_INDEX], buffer, sizeof(buffer))) {}
-
-            usleep_busy_wait((1000 * timeout_milliseconds) / max_polls);
-
-            if (frame_counter < smallest_frame) {
-                die("We can't go back in time!");
-            }
-        }
-
-        if (i == max_polls) {
-            die("Timed out waiting for authority to give frame input while spectating");
-        }
-exit_loop:;
-#endif
     }
 }
 
@@ -2376,14 +2392,15 @@ static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr) 
         return;
     }
 
-    sam2_signal_message_t *response = &g_signal_message[p];
+    sam2_signal_message_t response = {0};
 
-    // @todo Remove this once we do candidate streaming
-    int status = concatenate_if_there_is_enough_space(response->ice_sdp, sizeof(response->ice_sdp), sdp, '\n');
-
-    if (status < 0) {
-        LOG_WARN("Not enough space to store append new ICE candidate this may prevent us from connecting\n");
+    response.peer_id = g_room_we_are_in.peer_ids[p];
+    if (strlen(sdp) > sizeof(response.ice_sdp)) {
+        die("Candidate too large\n");
+        return;
     }
+    strcpy(response.ice_sdp, sdp);
+    g_libretro_context.SAM2Send((char *) &response, SAM2_EMESSAGE_SIGNAL);
 }
 
 // On local candidates gathering done
@@ -2396,8 +2413,10 @@ static void on_gathering_done(juice_agent_t *agent, void *user_ptr) {
         return;
     }
 
-    int status = sam2_client_send(g_sam2_socket, (char *) &g_signal_message[p], SAM2_EMESSAGE_SIGNAL);
-    assert(status >= 0);
+    sam2_signal_message_t response = {0};
+
+    response.peer_id = g_room_we_are_in.peer_ids[p];
+    g_libretro_context.SAM2Send((char *) &response, SAM2_EMESSAGE_SIGNAL);
 }
 
 // On message received
@@ -2422,7 +2441,7 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
     uint8_t channel_and_flags = data[0];
     switch (channel_and_flags & CHANNEL_MASK) {
     case CHANNEL_EXTRA: {
-        assert("This is an error currently\n");
+        assert(!"This is an error currently\n");
     }
     case CHANNEL_INPUT: {
         assert(size <= PACKET_MTU_PAYLOAD_SIZE_BYTES);
@@ -2736,7 +2755,10 @@ void startup_ice_for_peer(juice_agent_t **agent, sam2_signal_message_t *signal_m
     signal_message->peer_id = peer_id;
 
     if (start_candidate_gathering) {
-        juice_get_local_description(*agent, signal_message->ice_sdp, sizeof(signal_message->ice_sdp));
+        sam2_signal_message_t signal_message = {0};
+        signal_message.peer_id = peer_id;
+        juice_get_local_description(*agent, signal_message.ice_sdp, sizeof(signal_message.ice_sdp));
+        g_libretro_context.SAM2Send((char *) &signal_message, SAM2_EMESSAGE_SIGNAL);
 
         // This call starts an asynchronous task that requires periodic polling via juice_user_poll to complete
         // it will call the on_gathering_done callback once it's finished
@@ -3079,9 +3101,9 @@ int main(int argc, char *argv[]) {
                 && frame_counter >= g_libretro_context.peer_joining_on_frame[g_libretro_context.OurPort()])) {
                 g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].frame = frame_counter;
 
-                for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-                    if (!g_agent[p]) continue;
-                    juice_state_t state = juice_get_state(g_agent[p]);
+                for (int p = 0; p < SAM2_ARRAY_LENGTH(g_libretro_context.agent); p++) {
+                    if (!g_libretro_context.agent[p]) continue;
+                    juice_state_t state = juice_get_state(g_libretro_context.agent[p]);
 
                     // Wait until we can send netplay messages to everyone without fail
                     if (state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED) {
@@ -3095,7 +3117,7 @@ int main(int argc, char *argv[]) {
                         if (sizeof(input_packet_t) + actual_payload_size > PACKET_MTU_PAYLOAD_SIZE_BYTES) {
                             die("Input packet too large to send");
                         } else {
-                            juice_send(g_agent[p], (const char *) &input_packet, sizeof(input_packet_t) + actual_payload_size);
+                            juice_send(g_libretro_context.agent[p], (const char *) &input_packet, sizeof(input_packet_t) + actual_payload_size);
                             LOG_VERBOSE("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64 "\n", g_libretro_context.netplay_input_state.frame, p, g_room_we_are_in.peer_ids[p]);
                             fflush(stdout);
                         }
@@ -3106,9 +3128,9 @@ int main(int argc, char *argv[]) {
 
 #if JUICE_CONCURRENCY_MODE == JUICE_CONCURRENCY_MODE_USER
         // We need to poll agents to make progress on the ICE connection
-        juice_agent_t *agent[SAM2_PORT_MAX+1] = {0};
+        juice_agent_t *agent[SAM2_ARRAY_LENGTH(g_libretro_context.agent)] = {0};
         int agent_count = 0;
-        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+        for (int p = 0; p < SAM2_ARRAY_LENGTH(g_libretro_context.agent); p++) {
             if (g_libretro_context.agent[p]) {
                 agent[agent_count++] = g_libretro_context.agent[p];
             }
@@ -3174,8 +3196,10 @@ int main(int argc, char *argv[]) {
 
                 for (int p = 0; p < SAM2_ARRAY_LENGTH(g_libretro_context.agent); p++) {
                     if (!g_agent[p]) continue;
-
-                    juice_send(g_agent[p], (char *) &g_libretro_context.desync_debug_packet, sizeof(g_libretro_context.desync_debug_packet));
+                    juice_state_t juice_state = juice_get_state(g_agent[p]);
+                    if (juice_state == JUICE_STATE_CONNECTED || juice_state == JUICE_STATE_COMPLETED) {
+                        juice_send(g_agent[p], (char *) &g_libretro_context.desync_debug_packet, sizeof(g_libretro_context.desync_debug_packet));
+                    }
                 }
             }
 
@@ -3310,7 +3334,7 @@ int main(int argc, char *argv[]) {
                                     room_join->peer_id
                                 };
 
-                                sam2_client_send(g_sam2_socket, (char *) &error, SAM2_EMESSAGE_ERROR);
+                                g_libretro_context.SAM2Send((char *) &error, SAM2_EMESSAGE_ERROR);
                                 break;
                             } else {
                                 //g_room_we_are_in.flags |= SAM2_FLAG_PORT0_PEER_IS_INACTIVE << p;
@@ -3334,7 +3358,7 @@ int main(int argc, char *argv[]) {
                                             room_join->peer_id
                                         };
 
-                                        sam2_client_send(g_sam2_socket, (char *) &error, SAM2_EMESSAGE_ERROR);
+                                        g_libretro_context.SAM2Send((char *) &error, SAM2_EMESSAGE_ERROR);
                                         break;
                                     } else {
                                         printf("Peer %" PRIx64 " was let in by us the authority\n", room_join->room.peer_ids[sender_port]);
@@ -3352,7 +3376,7 @@ int main(int argc, char *argv[]) {
                                         g_libretro_context.room_we_are_in.peer_ids[sender_port] = room_join->room.peer_ids[sender_port];
                                         sam2_room_join_message_t response = {0};
                                         response.room = g_libretro_context.room_we_are_in;
-                                        sam2_client_send(g_sam2_socket, (char *) &response, SAM2_EMESSAGE_JOIN); // This must come before the next call
+                                        g_libretro_context.SAM2Send((char *) &response, SAM2_EMESSAGE_JOIN); // This must come before the next call
 
                                         startup_ice_for_peer(
                                             &g_libretro_context.agent[sender_port],
@@ -3369,14 +3393,14 @@ int main(int argc, char *argv[]) {
                                             response.joiner_peer_id = room_join->room.peer_ids[sender_port];
                                             response.frame_counter = g_libretro_context.peer_joining_on_frame[sender_port];
 
-                                            sam2_client_send(g_libretro_context.sam2_socket, (char *) &response, SAM2_EMESSAGE_ACKJ);
+                                            g_libretro_context.SAM2Send((char *) &response, SAM2_EMESSAGE_ACKJ);
                                         }
 
                                         break; // @todo I don't like this break
                                     }
                                 }
 
-                                sam2_client_send(g_sam2_socket, (char *) &response, SAM2_EMESSAGE_JOIN);
+                                g_libretro_context.SAM2Send((char *) &response, SAM2_EMESSAGE_JOIN);
                             }
                         } else {
                             LOG_INFO("Something about the room we're in was changed by the authority\n");
@@ -3404,6 +3428,7 @@ int main(int argc, char *argv[]) {
                                         printf("Peer %" PRIx64 " has joined the room\n", room_join->room.peer_ids[p]);
                                         fflush(stdout);
 
+                                        g_room_we_are_in.peer_ids[p] = room_join->room.peer_ids[p]; // This must come before the next call as the next call can generate an ICE candidate before returning
                                         startup_ice_for_peer(&g_agent[p], &g_signal_message[p], room_join->room.peer_ids[p]);
 
                                         sam2_room_acknowledge_join_message_t response = {0};
@@ -3411,7 +3436,7 @@ int main(int argc, char *argv[]) {
                                         response.joiner_peer_id = g_room_we_are_in.peer_ids[p] = room_join->room.peer_ids[p];
                                         response.frame_counter = g_libretro_context.peer_joining_on_frame[p] = frame_counter; // Lower bound
 
-                                        sam2_client_send(g_libretro_context.sam2_socket, (char *) &response, SAM2_EMESSAGE_ACKJ);
+                                        g_libretro_context.SAM2Send((char *) &response, SAM2_EMESSAGE_ACKJ);
                                     }
                                 }
                             }
@@ -3442,7 +3467,7 @@ int main(int argc, char *argv[]) {
                             response.joiner_peer_id = acknowledge_room_join_message->joiner_peer_id;
                             response.frame_counter = g_libretro_context.peer_joining_on_frame[joiner_port];
 
-                            sam2_client_send(g_libretro_context.sam2_socket, (char *) &response, SAM2_EMESSAGE_ACKJ);
+                            g_libretro_context.SAM2Send((char *) &response, SAM2_EMESSAGE_ACKJ);
                         } else {
                             LOG_INFO("Peer %" PRIx64 " has been acknowledged by %" PRIx64 " but not all peers\n", 
                                 acknowledge_room_join_message->joiner_peer_id, acknowledge_room_join_message->sender_peer_id);
@@ -3465,14 +3490,23 @@ int main(int argc, char *argv[]) {
 
                     int p = locate(g_room_we_are_in.peer_ids, room_signal->peer_id);
 
+                    if (strlen(room_signal->ice_sdp) == 0) {
+                        juice_set_remote_gathering_done(g_agent[p]);
+                    } else if (strncmp(room_signal->ice_sdp, "a=ice", strlen("a=ice")) == 0) {
+                        juice_set_remote_description(g_agent[p], room_signal->ice_sdp);
+                        break;
+                    } else if (strncmp(room_signal->ice_sdp, "a=candidate", strlen("a=candidate")) == 0) {
+                        juice_add_remote_candidate(g_agent[p], room_signal->ice_sdp);
+                        break;
+                    }
+
                     // Signaling is different for spectators and players
                     if (p == -1) {
-                        int s = g_libretro_context.spectator_count;
                         printf("Received signal from unknown peer\n");
                         fflush(stdout);
 
                         if (g_our_peer_id == g_room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
-                            if (s == SPECTATOR_MAX) {
+                            if (g_libretro_context.spectator_count == SPECTATOR_MAX) {
                                 printf("We can't let them in as a spectator there are too many spectators\n");
 
                                 static sam2_error_response_t error = { 
@@ -3481,10 +3515,12 @@ int main(int argc, char *argv[]) {
                                     "Authority has reached the maximum number of spectators"
                                 };
 
-                                sam2_client_send(g_sam2_socket, (char *) &error, SAM2_EMESSAGE_ERROR);
+                                g_libretro_context.SAM2Send((char *) &error, SAM2_EMESSAGE_ERROR);
                             } else {
                                 printf("We are letting them in as a spectator\n");
                                 fflush(stdout);
+
+                                int s = g_libretro_context.spectator_count++;
 
                                 startup_ice_for_peer(
                                     &g_libretro_context.spectator_agent[g_libretro_context.spectator_count],
@@ -3500,11 +3536,11 @@ int main(int argc, char *argv[]) {
                                     g_libretro_context.spectator_signal_message[g_libretro_context.spectator_count].ice_sdp,
                                     sizeof(sam2_signal_message_t::ice_sdp)
                                 );
+                                assert(!"This shouldn't use the signal message");
 
                                 // This call starts an asynchronous task that requires periodic polling via juice_user_poll to complete
                                 // it will call the on_gathering_done callback once it's finished
                                 juice_gather_candidates(g_libretro_context.spectator_agent[g_libretro_context.spectator_count]);
-                                g_libretro_context.spectator_count++;
                             }
                         } else {
                             printf("Received unknown signal when we weren't the authority\n");
