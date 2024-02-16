@@ -373,6 +373,12 @@ typedef struct {
     int64_t input_state_hash[INPUT_DELAY_FRAMES_MAX];
 } desync_debug_packet_t;
 
+struct core_option_t {
+    char key[128];
+    char value[128];
+};
+
+#define CORE_OPTIONS_MAX 128
 struct FLibretroContext {
     juice_agent_t        *agent              [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX] = {0};
     sam2_signal_message_t signal_message     [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX] = {0};
@@ -387,6 +393,10 @@ struct FLibretroContext {
     sam2_request_u requests[1024] = {0};
     sam2_room_t room_we_are_in = {0};
     uint64_t our_peer_id = 0;
+    int64_t delay_frames = 0;
+
+    bool core_options_dirty = false;
+    core_option_t core_options[CORE_OPTIONS_MAX] = {0};
 
     netplay_input_state_t netplay_input_state[SAM2_PORT_MAX+1] = {0};
     desync_debug_packet_t desync_debug_packet = { CHANNEL_DESYNC_DEBUG };
@@ -955,8 +965,14 @@ typedef struct {
     uint64_t encoding_chain; // @todo probably won't use this
     uint64_t xxhash;
 
-    int64_t zipped_savestate_size;
-    uint8_t zipped_savestate[];
+    int64_t compressed_options_size;
+    int64_t compressed_savestate_size;
+#if 0
+    uint8_t compressed_savestate_data[compressed_savestate_size];
+    uint8_t compressed_options_data[compressed_options_size];
+#else
+    uint8_t compressed_data[]; 
+#endif
 } savestate_transfer_payload_t;
 
 int g_argc;
@@ -1018,11 +1034,9 @@ uint64_t g_remote_savestate_hash = 0x0; // 0x6AEBEEF1EDADD1E5;
 #define MAX_SAVE_STATES 64
 static unsigned char g_savebuffer[MAX_SAVE_STATES][20 * 1024 * 1024] = {0};
 
-#define SAVE_STATE_COMPRESSED_BOUND_BYTES ZSTD_COMPRESSBOUND(sizeof(g_savebuffer[0]))
-#define SAVE_STATE_COMPRESSED_BOUND_WITH_REDUNDANCY_BYTES (255 * SAVE_STATE_COMPRESSED_BOUND_BYTES / (255 - MAX_REDUNDANT_PACKETS))
-static unsigned char g_savestate_transfer_payload_untyped[sizeof(savestate_transfer_payload_t) + SAVE_STATE_COMPRESSED_BOUND_WITH_REDUNDANCY_BYTES];
-static savestate_transfer_payload_t *g_savestate_transfer_payload = (savestate_transfer_payload_t *) g_savestate_transfer_payload_untyped;
-static uint8_t *g_savebuffer_compressed = g_savestate_transfer_payload->zipped_savestate;
+#define COMPRESSED_SAVE_STATE_BOUND_BYTES ZSTD_COMPRESSBOUND(sizeof(g_savebuffer[0]))
+#define COMPRESSED_CORE_OPTIONS_BOUND_BYTES ZSTD_COMPRESSBOUND(sizeof(g_libretro_context.core_options))
+#define COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES (255 * (COMPRESSED_SAVE_STATE_BOUND_BYTES + COMPRESSED_CORE_OPTIONS_BOUND_BYTES) / (255 - MAX_REDUNDANT_PACKETS))
 
 static int g_save_state_index = 0;
 static int g_save_state_used_for_delta_index_offset = 1;
@@ -1033,7 +1047,7 @@ const static int savestate_transfer_max_payload = FEC_PACKET_GROUPS_MAX * (GF_SI
 static void* g_fec_packet[FEC_PACKET_GROUPS_MAX][GF_SIZE - FEC_REDUNDANT_BLOCKS];
 static int g_fec_index[FEC_PACKET_GROUPS_MAX][GF_SIZE - FEC_REDUNDANT_BLOCKS];
 static int g_fec_index_counter[FEC_PACKET_GROUPS_MAX] = {0}; // Counts packets received in each "packet group"
-static unsigned char g_remote_savestate_transfer_packets[SAVE_STATE_COMPRESSED_BOUND_WITH_REDUNDANCY_BYTES + FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * sizeof(savestate_transfer_packet_t)];
+static unsigned char g_remote_savestate_transfer_packets[COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES + FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * sizeof(savestate_transfer_packet_t)];
 static int64_t g_remote_savestate_transfer_offset = 0;
 uint8_t g_remote_packet_groups = FEC_PACKET_GROUPS_MAX; // This is used to bookkeep how much data we actually need to receive to reform the complete savestate
 static bool g_send_savestate_next_frame = false;
@@ -1592,7 +1606,27 @@ finished_drawing_sam2_interface:
                 ImGui::Text("argv[%d]=%s", i, g_argv[i]);
             }
         }
-        
+
+        if (ImGui::CollapsingHeader("Core Options")) {
+            static bool isDirty = false; // Tracks if any option has been modified
+
+            for (int i = 0; strlen(g_libretro_context.core_options[i].key) > 0; i++) {
+                if (ImGui::InputText(g_libretro_context.core_options[i].key,
+                                     g_libretro_context.core_options[i].value,
+                                    IM_ARRAYSIZE(g_libretro_context.core_options[i].value))) {
+                    isDirty = true;
+                }
+            }
+
+            if (isDirty) {
+                // Show a Save button if any option has been modified
+                if (ImGui::Button("Save")) {
+                    g_libretro_context.core_options_dirty = true;
+                    isDirty = false; // Reset dirty state after saving
+                }
+            }
+        }
+
         ImGui::Checkbox("Fuzz Input", &g_libretro_context.fuzz_input);
         
         static bool old_vsync_enabled = true;
@@ -1952,6 +1986,14 @@ static bool core_environment(unsigned cmd, void *data) {
             SDL_assert(outvar->key && outvar->value);
         }
 
+        for (unsigned i = 0; i < num_vars; ++i) {
+            if (strlen(g_vars[i].key) > sizeof(g_libretro_context.core_options[i].key) - 1) continue;
+            if (strlen(g_vars[i].value) > sizeof(g_libretro_context.core_options[i].value) - 1) continue;
+
+            strcpy(g_libretro_context.core_options[i].key, g_vars[i].key);
+            strcpy(g_libretro_context.core_options[i].value, g_vars[i].value);
+        }
+
         return true;
     }
     case RETRO_ENVIRONMENT_GET_VARIABLE: {
@@ -1971,7 +2013,8 @@ static bool core_environment(unsigned cmd, void *data) {
     }
     case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE: {
         bool *bval = (bool*)data;
-		*bval = false;
+		*bval = g_libretro_context.core_options_dirty;
+        g_libretro_context.core_options_dirty = false;
         return true;
     }
 	case RETRO_ENVIRONMENT_GET_LOG_INTERFACE: {
@@ -2288,7 +2331,7 @@ void FLibretroContext::AuthoritySendSaveState(juice_agent_t *agent) {
 
     int packet_payload_size_bytes = PACKET_MTU_PAYLOAD_SIZE_BYTES - sizeof(savestate_transfer_packet_t);
     int n, k, packet_groups;
-    logical_partition(sizeof(savestate_transfer_payload_t) /* Header */ + ZSTD_COMPRESSBOUND(serialize_size),
+    logical_partition(sizeof(savestate_transfer_payload_t) /* Header */ + ZSTD_COMPRESSBOUND(serialize_size + sizeof(core_options)),
                       FEC_REDUNDANT_BLOCKS, &n, &k, &packet_payload_size_bytes, &packet_groups);
 
     size_t savestate_transfer_payload_plus_parity_bound_bytes = packet_groups * n * packet_payload_size_bytes;
@@ -2297,21 +2340,29 @@ void FLibretroContext::AuthoritySendSaveState(juice_agent_t *agent) {
     // Having this data in a single contiguous buffer makes indexing easier
     savestate_transfer_payload_t *savestate_transfer_payload = (savestate_transfer_payload_t *) malloc(savestate_transfer_payload_plus_parity_bound_bytes);
 
-    savestate_transfer_payload->zipped_savestate_size = ZSTD_compress(savestate_transfer_payload->zipped_savestate,
-                                                                      SAVE_STATE_COMPRESSED_BOUND_BYTES,
-                                                                      savebuffer, serialize_size, g_zstd_compress_level);
+    savestate_transfer_payload->compressed_savestate_size = ZSTD_compress(savestate_transfer_payload->compressed_data,
+                                                                    COMPRESSED_SAVE_STATE_BOUND_BYTES,
+                                                                    savebuffer, serialize_size, g_zstd_compress_level);
 
-    if (ZSTD_isError(savestate_transfer_payload->zipped_savestate_size)) {
-        die("ZSTD_compress failed: %s\n", ZSTD_getErrorName(savestate_transfer_payload->zipped_savestate_size));
+    if (ZSTD_isError(savestate_transfer_payload->compressed_savestate_size)) {
+        die("ZSTD_compress failed: %s\n", ZSTD_getErrorName(savestate_transfer_payload->compressed_savestate_size));
     }
 
-    logical_partition(sizeof(savestate_transfer_payload_t) /* Header */ + savestate_transfer_payload->zipped_savestate_size,
+    savestate_transfer_payload->compressed_options_size = ZSTD_compress(savestate_transfer_payload->compressed_data + savestate_transfer_payload->compressed_savestate_size,
+                                                                    COMPRESSED_SAVE_STATE_BOUND_BYTES - savestate_transfer_payload->compressed_savestate_size,
+                                                                    core_options, sizeof(core_options), g_zstd_compress_level);
+
+    if (ZSTD_isError(savestate_transfer_payload->compressed_options_size)) {
+        die("ZSTD_compress failed: %s\n", ZSTD_getErrorName(savestate_transfer_payload->compressed_options_size));
+    }
+
+    logical_partition(sizeof(savestate_transfer_payload_t) /* Header */ + savestate_transfer_payload->compressed_savestate_size + savestate_transfer_payload->compressed_options_size,
                       FEC_REDUNDANT_BLOCKS, &n, &k, &packet_payload_size_bytes, &packet_groups);
     SDL_assert(savestate_transfer_payload_plus_parity_bound_bytes >= packet_groups * n * packet_payload_size_bytes); // If this fails my logic calculating the bounds was just wrong
 
     savestate_transfer_payload->frame_counter = frame_counter;
-    savestate_transfer_payload->zipped_savestate_size = savestate_transfer_payload->zipped_savestate_size;
-    savestate_transfer_payload->total_size_bytes = sizeof(savestate_transfer_payload_t) + savestate_transfer_payload->zipped_savestate_size;
+    savestate_transfer_payload->compressed_savestate_size = savestate_transfer_payload->compressed_savestate_size;
+    savestate_transfer_payload->total_size_bytes = sizeof(savestate_transfer_payload_t) + savestate_transfer_payload->compressed_savestate_size;
 
     uint64_t hash = fnv1a_hash(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes);
     printf("Sending savestate payload with hash: %llx size: %llu bytes\n", hash, savestate_transfer_payload->total_size_bytes);
@@ -2594,54 +2645,54 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
             }
 
             if (all_data_decoded) { 
-                uint8_t *savestate_transfer_payload_untyped = (uint8_t *) g_savestate_transfer_payload;
+                savestate_transfer_payload_t *savestate_transfer_payload = (savestate_transfer_payload_t *) malloc(sizeof(savestate_transfer_payload_t) /* Fixed size header */ + COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES);
+
                 int64_t remote_payload_size = 0;
-                // The last packet contains some number of garbage bytes probably add the size thing back?
+                // @todo The last packet contains some number of garbage bytes probably add the size thing back?
                 for (int i = 0; i < k; i++) {
                     for (int j = 0; j < g_remote_packet_groups; j++) {
-                        memcpy(savestate_transfer_payload_untyped + remote_payload_size, g_fec_packet[j][i], rs_block_size);
+                        memcpy(((uint8_t *) savestate_transfer_payload) + remote_payload_size, g_fec_packet[j][i], rs_block_size);
                         remote_payload_size += rs_block_size;
                     }
                 }
 
-                LOG_INFO("Received savestate transfer payload for frame %" PRId64 "\n", g_savestate_transfer_payload->frame_counter);
-                // @todo Check the zipped savestate size against the decoded size so we don't OoBs
+                LOG_INFO("Received savestate transfer payload for frame %" PRId64 "\n", savestate_transfer_payload->frame_counter);
 
-                g_remote_savestate_hash = fnv1a_hash(g_savestate_transfer_payload, g_savestate_transfer_payload->total_size_bytes);
-                printf("Received savestate payload with hash: %llx size: %llu bytes\n", g_remote_savestate_hash, g_savestate_transfer_payload->total_size_bytes);
+                size_t ret = ZSTD_decompress(g_libretro_context.core_options, sizeof(g_libretro_context.core_options),
+                                            savestate_transfer_payload->compressed_data + savestate_transfer_payload->compressed_savestate_size,
+                                            savestate_transfer_payload->compressed_options_size);
 
-                g_zstd_compress_size[0] = ZSTD_decompress(g_savebuffer[0], 
-                                sizeof(g_savebuffer[0]),
-                                g_savestate_transfer_payload->zipped_savestate, 
-                                g_savestate_transfer_payload->zipped_savestate_size);
-                
-                if (ZSTD_isError(g_zstd_compress_size[0])) {
-                    fprintf(stderr, "Error decompressing savestate: %s\n", ZSTD_getErrorName(g_zstd_compress_size[0]));
-                    break;
+                if (ZSTD_isError(ret)) {
+                    LOG_ERROR("Error decompressing core options: %s\n", ZSTD_getErrorName(ret));
                 } else {
-                    if (!g_retro.retro_unserialize(g_savebuffer[0], g_zstd_compress_size[0])) {
-                        fprintf(stderr, "Failed to load savestate\n");
-                        // goto savestate_transfer_failed;
+                    g_libretro_context.core_options_dirty = true;
+                    //g_retro.retro_run(); // Apply options before loading savestate; Lets hope this isn't necessary
+
+                    g_remote_savestate_hash = fnv1a_hash(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes);
+                    LOG_INFO("Received savestate payload with hash: %llx size: %llu bytes\n", g_remote_savestate_hash, savestate_transfer_payload->total_size_bytes);
+
+                    g_zstd_compress_size[0] = ZSTD_decompress(g_savebuffer[0],
+                                    sizeof(g_savebuffer[0]),
+                                    savestate_transfer_payload->compressed_data, 
+                                    savestate_transfer_payload->compressed_savestate_size);
+
+                    if (ZSTD_isError(g_zstd_compress_size[0])) {
+                        LOG_ERROR("Error decompressing savestate: %s\n", ZSTD_getErrorName(g_zstd_compress_size[0]));
                     } else {
-                        LOG_VERBOSE("Save state loaded\n");
-                        LibretroContext->frame_counter = g_savestate_transfer_payload->frame_counter;
+                        if (!g_retro.retro_unserialize(g_savebuffer[0], g_zstd_compress_size[0])) {
+                            LOG_ERROR("Failed to load savestate\n");
+                        } else {
+                            LOG_VERBOSE("Save state loaded\n");
+                            LibretroContext->frame_counter = savestate_transfer_payload->frame_counter;
 
-                        LibretroContext->netplay_input_state[LibretroContext->OurPort()].frame = 0;
-                        memset(&LibretroContext->netplay_input_state[LibretroContext->OurPort()].input_state, 0, 
-                         sizeof(LibretroContext->netplay_input_state[LibretroContext->OurPort()].input_state));
-
-#if 0
-                        // @todo Fix the max frames we can advance changes dynamically since we'll be receiving packets while we're advancing
-                        // Probably we should be polling and sending out our own input even though we can't see the results of it yet...
-                        // Not doing this doesn't break logic but it creates potential for peers to stall while we're catching up
-                        LibretroContext->ignore_user_input = true; // Implicitly while we were connecting all our input is considered to be zero
-                        for (int f = 0; f < max_frames_we_can_advance; f++) {
-                            g_retro.retro_run();
+                            LibretroContext->netplay_input_state[LibretroContext->OurPort()].frame = 0;
+                            memset(&LibretroContext->netplay_input_state[LibretroContext->OurPort()].input_state, 0, 
+                            sizeof(LibretroContext->netplay_input_state[LibretroContext->OurPort()].input_state));
                         }
-                        LibretroContext->ignore_user_input = false;
-#endif
                     }
                 }
+
+                free(savestate_transfer_payload);
 
                 // Reset the savestate transfer state
                 g_remote_packet_groups = FEC_PACKET_GROUPS_MAX;
@@ -2802,13 +2853,14 @@ void tick_compression_investigation(void *rom_data, size_t rom_size) {
         } 
     }
 
+    static unsigned char savebuffer_compressed[2 * sizeof(g_savebuffer[0])]; // Double the savestate size just cause degenerate run length encoding could make it about 1.5x I think
     if (g_use_rle) {
         // If we're 4 byte aligned use the 4-byte wordsize rle that gives us the highest gains in 32-bit consoles (where we need it the most)
         if (g_serialize_size % 4 == 0) {
-            rle_encode32(buffer, g_serialize_size / 4, g_savebuffer_compressed, g_zstd_compress_size + g_frame_cyclic_offset);
+            rle_encode32(buffer, g_serialize_size / 4, savebuffer_compressed, g_zstd_compress_size + g_frame_cyclic_offset);
             g_zstd_compress_size[g_frame_cyclic_offset] *= 4;
         } else {
-            g_zstd_compress_size[g_frame_cyclic_offset] = rle8_encode(buffer, g_serialize_size, g_savebuffer_compressed); // @todo Technically this can overflow I don't really plan to use it though and I find the odds unlikely
+            g_zstd_compress_size[g_frame_cyclic_offset] = rle8_encode(buffer, g_serialize_size, savebuffer_compressed); // @todo Technically this can overflow I don't really plan to use it though and I find the odds unlikely
         }
     } else {
         if (g_use_dictionary) {
@@ -2853,13 +2905,13 @@ void tick_compression_investigation(void *rom_data, size_t rom_size) {
 
             if (cdict) {
                 g_zstd_compress_size[g_frame_cyclic_offset] = ZSTD_compress_usingCDict(cctx, 
-                                                                                       g_savebuffer_compressed, SAVE_STATE_COMPRESSED_BOUND_BYTES,
+                                                                                       savebuffer_compressed, COMPRESSED_SAVE_STATE_BOUND_BYTES,
                                                                                        buffer, g_serialize_size, 
                                                                                        cdict);
             }
         } else {
-            g_zstd_compress_size[g_frame_cyclic_offset] = ZSTD_compress(g_savebuffer_compressed,
-                                                                        SAVE_STATE_COMPRESSED_BOUND_BYTES,
+            g_zstd_compress_size[g_frame_cyclic_offset] = ZSTD_compress(savebuffer_compressed,
+                                                                        COMPRESSED_SAVE_STATE_BOUND_BYTES,
                                                                         buffer, g_serialize_size, g_zstd_compress_level);
         }
 
