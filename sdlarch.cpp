@@ -47,7 +47,7 @@ void startup_ice_for_peer(juice_agent_t **agent, sam2_signal_message_t *signal_m
 #include <chrono>
 #include <thread>
 
-#define RLE8_ENCODE_UPPER_BOUND(N) 3 * ((N+1) / 2) + (N) / 2
+#define RLE8_ENCODE_UPPER_BOUND(N) (3 * ((N+1) / 2) + (N) / 2)
 
 // Encodes input array of uint8_t into a byte stream with RLE for zeros.
 int64_t rle8_encode(const uint8_t* input, int64_t input_size, uint8_t* output) {
@@ -191,7 +191,7 @@ static struct {
 
 } g_shader = {0};
 
-static struct retro_variable *g_vars = NULL;
+static struct retro_variable *g_vars = NULL; // Default options
 
 static const char *g_vshader_src =
     "#version 150\n"
@@ -337,9 +337,23 @@ static_assert(to_integral(ERetroDeviceID::Size) < sizeof(FLibretroInputState) / 
 #define CHANNEL_SAVESTATE_TRANSFER      0b00110000
 #define CHANNEL_DESYNC_DEBUG            0b11110000
 
-// This is 1 larger than the max frame delay we can handle before blocking
-#define INPUT_DELAY_FRAMES_MAX 2
+// This is 2 larger than the max frame delay we can handle before blocking
+// Buffering 1 frame implies no delay. You would think 1 would be the minimum, but it's not.
+//
+// Consider the case where the peers are sending inputs corresponding to each frame ordered numerically
+// peer 0  peer 1
+// --------------
+// send 0  send 0
+// recv 0  recv 0
+//         tick 0
+//         send 1
+// recv 1
+// tick 0 <--- This is the problem, we already overwrote the input for frame 0
+// If you only buffer input for 1 frame, you can't handle the case where the peer immediately ticks then polls and sends an input
+// So to buffer input with no frame delay this needs to be 2
+#define INPUT_DELAY_FRAMES_MAX 8
 
+// @todo This is really sparse so you should just add routines to read values from it in the serialized format
 typedef struct {
     int64_t frame;
     FLibretroInputState input_state[INPUT_DELAY_FRAMES_MAX][PortCount];
@@ -945,7 +959,7 @@ typedef struct {
     uint8_t zipped_savestate[];
 } savestate_transfer_payload_t;
 
-int g_argc; 
+int g_argc;
 char **g_argv;
 
 static sam2_room_t g_new_room_set_through_gui = { 
@@ -977,7 +991,7 @@ static uint64_t g_reed_solomon_encode_cycle_count[MAX_SAMPLE_SIZE] = {0};
 static uint64_t g_reed_solomon_decode_cycle_count[MAX_SAMPLE_SIZE] = {0};
 static float g_frame_time_milliseconds[MAX_SAMPLE_SIZE] = {0};
 static float g_core_wants_tick_in_milliseconds[MAX_SAMPLE_SIZE] = {0};
-static uint64_t g_frame_cyclic_offset = 0; // Between 0 and g_sample_size-1
+static uint64_t g_frame_cyclic_offset = 0; // Between 0 and g_sample_size-1 @todo replace with a modulo of frame_counter
 static uint64_t g_main_loop_cyclic_offset = 0;
 static size_t g_serialize_size = 0;
 static bool g_do_zstd_compress = true;
@@ -2906,6 +2920,78 @@ void tick_compression_investigation(void *rom_data, size_t rom_size) {
             if (!g_libretro_context.agent[p]) continue;
             g_libretro_context.AuthoritySendSaveState(g_libretro_context.agent[p]);
         }
+    }
+}
+
+void RGBtoHSV(float r, float g, float b, float &h, float &s, float &v) {
+    float max = std::max({r, g, b});
+    float min = std::min({r, g, b});
+    float delta = max - min;
+
+    if (delta == 0) {
+        h = 0;
+    } else if (max == r) {
+        h = (1.0f / 6.0f) * fmod(((g - b) / delta), 6.0f);
+    } else if (max == g) {
+        h = (1.0f / 6.0f) * (((b - r) / delta) + 2.0f);
+    } else if (max == b) {
+        h = (1.0f / 6.0f) * (((r - g) / delta) + 4.0f);
+    }
+
+    s = max == 0 ? 0 : delta / max;
+    v = max;
+
+    // Normalize hue to be between 0 and 1
+    if (h < 0) {
+        h += 1;
+    }
+}
+
+
+void HSVtoRGB(float h, float s, float v, float &r, float &g, float &b) {
+    float C = v * s;
+    float Hprime = h * 6.0f;
+    float X = C * (1 - fabs(fmod(Hprime, 2) - 1));
+    float m = v - C;
+    r = g = b = 0; // Initialize
+
+    if (0 <= Hprime && Hprime < 1) {
+        r = C, g = X, b = 0;
+    } else if (1 <= Hprime && Hprime < 2) {
+        r = X, g = C, b = 0;
+    } else if (2 <= Hprime && Hprime < 3) {
+        r = 0, g = C, b = X;
+    } else if (3 <= Hprime && Hprime < 4) {
+        r = 0, g = X, b = C;
+    } else if (4 <= Hprime && Hprime < 5) {
+        r = X, g = 0, b = C;
+    } else if (5 <= Hprime && Hprime < 6) {
+        r = C, g = 0, b = X;
+    }
+
+    r += m;
+    g += m;
+    b += m;
+}
+
+void ImGuiColorShift(ImGuiStyle* dst) {
+    ImGuiStyle* style = dst ? dst : &ImGui::GetStyle();
+    ImVec4* colors = style->Colors;
+
+    float hueShift = 0.5f; // Calculate the hue shift required to get to an "orange" hue
+
+    for (int i = 0; i < ImGuiCol_COUNT; i++) {
+        ImVec4& col = colors[i];
+        float h, s, v;
+        RGBtoHSV(col.x, col.y, col.z, h, s, v);
+
+        // Apply hue shift and wrap around if necessary
+        h += hueShift;
+        if (h > 1.0f) h -= 1.0f;
+        if (h < 0.0f) h += 1.0f;
+
+        // Convert back to RGB and apply the color
+        HSVtoRGB(h, s, v, col.x, col.y, col.z);
     }
 }
 
