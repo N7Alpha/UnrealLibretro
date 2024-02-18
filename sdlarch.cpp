@@ -353,11 +353,19 @@ static_assert(to_integral(ERetroDeviceID::Size) < sizeof(FLibretroInputState) / 
 // So to buffer input with no frame delay this needs to be 2
 #define INPUT_DELAY_FRAMES_MAX 8
 
+struct core_option_t {
+    char key[128];
+    char value[128];
+};
+
 // @todo This is really sparse so you should just add routines to read values from it in the serialized format
 typedef struct {
     int64_t frame;
     FLibretroInputState input_state[INPUT_DELAY_FRAMES_MAX][PortCount];
+    core_option_t core_option[INPUT_DELAY_FRAMES_MAX]; // Max 1 option per frame provided by the authority
 } netplay_input_state_t;
+
+static_assert(sizeof(netplay_input_state_t) == (sizeof(netplay_input_state_t::frame) + sizeof(netplay_input_state_t::input_state) + sizeof(netplay_input_state_t::core_option)), "netplay_input_state_t is not packed");
 
 typedef struct {
     uint8_t channel_and_port;
@@ -371,12 +379,8 @@ typedef struct {
     int64_t frame;
     int64_t save_state_hash[INPUT_DELAY_FRAMES_MAX];
     int64_t input_state_hash[INPUT_DELAY_FRAMES_MAX];
+    //int64_t options_state_hash[INPUT_DELAY_FRAMES_MAX]; // @todo
 } desync_debug_packet_t;
-
-struct core_option_t {
-    char key[128];
-    char value[128];
-};
 
 #define CORE_OPTIONS_MAX 128
 struct FLibretroContext {
@@ -523,7 +527,9 @@ struct FLibretroContext {
     void core_input_poll();
 };
 
-static struct FLibretroContext g_libretro_context; 
+core_option_t g_core_option_for_next_frame = {0};
+
+static struct FLibretroContext g_libretro_context;
 static int64_t &frame_counter = g_libretro_context.frame_counter;
 
 struct keymap {
@@ -928,7 +934,6 @@ double format_unit_count(double count, char *unit)
 
 #define MAX_ROOMS 1024
 
-static_assert(sizeof(netplay_input_state_t) == sizeof(netplay_input_state_t::frame) + sizeof(netplay_input_state_t::input_state), "Input packet is not packed");
 #define SAVESTATE_TRANSFER_FLAG_K_IS_239         0b0001
 #define SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0 0b0010
 
@@ -1608,21 +1613,38 @@ finished_drawing_sam2_interface:
         }
 
         if (ImGui::CollapsingHeader("Core Options")) {
-            static bool isDirty = false; // Tracks if any option has been modified
+            static int option_modified_at_index = -1;
 
             for (int i = 0; strlen(g_libretro_context.core_options[i].key) > 0; i++) {
+                // Determine if the current option is editable
+                ImGuiInputTextFlags flags = 0;
+                if (option_modified_at_index > -1) {
+                    flags |= (i == option_modified_at_index) ? 0 : ImGuiInputTextFlags_ReadOnly;
+                }
+
+                if (!g_libretro_context.IsAuthority()) {
+                    flags |= ImGuiInputTextFlags_ReadOnly;
+                }
+
                 if (ImGui::InputText(g_libretro_context.core_options[i].key,
-                                     g_libretro_context.core_options[i].value,
-                                    IM_ARRAYSIZE(g_libretro_context.core_options[i].value))) {
-                    isDirty = true;
+                                    g_libretro_context.core_options[i].value,
+                                    IM_ARRAYSIZE(g_libretro_context.core_options[i].value),
+                                    flags)) {
+                    // Mark this option as modified
+                    option_modified_at_index = i;
                 }
             }
 
-            if (isDirty) {
-                // Show a Save button if any option has been modified
+            if (option_modified_at_index != -1) {
+                // Show and handle the Save button
                 if (ImGui::Button("Save")) {
+                    // @todo There are weird race conditions if you rapidly modify options using this gui since the authority is directly modifying the values in the buffer
+                    //       This really just shouldn't matter unless we hook up a programmatic tester or something to this gui. Ideally the authority should modify it when it
+                    //       hits the frame the option was modified on.
+                    g_core_option_for_next_frame = g_libretro_context.core_options[option_modified_at_index];
+
+                    option_modified_at_index = -1;
                     g_libretro_context.core_options_dirty = true;
-                    isDirty = false; // Reset dirty state after saving
                 }
             }
         }
@@ -2013,7 +2035,7 @@ static bool core_environment(unsigned cmd, void *data) {
     }
     case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE: {
         bool *bval = (bool*)data;
-		*bval = g_libretro_context.core_options_dirty;
+        *bval = g_libretro_context.core_options_dirty;
         g_libretro_context.core_options_dirty = false;
         return true;
     }
@@ -3223,6 +3245,10 @@ int main(int argc, char *argv[]) {
             // Poll input to apply to the next frame if we haven't yet
             if (g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].frame < frame_counter) {
                 g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].frame = frame_counter;
+                if (strlen(g_core_option_for_next_frame.key)) {
+                    g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].core_option[frame_counter % INPUT_DELAY_FRAMES_MAX] = g_core_option_for_next_frame;
+                    memset(&g_core_option_for_next_frame, 0, sizeof(g_core_option_for_next_frame));
+                }
 
                 if (   (!(g_libretro_context.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED))
                     || frame_counter >= g_libretro_context.peer_joining_on_frame[g_libretro_context.OurPort()]) {
@@ -3312,6 +3338,18 @@ int main(int argc, char *argv[]) {
         }
 
         if (netplay_ready_to_tick && core_ready_to_tick) {
+            core_option_t maybe_core_option_for_this_frame = g_libretro_context.netplay_input_state[SAM2_AUTHORITY_INDEX].core_option[g_libretro_context.frame_counter % INPUT_DELAY_FRAMES_MAX];
+            if (strlen(maybe_core_option_for_this_frame.key) > 0) {
+                for (int i = 0; i < SAM2_ARRAY_LENGTH(g_libretro_context.core_options); i++) {
+                    if (strcmp(g_libretro_context.core_options[i].key, maybe_core_option_for_this_frame.key) == 0) {
+                        g_libretro_context.core_options[i] = maybe_core_option_for_this_frame;
+                        break;
+                    }
+                }
+
+                g_libretro_context.core_options_dirty = true;
+            }
+
             g_retro.retro_run();
             frame_counter++;
 
