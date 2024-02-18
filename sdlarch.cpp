@@ -2512,10 +2512,15 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         assert(size <= PACKET_MTU_PAYLOAD_SIZE_BYTES);
 
         input_packet_t *input_packet = (input_packet_t *) data;
-        int8_t port = input_packet->channel_and_port & FLAGS_MASK;
+        int8_t original_sender_port = input_packet->channel_and_port & FLAGS_MASK;
 
-        if (port >= SAM2_PORT_MAX+1) {
-            LOG_WARN("Received input packet for port %d which is out of range\n", port);
+        if (   p != original_sender_port
+            && p != SAM2_AUTHORITY_INDEX) {
+            LOG_WARN("Non-authority gave us someones input eventually this should be verified with a signature\n");
+        }
+
+        if (original_sender_port >= SAM2_PORT_MAX+1) {
+            LOG_WARN("Received input packet for port %d which is out of range\n", original_sender_port);
             break;
         }
 
