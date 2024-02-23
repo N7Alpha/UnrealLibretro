@@ -405,6 +405,7 @@ struct FLibretroContext {
     netplay_input_state_t netplay_input_state[SAM2_PORT_MAX+1] = {0};
     desync_debug_packet_t desync_debug_packet = { CHANNEL_DESYNC_DEBUG };
 
+    int64_t base_frame_counter = 0;
     int64_t frame_counter = 0;
     FLibretroInputState InputState[PortCount] = {0};
     bool fuzz_input = false;
@@ -514,12 +515,17 @@ struct FLibretroContext {
     }
 
     int OurPort() const {
-        int port = locate(room_we_are_in.peer_ids, our_peer_id);
+        // @todo There is a bug here where we are sending out packets as the authority when we are not the authority
+        if (room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
+            int port = locate(room_we_are_in.peer_ids, our_peer_id);
 
-        if (port == -1) {
-            return 0; // @todo This should be handled differently I just don't want to out-of-bounds right now
+            if (port == -1) {
+                return 0; // @todo This should be handled differently I just don't want to out-of-bounds right now
+            } else {
+                return port;
+            }
         } else {
-            return port;
+            return SAM2_AUTHORITY_INDEX;
         }
     }
 
@@ -1603,7 +1609,7 @@ finished_drawing_sam2_interface:
     }
 
     {
-        ImGui::Begin("Timing", NULL, ImGuiWindowFlags_AlwaysAutoResize);
+        ImGui::Begin("Libretro Core", NULL, ImGuiWindowFlags_AlwaysAutoResize);
 
         // Assuming g_argc and g_argv are defined and populated
         if (ImGui::CollapsingHeader("Command Line Arguments")) {
@@ -1646,6 +1652,15 @@ finished_drawing_sam2_interface:
                     option_modified_at_index = -1;
                     g_libretro_context.core_options_dirty = true;
                 }
+            }
+        }
+
+        {
+            int64_t min_delay_frames = 0;
+            int64_t max_delay_frames = INPUT_DELAY_FRAMES_MAX/2-1;
+            if (ImGui::SliderScalar("Network Buffered Frames", ImGuiDataType_S64, &g_libretro_context.delay_frames, &min_delay_frames, &max_delay_frames, "%lld", ImGuiSliderFlags_None)) {
+                strcpy(g_core_option_for_next_frame.key, "netplay_delay_frames");
+                sprintf(g_core_option_for_next_frame.value, "%" PRIx64, g_libretro_context.delay_frames);
             }
         }
 
@@ -2711,10 +2726,10 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
                         } else {
                             LOG_VERBOSE("Save state loaded\n");
                             LibretroContext->frame_counter = savestate_transfer_payload->frame_counter;
-
-                            LibretroContext->netplay_input_state[LibretroContext->OurPort()].frame = 0;
-                            memset(&LibretroContext->netplay_input_state[LibretroContext->OurPort()].input_state, 0, 
-                            sizeof(LibretroContext->netplay_input_state[LibretroContext->OurPort()].input_state));
+                            LibretroContext->base_frame_counter = savestate_transfer_payload->frame_counter; // @todo This shouldn't be necessary
+                            LibretroContext->netplay_input_state[LibretroContext->OurPort()].frame = savestate_transfer_payload->frame_counter; // @todo This shouldn't be necessary
+                            memset(&LibretroContext->netplay_input_state[LibretroContext->OurPort()].input_state, 0, // @todo This should probably happen somewhere else
+                             sizeof(LibretroContext->netplay_input_state[LibretroContext->OurPort()].input_state));
                         }
                     }
                 }
@@ -3206,34 +3221,15 @@ int main(int argc, char *argv[]) {
 #endif
 
         //std::chrono::duration<double, std::milli> elapsed_time_milliseconds = current_time - last_frame_time;
-        bool core_ready_to_tick = false;
-        double core_wants_tick_in_seconds = 0.0;
-        {
-            static auto start = std::chrono::high_resolution_clock::now();
-            static int64_t frames = 0;
-            double target_frame_time_seconds = 1.0 / g_av.timing.fps - 1e-3;
-
+        static auto start = std::chrono::high_resolution_clock::now();
+        auto core_wants_tick_in_seconds = [](int64_t &base_frame_counter, int64_t frame_counter) {
             auto current_time = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> elapsed_time_milliseconds = current_time - start;
             double elapsed_time_seconds = elapsed_time_milliseconds.count() / 1000.0;
-            double sleep = (frames / g_av.timing.fps) - elapsed_time_seconds;
-            if (sleep > 0.0) {
-                core_wants_tick_in_seconds = sleep;
-            } else {
-                frames++;
-                core_ready_to_tick = true;
+            return ((frame_counter - base_frame_counter) / g_av.timing.fps) - elapsed_time_seconds;
+        };
 
-                // @todo I don't think this makes sense you should keep reasonable timing yourself if you can't the authority should just kick you
-                int64_t authority_is_on_frame = g_libretro_context.netplay_input_state[SAM2_AUTHORITY_INDEX].frame;
-
-                if (   sleep < -target_frame_time_seconds
-                    || frame_counter < authority_is_on_frame) { // If over a frame behind don't try to catch up to the next frame
-                    start = std::chrono::high_resolution_clock::now();
-                    frames = 0;
-                }
-            }
-        }
-        g_core_wants_tick_in_milliseconds[g_main_loop_cyclic_offset] = core_wants_tick_in_seconds * 1000.0;
+        g_core_wants_tick_in_milliseconds[g_main_loop_cyclic_offset] = core_wants_tick_in_seconds(g_libretro_context.base_frame_counter, frame_counter) * 1000.0;
 
         // Always send an input packet if the core is ready to tick. This subsumes retransmission logic and generally makes protocol logic less strict
         if (true) {
@@ -3242,23 +3238,21 @@ int main(int argc, char *argv[]) {
             if (g_kbd[SDL_SCANCODE_ESCAPE])
                 running = false;
 
-            // Poll input to apply to the next frame if we haven't yet
-            if (g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].frame < frame_counter) {
-                g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].frame = frame_counter;
-                if (strlen(g_core_option_for_next_frame.key)) {
-                    g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].core_option[frame_counter % INPUT_DELAY_FRAMES_MAX] = g_core_option_for_next_frame;
-                    memset(&g_core_option_for_next_frame, 0, sizeof(g_core_option_for_next_frame));
-                }
+            // Poll input with buffering for netplay
+            if (g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].frame < frame_counter + g_libretro_context.delay_frames) {
+                int64_t next_buffer_index = ++g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].frame % INPUT_DELAY_FRAMES_MAX;
+                g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].core_option[next_buffer_index] = g_core_option_for_next_frame;
+                memset(&g_core_option_for_next_frame, 0, sizeof(g_core_option_for_next_frame));
 
                 if (   (!(g_libretro_context.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED))
                     || frame_counter >= g_libretro_context.peer_joining_on_frame[g_libretro_context.OurPort()]) {
                     for (int i = 0; g_binds[i].k || g_binds[i].rk; ++i) {
-                        g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].input_state[frame_counter % INPUT_DELAY_FRAMES_MAX][0][g_binds[i].rk] = g_kbd[g_binds[i].k];
+                        g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].input_state[next_buffer_index][0][g_binds[i].rk] = g_kbd[g_binds[i].k];
                     }
 
                     if (g_libretro_context.fuzz_input) {
                         for (int i = 0; i < 16; ++i) {
-                            g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].input_state[frame_counter % INPUT_DELAY_FRAMES_MAX][0][i] = rand() & 0x0001;
+                            g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].input_state[next_buffer_index][0][i] = rand() & 0x0001;
                         }
                     }
                 }
@@ -3268,7 +3262,6 @@ int main(int argc, char *argv[]) {
                 && g_libretro_context.AllPeersReadyForPeerToJoin(g_libretro_context.our_peer_id)
                 && (!g_waiting_for_savestate // If we were waiting this would mean our frame_counter is invalid and break the next check
                 && frame_counter >= g_libretro_context.peer_joining_on_frame[g_libretro_context.OurPort()])) {
-                g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].frame = frame_counter;
 
                 for (int p = 0; p < SAM2_ARRAY_LENGTH(g_libretro_context.agent); p++) {
                     if (!g_libretro_context.agent[p]) continue;
@@ -3305,15 +3298,13 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        int timeout_milliseconds = 1e3 * core_wants_tick_in_seconds;
+        int timeout_milliseconds = 1e3 * core_wants_tick_in_seconds(g_libretro_context.base_frame_counter, frame_counter);
+        timeout_milliseconds = SAM2_MAX(0, timeout_milliseconds);
 
-        auto start = std::chrono::high_resolution_clock::now();
         int ret;
         if (ret = juice_user_poll(agent, agent_count, timeout_milliseconds)) {
             die("Error polling agent (%d)\n", ret);
         }
-        std::chrono::duration<double, std::milli> elapsed_time_milliseconds = std::chrono::high_resolution_clock::now() - start;
-        core_ready_to_tick = core_wants_tick_in_seconds < (elapsed_time_milliseconds.count()) / 1e3;
 #endif
 
         bool netplay_ready_to_tick = !g_waiting_for_savestate;
@@ -3337,17 +3328,31 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        if (netplay_ready_to_tick && core_ready_to_tick) {
+        netplay_ready_to_tick &= g_libretro_context.delay_frames <= g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].frame - g_libretro_context.frame_counter;
+        if (netplay_ready_to_tick && core_wants_tick_in_seconds(g_libretro_context.base_frame_counter, frame_counter) < 0.0) {
+            // @todo I don't think this makes sense you should keep reasonable timing yourself if you can't the authority should just kick you
+            //int64_t authority_is_on_frame = g_libretro_context.netplay_input_state[SAM2_AUTHORITY_INDEX].frame;
+
+            double target_frame_time_seconds = 1.0 / g_av.timing.fps - 1e-3;
+            if (   core_wants_tick_in_seconds(g_libretro_context.base_frame_counter, frame_counter) < -target_frame_time_seconds
+                /*|| frame_counter < authority_is_on_frame*/) { // If over a frame behind don't try to catch up to the next frame
+                start = std::chrono::high_resolution_clock::now();
+                g_libretro_context.base_frame_counter = frame_counter;
+            }
+
             core_option_t maybe_core_option_for_this_frame = g_libretro_context.netplay_input_state[SAM2_AUTHORITY_INDEX].core_option[g_libretro_context.frame_counter % INPUT_DELAY_FRAMES_MAX];
             if (strlen(maybe_core_option_for_this_frame.key) > 0) {
+                if (strcmp(maybe_core_option_for_this_frame.key, "netplay_delay_frames") == 0) {
+                    g_libretro_context.delay_frames = atoi(maybe_core_option_for_this_frame.value);
+                }
+
                 for (int i = 0; i < SAM2_ARRAY_LENGTH(g_libretro_context.core_options); i++) {
                     if (strcmp(g_libretro_context.core_options[i].key, maybe_core_option_for_this_frame.key) == 0) {
                         g_libretro_context.core_options[i] = maybe_core_option_for_this_frame;
+                        g_libretro_context.core_options_dirty = true;
                         break;
                     }
                 }
-
-                g_libretro_context.core_options_dirty = true;
             }
 
             g_retro.retro_run();
@@ -3459,6 +3464,32 @@ int main(int argc, char *argv[]) {
                     fflush(stdout);
 
                     g_libretro_context.our_peer_id = connect_message->peer_id;
+                    g_libretro_context.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = g_libretro_context.our_peer_id;
+                    //g_libretro_context.MovePeer(SAM2_AUTHORITY_INDEX, g_libretro_context.OurPort());
+
+//                    for (int i = 0; i < 10; i++) { // @nocheckin
+//                        sam2_room_make_message_t room_make_message = {0};
+//
+//                        snprintf(room_make_message.room.name, sizeof(room_make_message.room.name), "Room %d", i);
+//                        room_make_message.room.peer_ids[SAM2_AUTHORITY_INDEX] = g_libretro_context.our_peer_id;
+//
+//                        g_libretro_context.SAM2Send((char *) &room_make_message, SAM2_EMESSAGE_MAKE);
+//
+//                        sam2_room_join_message_t room_join_message = {0};
+//                        room_join_message.room = room_make_message.room;
+//                        room_join_message.room.peer_ids[1] = g_libretro_context.our_peer_id;
+//                        g_libretro_context.SAM2Send((char *) &room_join_message, SAM2_EMESSAGE_JOIN);
+//                    }
+
+//                    for (int i = 0; i < 100; i++) { // @nocheckin
+//                        // I think we'll have to explicitly kill the connection on error... or just use a continue instead of a goto??
+//                        // Well anyway some refactoring will have to happen for handling errors... probably irrecoverable ones that mess with message framing will require terminating the connection the other ones
+//                        // will just require reseting state + a continue
+//                        sam2_signal_message_t signal_message = {0};
+//
+//                        signal_message.peer_id = g_libretro_context.our_peer_id;
+//                        g_libretro_context.SAM2Send((char *) &signal_message, SAM2_EMESSAGE_SIGNAL);
+//                    }
 
                     break;
                 }
@@ -3661,6 +3692,12 @@ int main(int argc, char *argv[]) {
 
                         g_libretro_context.peer_ready_to_join_bitfield |= 0xFFULL << (8 * joiner_port);
                         g_libretro_context.peer_joining_on_frame[joiner_port] = acknowledge_room_join_message->frame_counter;
+
+                        if (acknowledge_room_join_message->joiner_peer_id == g_our_peer_id) {
+                            // @todo I feel like this shouldn't really have to be done, but I need at least the frame_counter here
+                            // since I use it to bookkeep the number of buffered frames of input
+                            g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].frame = g_libretro_context.peer_joining_on_frame[joiner_port] - 1;
+                        }
                     }
                     break;
                 }
