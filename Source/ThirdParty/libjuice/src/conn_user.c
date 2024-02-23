@@ -29,7 +29,7 @@ typedef struct conn_impl {
 static inline int conn_user_process(juice_agent_t **agents, int agents_count, uint32_t *has_packets_pending, char *buffer);
 static inline int conn_user_recv(socket_t sock, char *buffer, size_t size, addr_record_t *src);
 
-JUICE_EXPORT int juice_user_poll(juice_agent_t **agents, int agents_count) {
+JUICE_EXPORT int juice_user_poll(juice_agent_t **agents, int agents_count, int timeout) {
 	JLOG_VERBOSE("Setting up poll for %d agents", agents_count);
 
 	if (agents_count == 0)
@@ -62,6 +62,15 @@ JUICE_EXPORT int juice_user_poll(juice_agent_t **agents, int agents_count) {
 			continue;
 		}
 
+		conn_impl_t *conn_impl = agents[i]->conn_impl;
+		if (agents[i]->state != JUICE_STATE_CONNECTED || agents[i]->state == JUICE_STATE_COMPLETED) {
+			if (agent_conn_update(agents[i], &conn_impl->next_timestamp) != 0) {
+				JLOG_WARN("Agent update failed");
+				conn_impl->state = CONN_STATE_FINISHED;
+				continue;
+			}
+		}
+
 		if (agents[i]->config.concurrency_mode != JUICE_CONCURRENCY_MODE_USER) {
 			JLOG_ERROR("agents[%d].config.concurrency_mode=%d Only JUICE_CONCURRENCY_MODE_USER (%d) is supported", 
 			            i, agents[i]->config.concurrency_mode, JUICE_CONCURRENCY_MODE_USER);
@@ -69,7 +78,6 @@ JUICE_EXPORT int juice_user_poll(juice_agent_t **agents, int agents_count) {
 			continue;
 		}
 
-		conn_impl_t *conn_impl = agents[i]->conn_impl;
 		if (conn_impl->state != CONN_STATE_NEW && conn_impl->state != CONN_STATE_READY) {
 			pfd->fd = INVALID_SOCKET;
 			pfd->events = 0;
@@ -87,7 +95,7 @@ JUICE_EXPORT int juice_user_poll(juice_agent_t **agents, int agents_count) {
 		return status;
 
 	JLOG_VERBOSE("Entering poll on %d sockets", agents_count);
-	while ((poll(pfds, agents_count, 0)) < 0) {
+	while ((poll(pfds, agents_count, timeout)) < 0) {
 		// POSIX allows kernels to set these two errors unconditionally when calling poll
 		// In this case looping until poll succeeds is standard practice
 		if (sockerrno == SEINTR || sockerrno == SEAGAIN) {
@@ -114,7 +122,7 @@ JUICE_EXPORT int juice_user_poll(juice_agent_t **agents, int agents_count) {
 	}
 
 	// This subroutine protects from accidently accessing pfds
-    return conn_user_process(agents, agents_count, has_packets_pending, u.buffer);
+	return conn_user_process(agents, agents_count, has_packets_pending, u.buffer);
 }
 
 static inline int conn_user_process(juice_agent_t **agents, int agents_count, uint32_t *has_packets_pending, char *buffer) {
