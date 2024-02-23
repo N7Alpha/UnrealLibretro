@@ -208,8 +208,9 @@ static const char *g_fshader_src =
     "#version 150\n"
     "in vec2 o_coord;\n"
     "uniform sampler2D u_tex;\n"
+    "out vec4 outColor;\n"
     "void main() {\n"
-        "gl_FragColor = texture2D(u_tex, o_coord);\n"
+        "outColor = texture(u_tex, o_coord);\n"
     "}";
 
 
@@ -1013,7 +1014,7 @@ static int g_zstd_compress_level = 0;
 static int g_sample_size = MAX_SAMPLE_SIZE/2;
 static uint64_t g_save_cycle_count[MAX_SAMPLE_SIZE] = {0};
 static uint64_t g_zstd_cycle_count[MAX_SAMPLE_SIZE] = {1}; // The 1 is so we don't divide by 0
-static uint64_t g_zstd_compress_size[MAX_SAMPLE_SIZE] = {0};
+static size_t g_zstd_compress_size[MAX_SAMPLE_SIZE] = {0};
 static uint64_t g_reed_solomon_encode_cycle_count[MAX_SAMPLE_SIZE] = {0};
 static uint64_t g_reed_solomon_decode_cycle_count[MAX_SAMPLE_SIZE] = {0};
 static float g_frame_time_milliseconds[MAX_SAMPLE_SIZE] = {0};
@@ -3138,7 +3139,7 @@ int main(int argc, char *argv[]) {
     // Setup Platform/Renderer backends
     // GL 3.0 + GLSL 130
     g_video.hw.version_major = 4;
-    g_video.hw.version_minor = 5;
+    g_video.hw.version_minor = 1;
     g_video.hw.context_type  = RETRO_HW_CONTEXT_OPENGL_CORE;
     g_video.hw.context_reset   = noop;
     g_video.hw.context_destroy = noop;
@@ -3156,11 +3157,10 @@ int main(int argc, char *argv[]) {
     g_retro.retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
 
     // GL 3.0 + GLSL 130
-    const char* glsl_version = "#version 130";
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, g_video.hw.version_major);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, g_video.hw.version_minor);
 
     //IMGUI_CHECKVERSION();
     ImGui::SetCurrentContext(ImGui::CreateContext());
@@ -3176,7 +3176,7 @@ int main(int argc, char *argv[]) {
 
     // Setup Platform/Renderer backends
     ImGui_ImplSDL2_InitForOpenGL(g_win, g_ctx);
-    ImGui_ImplOpenGL3_Init(glsl_version);
+    ImGui_ImplOpenGL3_Init("#version 150");
 
     SDL_Event ev;
 

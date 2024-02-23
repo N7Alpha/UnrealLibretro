@@ -1,6 +1,6 @@
 // MIT License
 // 
-// Copyright (c) 2023 John Rehbein
+// Copyright (c) 2024 John Rehbein
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -725,6 +725,7 @@ static int sam2__resolve_hostname(const char *hostname, char *ip) {
 }
 
 #ifdef _WIN32
+    #define SAM2_SOCKET_ERROR (SOCKET_ERROR)
     #define SAM2_SOCKET_INVALID (INVALID_SOCKET)
     #define SAM2_CLOSESOCKET closesocket
     #define SAM2_SOCKERRNO ((int)WSAGetLastError())
@@ -738,12 +739,11 @@ static int sam2__resolve_hostname(const char *hostname, char *ip) {
     #include <sys/ioctl.h>
     #include <netinet/in.h>
     #include <arpa/inet.h>
+    #define SAM2_SOCKET_ERROR (-1)
     #define SAM2_SOCKET_INVALID (-1)
     #define SAM2_CLOSESOCKET close
     #define SAM2_SOCKERRNO errno
     #define SAM2_EINPROGRESS EINPROGRESS
-    typedef int sam2_fcntl_arg_t;
-    #define ioctlsocket_fn(sockfd, cmd, argp) fcntl(sockfd, cmd, *argp)
 #endif
 
 SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host, int port) {
@@ -776,12 +776,26 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
     }
 
     // Set the socket to non-blocking mode
-    sam2_fcntl_arg_t flags = 1;
-    if (ioctlsocket_fn(sockfd, FIONBIO, &flags) < 0) {
-        LOG_ERROR("Failed to set socket to non-blocking mode");
-        SAM2_CLOSESOCKET(sockfd);
-        return -1;
-    }
+    #ifdef _WIN32
+        int flags = 1; // 1 for non-blocking, 0 for blocking
+        if (ioctlsocket_fn(sockfd, FIONBIO, &flags) < 0) {
+            LOG_ERROR("Failed to set socket to non-blocking mode\n");
+            SAM2_CLOSESOCKET(sockfd);
+            return -1;
+        }
+    #else
+        int current_flags = fcntl(sockfd, F_GETFL, 0);
+        if (current_flags < 0) {
+            LOG_ERROR("Failed to get current socket flags\n");
+            SAM2_CLOSESOCKET(sockfd);
+            return -1;
+        }
+        if (fcntl(sockfd, F_SETFL, current_flags | O_NONBLOCK) < 0) {
+            LOG_ERROR("Failed to set socket to non-blocking mode\n");
+            SAM2_CLOSESOCKET(sockfd);
+            return -1;
+        }
+    #endif
 
     // Specify the numerical address of the server we're trying to connnect to
     if (family == AF_INET) {
@@ -830,24 +844,17 @@ SAM2_LINKAGE int sam2_client_disconnect(sam2_socket_t *sockfd_ptr, const char *h
     int status = 0;
 
     #ifdef _WIN32
-        if (WSACleanup() == SOCKET_ERROR) {
-            LOG_ERROR("WSACleanup failed: %d\n", WSAGetLastError());
-            status = -1;
-        }
+    if (WSACleanup() == SOCKET_ERROR) {
+        LOG_ERROR("WSACleanup failed: %d\n", WSAGetLastError());
+        status = -1;
+    }
     #endif
 
     if (*sockfd_ptr != SAM2_SOCKET_INVALID) {
-        #ifdef _WIN32
-        if (closesocket(*sockfd_ptr) == SOCKET_ERROR) {
-            LOG_ERROR("closesocket failed: %d\n", WSAGetLastError());
-            status = -1;
-        }
-        #else
-        if (close(*sockfd_ptr) == -1) {
+        if (SAM2_CLOSESOCKET(*sockfd_ptr) == SAM2_SOCKET_ERROR) {
             LOG_ERROR("close failed: %s\n", strerror(errno));
             status = -1;
         }
-        #endif
 
         *sockfd_ptr = SAM2_SOCKET_INVALID;
     }
