@@ -3514,6 +3514,7 @@ int main(int argc, char *argv[]) {
                         frame_counter = 123456789000; // Our frame_counter is invalid before we get a savestate this should make logic issues more obvious
                         g_room_we_are_in = room_join->room;
                         g_libretro_context.peer_joining_on_frame[g_libretro_context.OurPort()] = INT64_MAX; // Upper bound
+                        memset(g_libretro_context.netplay_input_state, 0, sizeof(g_libretro_context.netplay_input_state));
 
                         for (int p = 0; p < SAM2_ARRAY_LENGTH(room_join->room.peer_ids); p++) {
                             if (room_join->room.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
