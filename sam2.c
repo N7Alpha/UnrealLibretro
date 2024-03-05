@@ -730,8 +730,6 @@ static int sam2__resolve_hostname(const char *hostname, char *ip) {
     #define SAM2_CLOSESOCKET closesocket
     #define SAM2_SOCKERRNO ((int)WSAGetLastError())
     #define SAM2_EINPROGRESS WSAEWOULDBLOCK
-    typedef unsigned long sam2_fcntl_arg_t;
-    #define ioctlsocket_fn ioctlsocket
 #else
     #include <unistd.h>
     #include <fcntl.h>
@@ -777,24 +775,25 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
 
     // Set the socket to non-blocking mode
     #ifdef _WIN32
-        int flags = 1; // 1 for non-blocking, 0 for blocking
-        if (ioctlsocket_fn(sockfd, FIONBIO, &flags) < 0) {
-            LOG_ERROR("Failed to set socket to non-blocking mode\n");
-            SAM2_CLOSESOCKET(sockfd);
-            return -1;
-        }
+    u_long flags = 1; // 1 for non-blocking, 0 for blocking
+    if (ioctlsocket(sockfd, FIONBIO, &flags) < 0) {
+        LOG_ERROR("Failed to set socket to non-blocking mode\n");
+        SAM2_CLOSESOCKET(sockfd);
+        return -1;
+    }
     #else
-        int current_flags = fcntl(sockfd, F_GETFL, 0);
-        if (current_flags < 0) {
-            LOG_ERROR("Failed to get current socket flags\n");
-            SAM2_CLOSESOCKET(sockfd);
-            return -1;
-        }
-        if (fcntl(sockfd, F_SETFL, current_flags | O_NONBLOCK) < 0) {
-            LOG_ERROR("Failed to set socket to non-blocking mode\n");
-            SAM2_CLOSESOCKET(sockfd);
-            return -1;
-        }
+    int current_flags = fcntl(sockfd, F_GETFL, 0);
+    if (current_flags < 0) {
+        LOG_ERROR("Failed to get current socket flags\n");
+        SAM2_CLOSESOCKET(sockfd);
+        return -1;
+    }
+
+    if (fcntl(sockfd, F_SETFL, current_flags | O_NONBLOCK) < 0) {
+        LOG_ERROR("Failed to set socket to non-blocking mode\n");
+        SAM2_CLOSESOCKET(sockfd);
+        return -1;
+    }
     #endif
 
     // Specify the numerical address of the server we're trying to connnect to
