@@ -16,7 +16,6 @@
 
 #define ZDICT_STATIC_LINKING_ONLY
 #include "zdict.h"
-#include "rs.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -1037,7 +1036,6 @@ static ZDICT_cover_params_t g_parameters = {0};
 
 
 #define MAX_REDUNDANT_PACKETS 32
-static bool g_do_reed_solomon = false;
 static int g_redundant_packets = MAX_REDUNDANT_PACKETS - 1;
 static int g_lost_packets = 0;
 
@@ -1160,15 +1158,6 @@ void draw_imgui() {
 
                 g_dictionary_is_dirty |= ImGui::SliderScalar("k", ImGuiDataType_U32, &g_parameters.k, &k_min, &k_max);
                 g_dictionary_is_dirty |= ImGui::SliderScalar("d", ImGuiDataType_U32, &g_parameters.d, &d_min, &d_max);
-            }
-
-            ImGui::Checkbox("Do Reed Solomon", &g_do_reed_solomon);
-            if (g_do_reed_solomon) {
-                ImGui::SliderInt("Lost Packets", &g_lost_packets, 0, MAX_REDUNDANT_PACKETS);
-
-                strcpy(unit, "cycles");
-                display_count = format_unit_count(max_reed_solomon_decode_cycle_count, unit);
-                ImGui::Text("Reed solomon max decode cycle count %.2f %s", display_count, unit);
             }
 
             strcpy(unit, "bits");
@@ -2966,47 +2955,6 @@ void tick_compression_investigation(void *rom_data, size_t rom_size) {
     }
 
     g_zstd_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
-
-    // Reed Solomon
-    int packet_payload_size = PACKET_MTU_PAYLOAD_SIZE_BYTES - sizeof(savestate_transfer_packet_t);
-
-    int n, k, packet_groups;
-    logical_partition(sizeof(savestate_transfer_payload_t) + g_zstd_compress_size[g_frame_cyclic_offset], FEC_REDUNDANT_BLOCKS, &n, &k, &packet_payload_size, &packet_groups);
-    //int k = g_zstd_compress_size[g_frame_cyclic_offset]/PACKET_MTU_PAYLOAD_SIZE_BYTES+1;
-    //int n = k + g_redundant_packets;
-    if (g_do_reed_solomon) {
-        #if 0
-        char *data[(SAVE_STATE_COMPRESSED_BOUND_BYTES/PACKET_MTU_PAYLOAD_SIZE_BYTES+1+MAX_REDUNDANT_PACKETS)];
-        uint64_t remaining = g_zstd_compress_size[g_frame_cyclic_offset];
-        int i = 0;
-        for (; i < k; i++) {
-            uint64_t consume = SAM2_MIN(PACKET_MTU_PAYLOAD_SIZE_BYTES, remaining);
-            memcpy(g_savebuffer_compressed_packetized[i], &g_savebuffer_compressed[i * PACKET_MTU_PAYLOAD_SIZE_BYTES], consume);
-            remaining -= consume;
-            data[i] = (char *) g_savebuffer_compressed_packetized[i];
-        }
-
-        memset(&g_savebuffer_compressed_packetized[i + PACKET_MTU_PAYLOAD_SIZE_BYTES - remaining], 0, remaining);
-
-        for (; i < n; i++) {
-            data[i] = (char *) g_savebuffer_compressed_packetized[i];
-        }
-
-        uint64_t start = rdtsc();
-        rs_encode2(k, n, data, PACKET_MTU_PAYLOAD_SIZE_BYTES);
-        g_reed_solomon_encode_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
-
-        for (i = 0; i < g_lost_packets; i++) {
-            data[i] = NULL;
-        }
-
-        start = rdtsc();
-        rs_decode2(k, n, data, PACKET_MTU_PAYLOAD_SIZE_BYTES);
-        g_reed_solomon_decode_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
-        #else
-
-        #endif
-    }
 
     if (g_send_savestate_next_frame) {
         g_send_savestate_next_frame = false;
