@@ -2,6 +2,8 @@
 #define NOMINMAX  1
 #endif
 
+#define SAM2_IMPLEMENTATION
+#define SAM2_SERVER
 #include "sam2.c"
 #undef LOG_VERBOSE
 #define LOG_VERBOSE(...) do {} while(0)
@@ -13,10 +15,12 @@
 
 #include "juice/juice.h"
 #include "zstd.h"
+#include "fec.h"
 
 #define ZDICT_STATIC_LINKING_ONLY
 #include "zdict.h"
 
+#include <ctype.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

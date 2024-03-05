@@ -642,8 +642,10 @@ SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_response_u *respons
 // Will bias IPv6 if connecting via domain name and also block
 SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host, int port);
 
+#if defined(SAM2_EXECUTABLE)
+    #define SAM2_IMPLEMENTATION
+#endif
 
-#define SAM2_IMPLEMENTATION
 #if defined(SAM2_IMPLEMENTATION)
 
 #include <errno.h> // for errno

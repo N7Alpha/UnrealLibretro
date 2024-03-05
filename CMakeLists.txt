@@ -98,6 +98,4 @@ target_link_libraries(${PROJECT_NAME} SDL2-static SDL2main uv_a juice-static lib
 
 if(WIN32)
     target_link_libraries(${PROJECT_NAME} ws2_32)
-elseif(UNIX AND NOT APPLE)
-    target_link_libraries(${PROJECT_NAME} socket)
 endif()
