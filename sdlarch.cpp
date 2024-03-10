@@ -441,7 +441,7 @@ struct FLibretroContext {
     FLibretroInputState InputState[PortCount] = {0};
     bool fuzz_input = false;
 
-    uint64_t peer_ready_to_join_bitfield = 0b0;
+    uint64_t peer_ready_to_join_bitfield = 0b0; // Used by the authority for tracking join acknowledgements
     int64_t peer_joining_on_frame[SAM2_PORT_MAX+1] = {0};
 
     int SAM2Send(char *headerless_request, sam2_message_e request_tag) {
@@ -537,6 +537,7 @@ struct FLibretroContext {
     }
 
     bool AllPeersReadyForPeerToJoin(uint64_t joiner_peer_id) {
+        assert(IsAuthority());
         int joiner_port = locate(room_we_are_in.peer_ids, joiner_peer_id);
 
         if (joiner_port == -1) {
@@ -2145,7 +2146,7 @@ void FLibretroContext::core_input_poll() {
         // If the peer was supposed to join on this frame
         if (frame_counter >= g_libretro_context.peer_joining_on_frame[p]) {
 
-            assert(g_libretro_context.Spectating() || g_libretro_context.AllPeersReadyForPeerToJoin(room_we_are_in.peer_ids[p]));
+            assert(g_libretro_context.IsAuthority() || g_libretro_context.AllPeersReadyForPeerToJoin(room_we_are_in.peer_ids[p]));
             assert(netplay_input_state[p].frame <= frame_counter + (INPUT_DELAY_FRAMES_MAX-1));
             assert(netplay_input_state[p].frame >= frame_counter);
             for (int i = 0; i < 16; i++) {
@@ -3218,7 +3219,7 @@ int main(int argc, char *argv[]) {
                 if (g_libretro_context.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
                 netplay_ready_to_tick &= g_libretro_context.netplay_input_state[p].frame >= frame_counter;
 
-                if (g_libretro_context.OurPort() != p && !g_libretro_context.Spectating()) { // @todo The spectating check seems wierd I think I should figure out the AllPeersReadyForPeerToJoin
+                if (g_libretro_context.OurPort() != p && g_libretro_context.IsAuthority()) {
                     // Wait until we can send UDP packets to peer without fail @todo Now that I think about it this is probably redundant so I can remove it or change it to asserts once I figure out the logic better
                     netplay_ready_to_tick &= g_libretro_context.AllPeersReadyForPeerToJoin(g_libretro_context.room_we_are_in.peer_ids[p]);
                 }
