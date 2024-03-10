@@ -1369,44 +1369,51 @@ void draw_imgui() {
                             g_libretro_context.SAM2Send((char *) &request, SAM2_EMESSAGE_JOIN);
                         }
                     }
-                }
-                else if (g_room_we_are_in.peer_ids[p] == g_our_peer_id) {
-                    ImGui::TextColored(GOLD, "%" PRIx64, g_room_we_are_in.peer_ids[p]);
-                }
-                else {
+                } else {
+                    ImVec4 color = WHITE;
+
                     if (g_agent[p]) {
                         juice_state_t connection_state = juice_get_state(g_agent[p]);
 
-                        ImVec4 color = WHITE;
                         if (   g_room_we_are_in.flags & (SAM2_FLAG_PORT0_PEER_IS_INACTIVE << p)
                             || connection_state != JUICE_STATE_COMPLETED) {
                             color = GREY;
                         } else if (g_libretro_context.peer_desynced_frame[p]) {
                             color = RED;
                         }
+                    } else if (g_room_we_are_in.peer_ids[p] == g_our_peer_id) {
+                        color = GOLD;
+                    }
 
-                        ImGui::TextColored(color, "%" PRIx64, g_room_we_are_in.peer_ids[p]);
+                    ImGui::TextColored(color, "%" PRIx64, g_room_we_are_in.peer_ids[p]);
+                    if (g_agent[p]) {
+                        juice_state_t connection_state = juice_get_state(g_agent[p]);
 
-                        ImGui::SameLine();
-                        if (connection_state == JUICE_STATE_COMPLETED) {
-                            if (g_libretro_context.peer_desynced_frame[p]) {
-                                ImGui::TextColored(color, "Peer desynced (frame %" PRId64 ")", g_libretro_context.peer_desynced_frame[p]);
-                            } else {
-                                char buffer_depth[INPUT_DELAY_FRAMES_MAX] = {0};
+                        if (g_libretro_context.peer_desynced_frame[p]) {
+                            ImGui::SameLine();
+                            ImGui::TextColored(color, "Peer desynced (frame %" PRId64 ")", g_libretro_context.peer_desynced_frame[p]);
+                        }
 
-                                int64_t peer_num_frames_ahead = g_libretro_context.netplay_input_state[p].frame - g_libretro_context.frame_counter;
-                                for (int f = 0; f < sizeof(buffer_depth)-1; f++) {
-                                    buffer_depth[f] = f < peer_num_frames_ahead ? 'X' : 'O';
-                                }
-
-                                ImGui::TextColored(color, "Queue: %s", buffer_depth);
-                            }
-                        } else {
+                        if (connection_state != JUICE_STATE_COMPLETED) {
+                            ImGui::SameLine();
                             ImGui::TextColored(color, "%s %c", juice_state_to_string(connection_state), spinnerGlyph);
                         }
                     } else {
-                        ImGui::Text("ICE agent not created %c", spinnerGlyph);
+                        if (g_room_we_are_in.peer_ids[p] != g_our_peer_id) {
+                            ImGui::SameLine();
+                            ImGui::TextColored(color, "ICE agent not created");
+                        }
                     }
+
+                    char buffer_depth[INPUT_DELAY_FRAMES_MAX] = {0};
+
+                    int64_t peer_num_frames_ahead = g_libretro_context.netplay_input_state[p].frame - g_libretro_context.frame_counter;
+                    for (int f = 0; f < sizeof(buffer_depth)-1; f++) {
+                        buffer_depth[f] = f < peer_num_frames_ahead ? 'X' : 'O';
+                    }
+
+                    ImGui::SameLine();
+                    ImGui::TextColored(color, "Queue: %s", buffer_depth);
                 }
             }
 
@@ -1419,7 +1426,7 @@ void draw_imgui() {
                      ), true);
 
                 ImGui::SeparatorText("Spectators");
-                if (ImGui::BeginTable("SpectatorsTable", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+                if (ImGui::BeginTable("SpectatorsTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
                     ImGui::TableSetupColumn("Peer ID");
                     ImGui::TableSetupColumn("ICE Connection");
                     ImGui::TableHeadersRow();
@@ -1473,14 +1480,11 @@ void draw_imgui() {
         } else {
             // Create a "Make" button that sends a make room request when clicked
             if (ImGui::Button("Make")) {
-                // Send a make room request
                 sam2_room_make_message_t *request = &g_sam2_request.room_make_request;
                 request->room = g_new_room_set_through_gui;
-                // Fill in the rest of the request fields appropriately...
                 g_libretro_context.SAM2Send((char *) &g_sam2_request, SAM2_EMESSAGE_MAKE);
             }
             if (ImGui::Button(g_is_refreshing_rooms ? "Stop" : "Refresh")) {
-                // Toggle the state
                 g_is_refreshing_rooms = !g_is_refreshing_rooms;
 
                 if (g_is_refreshing_rooms) {
