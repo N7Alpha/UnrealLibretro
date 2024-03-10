@@ -63,6 +63,7 @@ static void die(const char *fmt, ...) {
     exit(EXIT_FAILURE);
 }
 
+void startup_ice_for_peer(juice_agent_t **agent, uint64_t *agent_peer_id, uint64_t peer_id, const char *start_candidate_gathering = NULL);
 // The payload here is regarding the max payload that *we* can use
 // We don't want to exceed the MTU because that can result in guranteed lost packets under certain conditions
 // Considering various things like UDP/IP headers, STUN/TURN headers, and additional junk 
@@ -365,6 +366,8 @@ static_assert(to_integral(ERetroDeviceID::Size) < sizeof(FLibretroInputState) / 
 #define CHANNEL_SAVESTATE_TRANSFER      0b00110000
 #define CHANNEL_DESYNC_DEBUG            0b11110000
 
+#define NETPLAY_INPUT_HISTORY_SIZE 256
+
 // This is 2 larger than the max frame delay we can handle before blocking
 // Buffering 1 frame implies no delay. You would think 1 would be the minimum, but it's not.
 //
@@ -412,13 +415,12 @@ typedef struct {
 
 #define CORE_OPTIONS_MAX 128
 struct FLibretroContext {
-    juice_agent_t        *agent              [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX] = {0};
-    sam2_signal_message_t signal_message     [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX] = {0};
-    int64_t               peer_desynced_frame[SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX] = {0};
+    juice_agent_t *agent              [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX] = {0};
+    uint64_t       agent_peer_id      [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX] = {0};
+    int64_t        peer_desynced_frame[SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX] = {0};
     juice_agent_t **spectator_agent = agent + SAM2_PORT_MAX + 1;
     int64_t spectator_count = 0;
 
-    sam2_signal_message_t *spectator_signal_message = signal_message + SAM2_PORT_MAX + 1;
 
     sam2_socket_t sam2_socket = 0;
     int sent_requests = 0;
@@ -432,6 +434,7 @@ struct FLibretroContext {
 
     netplay_input_state_t netplay_input_state[SAM2_PORT_MAX+1] = {0};
     desync_debug_packet_t desync_debug_packet = { CHANNEL_DESYNC_DEBUG };
+    unsigned char netplay_input_packet_history[SAM2_PORT_MAX+1][NETPLAY_INPUT_HISTORY_SIZE][PACKET_MTU_PAYLOAD_SIZE_BYTES] = {0};
 
     int64_t base_frame_counter = 0;
     int64_t frame_counter = 0;
@@ -446,6 +449,14 @@ struct FLibretroContext {
         if (request_tag == SAM2_EMESSAGE_SIGNAL) {
             sam2_signal_message_t *signal_message = (sam2_signal_message_t *) headerless_request;
             assert(signal_message->peer_id > SAM2_PORT_SENTINELS_MAX);
+
+            if (signal_message->peer_id == our_peer_id) {
+                die("We tried to signal ourself");
+            }
+
+            if (signal_message->peer_id == 0) {
+                die("We tried to signal no one");
+            }
         }
 
         int ret = sam2_client_send(sam2_socket, headerless_request, request_tag);
@@ -491,23 +502,23 @@ struct FLibretroContext {
     void MovePeer(int peer_existing_port, int peer_new_port) {
         assert(peer_existing_port != peer_new_port);
         assert(agent[peer_new_port] == NULL);
-        assert(signal_message[peer_new_port].peer_id == 0);
+        assert(agent_peer_id[peer_new_port] == 0);
         assert(agent[peer_existing_port] != NULL);
-        assert(signal_message[peer_existing_port].peer_id != 0);
+        assert( agent_peer_id[peer_new_port] != 0);
 
         agent[peer_new_port] = agent[peer_existing_port];
-        signal_message[peer_new_port] = signal_message[peer_existing_port];
+        agent_peer_id[peer_new_port] = agent_peer_id[peer_existing_port];
+        agent_peer_id[peer_existing_port] = 0;
         agent[peer_existing_port] = NULL;
-        memset(&signal_message[peer_existing_port], 0, sizeof(signal_message[peer_existing_port]));
     }
 
     void DisconnectPeer(int peer_port) {
         assert(agent[peer_port] != NULL);
-        assert(signal_message[peer_port].peer_id != 0);
+        assert(agent_peer_id != 0);
 
         juice_destroy(agent[peer_port]);
         agent[peer_port] = NULL;
-        memset(&signal_message[peer_port], 0, sizeof(signal_message[peer_port]));
+        agent_peer_id[peer_port] = 0;
     }
 
     void MarkPeerReadyForOtherPeer(uint64_t sender_peer_id, uint64_t joiner_peer_id) {
@@ -1004,7 +1015,6 @@ static int64_t g_sam2_room_count = 0;
 static bool g_waiting_for_savestate = false;
 
 static juice_agent_t **g_agent = g_libretro_context.agent;
-static sam2_signal_message_t *g_signal_message = g_libretro_context.signal_message;
 
 static const char *g_sam2_address = "sam2.cornbass.com";
 static sam2_socket_t &g_sam2_socket = g_libretro_context.sam2_socket;
@@ -1324,8 +1334,6 @@ void draw_imgui() {
             ImGui::Text("Flags bitfield: %s", flags_str);
         }
 
-        static bool is_open[SAM2_ARRAY_LENGTH(FLibretroContext::agent)] = {0};
-
         if (g_libretro_context.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
             ImGui::Text("Our Peer ID:");
             ImGui::SameLine();
@@ -1399,15 +1407,6 @@ void draw_imgui() {
                         ImGui::Text("ICE agent not created %c", spinnerGlyph);
                     }
                 }
-
-                if (g_agent[p]) {
-                    ImGui::SameLine();
-
-                    char button_label[32] = {0};
-                    snprintf(button_label, sizeof(button_label), "Signal Msg##%d", p);
-
-                    is_open[p] |= ImGui::Button(button_label);
-                }
             }
 
             if (g_room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] == g_our_peer_id) {
@@ -1422,7 +1421,6 @@ void draw_imgui() {
                 if (ImGui::BeginTable("SpectatorsTable", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
                     ImGui::TableSetupColumn("Peer ID");
                     ImGui::TableSetupColumn("ICE Connection");
-                    ImGui::TableSetupColumn("Signal Msg");
                     ImGui::TableHeadersRow();
 
                     for (int s = 0; s < g_libretro_context.spectator_count; s++) {
@@ -1430,7 +1428,7 @@ void draw_imgui() {
                         ImGui::TableSetColumnIndex(0);
 
                         // Display peer ID
-                        ImGui::Text("%" PRIx64, g_libretro_context.signal_message[SAM2_PORT_MAX + 1 + s].peer_id);
+                        ImGui::Text("%" PRIx64, g_libretro_context.agent_peer_id[SAM2_PORT_MAX + 1 + s]);
 
                         ImGui::TableSetColumnIndex(1);
                         // Display ICE connection status
@@ -1447,10 +1445,6 @@ void draw_imgui() {
                         } else {
                             ImGui::Text("ICE agent not created %c", spinnerGlyph);
                         }
-
-                        ImGui::TableSetColumnIndex(2);
-
-                        is_open[SAM2_PORT_MAX + 1 + s] |= ImGui::Button("Signal Msg");
                     }
 
                     ImGui::EndTable();
@@ -1458,26 +1452,6 @@ void draw_imgui() {
 
                 ImGui::EndChild();
             }
-
-            for (int p = 0; p < SAM2_ARRAY_LENGTH(is_open); p++) {
-                if (is_open[p]) {
-                    ImGui::Begin("Sam2 Signal Message", &is_open[p], ImGuiInputTextFlags_ReadOnly);
-
-                    ImGui::Text("Port: %d", p);
-                    // Display header
-                    ImGui::Text("Header: %.8s", g_signal_message[p].header);
-
-                    // Display peer_id
-                    ImGui::Text("Peer ID: %" PRIx64, g_signal_message[p].peer_id);
-
-                    // Display ice_sdp
-                    ImGui::InputTextMultiline("ICE SDP", g_signal_message[p].ice_sdp, sizeof(g_signal_message[p].ice_sdp),
-                        ImVec2(0, 0), ImGuiInputTextFlags_ReadOnly);
-
-                    ImGui::End();
-                }
-            }
-
 
             if (ImGui::Button("Exit")) {
                 // Send an exit room request
@@ -1587,13 +1561,12 @@ void draw_imgui() {
                 ImGui::SameLine();
                 if (ImGui::Button("Spectate")) {
                     // Directly signaling the authority just means spectate... @todo I probably should add the room as a field as well though incase I decide on multiple rooms per authority in the future
+                    g_room_we_are_in = g_sam2_rooms[selected_room_index]; 
                     startup_ice_for_peer(
                         &g_agent[SAM2_AUTHORITY_INDEX],
-                        &g_signal_message[SAM2_AUTHORITY_INDEX],
+                        &g_libretro_context.agent_peer_id[SAM2_AUTHORITY_INDEX],
                          g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX]
                     );
-
-                    g_room_we_are_in = g_sam2_rooms[selected_room_index];
                 }
             }
         }
@@ -2172,7 +2145,7 @@ void FLibretroContext::core_input_poll() {
         // If the peer was supposed to join on this frame
         if (frame_counter >= g_libretro_context.peer_joining_on_frame[p]) {
 
-            assert(g_libretro_context.AllPeersReadyForPeerToJoin(room_we_are_in.peer_ids[p]));
+            assert(g_libretro_context.Spectating() || g_libretro_context.AllPeersReadyForPeerToJoin(room_we_are_in.peer_ids[p]));
             assert(netplay_input_state[p].frame <= frame_counter + (INPUT_DELAY_FRAMES_MAX-1));
             assert(netplay_input_state[p].frame >= frame_counter);
             for (int i = 0; i < 16; i++) {
@@ -2489,7 +2462,7 @@ static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr) 
 
     sam2_signal_message_t response = {0};
 
-    response.peer_id = g_room_we_are_in.peer_ids[p];
+    response.peer_id = g_libretro_context.agent_peer_id[p];
     if (strlen(sdp) > sizeof(response.ice_sdp)) {
         die("Candidate too large\n");
         return;
@@ -2510,7 +2483,7 @@ static void on_gathering_done(juice_agent_t *agent, void *user_ptr) {
 
     sam2_signal_message_t response = {0};
 
-    response.peer_id = g_room_we_are_in.peer_ids[p];
+    response.peer_id = g_libretro_context.agent_peer_id[p];
     g_libretro_context.SAM2Send((char *) &response, SAM2_EMESSAGE_SIGNAL);
 }
 
@@ -2529,7 +2502,7 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
     }
 
     if (p >= SAM2_PORT_MAX+1) {
-        LOG_WARN("A spectator sent us a UDP packet for some reason");
+        LOG_WARN("A spectator sent us a UDP packet for some reason\n");
         return;
     }
 
@@ -2573,6 +2546,29 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
             LOG_VERBOSE("Received outdated input packet for frame %" PRId64 ". We are already on frame %" PRId64 ". Dropping it\n", frame, frame_counter);
         } else {
             rle8_decode(input_packet->coded_netplay_input_state, size - 1, (uint8_t *) &LibretroContext->netplay_input_state[p], sizeof(netplay_input_state_t));
+
+            // Store the input packet in the history buffer. Zero runs decode to no bytes convieniently so we don't need to store the packet size
+            int i = 0;
+            for (; i < size; i++) {
+                LibretroContext->netplay_input_packet_history[original_sender_port][frame % NETPLAY_INPUT_HISTORY_SIZE][i] = data[i];
+            }
+
+            for (; i < PACKET_MTU_PAYLOAD_SIZE_BYTES; i++) {
+                LibretroContext->netplay_input_packet_history[original_sender_port][frame % NETPLAY_INPUT_HISTORY_SIZE][i] = 0;
+            }
+
+            // Broadcast the input packet to spectators
+            if (LibretroContext->IsAuthority()) {
+                for (int i = 0; i < SPECTATOR_MAX; i++) {
+                    if (LibretroContext->spectator_agent[i]) {
+                        if (   juice_get_state(LibretroContext->spectator_agent[i]) == JUICE_STATE_CONNECTED
+                            || juice_get_state(LibretroContext->spectator_agent[i]) == JUICE_STATE_COMPLETED) {
+                            int status = juice_send(LibretroContext->spectator_agent[i], data, size);
+                            SDL_assert(status == 0);
+                        }
+                    }
+                }
+            }
         }
 
         break;
@@ -2831,7 +2827,7 @@ static void heuristic_byte_swap(uint32_t *data, size_t size) {
 }
 
 
-void startup_ice_for_peer(juice_agent_t **agent, sam2_signal_message_t *signal_message, uint64_t peer_id, bool start_candidate_gathering) {
+void startup_ice_for_peer(juice_agent_t **agent, uint64_t *agent_peer_id, uint64_t peer_id, const char *remote_description) {
     juice_config_t config;
     memset(&config, 0, sizeof(config));
 
@@ -2850,20 +2846,24 @@ void startup_ice_for_peer(juice_agent_t **agent, sam2_signal_message_t *signal_m
 
     *agent = juice_create(&config);
 
-    memset(signal_message, 0, sizeof(*signal_message));
+    *agent_peer_id = peer_id;
 
-    signal_message->peer_id = peer_id;
-
-    if (start_candidate_gathering) {
-        sam2_signal_message_t signal_message = {0};
-        signal_message.peer_id = peer_id;
-        juice_get_local_description(*agent, signal_message.ice_sdp, sizeof(signal_message.ice_sdp));
-        g_libretro_context.SAM2Send((char *) &signal_message, SAM2_EMESSAGE_SIGNAL);
-
-        // This call starts an asynchronous task that requires periodic polling via juice_user_poll to complete
-        // it will call the on_gathering_done callback once it's finished
-        juice_gather_candidates(*agent);
+    if (remote_description) {
+        // Right now I think there could be some kind of bug or race condition in my code or libjuice when there
+        // is an ICE role conflict. A role conflict is benign, but when a spectator connects the authority will never fully
+        // establish the connection even though the spectator manages to. If I avoid the role conflict by setting
+        // the remote description here then my connection establishes fine, but I should look into this eventually @todo
+        juice_set_remote_description(*agent, remote_description);
     }
+
+    sam2_signal_message_t signal_message = {0};
+    signal_message.peer_id = peer_id;
+    juice_get_local_description(*agent, signal_message.ice_sdp, sizeof(signal_message.ice_sdp));
+    g_libretro_context.SAM2Send((char *) &signal_message, SAM2_EMESSAGE_SIGNAL);
+
+    // This call starts an asynchronous task that requires periodic polling via juice_user_poll to complete
+    // it will call the on_gathering_done callback once it's finished
+    juice_gather_candidates(*agent);
 }
 
 // I pulled this out of main because it kind of clutters the logic and to get back some indentation
@@ -3186,23 +3186,41 @@ int main(int argc, char *argv[]) {
         }
 #endif
 
+        // Reconstruct input required for next tick if we're spectating... this crashes when without sufficient history to pull from @todo
+        if (g_libretro_context.Spectating()) {
+            for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+                if (g_libretro_context.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
+                g_libretro_context.netplay_input_packet_history[p][frame_counter % NETPLAY_INPUT_HISTORY_SIZE];
+
+                int i;
+                for (i = 0; i < INPUT_DELAY_FRAMES_MAX; i++) {
+                    int64_t frame = -1;
+                    input_packet_t *input_packet_that_could_contain_input_for_current_frame = (input_packet_t *) g_libretro_context.netplay_input_packet_history[p][(frame_counter + i) % NETPLAY_INPUT_HISTORY_SIZE];
+                    rle8_decode(input_packet_that_could_contain_input_for_current_frame->coded_netplay_input_state, PACKET_MTU_PAYLOAD_SIZE_BYTES, (uint8_t *) &frame, sizeof(frame));
+                    if (SAM2_ABS(frame - frame_counter) < INPUT_DELAY_FRAMES_MAX) {
+                        rle8_decode(input_packet_that_could_contain_input_for_current_frame->coded_netplay_input_state, PACKET_MTU_PAYLOAD_SIZE_BYTES,
+                            (uint8_t *) &g_libretro_context.netplay_input_state[p], sizeof(g_libretro_context.netplay_input_state[p]));
+
+                        goto next_peer;
+                    }
+                }
+
+                //if (i == INPUT_DELAY_FRAMES_MAX) {
+                //    die("Failed to reconstruct input for frame %" PRId64 " from peer %" PRIx64 "\n", frame_counter, g_libretro_context.room_we_are_in.peer_ids[p]);
+                //}
+            next_peer: continue;
+            }
+        }
+
         bool netplay_ready_to_tick = !g_waiting_for_savestate;
         if (g_libretro_context.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
             for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
                 if (g_libretro_context.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
                 netplay_ready_to_tick &= g_libretro_context.netplay_input_state[p].frame >= frame_counter;
 
-                if (g_libretro_context.OurPort() != p) {
+                if (g_libretro_context.OurPort() != p && !g_libretro_context.Spectating()) { // @todo The spectating check seems wierd I think I should figure out the AllPeersReadyForPeerToJoin
                     // Wait until we can send UDP packets to peer without fail @todo Now that I think about it this is probably redundant so I can remove it or change it to asserts once I figure out the logic better
                     netplay_ready_to_tick &= g_libretro_context.AllPeersReadyForPeerToJoin(g_libretro_context.room_we_are_in.peer_ids[p]);
-
-                    if (!g_agent[p]) {
-                        netplay_ready_to_tick = false;
-                    } else {
-                        juice_state_t state = juice_get_state(g_agent[p]);
-
-                        netplay_ready_to_tick &= state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED;
-                    }
                 }
             }
         }
@@ -3394,19 +3412,20 @@ int main(int argc, char *argv[]) {
                         g_room_we_are_in = room_join->room;
                         g_libretro_context.peer_joining_on_frame[g_libretro_context.OurPort()] = INT64_MAX; // Upper bound
                         memset(g_libretro_context.netplay_input_state, 0, sizeof(g_libretro_context.netplay_input_state));
+                        memset(g_libretro_context.netplay_input_packet_history, 0, sizeof(g_libretro_context.netplay_input_packet_history));
 
                         for (int p = 0; p < SAM2_ARRAY_LENGTH(room_join->room.peer_ids); p++) {
                             if (room_join->room.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
                             if (room_join->room.peer_ids[p] == g_our_peer_id) continue;
                             if (g_agent[p]) {
                                 // If we're spectating this should be true for the authority
-                                assert(g_signal_message[p].peer_id == room_join->room.peer_ids[p]);
+                                assert(g_libretro_context.agent_peer_id[p] == room_join->room.peer_ids[p]);
                                 continue;
                             }
 
                             g_libretro_context.peer_ready_to_join_bitfield |= (0xFFULL << SAM2_PORT_MAX * p); // @todo This should be based on a bitflag in the room
 
-                            startup_ice_for_peer(&g_agent[p], &g_signal_message[p], room_join->room.peer_ids[p]);
+                            startup_ice_for_peer(&g_agent[p], &g_libretro_context.agent_peer_id[p], room_join->room.peer_ids[p]);
                         }
                     } else {
                         if (g_our_peer_id == room_join->room.peer_ids[SAM2_AUTHORITY_INDEX]) {
@@ -3472,7 +3491,7 @@ int main(int argc, char *argv[]) {
 
                                         startup_ice_for_peer(
                                             &g_libretro_context.agent[sender_port],
-                                            &g_signal_message[sender_port],
+                                            &g_libretro_context.agent_peer_id[sender_port],
                                             room_join->room.peer_ids[sender_port]
                                         );
 
@@ -3521,7 +3540,7 @@ int main(int argc, char *argv[]) {
                                         fflush(stdout);
 
                                         g_room_we_are_in.peer_ids[p] = room_join->room.peer_ids[p]; // This must come before the next call as the next call can generate an ICE candidate before returning
-                                        startup_ice_for_peer(&g_agent[p], &g_signal_message[p], room_join->room.peer_ids[p]);
+                                        startup_ice_for_peer(&g_agent[p], &g_libretro_context.agent_peer_id[p], room_join->room.peer_ids[p]);
 
                                         sam2_room_acknowledge_join_message_t response = {0};
                                         response.room = g_libretro_context.room_we_are_in;
@@ -3586,19 +3605,8 @@ int main(int argc, char *argv[]) {
                     printf("Received signal from peer %" PRIx64 "\n", room_signal->peer_id);
                     fflush(stdout);
 
-                    int p = locate(g_room_we_are_in.peer_ids, room_signal->peer_id);
+                    int p = locate(g_libretro_context.agent_peer_id, room_signal->peer_id);
 
-                    if (strlen(room_signal->ice_sdp) == 0) {
-                        juice_set_remote_gathering_done(g_agent[p]);
-                    } else if (strncmp(room_signal->ice_sdp, "a=ice", strlen("a=ice")) == 0) {
-                        juice_set_remote_description(g_agent[p], room_signal->ice_sdp);
-                        break;
-                    } else if (strncmp(room_signal->ice_sdp, "a=candidate", strlen("a=candidate")) == 0) {
-                        juice_add_remote_candidate(g_agent[p], room_signal->ice_sdp);
-                        break;
-                    }
-
-                    // Signaling is different for spectators and players
                     if (p == -1) {
                         printf("Received signal from unknown peer\n");
                         fflush(stdout);
@@ -3618,27 +3626,14 @@ int main(int argc, char *argv[]) {
                                 printf("We are letting them in as a spectator\n");
                                 fflush(stdout);
 
-                                int s = g_libretro_context.spectator_count++;
-
                                 startup_ice_for_peer(
                                     &g_libretro_context.spectator_agent[g_libretro_context.spectator_count],
-                                    &g_libretro_context.spectator_signal_message[g_libretro_context.spectator_count],
+                                    &g_libretro_context.agent_peer_id[SAM2_PORT_MAX+1 + g_libretro_context.spectator_count],
                                     room_signal->peer_id,
-                                    /* start_candidate_gathering = */ false
+                                    /* remote_desciption = */ room_signal->ice_sdp
                                 );
 
-                                juice_set_remote_description(g_libretro_context.spectator_agent[g_libretro_context.spectator_count], room_signal->ice_sdp);
-                                juice_set_remote_gathering_done(g_libretro_context.spectator_agent[g_libretro_context.spectator_count]);
-                                juice_get_local_description(
-                                    g_libretro_context.spectator_agent[g_libretro_context.spectator_count],
-                                    g_libretro_context.spectator_signal_message[g_libretro_context.spectator_count].ice_sdp,
-                                    sizeof(sam2_signal_message_t::ice_sdp)
-                                );
-                                assert(!"This shouldn't use the signal message");
-
-                                // This call starts an asynchronous task that requires periodic polling via juice_user_poll to complete
-                                // it will call the on_gathering_done callback once it's finished
-                                juice_gather_candidates(g_libretro_context.spectator_agent[g_libretro_context.spectator_count]);
+                                p = g_libretro_context.spectator_count++;
                             }
                         } else {
                             printf("Received unknown signal when we weren't the authority\n");
@@ -3650,13 +3645,24 @@ int main(int argc, char *argv[]) {
                                 "Received unknown signal when we weren't the authority"
                             };
 
+                            g_libretro_context.SAM2Send((char *) &error, SAM2_EMESSAGE_ERROR);
                         }
-                    } else {
-                        printf("Received signal from known peer\n");
-                        juice_set_remote_description(g_agent[p], room_signal->ice_sdp);
-                        juice_set_remote_gathering_done(g_agent[p]);
-                        fflush(stdout);
                     }
+
+                    if (p != -1) {
+                        if (strlen(room_signal->ice_sdp) == 0) {
+                            LOG_INFO("Received remote gathering done from peer %" PRIx64 "\n", room_signal->peer_id);
+                            juice_set_remote_gathering_done(g_agent[p]);
+                        } else if (strncmp(room_signal->ice_sdp, "a=ice", strlen("a=ice")) == 0) {
+                            juice_set_remote_description(g_agent[p], room_signal->ice_sdp);
+                        } else if (strncmp(room_signal->ice_sdp, "a=candidate", strlen("a=candidate")) == 0) {
+                            juice_add_remote_candidate(g_agent[p], room_signal->ice_sdp);
+                        } else {
+                            printf("Unable to parse signal message '%s'\n", room_signal->ice_sdp);
+                            fflush(stdout);
+                        }
+                    }
+
                     break;
                 }
                 default:
