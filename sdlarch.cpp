@@ -2150,7 +2150,10 @@ void FLibretroContext::core_input_poll() {
         // If the peer was supposed to join on this frame
         if (frame_counter >= g_libretro_context.peer_joining_on_frame[p]) {
 
-            assert(g_libretro_context.IsAuthority() || g_libretro_context.AllPeersReadyForPeerToJoin(room_we_are_in.peer_ids[p]));
+            if (g_libretro_context.IsAuthority()) {
+                assert(g_libretro_context.AllPeersReadyForPeerToJoin(room_we_are_in.peer_ids[p]));
+            }
+
             assert(netplay_input_state[p].frame <= frame_counter + (INPUT_DELAY_FRAMES_MAX-1));
             assert(netplay_input_state[p].frame >= frame_counter);
             for (int i = 0; i < 16; i++) {
@@ -2592,7 +2595,7 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         int64_t total_frames_to_compare = INPUT_DELAY_FRAMES_MAX - frame_difference;
         for (int f = total_frames_to_compare-1; f >= 0 ; f--) {
             int64_t frame_to_compare = latest_common_frame - f;
-            if (frame_to_compare < LibretroContext->peer_joining_on_frame[p]) continue; // Gets rid of false postives when the client is joining
+            if (frame_to_compare < LibretroContext->peer_joining_on_frame[p]) continue; // Gets rid of false postives when another peer is joining
             if (frame_to_compare < LibretroContext->peer_joining_on_frame[LibretroContext->OurPort()]) continue; // Gets rid of false postives when we are joining
             int64_t frame_index = frame_to_compare % INPUT_DELAY_FRAMES_MAX;
 
@@ -3143,7 +3146,6 @@ int main(int argc, char *argv[]) {
             }
 
             if (   g_libretro_context.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED
-                && g_libretro_context.AllPeersReadyForPeerToJoin(g_libretro_context.our_peer_id)
                 && (!g_waiting_for_savestate // If we were waiting this would mean our frame_counter is invalid and break the next check
                 && frame_counter >= g_libretro_context.peer_joining_on_frame[g_libretro_context.OurPort()])) {
 
@@ -3206,14 +3208,13 @@ int main(int argc, char *argv[]) {
                         rle8_decode(input_packet_that_could_contain_input_for_current_frame->coded_netplay_input_state, PACKET_MTU_PAYLOAD_SIZE_BYTES,
                             (uint8_t *) &g_libretro_context.netplay_input_state[p], sizeof(g_libretro_context.netplay_input_state[p]));
 
-                        goto next_peer;
+                        break;
                     }
                 }
 
                 //if (i == INPUT_DELAY_FRAMES_MAX) {
                 //    die("Failed to reconstruct input for frame %" PRId64 " from peer %" PRIx64 "\n", frame_counter, g_libretro_context.room_we_are_in.peer_ids[p]);
                 //}
-            next_peer: continue;
             }
         }
 
@@ -3222,6 +3223,7 @@ int main(int argc, char *argv[]) {
             for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
                 if (g_libretro_context.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
                 netplay_ready_to_tick &= g_libretro_context.netplay_input_state[p].frame >= frame_counter;
+                netplay_ready_to_tick &= g_libretro_context.netplay_input_state[p].frame < frame_counter + INPUT_DELAY_FRAMES_MAX; // This is needed for spectators only. By protocol it should always true for non-spectators unless we have a bug or someone is misbehaving
 
                 if (g_libretro_context.OurPort() != p && g_libretro_context.IsAuthority()) {
                     // Wait until we can send UDP packets to peer without fail @todo Now that I think about it this is probably redundant so I can remove it or change it to asserts once I figure out the logic better
@@ -3230,8 +3232,27 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        netplay_ready_to_tick &= g_libretro_context.delay_frames <= g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].frame - g_libretro_context.frame_counter;
-        if (netplay_ready_to_tick && core_wants_tick_in_seconds(g_libretro_context.base_frame_counter, frame_counter) < 0.0) {
+        bool ignore_frame_pacing_so_we_can_catch_up = false;
+        if (g_libretro_context.Spectating()) {
+            int64_t authority_frame = -1;
+
+            // The number of packets we check here is reasonable, since if we miss INPUT_DELAY_FRAMES_MAX consecutive packets our connection is irrecoverable anyway
+            for (int i = 0; i < INPUT_DELAY_FRAMES_MAX; i++) {
+                int64_t frame = -1;
+                input_packet_t *input_packet = (input_packet_t *) g_libretro_context.netplay_input_packet_history[SAM2_AUTHORITY_INDEX][(frame_counter + i) % NETPLAY_INPUT_HISTORY_SIZE];
+                rle8_decode(input_packet->coded_netplay_input_state, PACKET_MTU_PAYLOAD_SIZE_BYTES, (uint8_t *) &frame, sizeof(frame));
+                authority_frame = SAM2_MAX(authority_frame, frame);
+            }
+
+            int64_t max_frame_tolerance_a_peer_can_be_behind = 2 * g_libretro_context.delay_frames - 1;
+            ignore_frame_pacing_so_we_can_catch_up = authority_frame > g_libretro_context.frame_counter + max_frame_tolerance_a_peer_can_be_behind;
+        }
+
+        int64_t frames_buffered = g_libretro_context.netplay_input_state[g_libretro_context.OurPort()].frame - g_libretro_context.frame_counter;
+        netplay_ready_to_tick &= frames_buffered >= g_libretro_context.delay_frames;
+        if (   netplay_ready_to_tick 
+            && (core_wants_tick_in_seconds(g_libretro_context.base_frame_counter, frame_counter) < 0.0
+            || ignore_frame_pacing_so_we_can_catch_up)) {
             // @todo I don't think this makes sense you should keep reasonable timing yourself if you can't the authority should just kick you
             //int64_t authority_is_on_frame = g_libretro_context.netplay_input_state[SAM2_AUTHORITY_INDEX].frame;
 
