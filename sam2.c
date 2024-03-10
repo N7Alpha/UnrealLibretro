@@ -275,7 +275,7 @@
 #define SAM2_H
 #include <stdint.h>
 #include <inttypes.h>
-#include <stdlib.h>
+#include <stdlib.h> // @todo Remove when I remove malloc and free stuff
 #include <string.h>
 
 #define SAM2__STR(s) _SAM2__STR(s)
@@ -660,7 +660,6 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <fcntl.h>
-#include <sys/types.h>
 #endif
 
 
@@ -734,11 +733,6 @@ static int sam2__resolve_hostname(const char *hostname, char *ip) {
     #define SAM2_EINPROGRESS WSAEWOULDBLOCK
 #else
     #include <unistd.h>
-    #include <fcntl.h>
-    #include <sys/socket.h>
-    #include <sys/ioctl.h>
-    #include <netinet/in.h>
-    #include <arpa/inet.h>
     #define SAM2_SOCKET_ERROR (-1)
     #define SAM2_SOCKET_INVALID (-1)
     #define SAM2_CLOSESOCKET close
