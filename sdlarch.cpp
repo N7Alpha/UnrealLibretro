@@ -38,7 +38,31 @@
 #include <SDL_opengl.h>
 #include "libretro.h"
 
-void startup_ice_for_peer(juice_agent_t **agent, sam2_signal_message_t *signal_message, uint64_t peer_id, bool start_candidate_gathering = true);
+static void die(const char *fmt, ...) {
+    char buffer[4096];
+    va_list va;
+    va_start(va, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, va);
+    va_end(va);
+
+    fputs(buffer, stderr);
+    fputc('\n', stderr);
+    fflush(stderr);
+
+    // Check for a debugger
+#ifdef _WIN32
+    if (IsDebuggerPresent()) {
+        __debugbreak(); // Break into the debugger on Windows
+    }
+#else
+    if (signal(SIGTRAP, SIG_IGN) != SIG_IGN) {
+        __builtin_trap(); // Break into the debugger on POSIX systems
+    }
+#endif
+
+    exit(EXIT_FAILURE);
+}
+
 // The payload here is regarding the max payload that *we* can use
 // We don't want to exceed the MTU because that can result in guranteed lost packets under certain conditions
 // Considering various things like UDP/IP headers, STUN/TURN headers, and additional junk 
@@ -574,31 +598,6 @@ static void logical_partition(int sz, int redundant, int *n, int *out_k, int *pa
 
 // This is a little confusing since the lower byte of sequence corresponds to the largest stride
 static int64_t logical_partition_offset_bytes(uint8_t sequence_hi, uint8_t sequence_lo, int block_size_bytes, int block_stride);
-
-static void die(const char *fmt, ...) {
-    char buffer[4096];
-    va_list va;
-    va_start(va, fmt);
-    vsnprintf(buffer, sizeof(buffer), fmt, va);
-    va_end(va);
-
-    fputs(buffer, stderr);
-    fputc('\n', stderr);
-    fflush(stderr);
-
-    // Check for a debugger
-#ifdef _WIN32
-    if (IsDebuggerPresent()) {
-        __debugbreak(); // Break into the debugger on Windows
-    }
-#else
-    if (signal(SIGTRAP, SIG_IGN) != SIG_IGN) {
-        __builtin_trap(); // Break into the debugger on POSIX systems
-    }
-#endif
-
-    exit(EXIT_FAILURE);
-}
 
 static GLuint compile_shader(unsigned type, unsigned count, const char **strings) {
     GLuint shader = glCreateShader(type);
