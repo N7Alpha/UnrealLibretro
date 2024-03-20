@@ -665,7 +665,6 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
 
         if (session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
             session->peer_ready_to_join_bitfield |= ((1ULL << sender_port) << (8 * joiner_port));
-            session->peer_joining_on_frame[joiner_port] = session->frame_counter;
 
             session->peer_joining_on_frame[joiner_port] = SAM2_MAX(
                 session->peer_joining_on_frame[joiner_port],
