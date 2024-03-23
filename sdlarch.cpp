@@ -1003,7 +1003,7 @@ void draw_imgui() {
                 }
 
                 if (isWindowOpen[j] && response_index[j] != -1) {
-                    ImGui::Begin(title[j], &isWindowOpen[j]); // Use isWindowOpen to allow closing the window{
+                    ImGui::Begin(title[j], &isWindowOpen[j]); // Use isWindowOpen to allow closing the window
 
                     char *message = j == 0 ? (char *) &g_libretro_context.requests[response_index[j]] : (char *) &g_received_response[response_index[j]];
 
@@ -1013,6 +1013,41 @@ void draw_imgui() {
                         sam2_signal_message_t *signal_message = (sam2_signal_message_t *) message;
                         ImGui::Text("Peer ID: %016" PRIx64, signal_message->peer_id);
                         ImGui::InputTextMultiline("ICE SDP", signal_message->ice_sdp, sizeof(signal_message->ice_sdp), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 16), ImGuiInputTextFlags_ReadOnly);
+                    } else if (memcmp(message, sam2_ackj_header, SAM2_HEADER_SIZE) == 0) {
+                        sam2_room_acknowledge_join_message_t *ack_join_message = (sam2_room_acknowledge_join_message_t *) message;
+                        ImGui::Text("Room: %s", ack_join_message->room.name);
+                        ImGui::Text("Sender Peer ID: %016" PRIx64, ack_join_message->sender_peer_id);
+                        ImGui::Text("Joiner Peer ID: %016" PRIx64, ack_join_message->joiner_peer_id);
+                        ImGui::Text("Frame Counter: %" PRId64, ack_join_message->frame_counter);
+                    } else if (memcmp(message, sam2_make_header, SAM2_HEADER_SIZE) == 0) {
+                        sam2_room_make_message_t *make_message = (sam2_room_make_message_t *) message;
+                        ImGui::Text("Room: %s", make_message->room.name);
+                    } else if (memcmp(message, sam2_list_header, SAM2_HEADER_SIZE) == 0) {
+                        if (j == 0) {
+                            // Request
+                            ImGui::Text("Room List Request");
+                        } else {
+                            // Response
+                            sam2_room_list_response_t *list_response = (sam2_room_list_response_t *) message;
+                            ImGui::Text("Server Room Count: %" PRId64, list_response->server_room_count);
+                            ImGui::Text("Room Count: %" PRId64, list_response->room_count);
+                            for (int i = 0; i < list_response->room_count; i++) {
+                                ImGui::Text("Room %d: %s", i, list_response->rooms[i].name);
+                            }
+                        }
+                    } else if (memcmp(message, sam2_join_header, SAM2_HEADER_SIZE) == 0) {
+                        sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
+                        ImGui::Text("Peer ID: %016" PRIx64, join_message->peer_id);
+                        ImGui::Text("Room: %s", join_message->room.name);
+                    } else if (memcmp(message, sam2_conn_header, SAM2_HEADER_SIZE) == 0) {
+                        sam2_connect_message_t *connect_message = (sam2_connect_message_t *) message;
+                        ImGui::Text("Peer ID: %016" PRIx64, connect_message->peer_id);
+                        ImGui::Text("Flags: %016" PRIx64, connect_message->flags);
+                    } else if (memcmp(message, sam2_fail_header, SAM2_HEADER_SIZE) == 0) {
+                        sam2_error_response_t *error_response = (sam2_error_response_t *) message;
+                        ImGui::Text("Code: %" PRId64, error_response->code);
+                        ImGui::Text("Description: %s", error_response->description);
+                        ImGui::Text("Peer ID: %016" PRIx64, error_response->peer_id);
                     }
 
                     // Optionally, provide a way to close the window manually
