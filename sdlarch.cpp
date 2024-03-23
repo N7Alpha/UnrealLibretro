@@ -2201,6 +2201,28 @@ void tick_compression_investigation(void *rom_data, size_t rom_size) {
     }
 }
 
+#ifdef _WIN32
+int64_t get_unix_time_microseconds() {
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+
+    ULARGE_INTEGER ul;
+    ul.LowPart = ft.dwLowDateTime;
+    ul.HighPart = ft.dwHighDateTime;
+
+    int64_t unix_time = (int64_t)(ul.QuadPart - 116444736000000000LL) / 10;
+
+    return unix_time;
+}
+#else
+int64_t get_unix_time_microseconds() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+}
+#endif
+
+
 int main(int argc, char *argv[]) {
     g_argc = argc;
     g_argv = argv;
@@ -2331,23 +2353,12 @@ int main(int argc, char *argv[]) {
         clock_gettime(CLOCK_MONOTONIC, &start_time);
 #endif
 
-        //std::chrono::duration<double, std::milli> elapsed_time_milliseconds = current_time - last_frame_time;
-        static int64_t base_frame_counter = 0;
-        static auto start = std::chrono::high_resolution_clock::now();
-        auto core_wants_tick_in_seconds = [](int64_t &base_frame_counter, int64_t frame_counter) {
-            auto current_time = std::chrono::high_resolution_clock::now();
-            std::chrono::duration<double, std::milli> elapsed_time_milliseconds = current_time - start;
-            double elapsed_time_seconds = elapsed_time_milliseconds.count() / 1000.0;
-            return ((frame_counter - base_frame_counter) / g_av.timing.fps) - elapsed_time_seconds;
+        static int64_t core_wants_tick_at_unix_usec = get_unix_time_microseconds();
+        auto core_wants_tick_in_seconds = [](int64_t core_wants_tick_at_unix_usec) {
+            return (double) (core_wants_tick_at_unix_usec - get_unix_time_microseconds()) / 1000000.0;
         };
 
-        // This is a hack. When we connect for netplay this should be set to zero I don't feel like adding a callback though.
-        // There is probably a better way of doing the same thing @todo
-        if (base_frame_counter > frame_counter) {
-            base_frame_counter = frame_counter;
-        }
-
-        g_core_wants_tick_in_milliseconds[g_main_loop_cyclic_offset] = core_wants_tick_in_seconds(base_frame_counter, frame_counter) * 1000.0;
+        g_core_wants_tick_in_milliseconds[g_main_loop_cyclic_offset] = core_wants_tick_in_seconds(core_wants_tick_at_unix_usec) * 1000.0;
 
         // Always send an input packet if the core is ready to tick. This subsumes retransmission logic and generally makes protocol logic less strict
         if (true) {
@@ -2415,7 +2426,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        int timeout_milliseconds = 1e3 * core_wants_tick_in_seconds(base_frame_counter, frame_counter);
+        int timeout_milliseconds = 1e3 * core_wants_tick_in_seconds(core_wants_tick_at_unix_usec);
         timeout_milliseconds = SAM2_MAX(0, timeout_milliseconds);
 
         int ret;
@@ -2482,17 +2493,15 @@ int main(int argc, char *argv[]) {
         int64_t frames_buffered = g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].frame - g_ulnet_session.frame_counter;
         netplay_ready_to_tick &= frames_buffered >= g_libretro_context.delay_frames;
         if (   netplay_ready_to_tick 
-            && (core_wants_tick_in_seconds(base_frame_counter, frame_counter) < 0.0
+            && (core_wants_tick_in_seconds(core_wants_tick_at_unix_usec) < 0.0
             || ignore_frame_pacing_so_we_can_catch_up)) {
             // @todo I don't think this makes sense you should keep reasonable timing yourself if you can't the authority should just kick you
             //int64_t authority_is_on_frame = g_ulnet_session.netplay_input_state[SAM2_AUTHORITY_INDEX].frame;
 
-            double target_frame_time_seconds = 1.0 / g_av.timing.fps - 1e-3;
-            if (   core_wants_tick_in_seconds(base_frame_counter, frame_counter) < -target_frame_time_seconds
-                /*|| frame_counter < authority_is_on_frame*/) { // If over a frame behind don't try to catch up to the next frame
-                start = std::chrono::high_resolution_clock::now();
-                base_frame_counter = frame_counter;
-            }
+            int64_t target_frame_time_usec = 1000000 / g_av.timing.fps - 1000; // @todo There is a leftover millisecond bias here for some reason
+            int64_t current_time_unix_usec = get_unix_time_microseconds();
+            core_wants_tick_at_unix_usec = SAM2_MAX(core_wants_tick_at_unix_usec, current_time_unix_usec - target_frame_time_usec);
+            core_wants_tick_at_unix_usec = SAM2_MIN(core_wants_tick_at_unix_usec, current_time_unix_usec + target_frame_time_usec);
 
             core_option_t maybe_core_option_for_this_frame = g_ulnet_session.netplay_input_state[SAM2_AUTHORITY_INDEX].core_option[g_ulnet_session.frame_counter % INPUT_DELAY_FRAMES_MAX];
             if (strlen(maybe_core_option_for_this_frame.key) > 0) {
@@ -2510,7 +2519,8 @@ int main(int argc, char *argv[]) {
             }
 
             g_retro.retro_run();
-            frame_counter++;
+            g_ulnet_session.frame_counter++;
+            core_wants_tick_at_unix_usec += 1000000 / g_av.timing.fps;
 
             // Keep track of frame-times for plotting purposes
             static auto last_tick_time = std::chrono::high_resolution_clock::now();
