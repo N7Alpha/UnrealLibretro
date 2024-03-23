@@ -182,33 +182,6 @@ typedef struct ulnet_session {
     bool (*retro_unserialize)(const void *data, size_t size);
 } ulnet_session_t;
 
-static int ulnet__locate_i64(int64_t arr[], int size, int64_t elem) {
-    for (int i = 0; i < size; i++) {
-        if (arr[i] == elem) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-static int ulnet__locate_u64(uint64_t *arr, int size, uint64_t elem) {
-    for (int i = 0; i < size; i++) {
-        if (arr[i] == elem) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-static int ulnet__locate_ptr(void **arr, int size, const void *elem) {
-    for (int i = 0; i < size; i++) {
-        if (arr[i] == elem) {
-            return i;
-        }
-    }
-    return -1;
-}
-
 #define RLE8_ENCODE_UPPER_BOUND(N) (3 * ((N+1) / 2) + (N) / 2)
 
 // Encodes input array of uint8_t into a byte stream with RLE for zeros.
@@ -329,7 +302,8 @@ bool ulnet_is_spectator(ulnet_session_t *session, uint64_t peer_id) {
 
 bool ulnet_all_peers_ready_for_peer_to_join(ulnet_session_t *session, uint64_t joiner_peer_id) {
     assert(ulnet_is_authority(session));
-    int joiner_port = ulnet__locate_u64(session->room_we_are_in.peer_ids, SAM2_ARRAY_LENGTH(session->room_we_are_in.peer_ids), joiner_peer_id);
+    int joiner_port;
+    SAM2_LOCATE(session->room_we_are_in.peer_ids, joiner_peer_id, joiner_port);
 
     if (joiner_port == -1) {
         assert(   session->our_peer_id == joiner_peer_id 
@@ -424,7 +398,8 @@ static void on_state_changed(juice_agent_t *agent, juice_state_t state, void *us
 static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr) {
     ulnet_session_t *session = (ulnet_session_t *) user_ptr;
 
-    int p = ulnet__locate_ptr((void **) session->agent, SAM2_ARRAY_LENGTH(session->agent), agent);
+    int p;
+    SAM2_LOCATE(session->agent, agent, p);
     if (p == -1) {
         LOG_ERROR("No agent found\n");
         return;
@@ -445,7 +420,8 @@ static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr) 
 static void on_gathering_done(juice_agent_t *agent, void *user_ptr) {
     ulnet_session_t *session = (ulnet_session_t *) user_ptr;
 
-    int p = ulnet__locate_ptr((void **) session->agent, SAM2_ARRAY_LENGTH(session->agent), agent);
+    int p;
+    SAM2_LOCATE(session->agent, agent, p);
     if (p == -1) {
         LOG_ERROR("No agent found\n");
         return;

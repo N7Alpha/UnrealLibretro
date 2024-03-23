@@ -332,6 +332,16 @@
 
 #define SAM2_ABS(a) ((a) < 0 ? -(a) : (a))
 
+#define SAM2_LOCATE(fixed_size_array, element, out_index) do { \
+    out_index = -1; \
+    for (int i = 0; i < SAM2_ARRAY_LENGTH(fixed_size_array); i++) { \
+        if ((fixed_size_array)[i] == (element)) { \
+            (out_index) = i; \
+            break; \
+        } \
+    } \
+} while (0)
+
 #define SAM2_SERVER_DEFAULT_PORT 9218
 #define SAM2_DEFAULT_BACKLOG 128
 
