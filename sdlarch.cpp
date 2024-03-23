@@ -291,10 +291,11 @@ struct FLibretroContext {
     FLibretroInputState InputState[PortCount] = {0};
     bool fuzz_input = false;
 
-    int SAM2Send(char *headerless_request, sam2_message_e request_tag) {
+    int SAM2Send(char *message) {
         // Do some sanity checks on the request
-        if (request_tag == SAM2_EMESSAGE_SIGNAL) {
-            sam2_signal_message_t *signal_message = (sam2_signal_message_t *) headerless_request;
+        sam2_message_e message_tag = sam2_get_tag((const char *) message);
+        if (message_tag == SAM2_EMESSAGE_SIGNAL) {
+            sam2_signal_message_t *signal_message = (sam2_signal_message_t *) message;
             assert(signal_message->peer_id > SAM2_PORT_SENTINELS_MAX);
 
             if (signal_message->peer_id == ulnet_session.our_peer_id) {
@@ -306,11 +307,11 @@ struct FLibretroContext {
             }
         }
 
-        int ret = sam2_client_send(sam2_socket, headerless_request, request_tag);
+        int ret = sam2_client_send(sam2_socket, message);
 
         // Bookkeep all sent requests for debugging purposes
         if (sent_requests < SAM2_ARRAY_LENGTH(requests)) {
-            memcpy(&requests[sent_requests++], headerless_request, sam2__request_map[request_tag].message_size);
+            memcpy(&requests[sent_requests++], message, sam2__request_map[message_tag].message_size);
         }
 
         return ret;
@@ -753,7 +754,6 @@ sam2_room_t sam2_rooms[ULNET_MAX_ROOMS];
 
 static const char *g_sam2_address = "sam2.cornbass.com";
 static sam2_socket_t &g_sam2_socket = g_libretro_context.sam2_socket;
-static sam2_request_u g_sam2_request;
 
 
 static int g_zstd_compress_level = 0;
@@ -1114,11 +1114,11 @@ void draw_imgui() {
                         ImGui::SameLine();
                         if (ImGui::Button("Join")) {
                             // Send a join room request for the available port
-                            sam2_room_join_message_t request = {0};
+                            sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
                             request.room = g_ulnet_session.room_we_are_in;
                             request.room.peer_ids[p] = g_ulnet_session.our_peer_id;
                             g_ulnet_session.peer_joining_on_frame[p] = INT64_MAX; // Upper bound
-                            g_libretro_context.SAM2Send((char *) &request, SAM2_EMESSAGE_JOIN);
+                            g_libretro_context.SAM2Send((char *) &request);
                         }
                     }
                 } else {
@@ -1215,7 +1215,7 @@ void draw_imgui() {
 
             if (ImGui::Button("Exit")) {
                 // Send an exit room request
-                sam2_room_join_message_t request = {0};
+                sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
                 request.room = g_ulnet_session.room_we_are_in;
 
                 for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
@@ -1225,16 +1225,16 @@ void draw_imgui() {
                     }
                 }
 
-                g_libretro_context.SAM2Send((char *) &request, SAM2_EMESSAGE_JOIN);
+                g_libretro_context.SAM2Send((char *) &request);
 
                 g_ulnet_session.our_peer_id = 0;
             }
         } else {
             // Create a "Make" button that sends a make room request when clicked
             if (ImGui::Button("Make")) {
-                sam2_room_make_message_t *request = &g_sam2_request.room_make_request;
-                request->room = g_new_room_set_through_gui;
-                g_libretro_context.SAM2Send((char *) &g_sam2_request, SAM2_EMESSAGE_MAKE);
+                sam2_room_make_message_t request = { SAM2_MAKE_HEADER };
+                request.room = g_new_room_set_through_gui;
+                g_libretro_context.SAM2Send((char *) &request);
             }
             if (ImGui::Button(g_is_refreshing_rooms ? "Stop" : "Refresh")) {
                 g_is_refreshing_rooms = !g_is_refreshing_rooms;
@@ -1242,7 +1242,8 @@ void draw_imgui() {
                 if (g_is_refreshing_rooms) {
                     g_sam2_room_count = 0;
                     // The list message is only a header
-                    g_libretro_context.SAM2Send((char *) &g_sam2_request, SAM2_EMESSAGE_LIST);
+                    sig_room_list_request_t request = { SAM2_LIST_HEADER };
+                    g_libretro_context.SAM2Send((char *) &request);
                 } else {
 
                 }
@@ -1295,7 +1296,7 @@ void draw_imgui() {
 
                 if (ImGui::Button("Join")) {
                     // Send a join room request
-                    sam2_room_join_message_t request = {0};
+                    sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
                     request.room = g_sam2_rooms[selected_room_index];
 
                     int p = 0;
@@ -1312,7 +1313,7 @@ void draw_imgui() {
 
                     g_ulnet_session.peer_joining_on_frame[p] = INT64_MAX; // Upper bound
 
-                    g_libretro_context.SAM2Send((char *) &request, SAM2_EMESSAGE_JOIN);
+                    g_libretro_context.SAM2Send((char *) &request);
                 }
 
                 ImGui::SameLine();
@@ -2635,10 +2636,10 @@ int main(int argc, char *argv[]) {
 
                     g_ulnet_session.zstd_compress_level = g_zstd_compress_level;
                     g_ulnet_session.user_ptr = (void *) &g_libretro_context;
-                    g_ulnet_session.sam2_send_callback = [](void *user_ptr, char *data, size_t size) {
+                    g_ulnet_session.sam2_send_callback = [](void *user_ptr, char *response) {
                         // We delegate sends to us so we have a single location of debug bookkeeping + error checking of sent messages
                         FLibretroContext *LibretroContext = (FLibretroContext *) user_ptr;
-                        return LibretroContext->SAM2Send(data, size);
+                        return LibretroContext->SAM2Send(response);
                     };
 
                     g_ulnet_session.retro_serialize = g_retro.retro_serialize;
