@@ -321,7 +321,7 @@
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
 #define SAM2_STATIC_ASSERT(cond, message) _Static_assert(cond, message)
 #else
-#error "static_assert can't be properly defined in this language or compiler version"
+#define SAM2_STATIC_ASSERT(cond, _) extern int sam2__static_assertion_##__COUNTER__[(cond) ? 1 : -1]
 #endif
 
 #define SAM2_ARRAY_LENGTH(arr) (sizeof(arr) / sizeof((arr)[0]))
