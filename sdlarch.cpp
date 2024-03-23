@@ -1477,6 +1477,10 @@ finished_drawing_sam2_interface:
         ImGui::End();
     }
 
+    //if (g_kbd[SDL_SCANCODE_LCTRL] && g_kbd[SDL_SCANCODE_LSHIFT] && g_kbd[SDL_SCANCODE_A]) {
+    //    // @todo Add a shortcut to collapse and uncollapse windows
+    //}
+
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }

@@ -298,7 +298,7 @@
 #define sam2_fail_header "FAIL" SAM2_PROTOCOL_STRING
 
 // Although this is less flexible it explicitly tells the compiler that you're making a non-null terminated string so it doesn't throw up warnings
-// C99 Compound Literals are tempting but they don't work for Tiny C Compiler
+// C99 Compound Literals are tempting but they don't work for Tiny C Compiler @enhancement Doing things this way bloats the binary in the Tiny C Compiler
 #define SAM2_8_CHARACTER_STRING_LITERAL(str_lit) { (str_lit)[0], (str_lit)[1], (str_lit)[2], (str_lit)[3], (str_lit)[4], (str_lit)[5], (str_lit)[6], (str_lit)[7] }
 #define SAM2_MAKE_HEADER SAM2_8_CHARACTER_STRING_LITERAL(sam2_make_header)
 #define SAM2_LIST_HEADER SAM2_8_CHARACTER_STRING_LITERAL(sam2_list_header)
