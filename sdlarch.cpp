@@ -1206,13 +1206,14 @@ void draw_imgui() {
                         ImGui::TableSetColumnIndex(0);
 
                         // Display peer ID
-                        ImGui::Text("%" PRIx64, g_ulnet_session.agent_peer_id[SAM2_PORT_MAX + 1 + s]);
+                        ImGui::Text("%" PRIx64, g_ulnet_session.agent_peer_id[SAM2_PORT_MAX+1 + s]);
 
                         ImGui::TableSetColumnIndex(1);
                         // Display ICE connection status
                         // Assuming g_ulnet_session.agent[] is an array of juice_agent_t* representing the ICE agents
-                        if (g_ulnet_session.spectator_agent[s]) {
-                            juice_state_t connection_state = juice_get_state(g_ulnet_session.spectator_agent[s]);
+                        juice_agent_t *spectator_agent = g_ulnet_session.agent[SAM2_PORT_MAX+1 + s];
+                        if (spectator_agent) {
+                            juice_state_t connection_state = juice_get_state(spectator_agent);
 
                             if (connection_state >= JUICE_STATE_CONNECTED) {
                                 ImGui::Text("%s", juice_state_to_string(connection_state));
@@ -2604,7 +2605,7 @@ int main(int argc, char *argv[]) {
             }
 
             if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
-                //desync_debug_packet_t desync_debug_packet = { CHANNEL_DESYNC_DEBUG };
+                g_ulnet_session.desync_debug_packet.channel_and_flags = CHANNEL_DESYNC_DEBUG;
                 g_ulnet_session.desync_debug_packet.frame          = (g_ulnet_session.frame_counter-1); // This was for the previous frame
                 g_ulnet_session.desync_debug_packet.save_state_hash [(g_ulnet_session.frame_counter-1) % INPUT_DELAY_FRAMES_MAX] = savestate_hash;
                 g_ulnet_session.desync_debug_packet.input_state_hash[(g_ulnet_session.frame_counter-1) % INPUT_DELAY_FRAMES_MAX] = fnv1a_hash(g_libretro_context.InputState, sizeof(g_libretro_context.InputState));

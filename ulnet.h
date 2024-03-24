@@ -143,7 +143,7 @@ typedef struct {
 } savestate_transfer_payload_t;
 
 typedef struct ulnet_session {
-    int zstd_compress_level = 0;
+    int zstd_compress_level;
 
     int64_t frame_counter;
     int64_t flags;
@@ -151,32 +151,31 @@ typedef struct ulnet_session {
 
     sam2_room_t room_we_are_in;
 
-    core_option_t core_options[CORE_OPTIONS_MAX] = {0}; // @todo I don't like this here
+    core_option_t core_options[CORE_OPTIONS_MAX]; // @todo I don't like this here
 
     // @todo Change these so they're all peer_*
-    juice_agent_t *agent                     [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX] = {0};
-    uint64_t       agent_peer_id             [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX] = {0};
-    int64_t        peer_desynced_frame       [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX] = {0};
-    int64_t        peer_joining_on_frame     [SAM2_PORT_MAX + 1 /* Plus Authority */] = {0};
-    netplay_input_state_t netplay_input_state[SAM2_PORT_MAX + 1 /* Plus Authority */] = {0};
-    unsigned char netplay_input_packet_history[SAM2_PORT_MAX+1][NETPLAY_INPUT_HISTORY_SIZE][PACKET_MTU_PAYLOAD_SIZE_BYTES] = {0};
+    juice_agent_t *agent                     [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX];
+    uint64_t       agent_peer_id             [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX];
+    int64_t        peer_desynced_frame       [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX];
+    int64_t        peer_joining_on_frame     [SAM2_PORT_MAX + 1 /* Plus Authority */];
+    netplay_input_state_t netplay_input_state[SAM2_PORT_MAX + 1 /* Plus Authority */];
+    unsigned char netplay_input_packet_history[SAM2_PORT_MAX+1][NETPLAY_INPUT_HISTORY_SIZE][PACKET_MTU_PAYLOAD_SIZE_BYTES];
     
-    juice_agent_t **spectator_agent = agent + SAM2_PORT_MAX + 1;
-    int64_t spectator_count = 0;
+    int64_t spectator_count;
 
-    desync_debug_packet_t desync_debug_packet = {CHANNEL_DESYNC_DEBUG};
-    uint64_t peer_ready_to_join_bitfield = 0x0; // Used by the authority for tracking join acknowledgements
+    desync_debug_packet_t desync_debug_packet;
+    uint64_t peer_ready_to_join_bitfield; // Used by the authority for tracking join acknowledgements
 
     unsigned char remote_savestate_transfer_packets[COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES + FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * sizeof(savestate_transfer_packet_t)];
-    int64_t remote_savestate_transfer_offset = 0;
+    int64_t remote_savestate_transfer_offset;
     uint8_t remote_packet_groups = FEC_PACKET_GROUPS_MAX; // This is used to bookkeep how much data we actually need to receive to reform the complete savestate
     void *fec_packet[FEC_PACKET_GROUPS_MAX][GF_SIZE - FEC_REDUNDANT_BLOCKS];
     int fec_index[FEC_PACKET_GROUPS_MAX][GF_SIZE - FEC_REDUNDANT_BLOCKS];
-    int fec_index_counter[FEC_PACKET_GROUPS_MAX] = {0}; // Counts packets received in each "packet group"
+    int fec_index_counter[FEC_PACKET_GROUPS_MAX]; // Counts packets received in each "packet group"
 
-    void *user_ptr = 0;
-    int (*sam2_send_callback)(void *user_ptr, char *response) = 0;
-    int (*populate_core_options_callback)(void *user_ptr, core_option_t options[CORE_OPTIONS_MAX]) = 0;
+    void *user_ptr;
+    int (*sam2_send_callback)(void *user_ptr, char *response);
+    int (*populate_core_options_callback)(void *user_ptr, core_option_t options[CORE_OPTIONS_MAX]);
 
     size_t (*retro_serialize_size)(void);
     bool (*retro_serialize)(void *data, size_t size);
@@ -698,7 +697,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
 
                     startup_ice_for_peer(
                         session,
-                        &session->spectator_agent[session->spectator_count],
+                        &session->agent[SAM2_PORT_MAX+1 + session->spectator_count],
                         &session->agent_peer_id[SAM2_PORT_MAX+1 + session->spectator_count],
                         room_signal->peer_id,
                         /* remote_desciption = */ room_signal->ice_sdp
@@ -827,10 +826,11 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
             // Broadcast the input packet to spectators
             if (ulnet_is_authority(session)) {
                 for (int i = 0; i < SPECTATOR_MAX; i++) {
-                    if (session->spectator_agent[i]) {
-                        if (   juice_get_state(session->spectator_agent[i]) == JUICE_STATE_CONNECTED
-                            || juice_get_state(session->spectator_agent[i]) == JUICE_STATE_COMPLETED) {
-                            int status = juice_send(session->spectator_agent[i], data, size);
+                    juice_agent_t *spectator_agent = session->agent[SAM2_PORT_MAX+1 + i];
+                    if (spectator_agent) {
+                        if (   juice_get_state(spectator_agent) == JUICE_STATE_CONNECTED
+                            || juice_get_state(spectator_agent) == JUICE_STATE_COMPLETED) {
+                            int status = juice_send(spectator_agent, data, size);
                             assert(status == 0);
                         }
                     }
