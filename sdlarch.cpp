@@ -331,6 +331,8 @@ struct FLibretroContext {
                 return ulnet_session.agent[p];
             }
         }
+
+        return NULL;
     }
 
     void DisconnectPeer(int peer_port) {
@@ -2455,7 +2457,7 @@ int main(int argc, char *argv[]) {
             }
 
             if (   g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED
-                && (!g_ulnet_session.flags & ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE  // If we were waiting this would mean our frame_counter is invalid and break the next check
+                && (!(g_ulnet_session.flags & ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE)  // If we were waiting this would mean our frame_counter is invalid and break the next check
                 && g_ulnet_session.frame_counter >= g_ulnet_session.peer_joining_on_frame[g_libretro_context.OurPort()])) {
 
                 for (int p = 0; p < SAM2_ARRAY_LENGTH(g_ulnet_session.agent); p++) {
@@ -2505,7 +2507,6 @@ int main(int argc, char *argv[]) {
         if (g_libretro_context.Spectating()) {
             for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
                 if (g_ulnet_session.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
-                g_ulnet_session.netplay_input_packet_history[p][g_ulnet_session.frame_counter % NETPLAY_INPUT_HISTORY_SIZE];
 
                 int i;
                 for (i = 0; i < INPUT_DELAY_FRAMES_MAX; i++) {
