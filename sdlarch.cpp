@@ -7,8 +7,6 @@
 #include "ulnet.h"
 #include "sam2.c"
 
-#undef LOG_VERBOSE
-#define LOG_VERBOSE(...) do {} while(0)
 #include "glad.h"
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
@@ -2271,7 +2269,7 @@ int main(int argc, char *argv[]) {
 		die("usage: %s <core> [game]", argv[0]);
 
     SDL_SetMainReady();
-    juice_set_log_level(JUICE_LOG_LEVEL_INFO);
+    juice_set_log_level(JUICE_LOG_LEVEL_VERBOSE);
 
     g_parameters.d = 8;
     g_parameters.k = 256;
@@ -2448,8 +2446,7 @@ int main(int argc, char *argv[]) {
                             die("Input packet too large to send");
                         } else {
                             juice_send(g_ulnet_session.agent[p], (const char *) &input_packet, sizeof(input_packet_t) + actual_payload_size);
-                            LOG_VERBOSE("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64 "\n", g_ulnet_session.netplay_input_state.frame, p, g_ulnet_session.room_we_are_in.peer_ids[p]);
-                            fflush(stdout);
+                            SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64, g_ulnet_session.netplay_input_state[p].frame, p, g_ulnet_session.room_we_are_in.peer_ids[p]);
                         }
                     }
                 }

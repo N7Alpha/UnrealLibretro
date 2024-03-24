@@ -308,7 +308,7 @@ bool ulnet_all_peers_ready_for_peer_to_join(ulnet_session_t *session, uint64_t j
     if (joiner_port == -1) {
         assert(   session->our_peer_id == joiner_peer_id 
                || session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]);
-        LOG_VERBOSE("Assuming %016" PRIx64 " is a spectator\n", joiner_peer_id);
+        SAM2_LOG_DEBUG("Assuming %016" PRIx64 " is a spectator\n", joiner_peer_id);
         return true;
     }
 
@@ -401,7 +401,7 @@ static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr) 
     int p;
     SAM2_LOCATE(session->agent, agent, p);
     if (p == -1) {
-        LOG_ERROR("No agent found\n");
+        SAM2_LOG_ERROR("No agent found\n");
         return;
     }
 
@@ -412,7 +412,7 @@ static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr) 
         strcpy(response.ice_sdp, sdp);
         session->sam2_send_callback(session->user_ptr, (char *) &response);
     } else {
-        LOG_ERROR("Candidate too large\n");
+        SAM2_LOG_ERROR("Candidate too large\n");
         return;
     }
 }
@@ -424,7 +424,7 @@ static void on_gathering_done(juice_agent_t *agent, void *user_ptr) {
     int p;
     SAM2_LOCATE(session->agent, agent, p);
     if (p == -1) {
-        LOG_ERROR("No agent found\n");
+        SAM2_LOG_ERROR("No agent found\n");
         return;
     }
 
@@ -452,16 +452,13 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
     }
     case SAM2_EMESSAGE_MAKE: {
         sam2_room_make_message_t *room_make = &response.room_make_response;
-        printf("Received room make response from SAM2\n");
-        fflush(stdout);
         assert(session->our_peer_id == room_make->room.peer_ids[SAM2_AUTHORITY_INDEX]);
         session->room_we_are_in = room_make->room;
         break;
     }
     case SAM2_EMESSAGE_CONN: {
         sam2_connect_message_t *connect_message = &response.connect_message;
-        printf("We were assigned the peer id %" PRIx64 "\n", connect_message->peer_id);
-        fflush(stdout);
+        SAM2_LOG_INFO("We were assigned the peer id %" PRIx64 "\n", connect_message->peer_id);
 
         session->our_peer_id = connect_message->peer_id;
         session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
@@ -473,14 +470,13 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
 
         if (   sam2_same_room(&session->room_we_are_in, &room_join->room)
             && session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
-            LOG_INFO("We switched rooms or joined a room for the first time %s\n", room_join->room.name);
+            SAM2_LOG_INFO("We switched rooms or joined a room for the first time %s\n", room_join->room.name);
 
             // @todo This should be actually handled, but it conflicts with the if statement below
         }
 
         if (!sam2_same_room(&session->room_we_are_in, &room_join->room)) {
-            printf("We were let into the server by the authority\n");
-            fflush(stdout);
+            SAM2_LOG_INFO("We were let into the server by the authority\n");
 
             session->flags |= ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE;
             session->frame_counter = 123456789000; // frame_counter is invalid before we get a savestate this should make logic issues more obvious
@@ -504,14 +500,12 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
             }
         } else {
             if (session->our_peer_id == room_join->room.peer_ids[SAM2_AUTHORITY_INDEX]) {
-                printf("Someone has asked us to change the state of the server in some way e.g. leaving, joining, etc.\n");
-                fflush(stdout);
+                SAM2_LOG_INFO("Someone has asked us to change the state of the server in some way e.g. leaving, joining, etc.\n");
 
                 int sender_port = sam2_get_port_of_peer(&room_join->room, room_join->peer_id);
 
                 if (sender_port == -1) {
-                    printf("They didn't specify which port they're joining on\n");
-                    fflush(stdout);
+                    SAM2_LOG_WARN("They didn't specify which port they're joining on\n");
 
                     sam2_error_response_t error = {
                         SAM2_FAIL_HEADER,
@@ -531,8 +525,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                         if (peer_existing_port != sender_port) {
                             MovePeer(session, peer_existing_port, sender_port); // This only moves spectators to real ports right now
                         } else {
-                            LOG_INFO("Peer %" PRIx64 " has asked to change something about the room\n", room_join->room.peer_ids[sender_port]);
-                            fflush(stdout);
+                            SAM2_LOG_INFO("Peer %" PRIx64 " has asked to change something about the room\n", room_join->room.peer_ids[sender_port]);
 
                         }
                     } else {
@@ -547,8 +540,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                             session->sam2_send_callback(session->user_ptr, (char *) &error);
                             break;
                         } else {
-                            printf("Peer %" PRIx64 " was let in by us the authority\n", room_join->room.peer_ids[sender_port]);
-                            fflush(stdout);
+                            SAM2_LOG_INFO("Peer %" PRIx64 " was let in by us the authority\n", room_join->room.peer_ids[sender_port]);
 
                             session->peer_joining_on_frame[sender_port] = session->frame_counter;
                             session->peer_ready_to_join_bitfield &= ~(0xFFULL << (8 * sender_port));
@@ -590,7 +582,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                     session->sam2_send_callback(session->user_ptr, (char *) &response);
                 }
             } else {
-                LOG_INFO("Something about the room we're in was changed by the authority\n");
+                SAM2_LOG_INFO("Something about the room we're in was changed by the authority\n");
 
                 assert(sam2_same_room(&session->room_we_are_in, &room_join->room));
 
@@ -598,8 +590,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                     // @todo Check something other than just joins and leaves
                     if (room_join->room.peer_ids[p] != session->room_we_are_in.peer_ids[p]) {
                         if (room_join->room.peer_ids[p] == SAM2_PORT_AVAILABLE) {
-                            printf("Peer %" PRIx64 " has left the room\n", session->room_we_are_in.peer_ids[p]);
-                            fflush(stdout);
+                            SAM2_LOG_INFO("Peer %" PRIx64 " has left the room\n", session->room_we_are_in.peer_ids[p]);
 
                             if (session->agent[p]) {
                                 juice_destroy(session->agent[p]);
@@ -612,8 +603,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
 
                             session->room_we_are_in.peer_ids[p] = SAM2_PORT_AVAILABLE;
                         } else {
-                            printf("Peer %" PRIx64 " has joined the room\n", room_join->room.peer_ids[p]);
-                            fflush(stdout);
+                            SAM2_LOG_INFO("Peer %" PRIx64 " has joined the room\n", room_join->room.peer_ids[p]);
 
                             session->room_we_are_in.peer_ids[p] = room_join->room.peer_ids[p]; // This must come before the next call as the next call can generate an ICE candidate before returning
                             startup_ice_for_peer(session, &session->agent[p], &session->agent_peer_id[p], room_join->room.peer_ids[p]);
@@ -656,13 +646,13 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
 
                 session->sam2_send_callback(session->user_ptr, (char *) &response);
             } else {
-                LOG_INFO("Peer %" PRIx64 " has been acknowledged by %" PRIx64 " but not all peers\n", 
+                SAM2_LOG_INFO("Peer %" PRIx64 " has been acknowledged by %" PRIx64 " but not all peers\n", 
                     acknowledge_room_join_message->joiner_peer_id, acknowledge_room_join_message->sender_peer_id);
             }
         } else {
             assert(acknowledge_room_join_message->sender_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]);
             assert(acknowledge_room_join_message->frame_counter >= session->peer_joining_on_frame[joiner_port] || session->our_peer_id == acknowledge_room_join_message->joiner_peer_id);
-            LOG_INFO("Authority told us peer %" PRIx64 " has been acknowledged by all peers and is joining on frame %" PRId64 " (our current frame %" PRId64 ")\n", 
+            SAM2_LOG_INFO("Authority told us peer %" PRIx64 " has been acknowledged by all peers and is joining on frame %" PRId64 " (our current frame %" PRId64 ")\n", 
                 acknowledge_room_join_message->joiner_peer_id, acknowledge_room_join_message->frame_counter, session->frame_counter);
 
             session->peer_ready_to_join_bitfield |= 0xFFULL << (8 * joiner_port);
@@ -678,8 +668,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
     }
     case SAM2_EMESSAGE_SIGNAL: {
         sam2_signal_message_t *room_signal = (sam2_signal_message_t *) &response;
-        printf("Received signal from peer %" PRIx64 "\n", room_signal->peer_id);
-        fflush(stdout);
+        SAM2_LOG_INFO("Received signal from peer %" PRIx64 "\n", room_signal->peer_id);
 
         int p = -1;
         for (int i = 0; i < SAM2_ARRAY_LENGTH(session->agent_peer_id); i++) {
@@ -690,12 +679,11 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
         }
 
         if (p == -1) {
-            printf("Received signal from unknown peer\n");
-            fflush(stdout);
+            SAM2_LOG_INFO("Received signal from unknown peer\n");
 
             if (session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
                 if (session->spectator_count == SPECTATOR_MAX) {
-                    printf("We can't let them in as a spectator there are too many spectators\n");
+                    SAM2_LOG_WARN("We can't let them in as a spectator there are too many spectators\n");
 
                     static sam2_error_response_t error = { 
                         SAM2_FAIL_HEADER,
@@ -705,8 +693,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
 
                     session->sam2_send_callback(session->user_ptr, (char *) &error);
                 } else {
-                    printf("We are letting them in as a spectator\n");
-                    fflush(stdout);
+                    SAM2_LOG_INFO("We are letting them in as a spectator\n");
 
                     startup_ice_for_peer(
                         session,
@@ -719,8 +706,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                     p = session->spectator_count++;
                 }
             } else {
-                printf("Received unknown signal when we weren't the authority\n");
-                fflush(stdout);
+                SAM2_LOG_WARN("Received unknown signal when we weren't the authority\n");
 
                 static sam2_error_response_t error = { 
                     SAM2_FAIL_HEADER,
@@ -734,22 +720,21 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
 
         if (p != -1) {
             if (strlen(room_signal->ice_sdp) == 0) {
-                LOG_INFO("Received remote gathering done from peer %" PRIx64 "\n", room_signal->peer_id);
+                SAM2_LOG_INFO("Received remote gathering done from peer %" PRIx64 "\n", room_signal->peer_id);
                 juice_set_remote_gathering_done(session->agent[p]);
             } else if (strncmp(room_signal->ice_sdp, "a=ice", strlen("a=ice")) == 0) {
                 juice_set_remote_description(session->agent[p], room_signal->ice_sdp);
             } else if (strncmp(room_signal->ice_sdp, "a=candidate", strlen("a=candidate")) == 0) {
                 juice_add_remote_candidate(session->agent[p], room_signal->ice_sdp);
             } else {
-                printf("Unable to parse signal message '%s'\n", room_signal->ice_sdp);
-                fflush(stdout);
+                SAM2_LOG_ERROR("Unable to parse signal message '%s'\n", room_signal->ice_sdp);
             }
         }
 
         break;
     }
     default:
-        fprintf(stderr, "Received unknown message (%d) from SAM2\n", (int) response_tag);
+        SAM2_LOG_ERROR("Received unknown message (%d) from SAM2\n", response_tag);
         break;
     }
 
@@ -767,18 +752,18 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         }
     }
     if (p == -1) {
-        LOG_ERROR("No agent associated for packet on channel 0x%" PRIx8 "\n", data[0] & CHANNEL_MASK);
+        SAM2_LOG_ERROR("No agent associated for packet on channel 0x%" PRIx8 "\n", data[0] & CHANNEL_MASK);
         return;
     }
 
     if (size == 0) {
-        LOG_WARN("Received a UDP packet with no payload\n");
+        SAM2_LOG_WARN("Received a UDP packet with no payload\n");
         return;
     }
 
     if (p >= SAM2_PORT_MAX+1
         && CHANNEL_INPUT != (data[0] & CHANNEL_MASK)) {
-        LOG_WARN("A spectator sent us a UDP packet for unsupported channel %" PRIx8 " for some reason\n", data[0] & CHANNEL_MASK);
+        SAM2_LOG_WARN("A spectator sent us a UDP packet for unsupported channel %" PRIx8 " for some reason\n", data[0] & CHANNEL_MASK);
         return;
     }
 
@@ -795,32 +780,32 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
 
         if (   p != original_sender_port
             && p != SAM2_AUTHORITY_INDEX) {
-            LOG_WARN("Non-authority gave us someones input eventually this should be verified with a signature\n");
+            SAM2_LOG_WARN("Non-authority gave us someones input eventually this should be verified with a signature\n");
         }
 
         if (original_sender_port >= SAM2_PORT_MAX+1) {
-            LOG_WARN("Received input packet for port %d which is out of range\n", original_sender_port);
+            SAM2_LOG_WARN("Received input packet for port %d which is out of range\n", original_sender_port);
             break;
         }
 
         if (rle8_decode_size(input_packet->coded_netplay_input_state, size - 1) != sizeof(netplay_input_state_t)) {
-            LOG_WARN("Received input packet with an invalid decode size\n");
+            SAM2_LOG_WARN("Received input packet with an invalid decode size\n");
             break;
         }
 
         int64_t frame;
         rle8_decode(input_packet->coded_netplay_input_state, size - 1, (uint8_t *) &frame, sizeof(frame));
 
-        LOG_VERBOSE("Recv input packet for frame %" PRId64 " from peer_ids[%d]=%" PRIx64 "\n",
+        SAM2_LOG_DEBUG("Recv input packet for frame %" PRId64 " from peer_ids[%d]=%" PRIx64 "\n",
             frame, p, session->room_we_are_in.peer_ids[p]);
 
         if (   ulnet_is_authority(session)
             && frame < session->peer_joining_on_frame[p]) {
-            LOG_WARN("Received input packet for frame %" PRId64 " but we agreed the client would start sending input on frame %" PRId64 "\n",
+            SAM2_LOG_WARN("Received input packet for frame %" PRId64 " but we agreed the client would start sending input on frame %" PRId64 "\n",
                 frame, session->peer_joining_on_frame[p]);
         } else if (frame < session->netplay_input_state[p].frame) {
             // UDP packets can arrive out of order this is normal
-            LOG_VERBOSE("Received outdated input packet for frame %" PRId64 ". We are already on frame %" PRId64 ". Dropping it\n",
+            SAM2_LOG_DEBUG("Received outdated input packet for frame %" PRId64 ". We are already on frame %" PRId64 ". Dropping it\n",
                 frame, session->frame_counter);
         } else {
             rle8_decode(
@@ -873,7 +858,7 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
             int64_t frame_index = frame_to_compare % INPUT_DELAY_FRAMES_MAX;
 
             if (our_desync_debug_packet.input_state_hash[frame_index] != their_desync_debug_packet.input_state_hash[frame_index]) {
-                LOG_ERROR("Input state hash mismatch for frame %" PRId64 " Our hash: %" PRIx64 " Their hash: %" PRIx64 "\n", 
+                SAM2_LOG_ERROR("Input state hash mismatch for frame %" PRId64 " Our hash: %" PRIx64 " Their hash: %" PRIx64 "\n", 
                     frame_to_compare, our_desync_debug_packet.input_state_hash[frame_index], their_desync_debug_packet.input_state_hash[frame_index]);
             } else if (   our_desync_debug_packet.save_state_hash[frame_index]
                        && their_desync_debug_packet.save_state_hash[frame_index]) {
@@ -883,11 +868,11 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
                         session->peer_desynced_frame[p] = frame_to_compare;
                     }
 
-                    LOG_ERROR("Save state hash mismatch for frame %" PRId64 " Our hash: %" PRIx64 " Their hash: %" PRIx64 "\n",
+                    SAM2_LOG_ERROR("Save state hash mismatch for frame %" PRId64 " Our hash: %" PRIx64 " Their hash: %" PRIx64 "\n",
                         frame_to_compare, our_desync_debug_packet.save_state_hash[frame_index], their_desync_debug_packet.save_state_hash[frame_index]);
                 } else if (session->peer_desynced_frame[p]) {
                     session->peer_desynced_frame[p] = 0;
-                    LOG_INFO("Peer resynced frame on frame %" PRId64 "\n", frame_to_compare);
+                    SAM2_LOG_INFO("Peer resynced frame on frame %" PRId64 "\n", frame_to_compare);
                 }
             }
         }
@@ -901,12 +886,12 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         }
 
         if (size < sizeof(savestate_transfer_packet_t)) {
-            LOG_WARN("Recv savestate transfer packet with size smaller than header\n");
+            SAM2_LOG_WARN("Recv savestate transfer packet with size smaller than header\n");
             break;
         }
 
         if (size > PACKET_MTU_PAYLOAD_SIZE_BYTES) {
-            LOG_WARN("Recv savestate transfer packet potentially larger than MTU\n");
+            SAM2_LOG_WARN("Recv savestate transfer packet potentially larger than MTU\n");
         }
 
         savestate_transfer_packet_t savestate_transfer_header;
@@ -932,8 +917,7 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
 
         uint8_t sequence_lo = savestate_transfer_header.sequence_lo;
 
-        LOG_VERBOSE("Received savestate packet sequence_hi: %hhu sequence_lo: %hhu\n", sequence_hi, sequence_lo);
-        fflush(stdout);
+        SAM2_LOG_DEBUG("Received savestate packet sequence_hi: %hhu sequence_lo: %hhu\n", sequence_hi, sequence_lo);
 
         uint8_t *copied_packet_ptr = (uint8_t *) memcpy(session->remote_savestate_transfer_packets + session->remote_savestate_transfer_offset, data, size);
         session->fec_packet[sequence_hi][sequence_lo] = copied_packet_ptr + sizeof(savestate_transfer_packet_t);
@@ -942,7 +926,7 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         session->fec_index[sequence_hi][session->fec_index_counter[sequence_hi]++] = sequence_lo;
 
         if (session->fec_index_counter[sequence_hi] == k) {
-            LOG_VERBOSE("Received all the savestate data for packet group: %hhu\n", sequence_hi);
+            SAM2_LOG_DEBUG("Received all the savestate data for packet group: %hhu\n", sequence_hi);
 
             int redudant_blocks_sent = k * FEC_REDUNDANT_BLOCKS / (GF_SIZE - FEC_REDUNDANT_BLOCKS);
             void *rs_code = fec_new(k, k + redudant_blocks_sent);
@@ -968,7 +952,7 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
                     }
                 }
 
-                LOG_INFO("Received savestate transfer payload for frame %" PRId64 "\n", savestate_transfer_payload->frame_counter);
+                SAM2_LOG_INFO("Received savestate transfer payload for frame %" PRId64 "\n", savestate_transfer_payload->frame_counter);
 
                 size_t ret = ZSTD_decompress(
                     session->core_options, sizeof(session->core_options),
@@ -978,13 +962,13 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
 
                 unsigned char *save_state_data = NULL;
                 if (ZSTD_isError(ret)) {
-                    LOG_ERROR("Error decompressing core options: %s\n", ZSTD_getErrorName(ret));
+                    SAM2_LOG_ERROR("Error decompressing core options: %s\n", ZSTD_getErrorName(ret));
                 } else {
                     session->flags |= ULNET_SESSION_FLAG_CORE_OPTIONS_DIRTY;
                     //session.retro_run(); // Apply options before loading savestate; Lets hope this isn't necessary
 
                     int64_t remote_savestate_hash = fnv1a_hash(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes);
-                    LOG_INFO("Received savestate payload with hash: %llx size: %llu bytes\n",
+                    SAM2_LOG_INFO("Received savestate payload with hash: %llx size: %llu bytes\n",
                         remote_savestate_hash, savestate_transfer_payload->total_size_bytes);
 
                     save_state_data = (unsigned char *) malloc(session->retro_serialize_size());
@@ -997,12 +981,12 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
                     );
 
                     if (ZSTD_isError(save_state_size)) {
-                        LOG_ERROR("Error decompressing savestate: %s\n", ZSTD_getErrorName(save_state_size));
+                        SAM2_LOG_ERROR("Error decompressing savestate: %s\n", ZSTD_getErrorName(save_state_size));
                     } else {
                         if (!session->retro_unserialize(save_state_data, save_state_size)) {
-                            LOG_ERROR("Failed to load savestate\n");
+                            SAM2_LOG_ERROR("Failed to load savestate\n");
                         } else {
-                            LOG_VERBOSE("Save state loaded\n");
+                            SAM2_LOG_DEBUG("Save state loaded\n");
                             session->frame_counter = savestate_transfer_payload->frame_counter;
                             session->netplay_input_state[ulnet_our_port(session)].frame = savestate_transfer_payload->frame_counter; // @todo This shouldn't be necessary
                             memset(&session->netplay_input_state[ulnet_our_port(session)].input_state, 0, // @todo This should probably happen somewhere else
@@ -1036,13 +1020,9 @@ void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent) {
     size_t serialize_size = session->retro_serialize_size();
     void *savebuffer = malloc(serialize_size);
 
-    LOG_INFO("Before serialize\n");
-    fflush(stdout);
     if (!session->retro_serialize(savebuffer, serialize_size)) {
         assert(!"Failed to serialize");
     }
-    LOG_INFO("After serialize\n");
-    fflush(stdout);
 
     int packet_payload_size_bytes = PACKET_MTU_PAYLOAD_SIZE_BYTES - sizeof(savestate_transfer_packet_t);
     int n, k, packet_groups;
@@ -1064,7 +1044,7 @@ void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent) {
     );
 
     if (ZSTD_isError(savestate_transfer_payload->compressed_savestate_size)) {
-        LOG_ERROR("ZSTD_compress failed: %s\n", ZSTD_getErrorName(savestate_transfer_payload->compressed_savestate_size));
+        SAM2_LOG_ERROR("ZSTD_compress failed: %s\n", ZSTD_getErrorName(savestate_transfer_payload->compressed_savestate_size));
         assert(0);
     }
 
@@ -1075,7 +1055,7 @@ void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent) {
     );
 
     if (ZSTD_isError(savestate_transfer_payload->compressed_options_size)) {
-        LOG_ERROR("ZSTD_compress failed: %s\n", ZSTD_getErrorName(savestate_transfer_payload->compressed_options_size));
+        SAM2_LOG_ERROR("ZSTD_compress failed: %s\n", ZSTD_getErrorName(savestate_transfer_payload->compressed_options_size));
         assert(0);
     }
 
