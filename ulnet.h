@@ -168,7 +168,7 @@ typedef struct ulnet_session {
 
     unsigned char remote_savestate_transfer_packets[COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES + FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * sizeof(savestate_transfer_packet_t)];
     int64_t remote_savestate_transfer_offset;
-    uint8_t remote_packet_groups = FEC_PACKET_GROUPS_MAX; // This is used to bookkeep how much data we actually need to receive to reform the complete savestate
+    uint8_t remote_packet_groups; // This is used to bookkeep how much data we actually need to receive to reform the complete savestate
     void *fec_packet[FEC_PACKET_GROUPS_MAX][GF_SIZE - FEC_REDUNDANT_BLOCKS];
     int fec_index[FEC_PACKET_GROUPS_MAX][GF_SIZE - FEC_REDUNDANT_BLOCKS];
     int fec_index_counter[FEC_PACKET_GROUPS_MAX]; // Counts packets received in each "packet group"
@@ -881,6 +881,12 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         break;
     }
     case CHANNEL_SAVESTATE_TRANSFER: {
+        if (session->remote_packet_groups == 0) {
+            // This is kind of a hack. Since every field in ulnet_session can just be zero-inited
+            // besides this one. I just use this check here to set it to it's correct initial value
+            session->remote_packet_groups = FEC_PACKET_GROUPS_MAX;
+        }
+
         if (session->agent[SAM2_AUTHORITY_INDEX] != agent) {
             printf("Received savestate transfer packet from non-authority agent\n");
             break;
