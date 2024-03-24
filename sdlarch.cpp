@@ -739,7 +739,6 @@ char **g_argv;
 
 static sam2_room_t g_new_room_set_through_gui = { 
     "My Room Name",
-    "TURN host",
     { SAM2_PORT_UNAVAILABLE, SAM2_PORT_AVAILABLE, SAM2_PORT_AVAILABLE, SAM2_PORT_AVAILABLE },
 };
 
@@ -822,6 +821,29 @@ static void peer_ids_to_string(uint64_t peer_ids[], char *output) {
 
     // Null terminate the string
     output[SAM2_AUTHORITY_INDEX + 1] = '\0';
+}
+
+static int read_whole_file(const char *filename, void **data, size_t *size) {
+    SDL_RWops *file = SDL_RWFromFile(filename, "rb");
+
+    if (!file)
+        die("Failed to load %s: %s", filename, SDL_GetError());
+
+    *size = SDL_RWsize(file);
+
+    if (*size < 0)
+        die("Failed to query file size: %s", SDL_GetError());
+
+    *data = SDL_malloc(*size);
+
+    if (!*data)
+        die("Failed to allocate memory for the content");
+
+    if (!SDL_RWread(file, *data, *size, 1))
+        die("Failed to read file data: %s", SDL_GetError());
+
+    SDL_RWclose(file);
+    return 0;
 }
 
 
@@ -1063,26 +1085,24 @@ void draw_imgui() {
                 ImGui::SeparatorText("Create a Room");
             }
 
-            sam2_room_t *display_room = g_ulnet_session.our_peer_id ? &g_ulnet_session.room_we_are_in : &g_new_room_set_through_gui;
 
-            // Editable text fields for room name and TURN host
-            ImGui::InputText("##name", display_room->name, sizeof(display_room->name),
-                g_ulnet_session.our_peer_id ? ImGuiInputTextFlags_ReadOnly : ImGuiInputTextFlags_None);
-            ImGui::SameLine();
-            ImGui::InputText("##turn_hostname", display_room->turn_hostname, sizeof(display_room->turn_hostname),
-                g_ulnet_session.our_peer_id ? ImGuiInputTextFlags_ReadOnly : ImGuiInputTextFlags_None);
+            if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
+                ImGui::Text("Room: %s", g_ulnet_session.room_we_are_in.name);
+                // Fixed text fields to display binary values
+                //char ports_str[65] = {0};
+                char flags_str[65] = {0};
 
-            // Fixed text fields to display binary values
-            //char ports_str[65] = {0};
-            char flags_str[65] = {0};
+                // Convert the integer values to binary strings
+                for (int i = 0; i < 64; i+=4) {
+                    //ports_str[i/4] = '0' + ((g_room.ports >> (60 - i)) & 0xF);
+                    flags_str[i/4] = '0' + ((g_ulnet_session.room_we_are_in.flags >> (60 - i)) & 0xF);
+                }
 
-            // Convert the integer values to binary strings
-            for (int i = 0; i < 64; i+=4) {
-                //ports_str[i/4] = '0' + ((g_room.ports >> (60 - i)) & 0xF);
-                flags_str[i/4] = '0' + ((display_room->flags >> (60 - i)) & 0xF);
+                ImGui::Text("Flags bitfield: %s", flags_str);
+            } else {
+                // Editable text field for room name
+                ImGui::InputText("##name", g_new_room_set_through_gui.name, sizeof(g_new_room_set_through_gui.name), ImGuiInputTextFlags_None);
             }
-
-            ImGui::Text("Flags bitfield: %s", flags_str);
         }
 
         if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
@@ -1254,16 +1274,17 @@ void draw_imgui() {
 
             ImGui::BeginChild("TableWindow",
                 ImVec2(
-                    ImGui::GetContentRegionAvail().x,
+                    500,
                     ImGui::GetWindowContentRegionMax().y/2
                 ), true);
 
             static int selected_room_index = -1;  // Initialize as -1 to indicate no selection
             // Table
-            if (ImGui::BeginTable("Rooms", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+            if (ImGui::BeginTable("Rooms", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
                 ImGui::TableSetupColumn("Room Name");
-                ImGui::TableSetupColumn("TURN Host Name");
                 ImGui::TableSetupColumn("Peers");
+                ImGui::TableSetupColumn("Core Hash");
+                ImGui::TableSetupColumn("ROM Hash");
                 ImGui::TableHeadersRow();
 
                 for (int room_index = 0; room_index < g_sam2_room_count; ++room_index) {
@@ -1275,14 +1296,17 @@ void draw_imgui() {
                     if (ImGui::Selectable(g_sam2_rooms[room_index].name, selected_room_index == room_index, selectable_flags)) {
                         selected_room_index = room_index;
                     }
-                    
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%s", g_sam2_rooms[room_index].turn_hostname);
 
                     ImGui::TableNextColumn();
                     char ports_str[65];
-                    peer_ids_to_string(g_new_room_set_through_gui.peer_ids, ports_str);
+                    peer_ids_to_string(g_sam2_rooms[room_index].peer_ids, ports_str);
                     ImGui::Text("%s", ports_str);
+
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%" PRIX64, g_sam2_rooms[room_index].core_hash_xxh64);
+
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%" PRIX64, g_sam2_rooms[room_index].rom_hash_xxh64);
                 }
 
                 ImGui::EndTable();
@@ -1292,38 +1316,54 @@ void draw_imgui() {
 
             if (selected_room_index != -1) {
 
-                if (ImGui::Button("Join")) {
-                    // Send a join room request
-                    sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
-                    request.room = g_sam2_rooms[selected_room_index];
+                // Disable the "Join" button if the selected room has a different hash
+                if (   g_sam2_rooms[selected_room_index].core_hash_xxh64 == g_new_room_set_through_gui.core_hash_xxh64 
+                    && g_sam2_rooms[selected_room_index].rom_hash_xxh64 == g_new_room_set_through_gui.rom_hash_xxh64) {
+                    if (ImGui::Button("Join")) {
+                        // Send a join room request
+                        sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
+                        request.room = g_sam2_rooms[selected_room_index];
 
-                    int p = 0;
-                    for (p = 0; p < SAM2_PORT_MAX; p++) {
-                        if (request.room.peer_ids[p] == SAM2_PORT_AVAILABLE) {
-                            request.room.peer_ids[p] = g_ulnet_session.our_peer_id;
-                            break;
+                        int p = 0;
+                        for (p = 0; p < SAM2_PORT_MAX; p++) {
+                            if (request.room.peer_ids[p] == SAM2_PORT_AVAILABLE) {
+                                request.room.peer_ids[p] = g_ulnet_session.our_peer_id;
+                                break;
+                            }
                         }
+
+                        if (p == SAM2_PORT_MAX) {
+                            die("No available ports in the room");
+                        }
+
+                        g_ulnet_session.peer_joining_on_frame[p] = INT64_MAX; // Upper bound
+
+                        g_libretro_context.SAM2Send((char *) &request);
                     }
 
-                    if (p == SAM2_PORT_MAX) {
-                        die("No available ports in the room");
+                    ImGui::SameLine();
+                    if (ImGui::Button("Spectate")) {
+                        // Directly signaling the authority just means spectate... @todo I probably should add the room as a field as well though incase I decide on multiple rooms per authority in the future
+                        g_ulnet_session.room_we_are_in = g_sam2_rooms[selected_room_index]; 
+                        startup_ice_for_peer(
+                            &g_ulnet_session,
+                            &g_ulnet_session.agent[SAM2_AUTHORITY_INDEX],
+                            &g_ulnet_session.agent_peer_id[SAM2_AUTHORITY_INDEX],
+                             g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX]
+                        );
+                    }
+                } else {
+                    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+                    ImGui::Button("Join");
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Core or ROM hash mismatch with room");
                     }
 
-                    g_ulnet_session.peer_joining_on_frame[p] = INT64_MAX; // Upper bound
-
-                    g_libretro_context.SAM2Send((char *) &request);
-                }
-
-                ImGui::SameLine();
-                if (ImGui::Button("Spectate")) {
-                    // Directly signaling the authority just means spectate... @todo I probably should add the room as a field as well though incase I decide on multiple rooms per authority in the future
-                    g_ulnet_session.room_we_are_in = g_sam2_rooms[selected_room_index]; 
-                    startup_ice_for_peer(
-                        &g_ulnet_session,
-                        &g_ulnet_session.agent[SAM2_AUTHORITY_INDEX],
-                        &g_ulnet_session.agent_peer_id[SAM2_AUTHORITY_INDEX],
-                         g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX]
-                    );
+                    ImGui::Button("Spectate");
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Core or ROM hash mismatch with room");
+                    }
+                    ImGui::PopStyleVar();
                 }
             }
         }
@@ -2281,28 +2321,16 @@ int main(int argc, char *argv[]) {
     void *rom_data = NULL;
     size_t rom_size = 0;
     if (argc > 2) {
-        SDL_RWops *file = SDL_RWFromFile(argv[2], "rb");
-
-        if (!file)
-            die("Failed to load %s: %s", argv[2], SDL_GetError());
-
-        rom_size = SDL_RWsize(file);
-
-        if (rom_size < 0)
-            die("Failed to query game file size: %s", SDL_GetError());
-
-        rom_data = SDL_malloc(rom_size);
-
-        if (!rom_data)
-            die("Failed to allocate memory for the content");
-
-        if (!SDL_RWread(file, (void*)rom_data, rom_size, 1))
-            die("Failed to read file data: %s", SDL_GetError());
-
-        //heuristic_byte_swap((uint32_t *)rom_data, rom_size / 4);
-        //std::reverse((uint8_t *)rom_data, (uint8_t *)rom_data + rom_size);
-        SDL_RWclose(file);
+        read_whole_file(g_argv[2], &rom_data, &rom_size);
     }
+    size_t core_size;
+    void *core_data;
+    read_whole_file(g_argv[1], &core_data, &core_size);
+    
+    g_new_room_set_through_gui.rom_hash_xxh64 = ZSTD_XXH64(rom_data, rom_size, 0);
+    g_new_room_set_through_gui.core_hash_xxh64 = ZSTD_XXH64(core_data, core_size, 0);
+    SDL_free(core_data);
+    core_data = NULL;
 
     if (SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS) < 0)
         die("Failed to initialize SDL");

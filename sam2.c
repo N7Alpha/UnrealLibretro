@@ -352,7 +352,6 @@
 #define SAM2_DEFAULT_BACKLOG 128
 
 // @todo move some of these into the UDP netcode file
-// @todo the 0b prefix is C++14 only
 #define SAM2_FLAG_NO_FIXED_PORT            0b00000001ULL // Clients aren't limited to setting input on bound port
 #define SAM2_FLAG_ALLOW_SHOW_IP            0b00000010ULL
 #define SAM2_FLAG_FORCE_TURN               0b00000100ULL
@@ -424,10 +423,10 @@
 
 typedef struct sig_room {
     char name[64]; // Unique name that identifies the room
-    char turn_hostname[64]; // Idea: Use proof-of-work to limit unauthorized access to the TURN server force clients to occasionally hash savestates to maintain access... you have to come up with some way where the work is "bandwidth hard"
     uint64_t peer_ids[SAM2_PORT_MAX+1]; // Must be unique per port (including authority)
-    //uint64_t authority_peer_id; // Set by sam2 server
     uint64_t flags;
+    uint64_t core_hash_xxh64;
+    uint64_t rom_hash_xxh64;
 } sam2_room_t;
 
 // This is a test for identity not equality
@@ -1562,7 +1561,6 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                 SAM2_LOG_DEBUG("Copying &request->room:%p into room+sig_server->room_count:%p room_count+1:%lld", &request->room, new_room, (long long int)sig_server->room_count);
                 memcpy(new_room, &request->room, sizeof(*new_room));
                 new_room->name[sizeof(new_room->name) - 1] = '\0';
-                new_room->turn_hostname[sizeof(new_room->turn_hostname) - 1] = '\0';
                 new_room->flags |= SAM2_FLAG_ROOM_IS_INITIALIZED;
 
                 sam2_room_make_message_t *response = (sam2_room_make_message_t *) sam2__alloc_response(sig_server, client_data->request_tag);
@@ -2063,7 +2061,7 @@ int main() {
 // If these fail then this server won't be binary compatible with the protocol and would fail horrendously
 // Resort to packing pragmas until these succeed if you run into this issue yourself
 SAM2_STATIC_ASSERT(SAM2_BYTEORDER_ENDIAN == SAM2_BYTEORDER_LITTLE_ENDIAN, "Platform is big-endian which is unsupported");
-SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == 64 + 64 + sizeof(uint64_t) + 8*sizeof(uint64_t) + sizeof(uint64_t), "sam2_room_t is not packed");
+SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == 64 + sizeof(uint64_t) + sizeof(uint64_t) + (SAM2_PORT_MAX+1)*sizeof(uint64_t) + sizeof(uint64_t), "sam2_room_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_make_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_make_message_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sig_room_list_request_t) == 8, "sig_room_list_request_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_list_response_t) == 8 + sizeof(int64_t) + sizeof(int64_t) + 8 * sizeof(sam2_room_t), "sam2_room_list_response_t is not packed");

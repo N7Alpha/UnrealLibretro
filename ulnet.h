@@ -2,6 +2,7 @@
 
 #include "juice/juice.h"
 #include "zstd.h"
+#include "zstd/lib/common/xxhash.h"
 #include "fec.h"
 
 #include <stdint.h>
