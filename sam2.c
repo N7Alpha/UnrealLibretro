@@ -716,11 +716,9 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
 
 #include <errno.h>
 #include <time.h>
+#include <sys/time.h>
 #include <stdarg.h>
 #if defined(_WIN32)
-#if _MT_ERRNO == 1
-    #error "errno_t is not thread-safe";
-#endif
 #include <ws2tcpip.h>
 #else
 #include <unistd.h>
