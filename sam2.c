@@ -283,7 +283,7 @@
 
 #define SAM2_VERSION_MAJOR 1
 #define SAM2_VERSION_MINOR 0
-#define SAM2_PROTOCOL_STRING "v" SAM2__STR(SAM2_VERSION_MAJOR) "." SAM2__STR(SAM2_VERSION_MINOR)
+#define SAM2_PROTOCOL_STRING SAM2__STR(SAM2_VERSION_MAJOR) "." SAM2__STR(SAM2_VERSION_MINOR) "r"
 
 
 #define SAM2_HEADER_SIZE 8
@@ -554,6 +554,7 @@ typedef union sam2_request {
     sig_room_list_request_t room_list_request;
     sam2_room_join_message_t room_join_request;
     sam2_signal_message_t signal_message;
+    sam2_error_response_t error_message;
 } sam2_request_u;
 
 // DO NOT CHANGE THE ORDER. These maps have the same ordering as the message enum 
@@ -653,16 +654,8 @@ typedef struct client_data {
     int64_t list_request_rooms_sent_so_far;
 
     sam2_room_t *hosted_room;
-    sam2_message_e request_tag;
-    union {
-        char buffer[sizeof(sam2_room_make_message_t)]; // @todo Remove this
-        sam2_room_make_message_t room_make_request;
-        sig_room_list_request_t room_list_request;
-        sam2_room_join_message_t room_join_request;
-        sam2_room_acknowledge_join_message_t acknowledge_room_join_message;
-        sam2_signal_message_t signal_message;
-        sam2_error_response_t error_response;
-    };
+
+    char buffer[sizeof(sam2_request_u)];
     int64_t length;
 } client_data_t;
 
@@ -728,7 +721,7 @@ SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_response_u *respons
 // Will bias IPv6 if connecting via domain name and also block
 SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host, int port);
 
-#if defined(SAM2_EXECUTABLE)
+#if defined(SAM2_EXECUTABLE) && !defined(SAM2_IMPLEMENTATION)
     #define SAM2_IMPLEMENTATION
 #endif
 
@@ -748,6 +741,81 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
 #include <netdb.h>
 #include <fcntl.h>
 #endif
+
+#define RLE8_ENCODE_UPPER_BOUND(N) (3 * ((N+1) / 2) + (N) / 2)
+
+int64_t rle8_encode_capped(const uint8_t *input, int64_t input_size, uint8_t *output, int64_t output_capacity) {
+    int64_t output_size = 0;
+    for (int64_t i = 0; i < input_size; ++i) {
+        if (input[i] == 0) {
+            uint16_t count = 1;
+            while (i + 1 < input_size && input[i + 1] == 0) {
+                count++;
+                i++;
+            }
+
+            if (output_size >= output_capacity-2) return -1;
+            output[output_size++] = 0; // Mark the start of a zero run
+            // Encode count as little endian
+            output[output_size++] = (uint8_t)(count & 0xFF);
+            output[output_size++] = (uint8_t)((count >> 8) & 0xFF);
+        } else {
+            if (output_size >= output_capacity) return -1;
+            output[output_size++] = input[i]; // Copy non-zero values directly
+        }
+    }
+    return output_size; // Return the size of the encoded data
+}
+
+// Encodes input array of uint8_t into a byte stream with RLE for zeros.
+int64_t rle8_encode(const uint8_t *input, int64_t input_size, uint8_t *output) {
+    return rle8_encode_capped(input, input_size, output, RLE8_ENCODE_UPPER_BOUND(input_size));
+}
+
+int64_t rle8_decode_extra(const uint8_t* input, int64_t input_size, int64_t *input_consumed, uint8_t* output, int64_t output_capacity) {
+    int64_t output_index = 0;
+    while (*input_consumed < input_size) {
+        if (input[*input_consumed] == 0) {
+            (*input_consumed)++; // Move past the zero marker
+            uint16_t count = input[*input_consumed] | (input[*input_consumed + 1] << 8); // Decode count as little endian
+            (*input_consumed) += 2; // Move past the count bytes
+
+            while (count-- > 0) {
+                if (output_index >= output_capacity) return output_index;
+                output[output_index++] = 0;
+            }
+        } else {
+            if (output_index >= output_capacity) return output_index;
+            output[output_index++] = input[(*input_consumed)++];
+        }
+    }
+    return output_index; // Return the size of the decoded data
+}
+
+// Decodes the encoded byte stream back into uint8_t values.
+int64_t rle8_decode(const uint8_t* input, int64_t input_size, uint8_t* output, int64_t output_capacity) {
+    int64_t input_consumed = 0;
+    return rle8_decode_extra(input, input_size, &input_consumed, output, output_capacity);
+}
+
+// Calculates the decoded size from the encoded byte stream.
+int64_t rle8_decode_size(const uint8_t* input, int64_t input_size) {
+    int64_t decoded_size = 0;
+    int64_t i = 0;
+    while (i < input_size) {
+        if (input[i] == 0) {
+            i++; // Move past the zero marker
+            uint16_t count = input[i] | (input[i + 1] << 8); // Decode count as little endian
+            i += 2; // Move past the count bytes
+
+            decoded_size += count;
+        } else {
+            decoded_size++;
+            i++;
+        }
+    }
+    return decoded_size;
+}
 
 static const char *sam2__log_level_names[] = {"DEBUG", "INFO", "WARN", "ERROR", "FATAL"};
 
@@ -1157,11 +1225,20 @@ successful_read:
 
 SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message) {
     sam2_message_e request_tag = sam2_get_tag(message);
-    if (request_tag <= SAM2_EMESSAGE_NONE) return -1; // Not in range of valid tags
-    if (request_tag >= SAM2_EMESSAGE_VOID) return -1; // Not in range of valid tags
+    if (request_tag == SAM2_EMESSAGE_INVALID) return -1;
 
     // Get the size of the message to be sent
     int message_size = sam2__request_map[request_tag].message_size;
+
+    char message_rle8[sizeof(sam2_request_u)];
+    int64_t message_size_rle8 = rle8_encode_capped((uint8_t *) message, message_size, (uint8_t *) message_rle8, sizeof(message_rle8));
+
+    // If this fails, we just send the message uncompressed
+    if (message_size_rle8 != -1) {
+        message_rle8[7] = 'z';
+        message = message_rle8;
+        message_size = message_size_rle8;
+    }
 
     // Write the message to the socket
     int total_bytes_written = 0;
@@ -1347,6 +1424,8 @@ static void sam2__write_response(uv_stream_t *client, sam2_response_u *response)
         );
     }
 
+    ((char *) response)[7] = 'r'; // @todo Support rle
+
     sam2_message_e tag = SAM2_EMESSAGE_MAKE;
     for (; tag < SAM2_EMESSAGE_VOID; tag++) {
         int found_matching_header = memcmp(response->buffer, sam2__response_map[tag].header, SAM2_HEADER_SIZE) == 0;
@@ -1457,6 +1536,7 @@ static void on_timeout(uv_timer_t *handle) {
 static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
     client_data_t *client_data = (client_data_t *) client->data;
     sam2_server_t *sig_server = (sam2_server_t *) client_data->sig_server;
+    sam2_message_e message_tag = SAM2_EMESSAGE_PART;
 
     if (sig_server->_debug_allocated_response_set != NULL) {
         SAM2_LOG_ERROR("We had allocated unsent responses this means we probably leaked memory handling the last response");
@@ -1480,8 +1560,6 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
     }
 
     for (int64_t remaining = nread; remaining > 0;) {
-        client_data->request_tag = SAM2_EMESSAGE_PART;
-
         // We first need to read the header as that is how we infer the total size of the message
         if (client_data->length < SAM2_HEADER_SIZE) {
             int64_t consumed = SAM2_MIN(remaining, SAM2_HEADER_SIZE - client_data->length);
@@ -1491,34 +1569,89 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
             client_data->length += consumed;
         }
 
+        sam2_request_u message;
         // Read as much data as we can for the associated message for the given header
         if (client_data->length >= SAM2_HEADER_SIZE) {
+            if (client_data->buffer[4] != SAM2_VERSION_MAJOR + '0') {
+                SAM2_LOG_WARN("Version mismatch. Client: %c Server: %c", client_data->buffer[4], SAM2_VERSION_MAJOR + '0');
+                static sam2_error_response_t response = {
+                    SAM2_FAIL_HEADER,
+                    SAM2_RESPONSE_CONNECTION_INVALID,
+                    "Version mismatch"
+                };
+
+                sam2__write_fatal_error(client, &response);
+                goto cleanup;
+            }
+
+            int64_t message_bytes_read = 0;
             sam2_message_e tag;
             for (tag = SAM2_EMESSAGE_MAKE; tag < SAM2_EMESSAGE_VOID; tag++) {
-                if (memcmp(client_data->buffer, sam2__request_map[tag].header, 8) == 0) {
-                    int64_t num_bytes_remaining_in_message_size = sam2__request_map[tag].message_size - client_data->length;
-                    int64_t consumed = SAM2_MIN(num_bytes_remaining_in_message_size, remaining);
-                    memcpy(client_data->buffer + client_data->length, buf->base + (nread - remaining), consumed);
+                if (memcmp(client_data->buffer, sam2__request_map[tag].header, 4) == 0) {
+                    if (client_data->buffer[7] == 'z') {
+                        // Decode what we have buffered
+                        message_bytes_read = rle8_decode(
+                            (uint8_t *) client_data->buffer,
+                            client_data->length,
+                            (uint8_t *) &message,
+                            sam2__request_map[tag].message_size
+                        );
 
-                    remaining -= consumed;
-                    client_data->length += consumed;
+                        // Decode the data we just received over the network
+                        int64_t input_consumed = 0;
+                        message_bytes_read += rle8_decode_extra(
+                            (uint8_t *) buf->base + (nread - remaining),
+                            remaining,
+                            &input_consumed,
+                            (uint8_t *) &message + message_bytes_read,
+                            sam2__request_map[tag].message_size - message_bytes_read
+                        );
 
-                    if (client_data->length > sam2__request_map[tag].message_size) {
-                        SAM2_LOG_ERROR("Message framing failed when parsing message with header '%.8s'", client_data->buffer);
+                        if (message_bytes_read == sam2__request_map[tag].message_size) {
+                            remaining -= input_consumed;
+                            client_data->length = 0;
+                        } else {
+                            memcpy(client_data->buffer + client_data->length, buf->base + (nread - remaining), remaining);
+                            client_data->length = remaining;
+                            remaining = 0;
+                        }
+                    } else if (client_data->buffer[7] == 'r') {
+                        int64_t num_bytes_remaining_in_message_size = sam2__request_map[tag].message_size - client_data->length;
+                        int64_t consumed = SAM2_MIN(num_bytes_remaining_in_message_size, remaining);
+                        memcpy(client_data->buffer + client_data->length, buf->base + (nread - remaining), consumed);
 
-                        static sam2_error_response_t response = { 
+                        remaining -= consumed;
+                        client_data->length += consumed;
+                        if (client_data->length > sam2__request_map[tag].message_size) {
+                            SAM2_LOG_ERROR("Message framing failed when parsing message with header '%.8s'", client_data->buffer);
+
+                            static sam2_error_response_t response = { 
+                                SAM2_FAIL_HEADER,
+                                SAM2_RESPONSE_SERVER_ERROR,
+                                "Message framing failed on the server this is bad"
+                            };
+
+                            sam2__write_fatal_error(client, &response);
+                            goto cleanup;
+                        }
+
+                        if (client_data->length >= sam2__request_map[tag].message_size) {
+                            memcpy(&message, client_data->buffer, client_data->length);
+                            message_bytes_read = client_data->length;
+                            client_data->length = 0;
+                        }
+                    } else {
+                        static sam2_error_response_t response = {
                             SAM2_FAIL_HEADER,
-                            SAM2_RESPONSE_SERVER_ERROR,
-                            "Message framing failed on the server this is bad"
+                            SAM2_RESPONSE_INVALID_ARGS,
+                            "Invalid message encode type"
                         };
 
                         sam2__write_fatal_error(client, &response);
                         goto cleanup;
-                    } else if (client_data->length == sam2__request_map[tag].message_size) {
-                        client_data->request_tag = tag;
-                    } else {
-                        client_data->request_tag = client_data->length == sam2__request_map[tag].message_size ? tag : SAM2_EMESSAGE_PART;
                     }
+
+                    message_tag = message_bytes_read == sam2__request_map[tag].message_size ? tag : SAM2_EMESSAGE_PART;
 
                     break;
                 }
@@ -1527,84 +1660,87 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
             // If no associated header
             if (tag == SAM2_EMESSAGE_VOID) {
                 SAM2_LOG_INFO("Client %" PRIx64 " sent invalid header '%.8s'", client_data->peer_id, client_data->buffer);
-                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SIG_RESPONSE_INVALID_HEADER };
+                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SIG_RESPONSE_INVALID_HEADER, "Invalid header" };
                 sam2__write_fatal_error(client, &response);
                 goto cleanup;
             }
         }
 
-        SAM2_LOG_DEBUG("client_data->length=%" PRId64 "", client_data->length);
+        SAM2_LOG_DEBUG("client_data->length=%" PRId64, client_data->length);
 
-        // If we have a complete request to process
-        if (client_data->request_tag != SAM2_EMESSAGE_PART) {
-            SAM2_LOG_INFO("Client %" PRIx64 " sent message with header '%.8s'", client_data->peer_id, client_data->buffer);
+        if (message_tag == SAM2_EMESSAGE_PART) {
+            // This is basically a courtesy for clients to warn them they only sent a partial message
+            uv_timer_start(client_data->timer, on_timeout, 500, 0);  // 0.5 seconds
+            goto cleanup;
+        }
 
-            // Send the appropriate response
-            switch(client_data->request_tag) {
-            case SAM2_EMESSAGE_LIST: {
-                sam2_room_list_response_t *response = &sam2__alloc_response(sig_server, client_data->request_tag)->room_list_response;
+        SAM2_LOG_INFO("Client %" PRIx64 " sent message with header '%.8s'", client_data->peer_id, (char *) &message);
 
-                response->server_room_count = sig_server->room_count;
-                response->room_count = SAM2_MIN((int64_t) SAM2_ARRAY_LENGTH(response->rooms), sig_server->room_count); 
-                memcpy(response->rooms, sig_server->rooms, sig_server->room_count * sizeof(sig_server->rooms[0]));
+        // Send the appropriate response
+        switch(message_tag) {
+        case SAM2_EMESSAGE_LIST: {
+            sam2_room_list_response_t *response = &sam2__alloc_response(sig_server, message_tag)->room_list_response;
 
-                client_data->list_request_rooms_sent_so_far += response->room_count;
-                // @todo Send remaining rooms if there are more than 128 bookkeep in client data accordingly
+            response->server_room_count = sig_server->room_count;
+            response->room_count = SAM2_MIN((int64_t) SAM2_ARRAY_LENGTH(response->rooms), sig_server->room_count); 
+            memcpy(response->rooms, sig_server->rooms, sig_server->room_count * sizeof(sig_server->rooms[0]));
 
-                sam2__write_response(client, (sam2_response_u *) response);
-                break;
+            client_data->list_request_rooms_sent_so_far += response->room_count;
+            // @todo Send remaining rooms if there are more than 128 bookkeep in client data accordingly
+
+            sam2__write_response(client, (sam2_response_u *) response);
+            break;
+        }
+        case SAM2_EMESSAGE_MAKE: {
+            sam2_room_make_message_t *request = (sam2_room_make_message_t *) &message;
+
+            if (sig_server->room_count + 1 > sig_server->room_capacity) {
+                SAM2_LOG_WARN("Out of rooms");
+                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_SERVER_ERROR, "Out of rooms"};
+                write_error((uv_stream_t *) client, &response);
+                goto finished_processing_last_message;
             }
-            case SAM2_EMESSAGE_MAKE: {
-                sam2_room_make_message_t *request = &client_data->room_make_request;
 
-                if (sig_server->room_count + 1 > sig_server->room_capacity) {
-                    SAM2_LOG_WARN("Out of rooms");
-                    static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_SERVER_ERROR, "Out of rooms"};
-                    write_error((uv_stream_t *) client, &response);
-                    goto finished_processing_last_message;
-                }
+            // @todo Add validation for room uniqueness and data permissions on flags, not having multiple rooms with the same name, etc
+            if (client_data->hosted_room) {
+                SAM2_LOG_INFO("Client %" PRIx64 " attempted to make a room while already hosting one replacing it with the new requested one", client_data->peer_id);
 
-                // @todo Add validation for room uniqueness and data permissions on flags, not having multiple rooms with the same name, etc
-                if (client_data->hosted_room) {
-                    SAM2_LOG_INFO("Client %" PRIx64 " attempted to make a room while already hosting one replacing it with the new requested one", client_data->peer_id);
-
-                    sam2__remove_room(sig_server, client_data->hosted_room);
-                }
-
-                sam2_room_t *new_room = &sig_server->rooms[sig_server->room_count++];
-                client_data->hosted_room = new_room;
-
-                request->room.peer_ids[SAM2_AUTHORITY_INDEX] = client_data->peer_id;
-
-                SAM2_LOG_DEBUG("Copying &request->room:%p into room+sig_server->room_count:%p room_count+1:%lld", &request->room, new_room, (long long int)sig_server->room_count);
-                memcpy(new_room, &request->room, sizeof(*new_room));
-                new_room->name[sizeof(new_room->name) - 1] = '\0';
-                new_room->flags |= SAM2_FLAG_ROOM_IS_INITIALIZED;
-
-                sam2_room_make_message_t *response = (sam2_room_make_message_t *) sam2__alloc_response(sig_server, client_data->request_tag);
-                memcpy(&response->room, new_room, sizeof(*new_room));
-
-                sam2__write_response(client, (sam2_response_u *) response);
-
-                break;
+                sam2__remove_room(sig_server, client_data->hosted_room);
             }
-            case SAM2_EMESSAGE_JOIN: {
-                // The logic in here is complicated because this message aliases many different operations...
-                // keeping the message structure uniform simplifies the client perspective in my opinion
 
-                sam2_room_join_message_t *request = &client_data->room_join_request;
+            sam2_room_t *new_room = &sig_server->rooms[sig_server->room_count++];
+            client_data->hosted_room = new_room;
 
-                request->room.name[sizeof(request->room.name) - 1] = '\0';
-                //memcpy(buffer.base, request, sizeof(*request));
+            request->room.peer_ids[SAM2_AUTHORITY_INDEX] = client_data->peer_id;
 
-                sam2_room_t *associated_room = sam2__find_hosted_room(sig_server, &request->room);
+            SAM2_LOG_DEBUG("Copying &request->room:%p into room+sig_server->room_count:%p room_count+1:%lld", &request->room, new_room, (long long int)sig_server->room_count);
+            memcpy(new_room, &request->room, sizeof(*new_room));
+            new_room->name[sizeof(new_room->name) - 1] = '\0';
+            new_room->flags |= SAM2_FLAG_ROOM_IS_INITIALIZED;
 
-                if (!associated_room) {
-                    SAM2_LOG_INFO("Client attempted to join non-existent room with authority %" PRIx64 "", request->room.peer_ids[SAM2_AUTHORITY_INDEX]);
-                    static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_ROOM_DOES_NOT_EXIST, "Room not found"};
-                    write_error((uv_stream_t *) client, &response);
-                    goto finished_processing_last_message;
-                }
+            sam2_room_make_message_t *response = (sam2_room_make_message_t *) sam2__alloc_response(sig_server, message_tag);
+            memcpy(&response->room, new_room, sizeof(*new_room));
+
+            sam2__write_response(client, (sam2_response_u *) response);
+
+            break;
+        }
+        case SAM2_EMESSAGE_JOIN: {
+            // The logic in here is complicated because this message aliases many different operations...
+            // keeping the message structure uniform simplifies the client perspective in my opinion
+            sam2_room_join_message_t *request = (sam2_room_join_message_t *) &message;
+
+            request->room.name[sizeof(request->room.name) - 1] = '\0';
+            //memcpy(buffer.base, request, sizeof(*request));
+
+            sam2_room_t *associated_room = sam2__find_hosted_room(sig_server, &request->room);
+
+            if (!associated_room) {
+                SAM2_LOG_INFO("Client attempted to join non-existent room with authority %" PRIx64 "", request->room.peer_ids[SAM2_AUTHORITY_INDEX]);
+                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_ROOM_DOES_NOT_EXIST, "Room not found"};
+                write_error((uv_stream_t *) client, &response);
+                goto finished_processing_last_message;
+            }
 
 //                for (int p = 0; p < SAM2_ARRAY_LENGTH(associated_room->peer_ids); p++) {
 //                    if (associated_room->peer_ids[p] == client_p) {
@@ -1612,268 +1748,262 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
 //                    }
 //                }
 
-                if (client_data->peer_id == associated_room->peer_ids[SAM2_AUTHORITY_INDEX]) {
-                    // If Authority made a state change
-                    int p_modified = -1;
-                    for (int p = 0; p < SAM2_PORT_MAX; p++) {
-                        if (request->room.peer_ids[p] != associated_room->peer_ids[p]) {
-                            SAM2_LOG_INFO("Peer on port %d for room '%s' changed from %" PRIx64 " to %" PRIx64 "",
-                                p, associated_room->name, associated_room->peer_ids[p], request->room.peer_ids[p]);
+            if (client_data->peer_id == associated_room->peer_ids[SAM2_AUTHORITY_INDEX]) {
+                // If Authority made a state change
+                int p_modified = -1;
+                for (int p = 0; p < SAM2_PORT_MAX; p++) {
+                    if (request->room.peer_ids[p] != associated_room->peer_ids[p]) {
+                        SAM2_LOG_INFO("Peer on port %d for room '%s' changed from %" PRIx64 " to %" PRIx64 "",
+                            p, associated_room->name, associated_room->peer_ids[p], request->room.peer_ids[p]);
 
-                            if (p_modified != -1) {
-                                // @todo This might be a bit too strict
-                                SAM2_LOG_INFO("Authority %" PRIx64 " attempted to change more than one port at a time", client_data->peer_id);
-                                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_SERVER_ERROR, "Can only change one port at a time"};
-                                write_error((uv_stream_t *) client, &response);
-                                goto finished_processing_last_message;
-                            }
-
-                            p_modified = p;
-                            associated_room->peer_ids[p] = request->room.peer_ids[p];
-                        }
-
-                        if (request->room.peer_ids[p] == request->room.peer_ids[SAM2_AUTHORITY_INDEX]) {
-                            SAM2_LOG_INFO("Authority %" PRIx64 " erroneously requested to join on port %d for their own room '%s'", client_data->peer_id, p, associated_room->name);
-                            static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_SERVER_ERROR, "Authority cannot join their own room"};
+                        if (p_modified != -1) {
+                            // @todo This might be a bit too strict
+                            SAM2_LOG_INFO("Authority %" PRIx64 " attempted to change more than one port at a time", client_data->peer_id);
+                            static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_SERVER_ERROR, "Can only change one port at a time"};
                             write_error((uv_stream_t *) client, &response);
                             goto finished_processing_last_message;
                         }
+
+                        p_modified = p;
+                        associated_room->peer_ids[p] = request->room.peer_ids[p];
                     }
 
-                    if (p_modified == -1) {
-                        SAM2_LOG_INFO("Authority %" PRIx64 " requested to change state but no ports were modified", client_data->peer_id);
-                        static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_ARGS, "Requested to change state but no ports were modified"};
+                    if (request->room.peer_ids[p] == request->room.peer_ids[SAM2_AUTHORITY_INDEX]) {
+                        SAM2_LOG_INFO("Authority %" PRIx64 " erroneously requested to join on port %d for their own room '%s'", client_data->peer_id, p, associated_room->name);
+                        static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_SERVER_ERROR, "Authority cannot join their own room"};
                         write_error((uv_stream_t *) client, &response);
                         goto finished_processing_last_message;
                     }
-
-                    if (request->room.peer_ids[SAM2_AUTHORITY_INDEX] == SAM2_PORT_AVAILABLE) {
-                        SAM2_LOG_INFO("Authority %" PRIx64 " abandoned the room '%s'", client_data->peer_id, associated_room->name);
-                        for (int p = 0; p < SAM2_PORT_MAX; p++) {
-                            request->room.peer_ids[SAM2_AUTHORITY_INDEX] = SAM2_PORT_AVAILABLE;
-                        }
-
-                        sam2__remove_room(sig_server, associated_room);
-                    }
-
-                    SAM2_LOG_INFO("Broadcasting new room state for room %s", associated_room->name);
-                    for (int p = 0; p < SAM2_PORT_MAX; p++) {
-                        if (associated_room->peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
-
-                        SAM2_LOG_INFO("Sending room state change for room '%s' to peer %" PRIx64 "", associated_room->name, associated_room->peer_ids[p]);
-
-                        uv_tcp_t *client_socket = sam2__find_client(sig_server, request->room.peer_ids[p]);
-
-                        if (client_socket) {
-                            sam2_room_join_message_t *response = (sam2_room_join_message_t *) sam2__alloc_response(sig_server, client_data->request_tag);
-                            response->peer_id = client_data->peer_id;
-                            memcpy(&response->room, &request->room, sizeof(*associated_room));
-                            //memcpy(response->room_secret, request->room_secret, sizeof(response->room_secret));
-
-                            sam2__write_response((uv_stream_t*) client_socket, (sam2_response_u *) response);
-                        } else {
-                            // @todo
-                            SAM2_LOG_WARN("No peer found for id %" PRIx64 "", request->room.peer_ids[p]);
-                        }
-                    }
-                } else {
-                    // Client requests state change by authority
-                    int p_join = sam2_get_port_of_peer(&request->room, client_data->peer_id);
-                    {
-                        int p_in = sam2_get_port_of_peer(associated_room, client_data->peer_id);
-                        if (p_join == -1) {
-                            if (p_in == -1) {
-                                SAM2_LOG_WARN("Client sent state change request for a room they are not in"); // @todo Add generic check and change this to an assert
-                                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_ARGS, "Invalid state change request"};
-                                write_error((uv_stream_t *) client, &response);
-                                goto finished_processing_last_message;
-                            } else {
-                                // Peer left
-                                if (request->room.peer_ids[p_in] != SAM2_PORT_AVAILABLE) {
-                                    SAM2_LOG_WARN("Convention violation: Client did not set the port to SAM2_PORT_AVAILABLE when leaving");
-                                    static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_ARGS, "When leaving a room, set the port to SAM2_PORT_AVAILABLE"};
-                                    write_error((uv_stream_t *) client, &response);
-                                    goto finished_processing_last_message;
-                                }
-                            }
-                        } else {
-                            if (p_in == -1) {
-                                // Peer joined
-                                if (associated_room->peer_ids[p_join] != SAM2_PORT_AVAILABLE) {
-                                    SAM2_LOG_WARN("Client attempted to join on an unavailable port");
-                                    static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_PORT_NOT_AVAILABLE, "Port is currently unavailable"};
-                                    write_error((uv_stream_t *) client, &response);
-                                    goto finished_processing_last_message;
-                                }
-                            } else {
-                                if (p_in != p_join) {
-                                    SAM2_LOG_WARN("Client changed port, which is not allowed");
-                                    static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_ARGS, "Peer cannot change ports; Instead leave and rejoin"};
-                                    write_error((uv_stream_t *) client, &response);
-                                    goto finished_processing_last_message;
-                                }
-                            }
-                        }
-
-                        // Check that the client didn't change any ports other than the one they joined on or left on
-                        for (int p = 0; p < SAM2_PORT_MAX; p++) {
-                            if (p != p_join && p != p_in && request->room.peer_ids[p] != associated_room->peer_ids[p]) {
-                                SAM2_LOG_WARN("Client attempted to change ports other than the one they joined on or left on");
-                                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_ARGS, "Invalid state change request"};
-                                write_error((uv_stream_t *) client, &response);
-                                goto finished_processing_last_message;
-                            }
-                        }
-                    }
-
-                    SAM2_LOG_INFO("Forwarding join request to room authority");
-                    uv_tcp_t *authority = sam2__find_client(sig_server, associated_room->peer_ids[SAM2_AUTHORITY_INDEX]);
-                    if (!authority) {
-                        SAM2_LOG_ERROR("Room authority not found even though room was associated. This is a bug");
-                        static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_SERVER_ERROR, "Room authority not found"};
-                        write_error((uv_stream_t *) client, &response);
-                        goto finished_processing_last_message;
-                    }
-
-                    sam2_room_join_message_t *response = (sam2_room_join_message_t *) sam2__alloc_response(sig_server, client_data->request_tag);
-                    memcpy(&response->room, associated_room, sizeof(*associated_room));
-                    response->peer_id = client_data->peer_id;
-                    if (p_join != -1) {
-                        response->room.peer_ids[p_join] = client_data->peer_id;
-                    }
-                    memcpy(response->room_secret, request->room_secret, sizeof(response->room_secret));
-                    sam2__write_response((uv_stream_t*) authority, (sam2_response_u *) response);
                 }
 
-                break;
-            }
-            case SAM2_EMESSAGE_ACKJ: {
-                sam2_room_acknowledge_join_message_t *request = &client_data->acknowledge_room_join_message;
-
-                sam2_room_t *associated_room = sam2__find_hosted_room(sig_server, &request->room);
-                client_data_t *joiner_client_data = (client_data_t *) sam2__find_client_data(sig_server, request->joiner_peer_id);
-
-                // @todo Some of these should just always be checked for any request I think I can write generic code if I reorder some of the fields in the structs
-                if (!associated_room) {
-                    SAM2_LOG_INFO("Client attempted to acknowledge peer %" PRIx64 " in non-existent room", request->joiner_peer_id);
-                    static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_ROOM_DOES_NOT_EXIST, "Acknowledged peer joining non-existant room"};
+                if (p_modified == -1) {
+                    SAM2_LOG_INFO("Authority %" PRIx64 " requested to change state but no ports were modified", client_data->peer_id);
+                    static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_ARGS, "Requested to change state but no ports were modified"};
                     write_error((uv_stream_t *) client, &response);
                     goto finished_processing_last_message;
-                } else if (!joiner_client_data) {
-                    SAM2_LOG_INFO("Client attempted to acknowledge non-existent peer %" PRIx64 " joining room '%s'", request->joiner_peer_id, associated_room->name);
-                    static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_PEER_DOES_NOT_EXIST, "Acknowledged non-existant peer joining room"};
-                    write_error((uv_stream_t *) client, &response);
-                    goto finished_processing_last_message;
-                } else if (sam2_get_port_of_peer(associated_room, request->sender_peer_id) == -1) {
-                    SAM2_LOG_INFO("Client attempted to acknowledge peer %" PRIx64 " joining room '%s', but %" PRIx64 " is not in the room", request->joiner_peer_id, associated_room->name, request->sender_peer_id);
-                    static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_PEER_NOT_IN_ROOM, "Acknowledged join while not in room"};
-                    write_error((uv_stream_t *) client, &response);
-                    goto finished_processing_last_message;
-                } else if (sam2_get_port_of_peer(associated_room, request->joiner_peer_id) == -1) {
-                    SAM2_LOG_INFO("Client attempted to acknowledge peer %" PRIx64 " joining room '%s', but %" PRIx64 " is not in the room", request->joiner_peer_id, associated_room->name, request->joiner_peer_id);
-                    static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_PEER_NOT_IN_ROOM, "Acknowledged join of peer who is not in the room"};
-                    write_error((uv_stream_t *) client, &response);
-                    goto finished_processing_last_message;
-                } else {
-                    SAM2_LOG_INFO("Client acknowledged peer %" PRIx64 " joining room '%s'", request->joiner_peer_id, associated_room->name);
-                    sam2_room_acknowledge_join_message_t response_value = {0};
-                    memcpy(&response_value, request, sizeof(response_value));
+                }
 
-                    response_value.sender_peer_id = client_data->peer_id;
+                if (request->room.peer_ids[SAM2_AUTHORITY_INDEX] == SAM2_PORT_AVAILABLE) {
+                    SAM2_LOG_INFO("Authority %" PRIx64 " abandoned the room '%s'", client_data->peer_id, associated_room->name);
+                    for (int p = 0; p < SAM2_PORT_MAX; p++) {
+                        request->room.peer_ids[SAM2_AUTHORITY_INDEX] = SAM2_PORT_AVAILABLE;
+                    }
 
-                    if (client_data->peer_id == associated_room->peer_ids[SAM2_AUTHORITY_INDEX]) {
-                        SAM2_LOG_INFO("Authority %" PRIx64 " received all acknowledgements for %" PRIx64 " joining room '%s'. Broadcasting this to all peers", client_data->peer_id, request->joiner_peer_id, associated_room->name);
-                        for (int p = 0; p < SAM2_PORT_MAX; p++) {
-                            if (associated_room->peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
+                    sam2__remove_room(sig_server, associated_room);
+                }
 
-                            SAM2_LOG_INFO("Sending room state change for room %s to peer %" PRIx64 "", associated_room->name, associated_room->peer_ids[p]);
+                SAM2_LOG_INFO("Broadcasting new room state for room %s", associated_room->name);
+                for (int p = 0; p < SAM2_PORT_MAX; p++) {
+                    if (associated_room->peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
 
-                            uv_tcp_t *peer_socket = sam2__find_client(sig_server, associated_room->peer_ids[p]);
+                    SAM2_LOG_INFO("Sending room state change for room '%s' to peer %" PRIx64 "", associated_room->name, associated_room->peer_ids[p]);
 
-                            if (peer_socket) {
-                                sam2_room_acknowledge_join_message_t *response = (sam2_room_acknowledge_join_message_t *) sam2__alloc_response(sig_server, client_data->request_tag);
-                                memcpy(response, &response_value, sizeof(*response));
+                    uv_tcp_t *client_socket = sam2__find_client(sig_server, request->room.peer_ids[p]);
 
-                                sam2__write_response((uv_stream_t*) peer_socket, (sam2_response_u *) response);
-                            } else {
-                                // @todo This should just kick everyone and delete the room
-                                SAM2_LOG_ERROR("No peer found for id %" PRIx64 "", associated_room->peer_ids[p]);
-                                sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_SERVER_ERROR, "Could not find peer this is a sam2 bug"};
+                    if (client_socket) {
+                        sam2_room_join_message_t *response = (sam2_room_join_message_t *) sam2__alloc_response(sig_server, message_tag);
+                        response->peer_id = client_data->peer_id;
+                        memcpy(&response->room, &request->room, sizeof(*associated_room));
+                        //memcpy(response->room_secret, request->room_secret, sizeof(response->room_secret));
+
+                        sam2__write_response((uv_stream_t*) client_socket, (sam2_response_u *) response);
+                    } else {
+                        // @todo
+                        SAM2_LOG_WARN("No peer found for id %" PRIx64 "", request->room.peer_ids[p]);
+                    }
+                }
+            } else {
+                // Client requests state change by authority
+                int p_join = sam2_get_port_of_peer(&request->room, client_data->peer_id);
+                {
+                    int p_in = sam2_get_port_of_peer(associated_room, client_data->peer_id);
+                    if (p_join == -1) {
+                        if (p_in == -1) {
+                            SAM2_LOG_WARN("Client sent state change request for a room they are not in"); // @todo Add generic check and change this to an assert
+                            static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_ARGS, "Invalid state change request"};
+                            write_error((uv_stream_t *) client, &response);
+                            goto finished_processing_last_message;
+                        } else {
+                            // Peer left
+                            if (request->room.peer_ids[p_in] != SAM2_PORT_AVAILABLE) {
+                                SAM2_LOG_WARN("Convention violation: Client did not set the port to SAM2_PORT_AVAILABLE when leaving");
+                                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_ARGS, "When leaving a room, set the port to SAM2_PORT_AVAILABLE"};
                                 write_error((uv_stream_t *) client, &response);
                                 goto finished_processing_last_message;
                             }
                         }
                     } else {
-                        SAM2_LOG_INFO("Client %" PRIx64 " acknowledged peer %" PRIx64 " joining room '%s'", client_data->peer_id, request->joiner_peer_id, associated_room->name);
-                        uv_tcp_t *authority = sam2__find_client(sig_server, associated_room->peer_ids[SAM2_AUTHORITY_INDEX]);
-                        sam2_room_acknowledge_join_message_t *response = (sam2_room_acknowledge_join_message_t *) sam2__alloc_response(sig_server, client_data->request_tag);
-                        memcpy(response, &response_value, sizeof(*response));
-                        sam2__write_response((uv_stream_t *) authority, (sam2_response_u *) response);
+                        if (p_in == -1) {
+                            // Peer joined
+                            if (associated_room->peer_ids[p_join] != SAM2_PORT_AVAILABLE) {
+                                SAM2_LOG_WARN("Client attempted to join on an unavailable port");
+                                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_PORT_NOT_AVAILABLE, "Port is currently unavailable"};
+                                write_error((uv_stream_t *) client, &response);
+                                goto finished_processing_last_message;
+                            }
+                        } else {
+                            if (p_in != p_join) {
+                                SAM2_LOG_WARN("Client changed port, which is not allowed");
+                                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_ARGS, "Peer cannot change ports; Instead leave and rejoin"};
+                                write_error((uv_stream_t *) client, &response);
+                                goto finished_processing_last_message;
+                            }
+                        }
+                    }
+
+                    // Check that the client didn't change any ports other than the one they joined on or left on
+                    for (int p = 0; p < SAM2_PORT_MAX; p++) {
+                        if (p != p_join && p != p_in && request->room.peer_ids[p] != associated_room->peer_ids[p]) {
+                            SAM2_LOG_WARN("Client attempted to change ports other than the one they joined on or left on");
+                            static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_ARGS, "Invalid state change request"};
+                            write_error((uv_stream_t *) client, &response);
+                            goto finished_processing_last_message;
+                        }
                     }
                 }
-                break;
-            }
-            case SAM2_EMESSAGE_SIGNAL: {
-                // Clients forwarding sdp's between eachother
-                sam2_signal_message_t *request = &client_data->signal_message;
 
-                if (request->peer_id == client_data->peer_id) {
-                    SAM2_LOG_INFO("Client attempted to send sdp information to themselves");
-                    static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_CANNOT_SIGNAL_SELF, "Cannot signal self"};
+                SAM2_LOG_INFO("Forwarding join request to room authority");
+                uv_tcp_t *authority = sam2__find_client(sig_server, associated_room->peer_ids[SAM2_AUTHORITY_INDEX]);
+                if (!authority) {
+                    SAM2_LOG_ERROR("Room authority not found even though room was associated. This is a bug");
+                    static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_SERVER_ERROR, "Room authority not found"};
                     write_error((uv_stream_t *) client, &response);
                     goto finished_processing_last_message;
                 }
 
-                uv_tcp_t *peer = sam2__find_client(sig_server, request->peer_id);
-
-                SAM2_LOG_INFO("Forwarding sdp information from peer %" PRIx64 " to peer %" PRIx64 "", client_data->peer_id, request->peer_id);
-                if (!peer) {
-                    SAM2_LOG_WARN("Forwarding failed Client attempted to send sdp information to non-existent peer");
-                    static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_PEER_DOES_NOT_EXIST, "Peer not found"};
-                    write_error((uv_stream_t *) client, &response);
-                    goto finished_processing_last_message;
-                }
-
-                sam2_signal_message_t *response = (sam2_signal_message_t *) sam2__alloc_response(sig_server, client_data->request_tag);
-
-                memcpy(response, request, sizeof(*response));
+                sam2_room_join_message_t *response = (sam2_room_join_message_t *) sam2__alloc_response(sig_server, message_tag);
+                memcpy(&response->room, associated_room, sizeof(*associated_room));
                 response->peer_id = client_data->peer_id;
-
-                sam2__write_response((uv_stream_t *) peer, (sam2_response_u *) response);
-                break;
-            }
-            case SAM2_EMESSAGE_ERROR: {
-                SAM2_LOG_INFO("Peer %" PRIx64 " sent error message to Peer %" PRIx64 "", client_data->peer_id, client_data->error_response.peer_id);
-                uv_tcp_t *target_peer = sam2__find_client(sig_server, client_data->error_response.peer_id);
-
-                if (target_peer) {
-                    sam2_error_response_t *response = (sam2_error_response_t *) sam2__alloc_response(sig_server, client_data->request_tag);
-                    memcpy(response, &client_data->error_response, sizeof(*response));
-                    sam2__write_response((uv_stream_t *) target_peer, (sam2_response_u *) response);
-                } else {
-                    SAM2_LOG_WARN("Peer %" PRIx64 " not found", client_data->error_response.peer_id);
+                if (p_join != -1) {
+                    response->room.peer_ids[p_join] = client_data->peer_id;
                 }
-                break;
+                memcpy(response->room_secret, request->room_secret, sizeof(response->room_secret));
+                sam2__write_response((uv_stream_t*) authority, (sam2_response_u *) response);
             }
-            default:
-                SAM2_LOG_FATAL("A dumb programming logic error was made or something got corrupted if you ever get here");
-                //__builtin_unreachable();
+
+            break;
+        }
+        case SAM2_EMESSAGE_ACKJ: {
+            sam2_room_acknowledge_join_message_t *request = (sam2_room_acknowledge_join_message_t *) &message;
+
+            sam2_room_t *associated_room = sam2__find_hosted_room(sig_server, &request->room);
+            client_data_t *joiner_client_data = (client_data_t *) sam2__find_client_data(sig_server, request->joiner_peer_id);
+
+            // @todo Some of these should just always be checked for any request I think I can write generic code if I reorder some of the fields in the structs
+            if (!associated_room) {
+                SAM2_LOG_INFO("Client attempted to acknowledge peer %" PRIx64 " in non-existent room", request->joiner_peer_id);
+                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_ROOM_DOES_NOT_EXIST, "Acknowledged peer joining non-existant room"};
+                write_error((uv_stream_t *) client, &response);
+                goto finished_processing_last_message;
+            } else if (!joiner_client_data) {
+                SAM2_LOG_INFO("Client attempted to acknowledge non-existent peer %" PRIx64 " joining room '%s'", request->joiner_peer_id, associated_room->name);
+                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_PEER_DOES_NOT_EXIST, "Acknowledged non-existant peer joining room"};
+                write_error((uv_stream_t *) client, &response);
+                goto finished_processing_last_message;
+            } else if (sam2_get_port_of_peer(associated_room, request->sender_peer_id) == -1) {
+                SAM2_LOG_INFO("Client attempted to acknowledge peer %" PRIx64 " joining room '%s', but %" PRIx64 " is not in the room", request->joiner_peer_id, associated_room->name, request->sender_peer_id);
+                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_PEER_NOT_IN_ROOM, "Acknowledged join while not in room"};
+                write_error((uv_stream_t *) client, &response);
+                goto finished_processing_last_message;
+            } else if (sam2_get_port_of_peer(associated_room, request->joiner_peer_id) == -1) {
+                SAM2_LOG_INFO("Client attempted to acknowledge peer %" PRIx64 " joining room '%s', but %" PRIx64 " is not in the room", request->joiner_peer_id, associated_room->name, request->joiner_peer_id);
+                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_PEER_NOT_IN_ROOM, "Acknowledged join of peer who is not in the room"};
+                write_error((uv_stream_t *) client, &response);
+                goto finished_processing_last_message;
+            } else {
+                SAM2_LOG_INFO("Client acknowledged peer %" PRIx64 " joining room '%s'", request->joiner_peer_id, associated_room->name);
+                sam2_room_acknowledge_join_message_t response_value = {0};
+                memcpy(&response_value, request, sizeof(response_value));
+
+                response_value.sender_peer_id = client_data->peer_id;
+
+                if (client_data->peer_id == associated_room->peer_ids[SAM2_AUTHORITY_INDEX]) {
+                    SAM2_LOG_INFO("Authority %" PRIx64 " received all acknowledgements for %" PRIx64 " joining room '%s'. Broadcasting this to all peers", client_data->peer_id, request->joiner_peer_id, associated_room->name);
+                    for (int p = 0; p < SAM2_PORT_MAX; p++) {
+                        if (associated_room->peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
+
+                        SAM2_LOG_INFO("Sending room state change for room %s to peer %" PRIx64 "", associated_room->name, associated_room->peer_ids[p]);
+
+                        uv_tcp_t *peer_socket = sam2__find_client(sig_server, associated_room->peer_ids[p]);
+
+                        if (peer_socket) {
+                            sam2_room_acknowledge_join_message_t *response = (sam2_room_acknowledge_join_message_t *) sam2__alloc_response(sig_server, message_tag);
+                            memcpy(response, &response_value, sizeof(*response));
+
+                            sam2__write_response((uv_stream_t*) peer_socket, (sam2_response_u *) response);
+                        } else {
+                            // @todo This should just kick everyone and delete the room
+                            SAM2_LOG_ERROR("No peer found for id %" PRIx64 "", associated_room->peer_ids[p]);
+                            sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_SERVER_ERROR, "Could not find peer this is a sam2 bug"};
+                            write_error((uv_stream_t *) client, &response);
+                            goto finished_processing_last_message;
+                        }
+                    }
+                } else {
+                    SAM2_LOG_INFO("Client %" PRIx64 " acknowledged peer %" PRIx64 " joining room '%s'", client_data->peer_id, request->joiner_peer_id, associated_room->name);
+                    uv_tcp_t *authority = sam2__find_client(sig_server, associated_room->peer_ids[SAM2_AUTHORITY_INDEX]);
+                    sam2_room_acknowledge_join_message_t *response = (sam2_room_acknowledge_join_message_t *) sam2__alloc_response(sig_server, message_tag);
+                    memcpy(response, &response_value, sizeof(*response));
+                    sam2__write_response((uv_stream_t *) authority, (sam2_response_u *) response);
+                }
             }
+            break;
+        }
+        case SAM2_EMESSAGE_SIGNAL: {
+            // Clients forwarding sdp's between eachother
+            sam2_signal_message_t *request = (sam2_signal_message_t *) &message;
+
+            if (request->peer_id == client_data->peer_id) {
+                SAM2_LOG_INFO("Client attempted to send sdp information to themselves");
+                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_CANNOT_SIGNAL_SELF, "Cannot signal self"};
+                write_error((uv_stream_t *) client, &response);
+                goto finished_processing_last_message;
+            }
+
+            uv_tcp_t *peer = sam2__find_client(sig_server, request->peer_id);
+
+            SAM2_LOG_INFO("Forwarding sdp information from peer %" PRIx64 " to peer %" PRIx64 "", client_data->peer_id, request->peer_id);
+            if (!peer) {
+                SAM2_LOG_WARN("Forwarding failed Client attempted to send sdp information to non-existent peer");
+                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_PEER_DOES_NOT_EXIST, "Peer not found"};
+                write_error((uv_stream_t *) client, &response);
+                goto finished_processing_last_message;
+            }
+
+            sam2_signal_message_t *response = (sam2_signal_message_t *) sam2__alloc_response(sig_server, message_tag);
+
+            memcpy(response, request, sizeof(*response));
+            response->peer_id = client_data->peer_id;
+
+            sam2__write_response((uv_stream_t *) peer, (sam2_response_u *) response);
+            break;
+        }
+        case SAM2_EMESSAGE_ERROR: {
+            sam2_error_response_t *error_message = (sam2_error_response_t *) &message;
+            SAM2_LOG_INFO("Peer %" PRIx64 " sent error message to Peer %" PRIx64 "", client_data->peer_id, error_message->peer_id);
+            uv_tcp_t *target_peer = sam2__find_client(sig_server, error_message->peer_id);
+
+            if (target_peer) {
+                sam2_error_response_t *response = (sam2_error_response_t *) sam2__alloc_response(sig_server, message_tag);
+                memcpy(response, error_message, sizeof(*response));
+                sam2__write_response((uv_stream_t *) target_peer, (sam2_response_u *) response);
+            } else {
+                SAM2_LOG_WARN("Peer %" PRIx64 " not found", error_message->peer_id);
+            }
+            break;
+        }
+        default:
+            SAM2_LOG_FATAL("A dumb programming logic error was made or something got corrupted if you ever get here");
+            //__builtin_unreachable();
+        }
 
 finished_processing_last_message:
-            uv_timer_stop(client_data->timer);
+        uv_timer_stop(client_data->timer);
 
-            client_data->request_tag = SAM2_EMESSAGE_NONE;
-            client_data->length = 0;
-        }
+        message_tag = SAM2_EMESSAGE_NONE;
     }
 
 cleanup:
-
-    // This is basically a courtesy for clients to warn them they only sent a partial message
-    if (client_data->request_tag == SAM2_EMESSAGE_PART) {
-        uv_timer_start(client_data->timer, on_timeout, 500, 0);  // 0.5 seconds
-    }
 
     if (buf->base) {
         SAM2_LOG_DEBUG("Freeing buf");

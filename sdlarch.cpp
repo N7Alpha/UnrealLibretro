@@ -2654,7 +2654,8 @@ int main(int argc, char *argv[]) {
                 );
 
                 if (status < 0) {
-                    die("Error polling sam2 server: %d\n", status);
+                    SAM2_LOG_ERROR("Error polling sam2 server: %d\n", status);
+                    break;
                 }
 
                 if (   response_tag == SAM2_EMESSAGE_PART
