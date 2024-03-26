@@ -330,6 +330,26 @@
 #define SAM2_STATIC_ASSERT(cond, _) extern int sam2__static_assertion_##__COUNTER__[(cond) ? 1 : -1]
 #endif
 
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+    // C99 or later
+    #define SAM2_RESTRICT restrict
+#elif defined(__cplusplus) && __cplusplus >= 201103L
+    // C++11 or later
+    #define SAM2_RESTRICT __restrict
+#elif defined(__GNUC__) || defined(__clang__)
+    // GCC or Clang
+    #define SAM2_RESTRICT __restrict__
+#elif defined(_MSC_VER) && _MSC_VER >= 1400
+    // Microsoft Visual C++ (MSVC)
+    #define SAM2_RESTRICT __restrict
+#elif defined(__INTEL_COMPILER)
+    // Intel C++ Compiler (ICC)
+    #define SAM2_RESTRICT restrict
+#else
+    // restrict keyword not available
+    #define SAM2_RESTRICT
+#endif
+
 #define SAM2_ARRAY_LENGTH(arr) (sizeof(arr) / sizeof((arr)[0]))
 
 #define SAM2_MAX(a,b) ((a) < (b) ? (b) : (a))
