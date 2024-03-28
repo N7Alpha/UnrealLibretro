@@ -1384,6 +1384,33 @@ finished_drawing_sam2_interface:
             }
         }
 
+        if (ImGui::CollapsingHeader("Serialization Quirks")) {
+            if (g_retro.quirks & RETRO_SERIALIZATION_QUIRK_INCOMPLETE) {
+                ImGui::BulletText("Incomplete: Serialization is usable but not reliable for frame-sensitive features like netplay or rerecording.");
+            }
+            if (g_retro.quirks & RETRO_SERIALIZATION_QUIRK_MUST_INITIALIZE) {
+                ImGui::BulletText("Must Initialize: Core requires initialization time before serialization is supported.");
+            }
+            if (g_retro.quirks & RETRO_SERIALIZATION_QUIRK_CORE_VARIABLE_SIZE) {
+                ImGui::BulletText("Core Variable Size: Serialization size may change within a session.");
+            }
+            if (g_retro.quirks & RETRO_SERIALIZATION_QUIRK_FRONT_VARIABLE_SIZE) {
+                ImGui::BulletText("Frontend Variable Size: Frontend supports variable-sized states.");
+            }
+            if (g_retro.quirks & RETRO_SERIALIZATION_QUIRK_SINGLE_SESSION) {
+                ImGui::BulletText("Single Session: Serialized state can only be loaded during the same session.");
+            }
+            if (g_retro.quirks & RETRO_SERIALIZATION_QUIRK_ENDIAN_DEPENDENT) {
+                ImGui::BulletText("Endian Dependent: Serialization is dependent on the system's endianness.");
+            }
+            if (g_retro.quirks & RETRO_SERIALIZATION_QUIRK_PLATFORM_DEPENDENT) {
+                ImGui::BulletText("Platform Dependent: Serialization cannot be loaded on a different platform due to platform-specific dependencies.");
+            }
+            if (!g_retro.quirks) {
+                ImGui::BulletText("The core did not report any serialization quirks.");
+            }
+        }
+
         if (ImGui::CollapsingHeader("Core Options")) {
             static int option_modified_at_index = -1;
 
