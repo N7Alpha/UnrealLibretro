@@ -22,7 +22,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <atomic>
 #include <time.h>
 
 #ifdef _WIN32
@@ -34,9 +33,6 @@
 #include <SDL.h>
 #include <SDL_opengl.h>
 #include "libretro.h"
-
-#include <chrono>
-#include <thread>
 
 static void die(const char *fmt, ...) {
     char buffer[4096];
@@ -61,39 +57,6 @@ static void die(const char *fmt, ...) {
 #endif
 
     exit(EXIT_FAILURE);
-}
-
-void usleep_busy_wait(unsigned int usec) {
-    if (usec >= 500) {
-        std::this_thread::sleep_for(std::chrono::microseconds(usec));
-    } else {
-        auto start = std::chrono::high_resolution_clock::now();
-        auto end = start + std::chrono::microseconds(usec);
-        while (std::chrono::high_resolution_clock::now() < end) {
-            // Yield resources to other thread on our core for ~40 * 10 cycles
-            // This also saves a little energy
-            _mm_pause();
-            _mm_pause();
-            _mm_pause();
-            _mm_pause();
-            _mm_pause();
-            _mm_pause();
-            _mm_pause();
-            _mm_pause();
-            _mm_pause();
-            _mm_pause();
-        }
-    }
-}
-
-template <typename T, std::size_t N>
-int locate(const T (&array)[N], const T& value) {
-    for (std::size_t i = 0; i < N; ++i) {
-        if (array[i] == value) {
-            return i;
-        }
-    }
-    return -1;
 }
 
 static SDL_Window *g_win = NULL;
@@ -2408,7 +2371,6 @@ int main(int argc, char *argv[]) {
     SDL_Event ev;
 
     for (g_main_loop_cyclic_offset = 0; running; g_main_loop_cyclic_offset = (g_main_loop_cyclic_offset + 1) % MAX_SAMPLE_SIZE) {
-        auto work_start_time = std::chrono::high_resolution_clock::now();
 
         // Update the game loop timer.
         if (runloop_frame_time.callback) {
@@ -2615,11 +2577,11 @@ int main(int argc, char *argv[]) {
             core_wants_tick_at_unix_usec += 1000000 / g_av.timing.fps;
 
             // Keep track of frame-times for plotting purposes
-            static auto last_tick_time = std::chrono::high_resolution_clock::now();
-            auto current_time = std::chrono::high_resolution_clock::now();
-            std::chrono::duration<double, std::milli> elapsed_time_milliseconds = current_time - last_tick_time;
-            g_frame_time_milliseconds[g_frame_cyclic_offset] = (float) elapsed_time_milliseconds.count();
-            last_tick_time = current_time;
+            static int64_t last_tick_usec = get_unix_time_microseconds();
+            int64_t current_time_usec = get_unix_time_microseconds();
+            int64_t elapsed_time_milliseconds = (current_time_usec - last_tick_usec) / 1000;
+            g_frame_time_milliseconds[g_frame_cyclic_offset] = elapsed_time_milliseconds;
+            last_tick_usec = current_time_usec;
 
             int64_t savestate_hash = 0;
             if (g_do_zstd_compress) {
@@ -2736,53 +2698,6 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
-
-#if 0
-        // Compute how long the processing took
-        clock_gettime(CLOCK_MONOTONIC, &end_time);
-        long elapsed = (end_time.tv_sec - start_time.tv_sec) * 1000 + (end_time.tv_nsec - start_time.tv_nsec) / 1000000; // milliseconds
-        
-        // Compute how much we should sleep to maintain the desired frame rate
-        int frame_time = (int)round(1000.0 / g_av.timing.fps); // Frame time in milliseconds
-        int sleep_time = frame_time - elapsed; // How much time left to sleep
-
-        // If the processing was quicker than frame time, sleep the remaining time
-        if (sleep_time > 0) {
-            struct timespec sleep_duration;
-            sleep_duration.tv_sec = sleep_time / 1000;
-            sleep_duration.tv_nsec = (sleep_time % 1000) * 1000000;
-            nanosleep(&sleep_duration, NULL);
-        }
-#endif
-        double monitor_wants_refresh_seconds = 0.0;
-        if (!g_vsync_enabled) {
-            // Handle timing for refreshing the OS window
-            // this has been separated from ticking the core as nowadays many PC monitors aren't 60Hz
-            static SDL_DisplayMode mode = {0};
-            if (mode.refresh_rate == 0) {
-                if (SDL_GetCurrentDisplayMode(0, &mode) != 0) {
-                    SDL_Log("SDL_GetCurrentDisplayMode failed: %s", SDL_GetError());
-                    // We might be on a linux server or something without a display
-                    // Just set are refresh rate to 60 since this will make timing better
-                    mode.refresh_rate = 60;
-                }
-            }
-
-            double frameDelay = 1e6 / mode.refresh_rate;
-            static auto lastSwap = std::chrono::high_resolution_clock::now();
-
-            auto now = std::chrono::high_resolution_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(now - lastSwap);
-            monitor_wants_refresh_seconds = SAM2_MAX(0.0, (frameDelay - duration.count()) / 1e6);
-            lastSwap = now;
-        }
-
-        // Poor man's coroutine's/scheduler
-        double work_elapsed_time_microseconds = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - work_start_time).count();
-
-        //printf("%g\n", sleep);
-        //fflush(stdout);
-        //usleep_busy_wait((unsigned int) (sleep * 1e6));
     }
 //cleanup:
     core_unload();
