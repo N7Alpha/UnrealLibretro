@@ -1979,7 +1979,7 @@ void FLibretroContext::core_input_poll() {
             }
 
             assert(g_ulnet_session.netplay_input_state[p].frame <= g_ulnet_session.frame_counter + (INPUT_DELAY_FRAMES_MAX-1));
-            assert(g_ulnet_session.netplay_input_state[p].frame >= g_ulnet_session.frame_counter);
+            assert(g_ulnet_session.netplay_input_state[p].frame >= g_ulnet_session.frame_counter); // Right now it's possible to do "nothing wrong" and trigger this. Calling retro_serialize sometimes causes a frame to advance prematurely which can trigger this
             for (int i = 0; i < 16; i++) {
                 g_joy[i] |= g_ulnet_session.netplay_input_state[p].input_state[g_ulnet_session.frame_counter % INPUT_DELAY_FRAMES_MAX][0][i];
             }
