@@ -1261,7 +1261,7 @@ void draw_imgui() {
                 if (g_is_refreshing_rooms) {
                     g_sam2_room_count = 0;
                     // The list message is only a header
-                    sig_room_list_request_t request = { SAM2_LIST_HEADER };
+                    sam2_room_list_request_t request = { SAM2_LIST_HEADER };
                     g_libretro_context.SAM2Send((char *) &request);
                 } else {
 

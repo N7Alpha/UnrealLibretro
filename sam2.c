@@ -404,24 +404,21 @@
 #define SAM2_FLAG_AUTHORITY_PERMISSION_MASK (SAM2_FLAG_NO_FIXED_PORT | SAM2_FLAG_ALLOW_SHOW_IP)
 #define SAM2_FLAG_CLIENT_PERMISSION_MASK (SAM2_FLAG_SPECTATOR)
 
-#define SAM2_RESPONSE_SUCCESS                 0
-#define SAM2_RESPONSE_SERVER_ERROR            1  // Emitted by signaling server when there was an internal error
-#define SAM2_RESPONSE_AUTHORITY_ERROR         2  // Emitted by authority when there isn't a code for what went wrong
-#define SAM2_RESPONSE_PEER_ERROR              3  // Emitted by a peer when there isn't a code for what went wrong
-#define SAM2_RESPONSE_INVALID_ARGS            4  // Emitted by signaling server when arguments are invalid
-#define SIG_RESPONSE_ROOM_ALREADY_EXISTS      5  // Emitted by signaling server when trying to create a room that already exists
-#define SAM2_RESPONSE_ROOM_DOES_NOT_EXIST     6  // Emitted by signaling server when a room does not exist
-#define SIG_RESPONSE_ROOM_FULL                7  // Emitted by signaling server or authority when it can't allow more connections for players or spectators
-#define SIG_RESPONSE_ROOM_PASSWORD_WRONG      8  // Emitted by signaling server when the password is wrong
-#define SIG_RESPONSE_INVALID_HEADER           9  // Emitted by signaling server when the header is invalid
-#define SIG_RESPONSE_INVALID_BODY             10 // Emitted by signaling server when the header is valid but the body is invalid
-#define SIG_RESPONSE_PARTIAL_RESPONSE_TIMEOUT 11
-#define SAM2_RESPONSE_PORT_NOT_AVAILABLE      12 // Emitted by signaling server when a client tries to reserve a port that is already occupied
-#define SAM2_RESPONSE_ALREADY_IN_ROOM         13
-#define SAM2_RESPONSE_PEER_DOES_NOT_EXIST     14
-#define SAM2_RESPONSE_PEER_NOT_IN_ROOM        15
-#define SAM2_RESPONSE_CANNOT_SIGNAL_SELF      16
-#define SAM2_RESPONSE_CONNECTION_INVALID      17
+#define SAM2_RESPONSE_SUCCESS                  0
+#define SAM2_RESPONSE_SERVER_ERROR             1  // Emitted by signaling server when there was an internal error
+#define SAM2_RESPONSE_AUTHORITY_ERROR          2  // Emitted by authority when there isn't a code for what went wrong
+#define SAM2_RESPONSE_PEER_ERROR               3  // Emitted by a peer when there isn't a code for what went wrong
+#define SAM2_RESPONSE_INVALID_ARGS             4  // Emitted by signaling server when arguments are invalid
+#define SAM2_RESPONSE_ROOM_DOES_NOT_EXIST      6  // Emitted by signaling server when a room does not exist
+#define SAM2_RESPONSE_ROOM_FULL                7  // Emitted by signaling server or authority when it can't allow more connections for players or spectators
+#define SAM2_RESPONSE_INVALID_HEADER           9  // Emitted by signaling server when the header is invalid
+#define SAM2_RESPONSE_PARTIAL_RESPONSE_TIMEOUT 11
+#define SAM2_RESPONSE_PORT_NOT_AVAILABLE       12 // Emitted by signaling server when a client tries to reserve a port that is already occupied
+#define SAM2_RESPONSE_ALREADY_IN_ROOM          13
+#define SAM2_RESPONSE_PEER_DOES_NOT_EXIST      14
+#define SAM2_RESPONSE_PEER_NOT_IN_ROOM         15
+#define SAM2_RESPONSE_CANNOT_SIGNAL_SELF       16
+#define SAM2_RESPONSE_CONNECTION_INVALID       17
 
 #define SAM2_PORT_UNAVAILABLE                 0
 #define SAM2_PORT_AVAILABLE                   1
@@ -441,7 +438,7 @@
 // All strings are utf-8 encoded unless stated otherwise... @todo Actually I should just add _utf8 if the field isn't ascii
 // Packing of structs is asserted at compile time since packing directives are compiler specific
 
-typedef struct sig_room {
+typedef struct sam2_room {
     char name[64]; // Unique name that identifies the room
     uint64_t peer_ids[SAM2_PORT_MAX+1]; // Must be unique per port (including authority)
     uint64_t flags;
@@ -485,7 +482,7 @@ typedef struct sam2_room_acknowledge_join_message {
     int64_t frame_counter; // Frame that sender stopped on
 } sam2_room_acknowledge_join_message_t;
 
-typedef struct sig_room_make_message {
+typedef struct sam2_room_make_message {
     char header[8];
     sam2_room_t room;
 
@@ -493,12 +490,12 @@ typedef struct sig_room_make_message {
     // uint8_t rom_siphash[16]; // optional
 } sam2_room_make_message_t;
 
-typedef struct sig_room_list_request {
+typedef struct sam2_room_list_request {
     char header[8];
-} sig_room_list_request_t;
+} sam2_room_list_request_t;
 
 // These are sent at a fixed rate until the client receives all the messages
-typedef struct sig_room_list_response {
+typedef struct sam2_room_list_response {
     char header[8];
 
     int64_t server_room_count;  // Set by server to total number of rooms listed on the server
@@ -551,7 +548,7 @@ SAM2_STATIC_ASSERT(sizeof(sam2_response_u) >= sizeof(sam2_room_list_response_t),
 typedef union sam2_request {
     char buffer[sizeof(sam2_room_make_message_t)]; // @todo Remove
     sam2_room_make_message_t room_make_request;
-    sig_room_list_request_t room_list_request;
+    sam2_room_list_request_t room_list_request;
     sam2_room_join_message_t room_join_request;
     sam2_signal_message_t signal_message;
     sam2_error_response_t error_message;
@@ -564,7 +561,7 @@ static struct {
 } sam2__request_map[] = {
     {"GOTOFAIL", SAM2_HEADER_SIZE}, /* SAM2_EMESSAGE_NONE */
     {sam2_make_header, sizeof(sam2_room_make_message_t)},
-    {sam2_list_header, sizeof(sig_room_list_request_t)},
+    {sam2_list_header, sizeof(sam2_room_list_request_t)},
     {sam2_join_header, sizeof(sam2_room_join_message_t)},
     {sam2_ackj_header, sizeof(sam2_room_acknowledge_join_message_t)},
     {sam2_conn_header, sizeof(sam2_connect_message_t)},
@@ -634,7 +631,6 @@ typedef struct sam2_node {
 
 typedef struct sam2_server {
     int64_t room_capacity; // Capacity of rooms and rooms_internal array
-    //sig_room_internal_t *rooms_internal;
     sam2_response_u *response_freelist;
 
     struct client_data *clients;
@@ -1523,7 +1519,7 @@ static void on_timeout(uv_timer_t *handle) {
             client_data->peer_id, (int)SAM2_MIN(client_data->length, SAM2_HEADER_SIZE), client_data->buffer, client_data->length);
 
         static sam2_error_response_t response = { 
-            SAM2_FAIL_HEADER, SIG_RESPONSE_INVALID_HEADER,
+            SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_HEADER,
              "An incomplete TCP message was received before timing out"
         };
 
@@ -1660,7 +1656,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
             // If no associated header
             if (tag == SAM2_EMESSAGE_VOID) {
                 SAM2_LOG_INFO("Client %" PRIx64 " sent invalid header '%.8s'", client_data->peer_id, client_data->buffer);
-                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SIG_RESPONSE_INVALID_HEADER, "Invalid header" };
+                static sam2_error_response_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_HEADER, "Invalid header" };
                 sam2__write_fatal_error(client, &response);
                 goto cleanup;
             }
@@ -2211,7 +2207,7 @@ int main() {
 SAM2_STATIC_ASSERT(SAM2_BYTEORDER_ENDIAN == SAM2_BYTEORDER_LITTLE_ENDIAN, "Platform is big-endian which is unsupported");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == 64 + sizeof(uint64_t) + sizeof(uint64_t) + (SAM2_PORT_MAX+1)*sizeof(uint64_t) + sizeof(uint64_t), "sam2_room_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_make_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_make_message_t is not packed");
-SAM2_STATIC_ASSERT(sizeof(sig_room_list_request_t) == 8, "sig_room_list_request_t is not packed");
+SAM2_STATIC_ASSERT(sizeof(sam2_room_list_request_t) == 8, "sam2_room_list_request_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_list_response_t) == 8 + sizeof(int64_t) + sizeof(int64_t) + 8 * sizeof(sam2_room_t), "sam2_room_list_response_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_join_message_t) == 8 + 8 + 64 + sizeof(sam2_room_t), "sam2_room_join_message_t is not packed");
 #endif
