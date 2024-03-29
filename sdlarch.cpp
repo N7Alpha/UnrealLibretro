@@ -1247,8 +1247,6 @@ void draw_imgui() {
                 }
 
                 g_libretro_context.SAM2Send((char *) &request);
-
-                g_ulnet_session.our_peer_id = 0;
             }
         } else {
             // Create a "Make" button that sends a make room request when clicked
