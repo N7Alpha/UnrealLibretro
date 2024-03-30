@@ -1010,7 +1010,7 @@ void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent) {
     savestate_transfer_payload->total_size_bytes = sizeof(savestate_transfer_payload_t) + savestate_transfer_payload->compressed_savestate_size;
 
     uint64_t hash = fnv1a_hash(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes);
-    printf("Sending savestate payload with hash: %llx size: %llu bytes\n", hash, savestate_transfer_payload->total_size_bytes);
+    printf("Sending savestate payload with hash: %" PRIx64 " size: %" PRId64 " bytes\n", hash, savestate_transfer_payload->total_size_bytes);
 
     // Create parity blocks for Reed-Solomon. n - k in total for each packet group
     // We have "packet grouping" because pretty much every implementation of Reed-Solomon doesn't support more than 255 blocks

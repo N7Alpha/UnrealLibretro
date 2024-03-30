@@ -6,6 +6,16 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Enable include-what-you-use if it exists
+# It was hitting an assertin the code I cared about checking
+#find_program(IWYU_PATH NAMES include-what-you-use iwyu)
+#if(IWYU_PATH)
+#  set(CMAKE_CXX_INCLUDE_WHAT_YOU_USE
+#    ${IWYU_PATH}
+#    -Xiwyu --no_fwd_decls
+#  )
+#endif()
+
 option(NETPLAYARCH_ASAN "Enable AddressSanitizer (ASan)" OFF)
 
 if(NETPLAYARCH_ASAN)
@@ -32,10 +42,6 @@ endif()
 # Set Compiler Flags
 if(MSVC)
 else()
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    set_source_files_properties(sdlarch.cpp PROPERTIES COMPILE_OPTIONS "-fsanitize=safe-stack")
-  endif()
-
   if(APPLE)
       link_libraries(-static-libstdc++)
   else()
@@ -53,7 +59,8 @@ if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "amd64|x86_64"
     set_source_files_properties(sdlarch.cpp PROPERTIES COMPILE_OPTIONS "-mshstk")
   endif()
 elseif()
-  set_source_files_properties(sdlarch.cpp PROPERTIES COMPILE_OPTIONS "-fsanitize=safe-stack")
+  # This was causing the aarch64 build of clang-13 to segmentation fault
+  #set_source_files_properties(sdlarch.cpp PROPERTIES COMPILE_OPTIONS "-fsanitize=safe-stack")
 endif()
 
 

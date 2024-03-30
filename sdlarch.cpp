@@ -890,7 +890,7 @@ void draw_imgui() {
             ImGui::Text("%s compression average speed: %.2f %s", algorithm_name, display_count, unit);
 
             g_send_savestate_next_frame = ImGui::Button("Send Savestate");
-            ImGui::Text("Remote Savestate hash: %llx", g_remote_savestate_hash);
+            ImGui::Text("Remote Savestate hash: %" PRIx64 "", g_remote_savestate_hash);
         }
 
         ImGui::SliderInt("Sample size", &g_sample_size, 1, MAX_SAMPLE_SIZE);
@@ -2108,7 +2108,31 @@ void receive_juice_log(juice_log_level_t level, const char *message) {
     assert(level < JUICE_LOG_LEVEL_ERROR);
 }
 
+#ifdef _WIN32
+int64_t get_unix_time_microseconds() {
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+
+    ULARGE_INTEGER ul;
+    ul.LowPart = ft.dwLowDateTime;
+    ul.HighPart = ft.dwHighDateTime;
+
+    int64_t unix_time = (int64_t)(ul.QuadPart - 116444736000000000LL) / 10;
+
+    return unix_time;
+}
+#else
+int64_t get_unix_time_microseconds() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+}
+#endif
+
 uint64_t rdtsc() {
+#if defined(__aarch64__) || defined(__arm__)
+    return 1000 * get_unix_time_microseconds();
+#else
 #if defined(_MSC_VER)   /* MSVC compiler */
     return __rdtsc();
 #elif defined(__GNUC__) /* GCC compiler */
@@ -2119,6 +2143,7 @@ uint64_t rdtsc() {
     return ((uint64_t)hi << 32) | lo;
 #else
 #error "Unsupported compiler"
+#endif
 #endif
 }
 
@@ -2269,28 +2294,6 @@ void tick_compression_investigation(void *rom_data, size_t rom_size) {
         }
     }
 }
-
-#ifdef _WIN32
-int64_t get_unix_time_microseconds() {
-    FILETIME ft;
-    GetSystemTimeAsFileTime(&ft);
-
-    ULARGE_INTEGER ul;
-    ul.LowPart = ft.dwLowDateTime;
-    ul.HighPart = ft.dwHighDateTime;
-
-    int64_t unix_time = (int64_t)(ul.QuadPart - 116444736000000000LL) / 10;
-
-    return unix_time;
-}
-#else
-int64_t get_unix_time_microseconds() {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
-}
-#endif
-
 
 int main(int argc, char *argv[]) {
     g_argc = argc;
@@ -2485,7 +2488,7 @@ int main(int argc, char *argv[]) {
         timeout_milliseconds = SAM2_MAX(0, timeout_milliseconds);
 
         int ret;
-        if (ret = juice_user_poll(agent, agent_count, timeout_milliseconds)) {
+        if ((ret = juice_user_poll(agent, agent_count, timeout_milliseconds))) {
             die("Error polling agent (%d)\n", ret);
         }
 #endif
