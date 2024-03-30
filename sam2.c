@@ -1181,7 +1181,7 @@ SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_response_u *respons
                 SAM2_LOG_INFO("Socket not connected");
                 return 0;
             }
-            // @todo Get rid of \n from LOG messages
+
             SAM2_LOG_ERROR("Error reading from socket");//, strerror(errno));
             *response_tag = SAM2_EMESSAGE_ERROR;
             return -1;
@@ -1392,7 +1392,7 @@ typedef struct {
 
 static void on_write(uv_write_t *req, int status) {
     if (status) {
-        SAM2_LOG_ERROR("uv_write error: %s\n", uv_strerror(status));
+        SAM2_LOG_ERROR("uv_write error: %s", uv_strerror(status));
     }
 
     // Generally this is a legal cast even in old compilers [ISO C11, section 6.5.2.3]
@@ -1416,7 +1416,7 @@ static void sam2__write_response(uv_stream_t *client, sam2_response_u *response)
     } else {
         SAM2_LOG_ERROR(
             "The memory for a response sent was reused within the same on_recv call. This is almost certainly an error. If you are"
-            " broadcasting a message you have to individually allocate each response since libuv sends them asynchronously\n"
+            " broadcasting a message you have to individually allocate each response since libuv sends them asynchronously"
         );
     }
 
@@ -2009,7 +2009,7 @@ cleanup:
 
 void on_new_connection(uv_stream_t *server, int status) {
     if (status < 0) {
-        SAM2_LOG_ERROR("New connection error %s\n", uv_strerror(status));
+        SAM2_LOG_ERROR("New connection error %s", uv_strerror(status));
         return;
     }
 
@@ -2133,7 +2133,7 @@ int main() {
     uv_tcp_bind(&server, (const struct sockaddr*)&addr, 0);
     int r = uv_listen((uv_stream_t*) &server, SAM2_DEFAULT_BACKLOG, on_new_connection);
     if (r) {
-        SAM2_LOG_ERROR("Listen error %s\n", uv_strerror(r));
+        SAM2_LOG_ERROR("Listen error %s", uv_strerror(r));
         return 1;
     }
 
