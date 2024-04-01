@@ -987,6 +987,21 @@ void draw_imgui() {
                     }
                 }
 
+                auto show_room = [](const sam2_room_t& room) {
+                    ImGui::Text("Room: %s", room.name);
+                    ImGui::Text("Flags: %016" PRIx64, room.flags);
+                    ImGui::Text("Core Hash: %016" PRIx64, room.core_hash_xxh64);
+                    ImGui::Text("ROM Hash: %016" PRIx64, room.rom_hash_xxh64);
+                    
+                    for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+                        if (p == SAM2_AUTHORITY_INDEX) {
+                            ImGui::Text("Authority Peer ID: %016" PRIx64, room.peer_ids[p]);
+                        } else {
+                            ImGui::Text("Port %d Peer ID: %016" PRIx64, p, room.peer_ids[p]);
+                        }
+                    }
+                };
+
                 if (isWindowOpen[j] && response_index[j] != -1) {
                     ImGui::Begin(title[j], &isWindowOpen[j]); // Use isWindowOpen to allow closing the window
 
@@ -1000,13 +1015,15 @@ void draw_imgui() {
                         ImGui::InputTextMultiline("ICE SDP", signal_message->ice_sdp, sizeof(signal_message->ice_sdp), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 16), ImGuiInputTextFlags_ReadOnly);
                     } else if (memcmp(message, sam2_ackj_header, SAM2_HEADER_SIZE) == 0) {
                         sam2_room_acknowledge_join_message_t *ack_join_message = (sam2_room_acknowledge_join_message_t *) message;
-                        ImGui::Text("Room: %s", ack_join_message->room.name);
+                        ImGui::Separator();
+                        show_room(ack_join_message->room);
                         ImGui::Text("Sender Peer ID: %016" PRIx64, ack_join_message->sender_peer_id);
                         ImGui::Text("Joiner Peer ID: %016" PRIx64, ack_join_message->joiner_peer_id);
                         ImGui::Text("Frame Counter: %" PRId64, ack_join_message->frame_counter);
                     } else if (memcmp(message, sam2_make_header, SAM2_HEADER_SIZE) == 0) {
                         sam2_room_make_message_t *make_message = (sam2_room_make_message_t *) message;
-                        ImGui::Text("Room: %s", make_message->room.name);
+                        ImGui::Separator();
+                        show_room(make_message->room);
                     } else if (memcmp(message, sam2_list_header, SAM2_HEADER_SIZE) == 0) {
                         if (j == 0) {
                             // Request
@@ -1017,13 +1034,15 @@ void draw_imgui() {
                             ImGui::Text("Server Room Count: %" PRId64, list_response->server_room_count);
                             ImGui::Text("Room Count: %" PRId64, list_response->room_count);
                             for (int i = 0; i < list_response->room_count; i++) {
-                                ImGui::Text("Room %d: %s", i, list_response->rooms[i].name);
+                                ImGui::Separator();
+                                show_room(list_response->rooms[i]);
                             }
                         }
                     } else if (memcmp(message, sam2_join_header, SAM2_HEADER_SIZE) == 0) {
                         sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
                         ImGui::Text("Peer ID: %016" PRIx64, join_message->peer_id);
-                        ImGui::Text("Room: %s", join_message->room.name);
+                        ImGui::Separator();
+                        show_room(join_message->room);
                     } else if (memcmp(message, sam2_conn_header, SAM2_HEADER_SIZE) == 0) {
                         sam2_connect_message_t *connect_message = (sam2_connect_message_t *) message;
                         ImGui::Text("Peer ID: %016" PRIx64, connect_message->peer_id);
@@ -1198,18 +1217,31 @@ void draw_imgui() {
             }
 
             if (ImGui::Button("Exit")) {
-                // Send an exit room request
-                sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
-                request.room = g_ulnet_session.room_we_are_in;
+                // Spectators should just disconnect they don't need to signal anything
+                if (!ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
+                    sam2_room_join_message_t message = { SAM2_JOIN_HEADER };
+                    message.room = g_ulnet_session.room_we_are_in;
+                    if (ulnet_is_authority(&g_ulnet_session)) {
+                        // Abandon the room
+                        message.room.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
+                    } else {
+                        // Tell the server we're no longer in the room
+                        message.room.peer_ids[ulnet_our_port(&g_ulnet_session)] = SAM2_PORT_AVAILABLE;
+                    }
 
+                    g_libretro_context.SAM2Send((char *) &message);
+                }
+
+                // Disconnect all peers
                 for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-                    if (request.room.peer_ids[p] == g_ulnet_session.our_peer_id) {
-                        request.room.peer_ids[p] = SAM2_PORT_AVAILABLE;
-                        break;
+                    if (g_ulnet_session.room_we_are_in.peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
+                        ulnet_disconnect_peer(&g_ulnet_session, p);
                     }
                 }
 
-                g_libretro_context.SAM2Send((char *) &request);
+                g_ulnet_session.room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
+                g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = g_ulnet_session.our_peer_id;
+                g_ulnet_session.netplay_input_state[SAM2_AUTHORITY_INDEX].frame = g_ulnet_session.frame_counter; // @todo This is stupid, I should just have a variable for tracking buffered frames
             }
         } else {
             // Create a "Make" button that sends a make room request when clicked
@@ -1256,8 +1288,9 @@ void draw_imgui() {
                     ImGui::TableNextColumn();
 
                     // Make the row selectable and keep track of the selected room
-                    ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick;
-                    if (ImGui::Selectable(g_sam2_rooms[room_index].name, selected_room_index == room_index, selectable_flags)) {
+                    char label[128];
+                    sprintf(label, "%s##%016" PRIx64, g_sam2_rooms[room_index].name, g_sam2_rooms[room_index].peer_ids[SAM2_AUTHORITY_INDEX]);
+                    if (ImGui::Selectable(label, selected_room_index == room_index, ImGuiSelectableFlags_SpanAllColumns)) {
                         selected_room_index = room_index;
                     }
 
@@ -1267,10 +1300,10 @@ void draw_imgui() {
                     ImGui::Text("%s", ports_str);
 
                     ImGui::TableNextColumn();
-                    ImGui::Text("%" PRIX64, g_sam2_rooms[room_index].core_hash_xxh64);
+                    ImGui::Text("%" PRIx64, g_sam2_rooms[room_index].core_hash_xxh64);
 
                     ImGui::TableNextColumn();
-                    ImGui::Text("%" PRIX64, g_sam2_rooms[room_index].rom_hash_xxh64);
+                    ImGui::Text("%" PRIx64, g_sam2_rooms[room_index].rom_hash_xxh64);
                 }
 
                 ImGui::EndTable();
@@ -2303,7 +2336,7 @@ int main(int argc, char *argv[]) {
 		die("usage: %s <core> [game]", argv[0]);
 
     SDL_SetMainReady();
-    juice_set_log_level(JUICE_LOG_LEVEL_VERBOSE);
+    juice_set_log_level(JUICE_LOG_LEVEL_WARN);
 
     g_parameters.d = 8;
     g_parameters.k = 256;
@@ -2512,7 +2545,7 @@ int main(int argc, char *argv[]) {
                 }
 
                 //if (i == INPUT_DELAY_FRAMES_MAX) {
-                //    die("Failed to reconstruct input for frame %" PRId64 " from peer %" PRIx64 "\n", frame_counter, g_ulnet_session.room_we_are_in.peer_ids[p]);
+                //    die("Failed to reconstruct input for frame %" PRId64 " from peer %" PRIx64 "\n", g_ulnet_session.frame_counter, g_ulnet_session.room_we_are_in.peer_ids[p]);
                 //}
             }
         }
@@ -2548,6 +2581,8 @@ int main(int argc, char *argv[]) {
         }
 
         int64_t frames_buffered = g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].frame - g_ulnet_session.frame_counter;
+        assert(frames_buffered <= INPUT_DELAY_FRAMES_MAX);
+        assert(frames_buffered >= 0);
         netplay_ready_to_tick &= frames_buffered >= g_libretro_context.delay_frames;
         if (   netplay_ready_to_tick 
             && (core_wants_tick_in_seconds(core_wants_tick_at_unix_usec) < 0.0
@@ -2620,7 +2655,7 @@ int main(int argc, char *argv[]) {
 
         // We hope vsync is disabled or else this will block
         // I think you have to write platform specific code / not use OpenGL if you want this to be non-blocking
-        // and still try to update on vertical sync
+        // and still try to update on vertical sync or use another thread, but I don't like threads
         SDL_GL_SwapWindow(g_win);
 
         if (g_sam2_socket == 0) {

@@ -320,12 +320,23 @@ int ulnet_our_port(ulnet_session_t *session) {
 static void on_state_changed(juice_agent_t *agent, juice_state_t state, void *user_ptr) {
     ulnet_session_t *session = (ulnet_session_t *) user_ptr;
 
+    int p;
+    SAM2_LOCATE(session->agent, agent, p);
+
     if (   state == JUICE_STATE_CONNECTED
         && session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
-        printf("Sending savestate to peer\n");
+        SAM2_LOG_INFO("Sending savestate to peer %016" PRIx64, session->our_peer_id);
         // @todo Probably this should be changed to a needs save state flag since this function is called from a callback
         //       but it might not matter
         ulnet_send_save_state(session, agent);
+    } else if (state == JUICE_STATE_FAILED) {
+        if (p >= SAM2_PORT_MAX+1) {
+            SAM2_LOG_INFO("Spectator %016" PRIx64 " left" , session->room_we_are_in.peer_ids[p]);
+            session->agent_peer_id[p] = session->our_peer_id;
+        } else {
+
+        }
+
     }
 }
 
@@ -369,6 +380,25 @@ static void on_gathering_done(juice_agent_t *agent, void *user_ptr) {
     session->sam2_send_callback(session->user_ptr, (char *) &response);
 }
 
+static inline void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port) {
+    if (session->agent[peer_port]) {
+        juice_destroy(session->agent[peer_port]);
+        session->agent[peer_port] = NULL;
+    }
+
+    session->agent_peer_id[peer_port] = 0;
+    session->peer_desynced_frame[peer_port] = 0;
+
+    // Skip this part for spectators
+    if (peer_port < SAM2_PORT_MAX+1) {
+        session->room_we_are_in.peer_ids[peer_port] = SAM2_PORT_AVAILABLE; // @todo Doing this in here is probably bad, but I was making errors without it
+        session->peer_joining_on_frame[peer_port] = 0;
+        session->peer_ready_to_join_bitfield &= ~(0xFFULL << SAM2_PORT_MAX * peer_port);
+        memset(&session->netplay_input_state[peer_port], 0, sizeof(netplay_input_state_t));
+        memset(session->netplay_input_packet_history[peer_port], 0, sizeof(session->netplay_input_packet_history[peer_port]));
+    }
+}
+
 int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
 
     sam2_response_u &response = *_response;
@@ -403,16 +433,9 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
     case SAM2_EMESSAGE_JOIN: {
         sam2_room_join_message_t *room_join = &response.room_join_response;
 
-        if (   sam2_same_room(&session->room_we_are_in, &room_join->room)
-            && session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
-            SAM2_LOG_INFO("We switched rooms or joined a room for the first time %s", room_join->room.name);
-
-            // @todo This should be actually handled, but it conflicts with the if statement below
-        }
-
         if (!sam2_same_room(&session->room_we_are_in, &room_join->room)) {
             SAM2_LOG_INFO("We were let into the server by the authority");
- 
+
             session->flags |= ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE;
             session->frame_counter = 123456789000; // frame_counter is invalid before we get a savestate this should make logic issues more obvious
             session->room_we_are_in = room_join->room;
@@ -440,17 +463,29 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                 int sender_port = sam2_get_port_of_peer(&room_join->room, room_join->peer_id);
 
                 if (sender_port == -1) {
-                    SAM2_LOG_WARN("They didn't specify which port they're joining on");
+                    // @todo This whole check is basically done twice, I need to have some better logic for leaving
+                    sender_port = sam2_get_port_of_peer(&session->room_we_are_in, room_join->peer_id);
+                    if (sender_port != -1) {
+                        SAM2_LOG_INFO("Peer %" PRIx64 " left", room_join->peer_id);
+                        ulnet_disconnect_peer(session, sender_port);
 
-                    sam2_error_response_t error = {
-                        SAM2_FAIL_HEADER,
-                        SAM2_RESPONSE_AUTHORITY_ERROR,
-                        "Client didn't try to join on any ports",
-                        room_join->peer_id
-                    };
+                        session->room_we_are_in.peer_ids[sender_port] = SAM2_PORT_AVAILABLE;
+                        sam2_room_join_message_t response = { SAM2_JOIN_HEADER };
+                        response.room = session->room_we_are_in;
+                        session->sam2_send_callback(session->user_ptr, (char *) &response);
+                    } else {
+                        SAM2_LOG_WARN("They didn't specify which port they're joining on");
 
-                    session->sam2_send_callback(session->user_ptr, (char *) &error);
-                    break;
+                        sam2_error_response_t error = {
+                            SAM2_FAIL_HEADER,
+                            SAM2_RESPONSE_AUTHORITY_ERROR,
+                            "Client didn't try to join on any ports",
+                            room_join->peer_id
+                        };
+
+                        session->sam2_send_callback(session->user_ptr, (char *) &error);
+                        break;
+                    }
                 } else {
                     //session->room_we_are_in.flags |= SAM2_FLAG_PORT0_PEER_IS_INACTIVE << p;
 
@@ -465,6 +500,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                         }
                     } else {
                         if (session->room_we_are_in.peer_ids[sender_port] != SAM2_PORT_AVAILABLE) {
+                            SAM2_LOG_INFO("Peer %" PRIx64 " tried to join on unavailable port", room_join->room.peer_ids[sender_port]);
                             sam2_error_response_t error = {
                                 SAM2_FAIL_HEADER,
                                 SAM2_RESPONSE_AUTHORITY_ERROR,
@@ -491,6 +527,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                             response.room = session->room_we_are_in;
                             session->sam2_send_callback(session->user_ptr, (char *) &response); // This must come before the next call
 
+                            // This call will immediately send the first ICE candidate, the link-local connection
                             startup_ice_for_peer(
                                 session,
                                 &session->agent[sender_port],
@@ -509,34 +546,32 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
 
                                 session->sam2_send_callback(session->user_ptr, (char *) &response);
                             }
-
-                            break; // @todo I don't like this break
                         }
                     }
-
-                    session->sam2_send_callback(session->user_ptr, (char *) &response);
                 }
             } else {
                 SAM2_LOG_INFO("Something about the room we're in was changed by the authority");
 
                 assert(sam2_same_room(&session->room_we_are_in, &room_join->room));
 
+                if ( !(room_join->room.flags & SAM2_FLAG_ROOM_IS_INITIALIZED)
+                    || room_join->room.peer_ids[ulnet_our_port(session)] == SAM2_PORT_AVAILABLE) {
+                    SAM2_LOG_INFO("We were kicked or the room was abandoned");
+                    for (int peer_port = 0; peer_port < SAM2_PORT_MAX+1; peer_port++) {
+                        ulnet_disconnect_peer(session, peer_port);
+                    }
+
+                    session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
+                    session->room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
+                    break;
+                }
+
                 for (int p = 0; p < SAM2_ARRAY_LENGTH(room_join->room.peer_ids); p++) {
                     // @todo Check something other than just joins and leaves
                     if (room_join->room.peer_ids[p] != session->room_we_are_in.peer_ids[p]) {
                         if (room_join->room.peer_ids[p] == SAM2_PORT_AVAILABLE) {
                             SAM2_LOG_INFO("Peer %" PRIx64 " has left the room", session->room_we_are_in.peer_ids[p]);
-
-                            if (session->agent[p]) {
-                                juice_destroy(session->agent[p]);
-                                session->agent[p] = NULL;
-                            }
-
-                            if (session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
-                                //session->room_we_are_in.flags |= SAM2_FLAG_PORT0_PEER_IS_INACTIVE << p;
-                            }
-
-                            session->room_we_are_in.peer_ids[p] = SAM2_PORT_AVAILABLE;
+                            ulnet_disconnect_peer(session, p);
                         } else {
                             SAM2_LOG_INFO("Peer %" PRIx64 " has joined the room", room_join->room.peer_ids[p]);
 
@@ -605,13 +640,8 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
         sam2_signal_message_t *room_signal = (sam2_signal_message_t *) &response;
         SAM2_LOG_INFO("Received signal from peer %" PRIx64 "", room_signal->peer_id);
 
-        int p = -1;
-        for (int i = 0; i < SAM2_ARRAY_LENGTH(session->agent_peer_id); i++) {
-            if (session->agent_peer_id[i] == room_signal->peer_id) {
-                p = i;
-                break;
-            }
-        }
+        int p;
+        SAM2_LOCATE(session->agent_peer_id, room_signal->peer_id, p);
 
         if (p == -1) {
             SAM2_LOG_INFO("Received signal from unknown peer");
@@ -679,13 +709,9 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
 static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *user_ptr) {
     ulnet_session_t *session = (ulnet_session_t *) user_ptr;
 
-    int p = -1;
-    for (int i = 0; i < SAM2_ARRAY_LENGTH(session->agent); i++) {
-        if (session->agent[i] == agent) {
-            p = i;
-            break;
-        }
-    }
+    int p;
+    SAM2_LOCATE(session->agent, agent, p);
+
     if (p == -1) {
         SAM2_LOG_ERROR("No agent associated for packet on channel 0x%" PRIx8 "", data[0] & CHANNEL_MASK);
         return;
@@ -696,7 +722,7 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         return;
     }
 
-    if (p >= SAM2_PORT_MAX+1
+    if (   p >= SAM2_PORT_MAX+1
         && CHANNEL_INPUT != (data[0] & CHANNEL_MASK)) {
         SAM2_LOG_WARN("A spectator sent us a UDP packet for unsupported channel %" PRIx8 " for some reason", data[0] & CHANNEL_MASK);
         return;
