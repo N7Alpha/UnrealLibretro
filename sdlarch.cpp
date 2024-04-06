@@ -246,7 +246,7 @@ struct FLibretroContext {
     ulnet_session_t ulnet_session = {0};
 
     int sent_requests = 0;
-    sam2_request_u requests[1024] = {0};
+    sam2_message_u requests[1024] = {0};
     int64_t delay_frames = 0;
 
     FLibretroInputState InputState[PortCount] = {0};
@@ -254,8 +254,7 @@ struct FLibretroContext {
 
     int SAM2Send(char *message) {
         // Do some sanity checks on the request
-        sam2_message_e message_tag = sam2_get_tag((const char *) message);
-        if (message_tag == SAM2_EMESSAGE_SIGNAL) {
+        if (memcmp(message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
             sam2_signal_message_t *signal_message = (sam2_signal_message_t *) message;
             assert(signal_message->peer_id > SAM2_PORT_SENTINELS_MAX);
 
@@ -272,7 +271,7 @@ struct FLibretroContext {
 
         // Bookkeep all sent requests for debugging purposes
         if (sent_requests < SAM2_ARRAY_LENGTH(requests)) {
-            memcpy(&requests[sent_requests++], message, sam2__request_map[message_tag].message_size);
+            memcpy(&requests[sent_requests++], message, sam2_get_metadata(message)->message_size);
         }
 
         return ret;
@@ -710,7 +709,7 @@ static sam2_room_t g_new_room_set_through_gui = {
 #define MAX_ROOMS 1024
 static sam2_room_t g_sam2_rooms[MAX_ROOMS];
 static int64_t g_sam2_room_count = 0;
-sam2_room_list_response_t last_sam2_room_list_response;
+sam2_room_list_message_t last_sam2_room_list_response;
 int64_t sam2_room_count;
 sam2_room_t sam2_rooms[ULNET_MAX_ROOMS];
 
@@ -763,9 +762,9 @@ static bool g_vsync_enabled = true;
 
 static ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 static bool g_connected_to_sam2 = false;
-static sam2_response_u g_received_response[2048];
+static sam2_message_u g_received_response[2048];
 static int g_num_received_response = 0;
-static sam2_error_response_t g_last_sam2_error = {SAM2_RESPONSE_SUCCESS};
+static sam2_error_message_t g_last_sam2_error = {SAM2_RESPONSE_SUCCESS};
 
 static void peer_ids_to_string(uint64_t peer_ids[], char *output) {
     for (int i = 0; i < SAM2_PORT_MAX; i++) {
@@ -1030,7 +1029,7 @@ void draw_imgui() {
                             ImGui::Text("Room List Request");
                         } else {
                             // Response
-                            sam2_room_list_response_t *list_response = (sam2_room_list_response_t *) message;
+                            sam2_room_list_message_t *list_response = (sam2_room_list_message_t *) message;
                             ImGui::Text("Server Room Count: %" PRId64, list_response->server_room_count);
                             ImGui::Text("Room Count: %" PRId64, list_response->room_count);
                             for (int i = 0; i < list_response->room_count; i++) {
@@ -1048,7 +1047,7 @@ void draw_imgui() {
                         ImGui::Text("Peer ID: %016" PRIx64, connect_message->peer_id);
                         ImGui::Text("Flags: %016" PRIx64, connect_message->flags);
                     } else if (memcmp(message, sam2_fail_header, SAM2_HEADER_SIZE) == 0) {
-                        sam2_error_response_t *error_response = (sam2_error_response_t *) message;
+                        sam2_error_message_t *error_response = (sam2_error_message_t *) message;
                         ImGui::Text("Code: %" PRId64, error_response->code);
                         ImGui::Text("Description: %s", error_response->description);
                         ImGui::Text("Peer ID: %016" PRIx64, error_response->peer_id);
@@ -1255,8 +1254,8 @@ void draw_imgui() {
 
                 if (g_is_refreshing_rooms) {
                     g_sam2_room_count = 0;
-                    // The list message is only a header
-                    sam2_room_list_request_t request = { SAM2_LIST_HEADER };
+                    // The list request is only a header
+                    sam2_room_list_message_t request = { SAM2_LIST_HEADER };
                     g_libretro_context.SAM2Send((char *) &request);
                 } else {
 
@@ -2580,9 +2579,12 @@ int main(int argc, char *argv[]) {
             ignore_frame_pacing_so_we_can_catch_up = authority_frame > g_ulnet_session.frame_counter + max_frame_tolerance_a_peer_can_be_behind;
         }
 
-        int64_t frames_buffered = g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].frame - g_ulnet_session.frame_counter;
-        assert(frames_buffered <= INPUT_DELAY_FRAMES_MAX);
-        assert(frames_buffered >= 0);
+        int64_t frames_buffered = 0;
+        if (!(g_ulnet_session.flags & ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE) && !ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
+            frames_buffered = g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].frame - g_ulnet_session.frame_counter + 1;
+            assert(frames_buffered <= INPUT_DELAY_FRAMES_MAX);
+            assert(frames_buffered >= 0);
+        }
         netplay_ready_to_tick &= frames_buffered >= g_libretro_context.delay_frames;
         if (   netplay_ready_to_tick 
             && (core_wants_tick_in_seconds(core_wants_tick_at_unix_usec) < 0.0
@@ -2665,26 +2667,20 @@ int main(int argc, char *argv[]) {
         }
 
         if (g_connected_to_sam2 || (g_connected_to_sam2 = sam2_client_poll_connection(g_sam2_socket, 0))) {
-            static sam2_message_e response_tag = SAM2_EMESSAGE_NONE;
             static int response_length = 0;
 
             for (int _prevent_infinite_loop_counter = 0; _prevent_infinite_loop_counter < 64; _prevent_infinite_loop_counter++) {
-
-                sam2_response_u *latest_sam2_message = &g_received_response[g_num_received_response];
+                sam2_message_u *latest_sam2_message = &g_received_response[g_num_received_response];
                 int status = sam2_client_poll(
                     g_sam2_socket,
                     latest_sam2_message,
-                    &response_tag,
                     &response_length
                 );
 
                 if (status < 0) {
-                    SAM2_LOG_ERROR("Error polling sam2 server: %d\n", status);
+                    SAM2_LOG_ERROR("Error polling sam2 server: %d", status);
                     break;
-                }
-
-                if (   response_tag == SAM2_EMESSAGE_PART
-                    || response_tag == SAM2_EMESSAGE_NONE) {
+                } else if (status == 0) {
                     break;
                 } else {
                     if (g_num_received_response+1 < SAM2_ARRAY_LENGTH(g_received_response)) {
@@ -2707,15 +2703,12 @@ int main(int argc, char *argv[]) {
                         latest_sam2_message
                     );
 
-                    switch (response_tag) {
-                    case SAM2_EMESSAGE_ERROR: {
-                        g_last_sam2_error = *((sam2_error_response_t *) latest_sam2_message);
+                    if (memcmp(latest_sam2_message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
+                        g_last_sam2_error = *((sam2_error_message_t *) latest_sam2_message);
                         printf("Received error response from SAM2 (%" PRId64 "): %s\n", g_last_sam2_error.code, g_last_sam2_error.description);
                         fflush(stdout);
-                        break;
-                    }
-                    case SAM2_EMESSAGE_LIST: {
-                        sam2_room_list_response_t *room_list = (sam2_room_list_response_t *) latest_sam2_message;
+                    } else if (memcmp(latest_sam2_message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
+                        sam2_room_list_message_t *room_list = (sam2_room_list_message_t *) latest_sam2_message;
 
                         int64_t rooms_to_copy = SAM2_MIN(
                             room_list->room_count,
@@ -2729,9 +2722,6 @@ int main(int argc, char *argv[]) {
                         if (g_is_refreshing_rooms) {
                             g_is_refreshing_rooms = g_sam2_room_count != room_list->server_room_count;
                         }
-
-                        break;
-                    }
                     }
                 }
             }

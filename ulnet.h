@@ -399,39 +399,24 @@ static inline void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port
     }
 }
 
-int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
+int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
 
-    sam2_response_u &response = *_response;
-
-    sam2_message_e response_tag = sam2_get_tag((const char *) _response);
-    if (response_tag == SAM2_EMESSAGE_INVALID) {
+    if (sam2_get_metadata((char *) response) == NULL) {
         return -1;
     }
 
-    switch (response_tag) {
-    case SAM2_EMESSAGE_ERROR: {
-        break;
-    }
-    case SAM2_EMESSAGE_LIST: {
-        break;
-    }
-    case SAM2_EMESSAGE_MAKE: {
-        sam2_room_make_message_t *room_make = &response.room_make_response;
+    if (memcmp(response, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        sam2_room_make_message_t *room_make = (sam2_room_make_message_t *) response;
         assert(session->our_peer_id == room_make->room.peer_ids[SAM2_AUTHORITY_INDEX]);
         session->room_we_are_in = room_make->room;
-        break;
-    }
-    case SAM2_EMESSAGE_CONN: {
-        sam2_connect_message_t *connect_message = &response.connect_message;
-        SAM2_LOG_INFO("We were assigned the peer id %" PRIx64 "", connect_message->peer_id);
+    } else if (memcmp(response, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        sam2_connect_message_t *connect_message = (sam2_connect_message_t *) response;
+        SAM2_LOG_INFO("We were assigned the peer id %" PRIx64, connect_message->peer_id);
 
         session->our_peer_id = connect_message->peer_id;
         session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
-
-        break;
-    }
-    case SAM2_EMESSAGE_JOIN: {
-        sam2_room_join_message_t *room_join = &response.room_join_response;
+    } else if (memcmp(response, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        sam2_room_join_message_t *room_join = (sam2_room_join_message_t *) response;
 
         if (!sam2_same_room(&session->room_we_are_in, &room_join->room)) {
             SAM2_LOG_INFO("We were let into the server by the authority");
@@ -470,13 +455,13 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                         ulnet_disconnect_peer(session, sender_port);
 
                         session->room_we_are_in.peer_ids[sender_port] = SAM2_PORT_AVAILABLE;
-                        sam2_room_join_message_t response = { SAM2_JOIN_HEADER };
-                        response.room = session->room_we_are_in;
-                        session->sam2_send_callback(session->user_ptr, (char *) &response);
+                        sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
+                        request.room = session->room_we_are_in;
+                        session->sam2_send_callback(session->user_ptr, (char *) &request);
                     } else {
                         SAM2_LOG_WARN("They didn't specify which port they're joining on");
 
-                        sam2_error_response_t error = {
+                        sam2_error_message_t error = {
                             SAM2_FAIL_HEADER,
                             SAM2_RESPONSE_AUTHORITY_ERROR,
                             "Client didn't try to join on any ports",
@@ -484,7 +469,6 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                         };
 
                         session->sam2_send_callback(session->user_ptr, (char *) &error);
-                        break;
                     }
                 } else {
                     //session->room_we_are_in.flags |= SAM2_FLAG_PORT0_PEER_IS_INACTIVE << p;
@@ -501,7 +485,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                     } else {
                         if (session->room_we_are_in.peer_ids[sender_port] != SAM2_PORT_AVAILABLE) {
                             SAM2_LOG_INFO("Peer %" PRIx64 " tried to join on unavailable port", room_join->room.peer_ids[sender_port]);
-                            sam2_error_response_t error = {
+                            sam2_error_message_t error = {
                                 SAM2_FAIL_HEADER,
                                 SAM2_RESPONSE_AUTHORITY_ERROR,
                                 "Peer tried to join on unavailable port",
@@ -509,7 +493,6 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                             };
 
                             session->sam2_send_callback(session->user_ptr, (char *) &error);
-                            break;
                         } else {
                             SAM2_LOG_INFO("Peer %" PRIx64 " was let in by us the authority", room_join->room.peer_ids[sender_port]);
 
@@ -523,9 +506,9 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                             }
 
                             session->room_we_are_in.peer_ids[sender_port] = room_join->room.peer_ids[sender_port];
-                            sam2_room_join_message_t response = { SAM2_JOIN_HEADER };
-                            response.room = session->room_we_are_in;
-                            session->sam2_send_callback(session->user_ptr, (char *) &response); // This must come before the next call
+                            sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
+                            request.room = session->room_we_are_in;
+                            session->sam2_send_callback(session->user_ptr, (char *) &request); // This must come before the next call
 
                             // This call will immediately send the first ICE candidate, the link-local connection
                             startup_ice_for_peer(
@@ -539,12 +522,12 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                             if (ulnet_all_peers_ready_for_peer_to_join(session, room_join->room.peer_ids[sender_port])) {
                                 // IS THIS NECESSARY? It doesn't seem like it so far with one connection
 
-                                sam2_room_acknowledge_join_message_t response = { SAM2_ACKJ_HEADER };
-                                response.room = session->room_we_are_in;
-                                response.joiner_peer_id = room_join->room.peer_ids[sender_port];
-                                response.frame_counter = session->peer_joining_on_frame[sender_port];
+                                sam2_room_acknowledge_join_message_t request = { SAM2_ACKJ_HEADER };
+                                request.room = session->room_we_are_in;
+                                request.joiner_peer_id = room_join->room.peer_ids[sender_port];
+                                request.frame_counter = session->peer_joining_on_frame[sender_port];
 
-                                session->sam2_send_callback(session->user_ptr, (char *) &response);
+                                session->sam2_send_callback(session->user_ptr, (char *) &request);
                             }
                         }
                     }
@@ -563,36 +546,33 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
 
                     session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
                     session->room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
-                    break;
-                }
+                } else {
+                    for (int p = 0; p < SAM2_ARRAY_LENGTH(room_join->room.peer_ids); p++) {
+                        // @todo Check something other than just joins and leaves
+                        if (room_join->room.peer_ids[p] != session->room_we_are_in.peer_ids[p]) {
+                            if (room_join->room.peer_ids[p] == SAM2_PORT_AVAILABLE) {
+                                SAM2_LOG_INFO("Peer %" PRIx64 " has left the room", session->room_we_are_in.peer_ids[p]);
+                                ulnet_disconnect_peer(session, p);
+                            } else {
+                                SAM2_LOG_INFO("Peer %" PRIx64 " has joined the room", room_join->room.peer_ids[p]);
 
-                for (int p = 0; p < SAM2_ARRAY_LENGTH(room_join->room.peer_ids); p++) {
-                    // @todo Check something other than just joins and leaves
-                    if (room_join->room.peer_ids[p] != session->room_we_are_in.peer_ids[p]) {
-                        if (room_join->room.peer_ids[p] == SAM2_PORT_AVAILABLE) {
-                            SAM2_LOG_INFO("Peer %" PRIx64 " has left the room", session->room_we_are_in.peer_ids[p]);
-                            ulnet_disconnect_peer(session, p);
-                        } else {
-                            SAM2_LOG_INFO("Peer %" PRIx64 " has joined the room", room_join->room.peer_ids[p]);
+                                session->room_we_are_in.peer_ids[p] = room_join->room.peer_ids[p]; // This must come before the next call as the next call can generate an ICE candidate before returning
+                                startup_ice_for_peer(session, &session->agent[p], &session->agent_peer_id[p], room_join->room.peer_ids[p]);
 
-                            session->room_we_are_in.peer_ids[p] = room_join->room.peer_ids[p]; // This must come before the next call as the next call can generate an ICE candidate before returning
-                            startup_ice_for_peer(session, &session->agent[p], &session->agent_peer_id[p], room_join->room.peer_ids[p]);
+                                sam2_room_acknowledge_join_message_t response = { SAM2_ACKJ_HEADER };
+                                response.room = session->room_we_are_in;
+                                response.joiner_peer_id = session->room_we_are_in.peer_ids[p] = room_join->room.peer_ids[p];
+                                response.frame_counter = session->peer_joining_on_frame[p] = session->frame_counter; // Lower bound
 
-                            sam2_room_acknowledge_join_message_t response = { SAM2_ACKJ_HEADER };
-                            response.room = session->room_we_are_in;
-                            response.joiner_peer_id = session->room_we_are_in.peer_ids[p] = room_join->room.peer_ids[p];
-                            response.frame_counter = session->peer_joining_on_frame[p] = session->frame_counter; // Lower bound
-
-                            session->sam2_send_callback(session->user_ptr, (char *) &response);
+                                session->sam2_send_callback(session->user_ptr, (char *) &response);
+                            }
                         }
                     }
                 }
             }
         }
-        break;
-    }
-    case SAM2_EMESSAGE_ACKJ: {
-        sam2_room_acknowledge_join_message_t *acknowledge_room_join_message = &response.room_acknowledge_join_message;
+    } else if (memcmp(response, sam2_ackj_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        sam2_room_acknowledge_join_message_t *acknowledge_room_join_message = (sam2_room_acknowledge_join_message_t *) response;
 
         int joiner_port = sam2_get_port_of_peer(&session->room_we_are_in, acknowledge_room_join_message->joiner_peer_id);
         int sender_port = sam2_get_port_of_peer(&session->room_we_are_in, acknowledge_room_join_message->sender_peer_id);
@@ -634,10 +614,8 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                 session->netplay_input_state[ulnet_our_port(session)].frame = session->peer_joining_on_frame[joiner_port] - 1;
             }
         }
-        break;
-    }
-    case SAM2_EMESSAGE_SIGNAL: {
-        sam2_signal_message_t *room_signal = (sam2_signal_message_t *) &response;
+    } else if (memcmp(response, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        sam2_signal_message_t *room_signal = (sam2_signal_message_t *) response;
         SAM2_LOG_INFO("Received signal from peer %" PRIx64 "", room_signal->peer_id);
 
         int p;
@@ -650,7 +628,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                 if (session->spectator_count == SPECTATOR_MAX) {
                     SAM2_LOG_WARN("We can't let them in as a spectator there are too many spectators");
 
-                    static sam2_error_response_t error = { 
+                    static sam2_error_message_t error = { 
                         SAM2_FAIL_HEADER,
                         SAM2_RESPONSE_AUTHORITY_ERROR,
                         "Authority has reached the maximum number of spectators"
@@ -673,7 +651,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
             } else {
                 SAM2_LOG_WARN("Received unknown signal when we weren't the authority");
 
-                static sam2_error_response_t error = { 
+                static sam2_error_message_t error = { 
                     SAM2_FAIL_HEADER,
                     SAM2_RESPONSE_AUTHORITY_ERROR,
                     "Received unknown signal when we weren't the authority"
@@ -695,12 +673,6 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_response_u *_response) {
                 SAM2_LOG_ERROR("Unable to parse signal message '%s'", room_signal->ice_sdp);
             }
         }
-
-        break;
-    }
-    default:
-        SAM2_LOG_ERROR("Received unknown message (%d) from SAM2", response_tag);
-        break;
     }
 
     return 0;
