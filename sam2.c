@@ -400,20 +400,21 @@
 #define SAM2_FLAG_CLIENT_PERMISSION_MASK (SAM2_FLAG_SPECTATOR)
 
 #define SAM2_RESPONSE_SUCCESS                  0
-#define SAM2_RESPONSE_SERVER_ERROR             1  // Emitted by signaling server when there was an internal error
-#define SAM2_RESPONSE_AUTHORITY_ERROR          2  // Emitted by authority when there isn't a code for what went wrong
-#define SAM2_RESPONSE_PEER_ERROR               3  // Emitted by a peer when there isn't a code for what went wrong
-#define SAM2_RESPONSE_INVALID_ARGS             4  // Emitted by signaling server when arguments are invalid
-#define SAM2_RESPONSE_ROOM_DOES_NOT_EXIST      6  // Emitted by signaling server when a room does not exist
-#define SAM2_RESPONSE_ROOM_FULL                7  // Emitted by signaling server or authority when it can't allow more connections for players or spectators
-#define SAM2_RESPONSE_INVALID_HEADER           9  // Emitted by signaling server when the header is invalid
-#define SAM2_RESPONSE_PARTIAL_RESPONSE_TIMEOUT 11
-#define SAM2_RESPONSE_PORT_NOT_AVAILABLE       12 // Emitted by signaling server when a client tries to reserve a port that is already occupied
-#define SAM2_RESPONSE_ALREADY_IN_ROOM          13
-#define SAM2_RESPONSE_PEER_DOES_NOT_EXIST      14
-#define SAM2_RESPONSE_PEER_NOT_IN_ROOM         15
-#define SAM2_RESPONSE_CANNOT_SIGNAL_SELF       16
-#define SAM2_RESPONSE_CONNECTION_INVALID       17
+#define SAM2_RESPONSE_SERVER_ERROR             -1  // Emitted by signaling server when there was an internal error
+#define SAM2_RESPONSE_AUTHORITY_ERROR          -2  // Emitted by authority when there isn't a code for what went wrong
+#define SAM2_RESPONSE_PEER_ERROR               -3  // Emitted by a peer when there isn't a code for what went wrong
+#define SAM2_RESPONSE_INVALID_ARGS             -4  // Emitted by signaling server when arguments are invalid
+#define SAM2_RESPONSE_ROOM_DOES_NOT_EXIST      -6  // Emitted by signaling server when a room does not exist
+#define SAM2_RESPONSE_ROOM_FULL                -7  // Emitted by signaling server or authority when it can't allow more connections for players or spectators
+#define SAM2_RESPONSE_INVALID_HEADER           -9  // Emitted by signaling server when the header is invalid
+#define SAM2_RESPONSE_PARTIAL_RESPONSE_TIMEOUT -11
+#define SAM2_RESPONSE_PORT_NOT_AVAILABLE       -12 // Emitted by signaling server when a client tries to reserve a port that is already occupied
+#define SAM2_RESPONSE_ALREADY_IN_ROOM          -13
+#define SAM2_RESPONSE_PEER_DOES_NOT_EXIST      -14
+#define SAM2_RESPONSE_PEER_NOT_IN_ROOM         -15
+#define SAM2_RESPONSE_CANNOT_SIGNAL_SELF       -16
+#define SAM2_RESPONSE_VERSION_MISMATCH         -17
+#define SAM2_RESPONSE_INVALID_ENCODE_TYPE      -18
 
 #define SAM2_PORT_UNAVAILABLE                 0
 #define SAM2_PORT_AVAILABLE                   1
@@ -442,7 +443,7 @@ typedef struct sam2_room {
 } sam2_room_t;
 
 // This is a test for identity not equality
-SAM2_LINKAGE int sam2_same_room(sam2_room_t *a, sam2_room_t *b) {
+static int sam2_same_room(sam2_room_t *a, sam2_room_t *b) {
     return a && b && a->peer_ids[SAM2_AUTHORITY_INDEX] == b->peer_ids[SAM2_AUTHORITY_INDEX]
            && strncmp(a->name, b->name, sizeof(a->name)) == 0;
 }
@@ -673,12 +674,10 @@ SAM2_LINKAGE int sam2_server_destroy(struct sam2_server *server);
 // == Client interface                          ==
 // ===============================================
 
-// NOTE: Initialize response_tag to SAM2_EMESSAGE_NONE and response_length to 0 before calling sam2_client_poll 
-//       and only ever read from it however response can be safely modified once you have a complete message
 // Non-blocking trys to read a response sent by the server
 // Returns negative on error, positive if there are more messages to read, and zero when you've processed the last message
 // Errors can't be recovered from you must call sam2_client_disconnect and then sam2_client_connect again
-SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *response, int *response_length);
+SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *response, char *buffer, int *buffer_length);
 
 // Connnects to host which is either an IPv4/IPv6 Address or domain name
 // Will bias IPv6 if connecting via domain name and also block
@@ -1096,76 +1095,83 @@ SAM2_LINKAGE int sam2_client_poll_connection(sam2_socket_t sockfd, int timeout_m
     #define SAM2_ENOTCONN ENOTCONN
 #endif
 
-// NOTE: Initialize response_tag to SAM2_EMESSAGE_NONE and response_length to 0 before calling sam2_client_poll and only ever read from it
-// Non-blocking trys to read a response sent by the server
-// Returns negative on error, positive if there are more messages to read, and zero when you've processed the last message
-SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *response, int *response_length) {
+static int sam2__frame_message(sam2_message_u *message, char *buffer, int *length) {
+    if (*length < SAM2_HEADER_SIZE) return 0;
+    sam2_message_metadata_t *metadata = sam2_get_metadata(buffer);
 
-    // The logic for reading a complete message is tricky since you can
-    // potentially get a fraction of it due to the streaming nature of TCP
-    // This loop is at max 2 iterations 1 reading the header and 1 reading the body
-    for (;;) {
-        int bytes_desired;
-        int bytes_read = 0;
-        if (*response_length < SAM2_HEADER_SIZE) {
-            bytes_desired = SAM2_HEADER_SIZE - *response_length;
-        } else {
-            sam2_message_metadata_t *message_metadata = sam2_get_metadata((char *) response);
+    if (metadata == NULL)                      return SAM2_RESPONSE_INVALID_HEADER;
+    if (buffer[4] != SAM2_VERSION_MAJOR + '0') return SAM2_RESPONSE_VERSION_MISMATCH;
 
-            if (message_metadata == NULL) {
-                SAM2_LOG_ERROR("Invalid message header '%8.s'", (char *) response);
-                return -1;
-            }
+    int64_t message_bytes_read = 0;
+    int64_t input_consumed = 0;
 
-            bytes_desired = message_metadata->message_size - *response_length;
+    if (buffer[7] == 'z') {
+        message_bytes_read = rle8_decode_extra(
+            (uint8_t *) buffer,
+            *length,
+            &input_consumed,
+            (uint8_t *) message,
+            metadata->message_size
+        );
+    } else if (buffer[7] == 'r') {
+        if (*length >= metadata->message_size) {
+            memcpy(message, buffer, metadata->message_size);
+            message_bytes_read = input_consumed = metadata->message_size;
         }
+    } else {
+        return SAM2_RESPONSE_INVALID_ENCODE_TYPE;
+    }
 
-        if (bytes_desired == 0) goto successful_read; // Trying to read zero bytes from a socket will close it
-        bytes_read = recv(sockfd, ((char *) response) + *response_length, bytes_desired, 0);
+    if (message_bytes_read == metadata->message_size) {
+        // Theoretically the memmove here is inefficient, but it shouldn't be actually matter
+        memmove(buffer, buffer + input_consumed, *length - input_consumed);
+        *length -= input_consumed;
+
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *message, char *buffer, int *buffer_length) {
+    int bytes_desired = sizeof(sam2_message_u) - *buffer_length;
+    int bytes_read = 0;
+
+    // Trying to read zero bytes from a socket will close it
+    if (bytes_desired > 0) {
+        bytes_read = recv(sockfd, ((char *) buffer) + *buffer_length, bytes_desired, 0);
 
         if (bytes_read < 0) {
             if (SAM2_SOCKERRNO == SAM2_EAGAIN || SAM2_SOCKERRNO == EWOULDBLOCK) {
                 //SAM2_LOG_DEBUG("No more datagrams to receive");
-                return 0;
             } else if (SAM2_SOCKERRNO == SAM2_ENOTCONN) {
                 SAM2_LOG_INFO("Socket not connected");
                 return 0;
+            } else {
+                SAM2_LOG_ERROR("Error reading from socket");//, strerror(errno));
+                return -1;
             }
-
-            SAM2_LOG_ERROR("Error reading from socket");//, strerror(errno));
-            return -1;
         } else if (bytes_read == 0) {
             SAM2_LOG_WARN("Server closed connection");
             return -1;
         } else {
-successful_read:
-            *response_length += bytes_read;
-
-            sam2_message_metadata_t *message_metadata = sam2_get_metadata((char *) response);
-
-            if (message_metadata == NULL) continue; // Go back to the top of the loop to determine header tag and read message body
-
-            if (*response_length < SAM2_HEADER_SIZE) {
-                SAM2_LOG_DEBUG("Received %d/%d bytes of header", *response_length, SAM2_HEADER_SIZE);
-                return 0;
-            } else {
-                // If the total number of bytes read so far is equal to the size of the message,
-                // this indicates that a full message has been received. In this case, we update
-                // the response_tag to the current header_tag, indicating a complete message of this type.
-                if (*response_length == message_metadata->message_size) {
-                    SAM2_LOG_DEBUG("Received complete message with header '%.8s'", (char *) response);
-                    *response_length = 0;
-                    return 1;
-                } else {
-                    SAM2_LOG_DEBUG("Received %d/%d bytes of message", *response_length, message_metadata->message_size);
-                    return 0;
-                }
-                
-            }
+            *buffer_length += bytes_read;
         }
     }
 
-    return 1;
+    int message_frame_status = sam2__frame_message(message, buffer, buffer_length);
+
+    if (message_frame_status == 0) {
+        SAM2_LOG_DEBUG("Received %d/%d bytes of header", *buffer_length, SAM2_HEADER_SIZE);
+        return 0;
+    } else if (message_frame_status < 0) {
+        SAM2_LOG_ERROR("Message framing failed code (%d)", message_frame_status);
+        return -1;
+    } else {
+        SAM2_LOG_DEBUG("Received complete message with header '%.8s'", (char *) message);
+        ((char *) message)[7] = 'r';
+        return 1;
+    }
 }
 
 SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message) {
@@ -1224,9 +1230,7 @@ static uint64_t fnv1a_hash(void* data, size_t len) {
     return hash;
 }
 
-static sam2_message_u *sam2__alloc_message(sam2_server_t *server, const char *header) {
-    sam2_message_u *message = (sam2_message_u *) calloc(1, sizeof(sam2_message_u));
-
+static sam2_message_u *sam2__alloc_message_raw(sam2_server_t *server) {
     // @todo
     //sam2_message_u *response = NULL;
     //if (response_freelist) {
@@ -1235,6 +1239,18 @@ static sam2_message_u *sam2__alloc_message(sam2_server_t *server, const char *he
     //} else {
     //    assert(0); // Just check we have ample responses to send out >~32 in case of broadcast. This beats checking for NULL from an allocator every single time we make an allocation
     //}
+
+    return (sam2_message_u *) calloc(1, sizeof(sam2_message_u));
+}
+
+static void sam2__free_message_raw(sam2_server_t *server, void *message) {
+    //response->next = response_freelist;
+    //response_freelist = response;
+    free(message);
+}
+
+static sam2_message_u *sam2__alloc_message(sam2_server_t *server, const char *header) {
+    sam2_message_u *message = sam2__alloc_message_raw(server);
 
     sam2_avl_node_t *message_node = (sam2_avl_node_t *) SAM2_MALLOC(sizeof(sam2_avl_node_t));
     message_node->key = (uint64_t) message;
@@ -1252,12 +1268,10 @@ static sam2_message_u *sam2__alloc_message(sam2_server_t *server, const char *he
     return message;
 }
 
-static void sam2__free_response(sam2_server_t *server, void *response) {
-    //response->next = response_freelist;
-    //response_freelist = response;
-    free(response);
+static void sam2__free_response(sam2_server_t *server, void *message) {
+    sam2__free_message_raw(server, message);
 
-    sam2_avl_node_t key_only_node = { (uint64_t) response };
+    sam2_avl_node_t key_only_node = { (uint64_t) message };
     sam2_avl_node_t *node = sam2_avl_erase(&server->_debug_allocated_message_set, &key_only_node);
     if (node) {
         SAM2_FREE(node);
@@ -1313,11 +1327,11 @@ static void on_write(uv_write_t *req, int status) {
 }
 
 // This procedure owns the lifetime of response
-static void sam2__write_response(uv_stream_t *client, sam2_message_u *response) {
+static void sam2__write_response(uv_stream_t *client, sam2_message_u *message) {
     client_data_t *client_data = (client_data_t *) client->data;
     sam2_server_t *server = client_data->sig_server;
 
-    sam2_avl_node_t key_only_node = { (uint64_t) response };
+    sam2_avl_node_t key_only_node = { (uint64_t) message };
 
     sam2_avl_node_t *node = sam2_avl_erase(&server->_debug_allocated_message_set, &key_only_node);
     if (node) {
@@ -1329,28 +1343,42 @@ static void sam2__write_response(uv_stream_t *client, sam2_message_u *response) 
         );
     }
 
-    ((char *) response)[7] = 'r'; // @todo Support rle
-
-    sam2_message_metadata_t *metadata = sam2_get_metadata((char *) response);
+    sam2_message_metadata_t *metadata = sam2_get_metadata((char *) message);
 
     if (metadata == NULL) {
-        SAM2_LOG_ERROR("We tried to send a response with invalid header to a client '%.8s'", (char *) response);
-        sam2__free_response(server, response);
+        SAM2_LOG_ERROR("We tried to send a response with invalid header to a client '%.8s'", (char *) message);
+        sam2__free_response(server, message);
         return;
     }
 
+    sam2_message_u *message_rle8 = sam2__alloc_message_raw(server);
+    int64_t message_size_rle8 = rle8_encode_capped((uint8_t *)message, metadata->message_size, (uint8_t *) message_rle8, sizeof(*message_rle8));
+
+    // If this fails, we just send the message uncompressed
+    int64_t message_size;
+    if (message_size_rle8 != -1) {
+        ((char *) message_rle8)[7] = 'z';
+        sam2__free_response(server, message);
+        message = message_rle8;
+        message_size = message_size_rle8;
+    } else {
+        ((char *) message)[7] = 'r';
+        sam2__free_response(server, message_rle8);
+        message_size = metadata->message_size;
+    }
+
     uv_buf_t buffer;
-    buffer.len = metadata->message_size;
-    buffer.base = (char *) response;
+    buffer.len = message_size;
+    buffer.base = (char *) message;
 
     sam2_ext_write_t *write_req = (sam2_ext_write_t*) malloc(sizeof(sam2_ext_write_t));
-    write_req->req.data = response;
+    write_req->req.data = message;
     write_req->server = server;
 
     int status = uv_write((uv_write_t *) write_req, client, &buffer, 1, on_write);
     if (status < 0) {
         SAM2_LOG_ERROR("uv_write error: %s", uv_strerror(status));
-        sam2__free_response(server, response);
+        sam2__free_response(server, message);
     }
 }
 
@@ -1544,7 +1572,7 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
                 SAM2_LOG_WARN("Version mismatch. Client: %c Server: %c", client_data->buffer[4], SAM2_VERSION_MAJOR + '0');
                 static sam2_error_message_t response = {
                     SAM2_FAIL_HEADER,
-                    SAM2_RESPONSE_CONNECTION_INVALID,
+                    SAM2_RESPONSE_VERSION_MISMATCH,
                     "Version mismatch"
                 };
 
