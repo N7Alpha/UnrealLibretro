@@ -604,7 +604,7 @@ typedef struct client_data {
     sam2_room_t *hosted_room;
 
     char buffer[sizeof(sam2_message_u)];
-    int64_t length;
+    int length;
 } client_data_t;
 
 #if defined(_MSC_VER)
@@ -1554,113 +1554,50 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
         goto cleanup;
     }
 
-    for (int64_t remaining = nread; remaining > 0;) {
-        // We first need to read the header as that is how we infer the total size of the message
-        if (client_data->length < SAM2_HEADER_SIZE) {
-            int64_t consumed = SAM2_MIN(remaining, SAM2_HEADER_SIZE - client_data->length);
-            memcpy(client_data->buffer + client_data->length, buf->base + (nread - remaining), consumed);
+    for (int64_t remaining = nread;;) {
+        int64_t num_bytes_to_move_into_buffer = SAM2_MIN(((int) sizeof(client_data->buffer)) - client_data->length, remaining);
+        memcpy(client_data->buffer + client_data->length, buf->base + (nread - remaining), num_bytes_to_move_into_buffer);
+        remaining -= num_bytes_to_move_into_buffer;
+        client_data->length += num_bytes_to_move_into_buffer;
 
-            remaining -= consumed;
-            client_data->length += consumed;
-        }
-
-        int64_t message_bytes_read = 0;
         sam2_message_u message;
-        // Read as much data as we can for the associated message for the given header
-        if (client_data->length >= SAM2_HEADER_SIZE) {
-            if (client_data->buffer[4] != SAM2_VERSION_MAJOR + '0') {
-                SAM2_LOG_WARN("Version mismatch. Client: %c Server: %c", client_data->buffer[4], SAM2_VERSION_MAJOR + '0');
-                static sam2_error_message_t response = {
-                    SAM2_FAIL_HEADER,
-                    SAM2_RESPONSE_VERSION_MISMATCH,
-                    "Version mismatch"
-                };
+        int frame_message_status = sam2__frame_message(&message, client_data->buffer, &client_data->length);
 
-                sam2__write_fatal_error(client, &response);
-                goto cleanup;
+        if (frame_message_status == 0) {
+            if (client_data->length > 0) {
+                // This is basically a courtesy for clients to warn them they only sent a partial message
+                uv_timer_start(client_data->timer, on_timeout, 500, 0);  // 0.5 seconds
             }
 
-            sam2_message_metadata_t *metadata = sam2_get_metadata(client_data->buffer);
+            goto cleanup; // We've processed the last message
+        } else if (frame_message_status == SAM2_RESPONSE_VERSION_MISMATCH) {
+            SAM2_LOG_WARN("Version mismatch. Client: %c Server: %c", client_data->buffer[4], SAM2_VERSION_MAJOR + '0');
+            static sam2_error_message_t response = {
+                SAM2_FAIL_HEADER,
+                SAM2_RESPONSE_VERSION_MISMATCH,
+                "Version mismatch"
+            };
 
-            // If no associated header
-            if (metadata == NULL) {
-                SAM2_LOG_INFO("Client %" PRIx64 " sent invalid header tag '%.4s'", client_data->peer_id, client_data->buffer);
-                static sam2_error_message_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_HEADER, "Invalid header" };
-                sam2__write_fatal_error(client, &response);
-                goto cleanup;
-            }
+            sam2__write_fatal_error(client, &response);
+            goto cleanup;
+        } else if (frame_message_status == SAM2_RESPONSE_INVALID_HEADER) {
+            SAM2_LOG_INFO("Client %" PRIx64 " sent invalid header tag '%.4s'", client_data->peer_id, client_data->buffer);
+            static sam2_error_message_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_HEADER, "Invalid header" };
 
-            if (client_data->buffer[7] == 'z') {
-                // Decode what we have buffered
-                message_bytes_read = rle8_decode(
-                    (uint8_t *) client_data->buffer,
-                    client_data->length,
-                    (uint8_t *) &message,
-                    metadata->message_size
-                );
+            sam2__write_fatal_error(client, &response);
+            goto cleanup;
+        } else if (frame_message_status == SAM2_RESPONSE_INVALID_ENCODE_TYPE) {
+            static sam2_error_message_t response = {
+                SAM2_FAIL_HEADER,
+                SAM2_RESPONSE_INVALID_ARGS,
+                "Invalid message encode type"
+            };
 
-                // Decode the data we just received over the network
-                int64_t input_consumed = 0;
-                message_bytes_read += rle8_decode_extra(
-                    (uint8_t *) buf->base + (nread - remaining),
-                    remaining,
-                    &input_consumed,
-                    (uint8_t *) &message + message_bytes_read,
-                    metadata->message_size - message_bytes_read
-                );
-
-                if (message_bytes_read == metadata->message_size) {
-                    remaining -= input_consumed;
-                    client_data->length = 0;
-                } else {
-                    memcpy(client_data->buffer + client_data->length, buf->base + (nread - remaining), remaining);
-                    client_data->length = remaining;
-                    remaining = 0;
-                }
-            } else if (client_data->buffer[7] == 'r') {
-                int64_t num_bytes_remaining_in_message_size = metadata->message_size - client_data->length;
-                int64_t consumed = SAM2_MIN(num_bytes_remaining_in_message_size, remaining);
-                memcpy(client_data->buffer + client_data->length, buf->base + (nread - remaining), consumed);
-
-                remaining -= consumed;
-                client_data->length += consumed;
-                if (client_data->length > metadata->message_size) {
-                    SAM2_LOG_ERROR("Message framing failed when parsing message with header '%.8s'", client_data->buffer);
-
-                    static sam2_error_message_t response = { 
-                        SAM2_FAIL_HEADER,
-                        SAM2_RESPONSE_SERVER_ERROR,
-                        "Message framing failed on the server this is bad"
-                    };
-
-                    sam2__write_fatal_error(client, &response);
-                    goto cleanup;
-                }
-
-                if (client_data->length >= metadata->message_size) {
-                    memcpy(&message, client_data->buffer, client_data->length);
-                    message_bytes_read = client_data->length;
-                    client_data->length = 0;
-                }
-            } else {
-                static sam2_error_message_t response = {
-                    SAM2_FAIL_HEADER,
-                    SAM2_RESPONSE_INVALID_ARGS,
-                    "Invalid message encode type"
-                };
-
-                sam2__write_fatal_error(client, &response);
-                goto cleanup;
-            }
-
-            SAM2_LOG_DEBUG("client_data->length=%" PRId64, client_data->length);
-        }
-
-        if (message_bytes_read < SAM2_HEADER_SIZE || message_bytes_read != sam2_get_metadata((char *) &message)->message_size) {
-            // This is basically a courtesy for clients to warn them they only sent a partial message
-            uv_timer_start(client_data->timer, on_timeout, 500, 0);  // 0.5 seconds
+            sam2__write_fatal_error(client, &response);
             goto cleanup;
         }
+
+        SAM2_LOG_DEBUG("client_data->length=%" PRId64, client_data->length);
 
         SAM2_LOG_INFO("Client %" PRIx64 " sent message with header '%.8s'", client_data->peer_id, (char *) &message);
 
