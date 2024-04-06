@@ -284,31 +284,25 @@
 
 #define SAM2_VERSION_MAJOR 1
 #define SAM2_VERSION_MINOR 0
-#define SAM2_PROTOCOL_STRING SAM2__STR(SAM2_VERSION_MAJOR) "." SAM2__STR(SAM2_VERSION_MINOR) "r"
 
 #define SAM2_HEADER_TAG_SIZE 4
 #define SAM2_HEADER_SIZE 8
 
-#define sam2_make_header "MAKE" SAM2_PROTOCOL_STRING
-#define sam2_list_header "LIST" SAM2_PROTOCOL_STRING
-#define sam2_join_header "JOIN" SAM2_PROTOCOL_STRING
-#define sam2_ackj_header "ACKJ" SAM2_PROTOCOL_STRING
-#define sam2_sync_header "SYNC" SAM2_PROTOCOL_STRING
-#define sam2_conn_header "CONN" SAM2_PROTOCOL_STRING
-#define sam2_sign_header "SIGN" SAM2_PROTOCOL_STRING
-#define sam2_fail_header "FAIL" SAM2_PROTOCOL_STRING
-
-// Although this is less flexible it explicitly tells the compiler that you're making a non-null terminated string so it doesn't throw up warnings
-// C99 Compound Literals are tempting but they don't work for Tiny C Compiler @enhancement Doing things this way bloats the binary in the Tiny C Compiler
-#define SAM2_8_CHARACTER_STRING_LITERAL(str_lit) { (str_lit)[0], (str_lit)[1], (str_lit)[2], (str_lit)[3], (str_lit)[4], (str_lit)[5], (str_lit)[6], (str_lit)[7] }
-#define SAM2_MAKE_HEADER SAM2_8_CHARACTER_STRING_LITERAL(sam2_make_header)
-#define SAM2_LIST_HEADER SAM2_8_CHARACTER_STRING_LITERAL(sam2_list_header)
-#define SAM2_JOIN_HEADER SAM2_8_CHARACTER_STRING_LITERAL(sam2_join_header)
-#define SAM2_ACKJ_HEADER SAM2_8_CHARACTER_STRING_LITERAL(sam2_ackj_header)
-#define SAM2_SYNC_HEADER SAM2_8_CHARACTER_STRING_LITERAL(sam2_sync_header)
-#define SAM2_CONN_HEADER SAM2_8_CHARACTER_STRING_LITERAL(sam2_conn_header)
-#define SAM2_SIGN_HEADER SAM2_8_CHARACTER_STRING_LITERAL(sam2_sign_header)
-#define SAM2_FAIL_HEADER SAM2_8_CHARACTER_STRING_LITERAL(sam2_fail_header)
+// MSVC likes to complain (C2117) so we have to define a C-String version (lower-case) of this macro for list initializers and a char array literal version (ALL-CAPS)
+#define sam2_make_header  "M" "A" "K" "E" SAM2__STR(SAM2_VERSION_MAJOR) "." SAM2__STR(SAM2_VERSION_MINOR) "r"
+#define SAM2_MAKE_HEADER {'M','A','K','E',    '0' + SAM2_VERSION_MAJOR, '.',    '0' + SAM2_VERSION_MINOR, 'r'}
+#define sam2_list_header  "L" "I" "S" "T" SAM2__STR(SAM2_VERSION_MAJOR) "." SAM2__STR(SAM2_VERSION_MINOR) "r"
+#define SAM2_LIST_HEADER {'L','I','S','T',    '0' + SAM2_VERSION_MAJOR, '.',    '0' + SAM2_VERSION_MINOR, 'r'}
+#define sam2_join_header  "J" "O" "I" "N" SAM2__STR(SAM2_VERSION_MAJOR) "." SAM2__STR(SAM2_VERSION_MINOR) "r"
+#define SAM2_JOIN_HEADER {'J','O','I','N',    '0' + SAM2_VERSION_MAJOR, '.',    '0' + SAM2_VERSION_MINOR, 'r'}
+#define sam2_ackj_header  "A" "C" "K" "J" SAM2__STR(SAM2_VERSION_MAJOR) "." SAM2__STR(SAM2_VERSION_MINOR) "r"
+#define SAM2_ACKJ_HEADER {'A','C','K','J',    '0' + SAM2_VERSION_MAJOR, '.',    '0' + SAM2_VERSION_MINOR, 'r'}
+#define sam2_conn_header  "C" "O" "N" "N" SAM2__STR(SAM2_VERSION_MAJOR) "." SAM2__STR(SAM2_VERSION_MINOR) "r"
+#define SAM2_CONN_HEADER {'C','O','N','N',    '0' + SAM2_VERSION_MAJOR, '.',    '0' + SAM2_VERSION_MINOR, 'r'}
+#define sam2_sign_header  "S" "I" "G" "N" SAM2__STR(SAM2_VERSION_MAJOR) "." SAM2__STR(SAM2_VERSION_MINOR) "r"
+#define SAM2_SIGN_HEADER {'S','I','G','N',    '0' + SAM2_VERSION_MAJOR, '.',    '0' + SAM2_VERSION_MINOR, 'r'}
+#define sam2_fail_header  "F" "A" "I" "L" SAM2__STR(SAM2_VERSION_MAJOR) "." SAM2__STR(SAM2_VERSION_MINOR) "r"
+#define SAM2_FAIL_HEADER {'F','A','I','L',    '0' + SAM2_VERSION_MAJOR, '.',    '0' + SAM2_VERSION_MINOR, 'r'}
 
 #ifndef SAM2_LINKAGE
 #ifdef __cplusplus
