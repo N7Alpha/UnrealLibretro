@@ -1030,12 +1030,8 @@ void draw_imgui() {
                         } else {
                             // Response
                             sam2_room_list_message_t *list_response = (sam2_room_list_message_t *) message;
-                            ImGui::Text("Server Room Count: %" PRId64, list_response->server_room_count);
-                            ImGui::Text("Room Count: %" PRId64, list_response->room_count);
-                            for (int i = 0; i < list_response->room_count; i++) {
-                                ImGui::Separator();
-                                show_room(list_response->rooms[i]);
-                            }
+                            ImGui::Separator();
+                            show_room(list_response->room);
                         }
                     } else if (memcmp(message, sam2_join_header, SAM2_HEADER_SIZE) == 0) {
                         sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
@@ -2712,17 +2708,12 @@ int main(int argc, char *argv[]) {
                     } else if (memcmp(latest_sam2_message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
                         sam2_room_list_message_t *room_list = (sam2_room_list_message_t *) latest_sam2_message;
 
-                        int64_t rooms_to_copy = SAM2_MIN(
-                            room_list->room_count,
-                            (int64_t) ULNET_MAX_ROOMS - g_sam2_room_count
-                        );
-
-                        for (int i = 0; i < rooms_to_copy; i++) {
-                            g_sam2_rooms[g_sam2_room_count++] = room_list->rooms[i];
-                        }
-
-                        if (g_is_refreshing_rooms) {
-                            g_is_refreshing_rooms = g_sam2_room_count != room_list->server_room_count;
+                        if (room_list->room.peer_ids[SAM2_AUTHORITY_INDEX] == SAM2_PORT_UNAVAILABLE) {
+                            g_is_refreshing_rooms = false;
+                        } else {
+                            if (g_sam2_room_count < ULNET_MAX_ROOMS) {
+                                g_sam2_rooms[g_sam2_room_count++] = room_list->room;
+                            }
                         }
                     }
                 }

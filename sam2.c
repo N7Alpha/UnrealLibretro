@@ -469,15 +469,6 @@ static void sanitize_room(sam2_room_t *associated_room, sam2_room_t *room, uint6
 
 }
 
-typedef struct sam2_room_acknowledge_join_message {
-    char header[8];
-    sam2_room_t room;
-
-    uint64_t sender_peer_id; // Set by sam2
-    uint64_t joiner_peer_id; // Set by sender
-    int64_t frame_counter; // Frame that sender stopped on
-} sam2_room_acknowledge_join_message_t;
-
 typedef struct sam2_room_make_message {
     char header[8];
     sam2_room_t room;
@@ -486,42 +477,49 @@ typedef struct sam2_room_make_message {
 // These are sent at a fixed rate until the client receives all the messages
 typedef struct sam2_room_list_message {
     char header[8];
-
-    int64_t server_room_count;  // Set by server to total number of rooms listed on the server
-    int64_t room_count; // Actual number of rooms inside of rooms
-    sam2_room_t rooms[4];
+    sam2_room_t room; // Server indicates finished sending rooms by sending a room with room.peer_id[AUTHORITY_INDEX] == SAM2_PORT_UNAVAILABLE
 } sam2_room_list_message_t;
-
-typedef struct sam2_signal_message {
-    char header[8];
-
-    uint64_t peer_id;
-    char ice_sdp[1008];
-} sam2_signal_message_t;
 
 typedef struct sam2_room_join_message {
     char header[8];
+    sam2_room_t room;
 
     uint64_t peer_id; // Peer id of sender set by sam2 server
     char room_secret[64]; // optional peers know this so use it to determine authorization?
-    sam2_room_t room; // Set desired ports to PORT_RESERVE to request a port from the server
 } sam2_room_join_message_t;
 
+typedef struct sam2_room_acknowledge_join_message {
+    char header[8];
+    sam2_room_t room;
+
+    uint64_t sender_peer_id; // Set by sam2
+    uint64_t joiner_peer_id; // Set by sender
+    int64_t frame_counter; // Frame that sender stopped on
+} sam2_room_acknowledge_join_message_t;
 typedef struct sam2_connect_message {
     char header[8];
     uint64_t peer_id;
+
     uint64_t flags;
 } sam2_connect_message_t;
 
-typedef struct sam2_error_response {
+typedef struct sam2_signal_message {
     char header[8];
+    uint64_t peer_id;
+
+    char ice_sdp[496];
+} sam2_signal_message_t;
+
+typedef struct sam2_error_message {
+    char header[8];
+
     int64_t code;
     char description[128];
     uint64_t peer_id;
 } sam2_error_message_t;
 
 typedef union sam2_message {
-    union sam2_response *next; // Points to next element in freelist
+    union sam2_message *next; // Points to next element in freelist
 
     sam2_room_make_message_t room_make_response;
     sam2_room_list_message_t room_list_response;
@@ -538,7 +536,6 @@ typedef struct sam2_message_metadata {
 } sam2_message_metadata_t;
 
 static sam2_message_metadata_t sam2__message_metadata[] = {
-    {"GOTOFAIL", SAM2_HEADER_SIZE}, /* SAM2_EMESSAGE_NONE */
     {sam2_make_header, sizeof(sam2_room_make_message_t)},
     {sam2_list_header, sizeof(sam2_room_list_message_t)},
     {sam2_join_header, sizeof(sam2_room_join_message_t)},
@@ -599,7 +596,7 @@ typedef struct client_data {
     uint64_t peer_id;
 
     uv_timer_t *timer;
-    int64_t list_request_rooms_sent_so_far;
+    int64_t rooms_sent;
 
     sam2_room_t *hosted_room;
 
@@ -1603,16 +1600,20 @@ static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
 
         // Send the appropriate response
         if (memcmp(&message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
-            sam2_room_list_message_t *response = &sam2__alloc_message(sig_server, sam2_list_header)->room_list_response;
+            for (const int64_t stop_at = SAM2_MIN(client_data->rooms_sent + 128, sig_server->room_count); client_data->rooms_sent < stop_at;) {
+                sam2_room_list_message_t *response = &sam2__alloc_message(sig_server, sam2_list_header)->room_list_response;
+                response->room = sig_server->rooms[client_data->rooms_sent++];
+                sam2__write_response(client, (sam2_message_u *) response);
+            }
 
-            response->server_room_count = sig_server->room_count;
-            response->room_count = SAM2_MIN((int64_t) SAM2_ARRAY_LENGTH(response->rooms), sig_server->room_count); 
-            memcpy(response->rooms, sig_server->rooms, sig_server->room_count * sizeof(sig_server->rooms[0]));
+            if (client_data->rooms_sent >= sig_server->room_count) {
+                client_data->rooms_sent = 0;
+                sam2_room_list_message_t *response = &sam2__alloc_message(sig_server, sam2_list_header)->room_list_response;
+                memset(&response->room, 0, sizeof(response->room));
+                sam2__write_response(client, (sam2_message_u *) response);
+            }
 
-            client_data->list_request_rooms_sent_so_far += response->room_count;
-            // @todo Send remaining rooms if there are more than 128 bookkeep in client data accordingly
-
-            sam2__write_response(client, (sam2_message_u *) response);
+            // @todo Send remaining rooms if there are more than 128
         } else if (memcmp(&message, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
             sam2_room_make_message_t *request = (sam2_room_make_message_t *) &message;
 
@@ -2109,6 +2110,6 @@ int main() {
 SAM2_STATIC_ASSERT(SAM2_BYTEORDER_ENDIAN == SAM2_BYTEORDER_LITTLE_ENDIAN, "Platform is big-endian which is unsupported");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == 64 + sizeof(uint64_t) + sizeof(uint64_t) + (SAM2_PORT_MAX+1)*sizeof(uint64_t) + sizeof(uint64_t), "sam2_room_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_make_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_make_message_t is not packed");
-SAM2_STATIC_ASSERT(sizeof(sam2_room_list_message_t) == 8 + sizeof(int64_t) + sizeof(int64_t) + 4 * sizeof(sam2_room_t), "sam2_room_list_message_t is not packed");
+SAM2_STATIC_ASSERT(sizeof(sam2_room_list_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_list_message_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_join_message_t) == 8 + 8 + 64 + sizeof(sam2_room_t), "sam2_room_join_message_t is not packed");
 #endif
