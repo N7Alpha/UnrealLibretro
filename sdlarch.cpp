@@ -938,430 +938,431 @@ void draw_imgui() {
        // ImGui::Checkbox("Another Window", &show_another_window);
         
         ImGui::End();
-        {
-            ImGui::Begin("Signaling Server and a Match Maker", NULL, ImGuiWindowFlags_AlwaysAutoResize);
+    }
 
-            if (g_connected_to_sam2) {
-                ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to %s:%d", g_sam2_address, SAM2_SERVER_DEFAULT_PORT);
-            } else {
-                ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1), "Connecting to %s:%d %c", g_sam2_address, SAM2_SERVER_DEFAULT_PORT, spinnerGlyph);
-                goto finished_drawing_sam2_interface;
-            }
+    {
+        ImGui::Begin("Signaling Server and a Match Maker", NULL, ImGuiWindowFlags_AlwaysAutoResize);
 
-            if (g_last_sam2_error.code) {
-                ImGui::TextColored(ImVec4(1, 0, 0, 1), "Last error: %s", g_last_sam2_error.description);
-                ImGui::SameLine();
-                if (ImGui::Button("Clear")) {
-                    g_last_sam2_error.code = 0;
-                }
-            }
+        if (g_connected_to_sam2) {
+            ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to %s:%d", g_sam2_address, SAM2_SERVER_DEFAULT_PORT);
+        } else {
+            ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1), "Connecting to %s:%d %c", g_sam2_address, SAM2_SERVER_DEFAULT_PORT, spinnerGlyph);
+            goto finished_drawing_sam2_interface;
+        }
 
-            const char *title[]         = { "Requests", "Responses" };
-            int num_received[]          = { g_libretro_context.sent_requests, g_num_received_response };
-            static bool isWindowOpen[]  = { false, false };
-            static int response_index[] = { 0, 0 };
-            for (int j = 0; j < SAM2_ARRAY_LENGTH(title); j++) {
-                if (ImGui::CollapsingHeader(title[j])) {
-                    if (ImGui::BeginTable("MessagesTable", 1, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
-                        ImGui::TableSetupColumn("Header", ImGuiTableColumnFlags_WidthFixed, 150.0f);
-                        ImGui::TableHeadersRow();
-
-                        for (int i = 0; i < num_received[j]; ++i) {
-                            char *message = j == 0 ? (char *) &g_libretro_context.requests[i] : (char *) &g_received_response[i];
-                            ImGui::TableNextRow();
-                            ImGui::TableSetColumnIndex(0);
-
-                            ImGui::Text("%.8s", message);
-                            ImGui::SameLine();
-                            char button_label[64] = {0};
-                            snprintf(button_label, sizeof(button_label), "Show##%d_%d", j, i);
-
-                            if (ImGui::Button(button_label)) {
-                                response_index[j] = i;
-                                isWindowOpen[j] = true;
-                            }
-                        }
-
-                        ImGui::EndTable();
-                    }
-                }
-
-                auto show_room = [](const sam2_room_t& room) {
-                    ImGui::Text("Room: %s", room.name);
-                    ImGui::Text("Flags: %016" PRIx64, room.flags);
-                    ImGui::Text("Core Hash: %016" PRIx64, room.core_hash_xxh64);
-                    ImGui::Text("ROM Hash: %016" PRIx64, room.rom_hash_xxh64);
-                    
-                    for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-                        if (p == SAM2_AUTHORITY_INDEX) {
-                            ImGui::Text("Authority Peer ID: %016" PRIx64, room.peer_ids[p]);
-                        } else {
-                            ImGui::Text("Port %d Peer ID: %016" PRIx64, p, room.peer_ids[p]);
-                        }
-                    }
-                };
-
-                if (isWindowOpen[j] && response_index[j] != -1) {
-                    ImGui::Begin(title[j], &isWindowOpen[j]); // Use isWindowOpen to allow closing the window
-
-                    char *message = j == 0 ? (char *) &g_libretro_context.requests[response_index[j]] : (char *) &g_received_response[response_index[j]];
-
-                    ImGui::Text("Header: %.8s", (char *) message);
-
-                    if (memcmp(message, sam2_sign_header, SAM2_HEADER_SIZE) == 0) {
-                        sam2_signal_message_t *signal_message = (sam2_signal_message_t *) message;
-                        ImGui::Text("Peer ID: %016" PRIx64, signal_message->peer_id);
-                        ImGui::InputTextMultiline("ICE SDP", signal_message->ice_sdp, sizeof(signal_message->ice_sdp), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 16), ImGuiInputTextFlags_ReadOnly);
-                    } else if (memcmp(message, sam2_ackj_header, SAM2_HEADER_SIZE) == 0) {
-                        sam2_room_acknowledge_join_message_t *ack_join_message = (sam2_room_acknowledge_join_message_t *) message;
-                        ImGui::Separator();
-                        show_room(ack_join_message->room);
-                        ImGui::Text("Sender Peer ID: %016" PRIx64, ack_join_message->sender_peer_id);
-                        ImGui::Text("Joiner Peer ID: %016" PRIx64, ack_join_message->joiner_peer_id);
-                        ImGui::Text("Frame Counter: %" PRId64, ack_join_message->frame_counter);
-                    } else if (memcmp(message, sam2_make_header, SAM2_HEADER_SIZE) == 0) {
-                        sam2_room_make_message_t *make_message = (sam2_room_make_message_t *) message;
-                        ImGui::Separator();
-                        show_room(make_message->room);
-                    } else if (memcmp(message, sam2_list_header, SAM2_HEADER_SIZE) == 0) {
-                        if (j == 0) {
-                            // Request
-                            ImGui::Text("Room List Request");
-                        } else {
-                            // Response
-                            sam2_room_list_message_t *list_response = (sam2_room_list_message_t *) message;
-                            ImGui::Separator();
-                            show_room(list_response->room);
-                        }
-                    } else if (memcmp(message, sam2_join_header, SAM2_HEADER_SIZE) == 0) {
-                        sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
-                        ImGui::Text("Peer ID: %016" PRIx64, join_message->peer_id);
-                        ImGui::Separator();
-                        show_room(join_message->room);
-                    } else if (memcmp(message, sam2_conn_header, SAM2_HEADER_SIZE) == 0) {
-                        sam2_connect_message_t *connect_message = (sam2_connect_message_t *) message;
-                        ImGui::Text("Peer ID: %016" PRIx64, connect_message->peer_id);
-                        ImGui::Text("Flags: %016" PRIx64, connect_message->flags);
-                    } else if (memcmp(message, sam2_fail_header, SAM2_HEADER_SIZE) == 0) {
-                        sam2_error_message_t *error_response = (sam2_error_message_t *) message;
-                        ImGui::Text("Code: %" PRId64, error_response->code);
-                        ImGui::Text("Description: %s", error_response->description);
-                        ImGui::Text("Peer ID: %016" PRIx64, error_response->peer_id);
-                    }
-
-                    // Optionally, provide a way to close the window manually
-                    if (ImGui::Button("Close")) {
-                        isWindowOpen[j] = false; // Close the window
-                    }
-
-                    ImGui::End();
-                }
-            }
-
-            if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
-                ImGui::SeparatorText("In Room");
-            } else {
-                ImGui::SeparatorText("Create a Room");
-            }
-
-
-            if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
-                ImGui::Text("Room: %s", g_ulnet_session.room_we_are_in.name);
-                // Fixed text fields to display binary values
-                //char ports_str[65] = {0};
-                char flags_str[65] = {0};
-
-                // Convert the integer values to binary strings
-                for (int i = 0; i < 64; i+=4) {
-                    //ports_str[i/4] = '0' + ((g_room.ports >> (60 - i)) & 0xF);
-                    flags_str[i/4] = '0' + ((g_ulnet_session.room_we_are_in.flags >> (60 - i)) & 0xF);
-                }
-
-                ImGui::Text("Flags bitfield: %s", flags_str);
-            } else {
-                // Editable text field for room name
-                ImGui::InputText("##name", g_new_room_set_through_gui.name, sizeof(g_new_room_set_through_gui.name), ImGuiInputTextFlags_None);
+        if (g_last_sam2_error.code) {
+            ImGui::TextColored(ImVec4(1, 0, 0, 1), "Last error: %s", g_last_sam2_error.description);
+            ImGui::SameLine();
+            if (ImGui::Button("Clear")) {
+                g_last_sam2_error.code = 0;
             }
         }
 
-        if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
-            ImGui::Text("Our Peer ID:");
-            ImGui::SameLine();
-            //0xe0 0xc9 0x1b
-            const ImVec4 WHITE(1.0f, 1.0f, 1.0f, 1.0f);
-            const ImVec4 GREY(0.5f, 0.5f, 0.5f, 1.0f);
-            const ImVec4 GOLD(1.0f, 0.843f, 0.0f, 1.0f);
-            const ImVec4 RED(1.0f, 0.0f, 0.0f, 1.0f);
-            ImGui::TextColored(GOLD, "%" PRIx64, g_ulnet_session.our_peer_id);
-
-            ImGui::SeparatorText("Connection Status");
-            for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-                if (p != SAM2_AUTHORITY_INDEX) {
-                    ImGui::Text("Port %d:", p);
-                } else {
-                    ImGui::Text("Authority:");
-                }
-
-                ImGui::SameLine();
-
-                if      (g_ulnet_session.room_we_are_in.peer_ids[p] == SAM2_PORT_UNAVAILABLE) { ImGui::Text("Unavailable"); }
-                else if (g_ulnet_session.room_we_are_in.peer_ids[p] == SAM2_PORT_AVAILABLE)   {
-                    ImGui::Text("Available");
-                    if (g_libretro_context.Spectating()) {
-                        ImGui::SameLine();
-                        if (ImGui::Button("Join")) {
-                            // Send a join room request for the available port
-                            sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
-                            request.room = g_ulnet_session.room_we_are_in;
-                            request.room.peer_ids[p] = g_ulnet_session.our_peer_id;
-                            g_ulnet_session.peer_joining_on_frame[p] = INT64_MAX; // Upper bound
-                            g_libretro_context.SAM2Send((char *) &request);
-                        }
-                    }
-                } else {
-                    ImVec4 color = WHITE;
-
-                    if (g_ulnet_session.agent[p]) {
-                        juice_state_t connection_state = juice_get_state(g_ulnet_session.agent[p]);
-
-                        if (   g_ulnet_session.room_we_are_in.flags & (SAM2_FLAG_PORT0_PEER_IS_INACTIVE << p)
-                            || connection_state != JUICE_STATE_COMPLETED) {
-                            color = GREY;
-                        } else if (g_ulnet_session.peer_desynced_frame[p]) {
-                            color = RED;
-                        }
-                    } else if (g_ulnet_session.room_we_are_in.peer_ids[p] == g_ulnet_session.our_peer_id) {
-                        color = GOLD;
-                    }
-
-                    ImGui::TextColored(color, "%" PRIx64, g_ulnet_session.room_we_are_in.peer_ids[p]);
-                    if (g_ulnet_session.agent[p]) {
-                        juice_state_t connection_state = juice_get_state(g_ulnet_session.agent[p]);
-
-                        if (g_ulnet_session.peer_desynced_frame[p]) {
-                            ImGui::SameLine();
-                            ImGui::TextColored(color, "Peer desynced (frame %" PRId64 ")", g_ulnet_session.peer_desynced_frame[p]);
-                        }
-
-                        if (connection_state != JUICE_STATE_COMPLETED) {
-                            ImGui::SameLine();
-                            ImGui::TextColored(color, "%s %c", juice_state_to_string(connection_state), spinnerGlyph);
-                        }
-                    } else {
-                        if (g_ulnet_session.room_we_are_in.peer_ids[p] != g_ulnet_session.our_peer_id) {
-                            ImGui::SameLine();
-                            ImGui::TextColored(color, "ICE agent not created");
-                        }
-                    }
-
-                    char buffer_depth[INPUT_DELAY_FRAMES_MAX] = {0};
-
-                    int64_t peer_num_frames_ahead = g_ulnet_session.netplay_input_state[p].frame - g_ulnet_session.frame_counter;
-                    for (int f = 0; f < sizeof(buffer_depth)-1; f++) {
-                        buffer_depth[f] = f < peer_num_frames_ahead ? 'X' : 'O';
-                    }
-
-                    ImGui::SameLine();
-                    ImGui::TextColored(color, "Queue: %s", buffer_depth);
-                }
-            }
-
-            if (g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] == g_ulnet_session.our_peer_id) {
-
-                ImGui::BeginChild("SpectatorsTableWindow", 
-                    ImVec2(
-                        ImGui::GetContentRegionAvail().x,
-                        ImGui::GetWindowContentRegionMax().y / 4
-                     ), true);
-
-                ImGui::SeparatorText("Spectators");
-                if (ImGui::BeginTable("SpectatorsTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
-                    ImGui::TableSetupColumn("Peer ID");
-                    ImGui::TableSetupColumn("ICE Connection");
+        const char *title[]         = { "Requests", "Responses" };
+        int num_received[]          = { g_libretro_context.sent_requests, g_num_received_response };
+        static bool isWindowOpen[]  = { false, false };
+        static int response_index[] = { 0, 0 };
+        for (int j = 0; j < SAM2_ARRAY_LENGTH(title); j++) {
+            if (ImGui::CollapsingHeader(title[j])) {
+                if (ImGui::BeginTable("MessagesTable", 1, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+                    ImGui::TableSetupColumn("Header", ImGuiTableColumnFlags_WidthFixed, 150.0f);
                     ImGui::TableHeadersRow();
 
-                    for (int s = 0; s < g_ulnet_session.spectator_count; s++) {
+                    for (int i = 0; i < num_received[j]; ++i) {
+                        char *message = j == 0 ? (char *) &g_libretro_context.requests[i] : (char *) &g_received_response[i];
                         ImGui::TableNextRow();
                         ImGui::TableSetColumnIndex(0);
 
-                        // Display peer ID
-                        ImGui::Text("%" PRIx64, g_ulnet_session.agent_peer_id[SAM2_PORT_MAX+1 + s]);
+                        ImGui::Text("%.8s", message);
+                        ImGui::SameLine();
+                        char button_label[64] = {0};
+                        snprintf(button_label, sizeof(button_label), "Show##%d_%d", j, i);
 
-                        ImGui::TableSetColumnIndex(1);
-                        // Display ICE connection status
-                        // Assuming g_ulnet_session.agent[] is an array of juice_agent_t* representing the ICE agents
-                        juice_agent_t *spectator_agent = g_ulnet_session.agent[SAM2_PORT_MAX+1 + s];
-                        if (spectator_agent) {
-                            juice_state_t connection_state = juice_get_state(spectator_agent);
-
-                            if (connection_state >= JUICE_STATE_CONNECTED) {
-                                ImGui::Text("%s", juice_state_to_string(connection_state));
-                            } else {
-                                ImGui::TextColored(GREY, "%s %c", juice_state_to_string(connection_state), spinnerGlyph);
-                            }
-
-                        } else {
-                            ImGui::Text("ICE agent not created %c", spinnerGlyph);
+                        if (ImGui::Button(button_label)) {
+                            response_index[j] = i;
+                            isWindowOpen[j] = true;
                         }
                     }
 
                     ImGui::EndTable();
                 }
-
-                ImGui::EndChild();
             }
 
-            if (ImGui::Button("Exit")) {
-                // Spectators should just disconnect they don't need to signal anything
-                if (!ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
-                    sam2_room_join_message_t message = { SAM2_JOIN_HEADER };
-                    message.room = g_ulnet_session.room_we_are_in;
-                    if (ulnet_is_authority(&g_ulnet_session)) {
-                        // Abandon the room
-                        message.room.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
-                    } else {
-                        // Tell the server we're no longer in the room
-                        message.room.peer_ids[ulnet_our_port(&g_ulnet_session)] = SAM2_PORT_AVAILABLE;
-                    }
-
-                    g_libretro_context.SAM2Send((char *) &message);
-                }
-
-                // Disconnect all peers
+            auto show_room = [](const sam2_room_t& room) {
+                ImGui::Text("Room: %s", room.name);
+                ImGui::Text("Flags: %016" PRIx64, room.flags);
+                ImGui::Text("Core Hash: %016" PRIx64, room.core_hash_xxh64);
+                ImGui::Text("ROM Hash: %016" PRIx64, room.rom_hash_xxh64);
+                
                 for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-                    if (g_ulnet_session.room_we_are_in.peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
-                        ulnet_disconnect_peer(&g_ulnet_session, p);
+                    if (p == SAM2_AUTHORITY_INDEX) {
+                        ImGui::Text("Authority Peer ID: %016" PRIx64, room.peer_ids[p]);
+                    } else {
+                        ImGui::Text("Port %d Peer ID: %016" PRIx64, p, room.peer_ids[p]);
+                    }
+                }
+            };
+
+            if (isWindowOpen[j] && response_index[j] != -1) {
+                ImGui::Begin(title[j], &isWindowOpen[j]); // Use isWindowOpen to allow closing the window
+
+                char *message = j == 0 ? (char *) &g_libretro_context.requests[response_index[j]] : (char *) &g_received_response[response_index[j]];
+
+                ImGui::Text("Header: %.8s", (char *) message);
+
+                if (memcmp(message, sam2_sign_header, SAM2_HEADER_SIZE) == 0) {
+                    sam2_signal_message_t *signal_message = (sam2_signal_message_t *) message;
+                    ImGui::Text("Peer ID: %016" PRIx64, signal_message->peer_id);
+                    ImGui::InputTextMultiline("ICE SDP", signal_message->ice_sdp, sizeof(signal_message->ice_sdp), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 16), ImGuiInputTextFlags_ReadOnly);
+                } else if (memcmp(message, sam2_ackj_header, SAM2_HEADER_SIZE) == 0) {
+                    sam2_room_acknowledge_join_message_t *ack_join_message = (sam2_room_acknowledge_join_message_t *) message;
+                    ImGui::Separator();
+                    show_room(ack_join_message->room);
+                    ImGui::Text("Sender Peer ID: %016" PRIx64, ack_join_message->sender_peer_id);
+                    ImGui::Text("Joiner Peer ID: %016" PRIx64, ack_join_message->joiner_peer_id);
+                    ImGui::Text("Frame Counter: %" PRId64, ack_join_message->frame_counter);
+                } else if (memcmp(message, sam2_make_header, SAM2_HEADER_SIZE) == 0) {
+                    sam2_room_make_message_t *make_message = (sam2_room_make_message_t *) message;
+                    ImGui::Separator();
+                    show_room(make_message->room);
+                } else if (memcmp(message, sam2_list_header, SAM2_HEADER_SIZE) == 0) {
+                    if (j == 0) {
+                        // Request
+                        ImGui::Text("Room List Request");
+                    } else {
+                        // Response
+                        sam2_room_list_message_t *list_response = (sam2_room_list_message_t *) message;
+                        ImGui::Separator();
+                        show_room(list_response->room);
+                    }
+                } else if (memcmp(message, sam2_join_header, SAM2_HEADER_SIZE) == 0) {
+                    sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
+                    ImGui::Text("Peer ID: %016" PRIx64, join_message->peer_id);
+                    ImGui::Separator();
+                    show_room(join_message->room);
+                } else if (memcmp(message, sam2_conn_header, SAM2_HEADER_SIZE) == 0) {
+                    sam2_connect_message_t *connect_message = (sam2_connect_message_t *) message;
+                    ImGui::Text("Peer ID: %016" PRIx64, connect_message->peer_id);
+                    ImGui::Text("Flags: %016" PRIx64, connect_message->flags);
+                } else if (memcmp(message, sam2_fail_header, SAM2_HEADER_SIZE) == 0) {
+                    sam2_error_message_t *error_response = (sam2_error_message_t *) message;
+                    ImGui::Text("Code: %" PRId64, error_response->code);
+                    ImGui::Text("Description: %s", error_response->description);
+                    ImGui::Text("Peer ID: %016" PRIx64, error_response->peer_id);
+                }
+
+                // Optionally, provide a way to close the window manually
+                if (ImGui::Button("Close")) {
+                    isWindowOpen[j] = false; // Close the window
+                }
+
+                ImGui::End();
+            }
+        }
+
+        if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
+            ImGui::SeparatorText("In Room");
+        } else {
+            ImGui::SeparatorText("Create a Room");
+        }
+
+
+        if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
+            ImGui::Text("Room: %s", g_ulnet_session.room_we_are_in.name);
+            // Fixed text fields to display binary values
+            //char ports_str[65] = {0};
+            char flags_str[65] = {0};
+
+            // Convert the integer values to binary strings
+            for (int i = 0; i < 64; i+=4) {
+                //ports_str[i/4] = '0' + ((g_room.ports >> (60 - i)) & 0xF);
+                flags_str[i/4] = '0' + ((g_ulnet_session.room_we_are_in.flags >> (60 - i)) & 0xF);
+            }
+
+            ImGui::Text("Flags bitfield: %s", flags_str);
+        } else {
+            // Editable text field for room name
+            ImGui::InputText("##name", g_new_room_set_through_gui.name, sizeof(g_new_room_set_through_gui.name), ImGuiInputTextFlags_None);
+        }
+    }
+
+    if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
+        ImGui::Text("Our Peer ID:");
+        ImGui::SameLine();
+        //0xe0 0xc9 0x1b
+        const ImVec4 WHITE(1.0f, 1.0f, 1.0f, 1.0f);
+        const ImVec4 GREY(0.5f, 0.5f, 0.5f, 1.0f);
+        const ImVec4 GOLD(1.0f, 0.843f, 0.0f, 1.0f);
+        const ImVec4 RED(1.0f, 0.0f, 0.0f, 1.0f);
+        ImGui::TextColored(GOLD, "%" PRIx64, g_ulnet_session.our_peer_id);
+
+        ImGui::SeparatorText("Connection Status");
+        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+            if (p != SAM2_AUTHORITY_INDEX) {
+                ImGui::Text("Port %d:", p);
+            } else {
+                ImGui::Text("Authority:");
+            }
+
+            ImGui::SameLine();
+
+            if      (g_ulnet_session.room_we_are_in.peer_ids[p] == SAM2_PORT_UNAVAILABLE) { ImGui::Text("Unavailable"); }
+            else if (g_ulnet_session.room_we_are_in.peer_ids[p] == SAM2_PORT_AVAILABLE)   {
+                ImGui::Text("Available");
+                if (g_libretro_context.Spectating()) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Join")) {
+                        // Send a join room request for the available port
+                        sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
+                        request.room = g_ulnet_session.room_we_are_in;
+                        request.room.peer_ids[p] = g_ulnet_session.our_peer_id;
+                        g_ulnet_session.peer_joining_on_frame[p] = INT64_MAX; // Upper bound
+                        g_libretro_context.SAM2Send((char *) &request);
+                    }
+                }
+            } else {
+                ImVec4 color = WHITE;
+
+                if (g_ulnet_session.agent[p]) {
+                    juice_state_t connection_state = juice_get_state(g_ulnet_session.agent[p]);
+
+                    if (   g_ulnet_session.room_we_are_in.flags & (SAM2_FLAG_PORT0_PEER_IS_INACTIVE << p)
+                        || connection_state != JUICE_STATE_COMPLETED) {
+                        color = GREY;
+                    } else if (g_ulnet_session.peer_desynced_frame[p]) {
+                        color = RED;
+                    }
+                } else if (g_ulnet_session.room_we_are_in.peer_ids[p] == g_ulnet_session.our_peer_id) {
+                    color = GOLD;
+                }
+
+                ImGui::TextColored(color, "%" PRIx64, g_ulnet_session.room_we_are_in.peer_ids[p]);
+                if (g_ulnet_session.agent[p]) {
+                    juice_state_t connection_state = juice_get_state(g_ulnet_session.agent[p]);
+
+                    if (g_ulnet_session.peer_desynced_frame[p]) {
+                        ImGui::SameLine();
+                        ImGui::TextColored(color, "Peer desynced (frame %" PRId64 ")", g_ulnet_session.peer_desynced_frame[p]);
+                    }
+
+                    if (connection_state != JUICE_STATE_COMPLETED) {
+                        ImGui::SameLine();
+                        ImGui::TextColored(color, "%s %c", juice_state_to_string(connection_state), spinnerGlyph);
+                    }
+                } else {
+                    if (g_ulnet_session.room_we_are_in.peer_ids[p] != g_ulnet_session.our_peer_id) {
+                        ImGui::SameLine();
+                        ImGui::TextColored(color, "ICE agent not created");
                     }
                 }
 
-                g_ulnet_session.room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
-                g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = g_ulnet_session.our_peer_id;
-                g_ulnet_session.netplay_input_state[SAM2_AUTHORITY_INDEX].frame = g_ulnet_session.frame_counter; // @todo This is stupid, I should just have a variable for tracking buffered frames
-            }
-        } else {
-            // Create a "Make" button that sends a make room request when clicked
-            if (ImGui::Button("Make")) {
-                sam2_room_make_message_t request = { SAM2_MAKE_HEADER };
-                request.room = g_new_room_set_through_gui;
-                g_libretro_context.SAM2Send((char *) &request);
-            }
-            if (ImGui::Button(g_is_refreshing_rooms ? "Stop" : "Refresh")) {
-                g_is_refreshing_rooms = !g_is_refreshing_rooms;
+                char buffer_depth[INPUT_DELAY_FRAMES_MAX] = {0};
 
-                if (g_is_refreshing_rooms) {
-                    g_sam2_room_count = 0;
-                    // The list request is only a header
-                    sam2_room_list_message_t request = { SAM2_LIST_HEADER };
-                    g_libretro_context.SAM2Send((char *) &request);
-                } else {
-
+                int64_t peer_num_frames_ahead = g_ulnet_session.netplay_input_state[p].frame - g_ulnet_session.frame_counter;
+                for (int f = 0; f < sizeof(buffer_depth)-1; f++) {
+                    buffer_depth[f] = f < peer_num_frames_ahead ? 'X' : 'O';
                 }
-            }
 
-            // If we're in the "Stop" state
-            if (g_is_refreshing_rooms) {
-                // Run your "Stop" code here
+                ImGui::SameLine();
+                ImGui::TextColored(color, "Queue: %s", buffer_depth);
             }
+        }
 
-            ImGui::BeginChild("TableWindow",
+        if (g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] == g_ulnet_session.our_peer_id) {
+
+            ImGui::BeginChild("SpectatorsTableWindow", 
                 ImVec2(
-                    500,
-                    ImGui::GetWindowContentRegionMax().y/2
-                ), true);
+                    ImGui::GetContentRegionAvail().x,
+                    ImGui::GetWindowContentRegionMax().y / 4
+                    ), true);
 
-            static int selected_room_index = -1;  // Initialize as -1 to indicate no selection
-            // Table
-            if (ImGui::BeginTable("Rooms", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
-                ImGui::TableSetupColumn("Room Name");
-                ImGui::TableSetupColumn("Peers");
-                ImGui::TableSetupColumn("Core Hash");
-                ImGui::TableSetupColumn("ROM Hash");
+            ImGui::SeparatorText("Spectators");
+            if (ImGui::BeginTable("SpectatorsTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+                ImGui::TableSetupColumn("Peer ID");
+                ImGui::TableSetupColumn("ICE Connection");
                 ImGui::TableHeadersRow();
 
-                for (int room_index = 0; room_index < g_sam2_room_count; ++room_index) {
+                for (int s = 0; s < g_ulnet_session.spectator_count; s++) {
                     ImGui::TableNextRow();
-                    ImGui::TableNextColumn();
+                    ImGui::TableSetColumnIndex(0);
 
-                    // Make the row selectable and keep track of the selected room
-                    char label[128];
-                    sprintf(label, "%s##%016" PRIx64, g_sam2_rooms[room_index].name, g_sam2_rooms[room_index].peer_ids[SAM2_AUTHORITY_INDEX]);
-                    if (ImGui::Selectable(label, selected_room_index == room_index, ImGuiSelectableFlags_SpanAllColumns)) {
-                        selected_room_index = room_index;
+                    // Display peer ID
+                    ImGui::Text("%" PRIx64, g_ulnet_session.agent_peer_id[SAM2_PORT_MAX+1 + s]);
+
+                    ImGui::TableSetColumnIndex(1);
+                    // Display ICE connection status
+                    // Assuming g_ulnet_session.agent[] is an array of juice_agent_t* representing the ICE agents
+                    juice_agent_t *spectator_agent = g_ulnet_session.agent[SAM2_PORT_MAX+1 + s];
+                    if (spectator_agent) {
+                        juice_state_t connection_state = juice_get_state(spectator_agent);
+
+                        if (connection_state >= JUICE_STATE_CONNECTED) {
+                            ImGui::Text("%s", juice_state_to_string(connection_state));
+                        } else {
+                            ImGui::TextColored(GREY, "%s %c", juice_state_to_string(connection_state), spinnerGlyph);
+                        }
+
+                    } else {
+                        ImGui::Text("ICE agent not created %c", spinnerGlyph);
                     }
-
-                    ImGui::TableNextColumn();
-                    char ports_str[65];
-                    peer_ids_to_string(g_sam2_rooms[room_index].peer_ids, ports_str);
-                    ImGui::Text("%s", ports_str);
-
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%" PRIx64, g_sam2_rooms[room_index].core_hash_xxh64);
-
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%" PRIx64, g_sam2_rooms[room_index].rom_hash_xxh64);
                 }
 
                 ImGui::EndTable();
             }
 
             ImGui::EndChild();
+        }
 
-            if (selected_room_index != -1) {
-
-                // Disable the "Join" button if the selected room has a different hash
-                if (   g_sam2_rooms[selected_room_index].core_hash_xxh64 == g_new_room_set_through_gui.core_hash_xxh64 
-                    && g_sam2_rooms[selected_room_index].rom_hash_xxh64 == g_new_room_set_through_gui.rom_hash_xxh64) {
-                    if (ImGui::Button("Join")) {
-                        // Send a join room request
-                        sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
-                        request.room = g_sam2_rooms[selected_room_index];
-
-                        int p = 0;
-                        for (p = 0; p < SAM2_PORT_MAX; p++) {
-                            if (request.room.peer_ids[p] == SAM2_PORT_AVAILABLE) {
-                                request.room.peer_ids[p] = g_ulnet_session.our_peer_id;
-                                break;
-                            }
-                        }
-
-                        if (p == SAM2_PORT_MAX) {
-                            die("No available ports in the room");
-                        }
-
-                        g_ulnet_session.peer_joining_on_frame[p] = INT64_MAX; // Upper bound
-
-                        g_libretro_context.SAM2Send((char *) &request);
-                    }
-
-                    ImGui::SameLine();
-                    if (ImGui::Button("Spectate")) {
-                        // Directly signaling the authority just means spectate... @todo I probably should add the room as a field as well though incase I decide on multiple rooms per authority in the future
-                        g_ulnet_session.room_we_are_in = g_sam2_rooms[selected_room_index]; 
-                        startup_ice_for_peer(
-                            &g_ulnet_session,
-                            &g_ulnet_session.agent[SAM2_AUTHORITY_INDEX],
-                            &g_ulnet_session.agent_peer_id[SAM2_AUTHORITY_INDEX],
-                             g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX]
-                        );
-                    }
+        if (ImGui::Button("Exit")) {
+            // Spectators should just disconnect they don't need to signal anything
+            if (!ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
+                sam2_room_join_message_t message = { SAM2_JOIN_HEADER };
+                message.room = g_ulnet_session.room_we_are_in;
+                if (ulnet_is_authority(&g_ulnet_session)) {
+                    // Abandon the room
+                    message.room.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
                 } else {
-                    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
-                    ImGui::Button("Join");
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Core or ROM hash mismatch with room");
-                    }
+                    // Tell the server we're no longer in the room
+                    message.room.peer_ids[ulnet_our_port(&g_ulnet_session)] = SAM2_PORT_AVAILABLE;
+                }
 
-                    ImGui::Button("Spectate");
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Core or ROM hash mismatch with room");
-                    }
-                    ImGui::PopStyleVar();
+                g_libretro_context.SAM2Send((char *) &message);
+            }
+
+            // Disconnect all peers
+            for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+                if (g_ulnet_session.room_we_are_in.peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
+                    ulnet_disconnect_peer(&g_ulnet_session, p);
                 }
             }
+
+            g_ulnet_session.room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
+            g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = g_ulnet_session.our_peer_id;
+            g_ulnet_session.netplay_input_state[SAM2_AUTHORITY_INDEX].frame = g_ulnet_session.frame_counter; // @todo This is stupid, I should just have a variable for tracking buffered frames
         }
-finished_drawing_sam2_interface:
-        ImGui::End();
+    } else {
+        // Create a "Make" button that sends a make room request when clicked
+        if (ImGui::Button("Make")) {
+            sam2_room_make_message_t request = { SAM2_MAKE_HEADER };
+            request.room = g_new_room_set_through_gui;
+            g_libretro_context.SAM2Send((char *) &request);
+        }
+        if (ImGui::Button(g_is_refreshing_rooms ? "Stop" : "Refresh")) {
+            g_is_refreshing_rooms = !g_is_refreshing_rooms;
+
+            if (g_is_refreshing_rooms) {
+                g_sam2_room_count = 0;
+                // The list request is only a header
+                sam2_room_list_message_t request = { SAM2_LIST_HEADER };
+                g_libretro_context.SAM2Send((char *) &request);
+            } else {
+
+            }
+        }
+
+        // If we're in the "Stop" state
+        if (g_is_refreshing_rooms) {
+            // Run your "Stop" code here
+        }
+
+        ImGui::BeginChild("TableWindow",
+            ImVec2(
+                500,
+                ImGui::GetWindowContentRegionMax().y/2
+            ), true);
+
+        static int selected_room_index = -1;  // Initialize as -1 to indicate no selection
+        // Table
+        if (ImGui::BeginTable("Rooms", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+            ImGui::TableSetupColumn("Room Name");
+            ImGui::TableSetupColumn("Peers");
+            ImGui::TableSetupColumn("Core Hash");
+            ImGui::TableSetupColumn("ROM Hash");
+            ImGui::TableHeadersRow();
+
+            for (int room_index = 0; room_index < g_sam2_room_count; ++room_index) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+
+                // Make the row selectable and keep track of the selected room
+                char label[128];
+                sprintf(label, "%s##%016" PRIx64, g_sam2_rooms[room_index].name, g_sam2_rooms[room_index].peer_ids[SAM2_AUTHORITY_INDEX]);
+                if (ImGui::Selectable(label, selected_room_index == room_index, ImGuiSelectableFlags_SpanAllColumns)) {
+                    selected_room_index = room_index;
+                }
+
+                ImGui::TableNextColumn();
+                char ports_str[65];
+                peer_ids_to_string(g_sam2_rooms[room_index].peer_ids, ports_str);
+                ImGui::Text("%s", ports_str);
+
+                ImGui::TableNextColumn();
+                ImGui::Text("%" PRIx64, g_sam2_rooms[room_index].core_hash_xxh64);
+
+                ImGui::TableNextColumn();
+                ImGui::Text("%" PRIx64, g_sam2_rooms[room_index].rom_hash_xxh64);
+            }
+
+            ImGui::EndTable();
+        }
+
+        ImGui::EndChild();
+
+        if (selected_room_index != -1) {
+
+            // Disable the "Join" button if the selected room has a different hash
+            if (   g_sam2_rooms[selected_room_index].core_hash_xxh64 == g_new_room_set_through_gui.core_hash_xxh64 
+                && g_sam2_rooms[selected_room_index].rom_hash_xxh64 == g_new_room_set_through_gui.rom_hash_xxh64) {
+                if (ImGui::Button("Join")) {
+                    // Send a join room request
+                    sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
+                    request.room = g_sam2_rooms[selected_room_index];
+
+                    int p = 0;
+                    for (p = 0; p < SAM2_PORT_MAX; p++) {
+                        if (request.room.peer_ids[p] == SAM2_PORT_AVAILABLE) {
+                            request.room.peer_ids[p] = g_ulnet_session.our_peer_id;
+                            break;
+                        }
+                    }
+
+                    if (p == SAM2_PORT_MAX) {
+                        die("No available ports in the room");
+                    }
+
+                    g_ulnet_session.peer_joining_on_frame[p] = INT64_MAX; // Upper bound
+
+                    g_libretro_context.SAM2Send((char *) &request);
+                }
+
+                ImGui::SameLine();
+                if (ImGui::Button("Spectate")) {
+                    // Directly signaling the authority just means spectate... @todo I probably should add the room as a field as well though incase I decide on multiple rooms per authority in the future
+                    g_ulnet_session.room_we_are_in = g_sam2_rooms[selected_room_index]; 
+                    startup_ice_for_peer(
+                        &g_ulnet_session,
+                        &g_ulnet_session.agent[SAM2_AUTHORITY_INDEX],
+                        &g_ulnet_session.agent_peer_id[SAM2_AUTHORITY_INDEX],
+                            g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX]
+                    );
+                }
+            } else {
+                ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+                ImGui::Button("Join");
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Core or ROM hash mismatch with room");
+                }
+
+                ImGui::Button("Spectate");
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Core or ROM hash mismatch with room");
+                }
+                ImGui::PopStyleVar();
+            }
+        }
     }
+finished_drawing_sam2_interface:
+    ImGui::End();
 
     {
         ImGui::Begin("Libretro Core", NULL, ImGuiWindowFlags_AlwaysAutoResize);
