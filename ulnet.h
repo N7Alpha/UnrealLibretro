@@ -254,6 +254,15 @@ bool ulnet_all_peers_ready_for_peer_to_join(ulnet_session_t *session, uint64_t j
     return 0xFFULL == (0xFFULL & (session->peer_ready_to_join_bitfield >> (8 * joiner_port)));
 }
 
+void ulnet_authority_broadcast_acknowledged_join(ulnet_session_t *session, int joiner_port) {
+    sam2_room_acknowledge_join_message_t response = { SAM2_ACKJ_HEADER };
+    response.room = session->room_we_are_in;
+    response.joiner_peer_id = session->room_we_are_in.peer_ids[joiner_port];
+    response.frame_counter = session->peer_joining_on_frame[joiner_port];
+
+    session->sam2_send_callback(session->user_ptr, (char *) &response);
+}
+
 void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent);
 
 // Interactive-Connectivity-Establishment callbacks that libjuice calls
@@ -518,16 +527,8 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
                                 room_join->room.peer_ids[sender_port]
                             );
 
-                            // @todo This check is basically duplicated code with the code in the ACKJ handler
                             if (ulnet_all_peers_ready_for_peer_to_join(session, room_join->room.peer_ids[sender_port])) {
-                                // IS THIS NECESSARY? It doesn't seem like it so far with one connection
-
-                                sam2_room_acknowledge_join_message_t request = { SAM2_ACKJ_HEADER };
-                                request.room = session->room_we_are_in;
-                                request.joiner_peer_id = room_join->room.peer_ids[sender_port];
-                                request.frame_counter = session->peer_joining_on_frame[sender_port];
-
-                                session->sam2_send_callback(session->user_ptr, (char *) &request);
+                                ulnet_authority_broadcast_acknowledged_join(session, sender_port);
                             }
                         }
                     }
@@ -589,12 +590,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
             );
 
             if (ulnet_all_peers_ready_for_peer_to_join(session, acknowledge_room_join_message->joiner_peer_id)) {
-                sam2_room_acknowledge_join_message_t response = { SAM2_ACKJ_HEADER };
-                response.room = session->room_we_are_in;
-                response.joiner_peer_id = acknowledge_room_join_message->joiner_peer_id;
-                response.frame_counter = session->peer_joining_on_frame[joiner_port];
-
-                session->sam2_send_callback(session->user_ptr, (char *) &response);
+                ulnet_authority_broadcast_acknowledged_join(session, joiner_port);
             } else {
                 SAM2_LOG_INFO("Peer %" PRIx64 " has been acknowledged by %" PRIx64 " but not all peers", 
                     acknowledge_room_join_message->joiner_peer_id, acknowledge_room_join_message->sender_peer_id);
