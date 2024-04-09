@@ -816,9 +816,6 @@ void draw_imgui() {
     char spinnerFrames[4] = { '|', '/', '-', '\\' };
     char spinnerGlyph = spinnerFrames[(spinnerIndex++/4)%4];
 
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplSDL2_NewFrame();
-    ImGui::NewFrame();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     static bool show_demo_window = false;
 
@@ -2448,6 +2445,11 @@ int main(int argc, char *argv[]) {
 
         g_core_wants_tick_in_milliseconds[g_main_loop_cyclic_offset] = core_wants_tick_in_seconds(core_wants_tick_at_unix_usec) * 1000.0;
 
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplSDL2_NewFrame();
+        ImGui::NewFrame();
+        ImGui::Begin("P2P UDP Netplay", NULL, ImGuiWindowFlags_AlwaysAutoResize);
+
         // Always send an input packet if the core is ready to tick. This subsumes retransmission logic and generally makes protocol logic less strict
         if (true) {
             g_kbd = SDL_GetKeyboardState(NULL);
@@ -2479,25 +2481,31 @@ int main(int argc, char *argv[]) {
                 && (!(g_ulnet_session.flags & ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE)  // If we were waiting this would mean our frame_counter is invalid and break the next check
                 && g_ulnet_session.frame_counter >= g_ulnet_session.peer_joining_on_frame[g_libretro_context.OurPort()])) {
 
+                union {
+                    uint8_t _[1 /* Packet Header */ + RLE8_ENCODE_UPPER_BOUND(PACKET_MTU_PAYLOAD_SIZE_BYTES)];
+                    input_packet_t input_packet;
+                };
+                input_packet.channel_and_port = CHANNEL_INPUT | g_libretro_context.OurPort();
+                int64_t actual_payload_size = rle8_encode(
+                    (uint8_t *)&g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()],
+                    sizeof(g_ulnet_session.netplay_input_state[0]),
+                    input_packet.coded_netplay_input_state
+                );
+
+                if (sizeof(input_packet_t) + actual_payload_size > PACKET_MTU_PAYLOAD_SIZE_BYTES) {
+                    die("Input packet too large to send");
+                }
+
+                ImGui::Text("Input packet size: %" PRId64, sizeof(input_packet_t) + actual_payload_size);
+
                 for (int p = 0; p < SAM2_ARRAY_LENGTH(g_ulnet_session.agent); p++) {
                     if (!g_ulnet_session.agent[p]) continue;
                     juice_state_t state = juice_get_state(g_ulnet_session.agent[p]);
 
                     // Wait until we can send netplay messages to everyone without fail
                     if (state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED) {
-                        union {
-                            uint8_t _[1 /* Packet Header */ + RLE8_ENCODE_UPPER_BOUND(PACKET_MTU_PAYLOAD_SIZE_BYTES)];
-                            input_packet_t input_packet;
-                        };
-                        input_packet.channel_and_port = CHANNEL_INPUT | g_libretro_context.OurPort();
-                        int64_t actual_payload_size = rle8_encode((uint8_t *)&g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()], sizeof(g_ulnet_session.netplay_input_state[0]), input_packet.coded_netplay_input_state);
-
-                        if (sizeof(input_packet_t) + actual_payload_size > PACKET_MTU_PAYLOAD_SIZE_BYTES) {
-                            die("Input packet too large to send");
-                        } else {
-                            juice_send(g_ulnet_session.agent[p], (const char *) &input_packet, sizeof(input_packet_t) + actual_payload_size);
-                            SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64, g_ulnet_session.netplay_input_state[p].frame, p, g_ulnet_session.room_we_are_in.peer_ids[p]);
-                        }
+                        juice_send(g_ulnet_session.agent[p], (const char *) &input_packet, sizeof(input_packet_t) + actual_payload_size);
+                        SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64, g_ulnet_session.netplay_input_state[p].frame, p, g_ulnet_session.room_we_are_in.peer_ids[p]);
                     }
                 }
             }
@@ -2528,13 +2536,17 @@ int main(int argc, char *argv[]) {
                 if (g_ulnet_session.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
 
                 int i;
-                for (i = 0; i < INPUT_DELAY_FRAMES_MAX; i++) {
+                for (i = INPUT_DELAY_FRAMES_MAX-1; i >= 0; i--) {
                     int64_t frame = -1;
                     input_packet_t *input_packet_that_could_contain_input_for_current_frame = (input_packet_t *) g_ulnet_session.netplay_input_packet_history[p][(g_ulnet_session.frame_counter + i) % NETPLAY_INPUT_HISTORY_SIZE];
                     rle8_decode(input_packet_that_could_contain_input_for_current_frame->coded_netplay_input_state, PACKET_MTU_PAYLOAD_SIZE_BYTES, (uint8_t *) &frame, sizeof(frame));
                     if (SAM2_ABS(frame - g_ulnet_session.frame_counter) < INPUT_DELAY_FRAMES_MAX) {
-                        rle8_decode(input_packet_that_could_contain_input_for_current_frame->coded_netplay_input_state, PACKET_MTU_PAYLOAD_SIZE_BYTES,
-                            (uint8_t *) &g_ulnet_session.netplay_input_state[p], sizeof(g_ulnet_session.netplay_input_state[p]));
+                        int64_t input_consumed = 0;
+                        int64_t decode_size = rle8_decode_extra(input_packet_that_could_contain_input_for_current_frame->coded_netplay_input_state, PACKET_MTU_PAYLOAD_SIZE_BYTES,
+                            &input_consumed, (uint8_t *) &g_ulnet_session.netplay_input_state[p], sizeof(g_ulnet_session.netplay_input_state[p]));
+
+                        SAM2_LOG_DEBUG("Reconstructed input for frame %" PRId64 " from peer %" PRIx64 "consumed %" PRId64 " bytes of input to produce %" PRId64,
+                            g_ulnet_session.frame_counter, g_ulnet_session.room_we_are_in.peer_ids[p], input_consumed, decode_size);
 
                         break;
                     }
@@ -2546,15 +2558,20 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        ImGui::SeparatorText("Things We are Waiting on Before we can Tick");
+        if                            (g_ulnet_session.flags & ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE) { ImGui::Text("Waiting for savestate"); }
         bool netplay_ready_to_tick = !(g_ulnet_session.flags & ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE);
         if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
             for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
                 if (g_ulnet_session.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
+                if                      (g_ulnet_session.netplay_input_state[p].frame <  g_ulnet_session.frame_counter) { ImGui::Text("Input state on port %d is too old", p); }
                 netplay_ready_to_tick &= g_ulnet_session.netplay_input_state[p].frame >= g_ulnet_session.frame_counter;
-                netplay_ready_to_tick &= g_ulnet_session.netplay_input_state[p].frame < g_ulnet_session.frame_counter + INPUT_DELAY_FRAMES_MAX; // This is needed for spectators only. By protocol it should always true for non-spectators unless we have a bug or someone is misbehaving
+                if                      (g_ulnet_session.netplay_input_state[p].frame >= g_ulnet_session.frame_counter + INPUT_DELAY_FRAMES_MAX) { ImGui::Text("Input state on port %d is too new (ahead by %d frames)", p, g_ulnet_session.netplay_input_state[p].frame - (g_ulnet_session.frame_counter + INPUT_DELAY_FRAMES_MAX)); }
+                netplay_ready_to_tick &= g_ulnet_session.netplay_input_state[p].frame <  g_ulnet_session.frame_counter + INPUT_DELAY_FRAMES_MAX; // This is needed for spectators only. By protocol it should always true for non-spectators unless we have a bug or someone is misbehaving
 
                 if (g_libretro_context.OurPort() != p && g_libretro_context.IsAuthority()) {
                     // Wait until we can send UDP packets to peer without fail @todo Now that I think about it this is probably redundant so I can remove it or change it to asserts once I figure out the logic better
+                    if                     (!ulnet_all_peers_ready_for_peer_to_join(&g_ulnet_session, g_ulnet_session.room_we_are_in.peer_ids[p])) { ImGui::Text("Not ready for peer on port %d to join", p); }
                     netplay_ready_to_tick &= ulnet_all_peers_ready_for_peer_to_join(&g_ulnet_session, g_ulnet_session.room_we_are_in.peer_ids[p]);
                 }
             }
@@ -2576,14 +2593,15 @@ int main(int argc, char *argv[]) {
             ignore_frame_pacing_so_we_can_catch_up = authority_frame > g_ulnet_session.frame_counter + max_frame_tolerance_a_peer_can_be_behind;
         }
 
-        int64_t frames_buffered = 0;
         if (!(g_ulnet_session.flags & ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE) && !ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
-            frames_buffered = g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].frame - g_ulnet_session.frame_counter + 1;
+            int64_t frames_buffered = g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].frame - g_ulnet_session.frame_counter + 1;
             assert(frames_buffered <= INPUT_DELAY_FRAMES_MAX);
             assert(frames_buffered >= 0);
+            if                      (frames_buffered <  g_libretro_context.delay_frames) { ImGui::Text("We have not buffered enough frames still need %d", g_libretro_context.delay_frames - frames_buffered); }
+            netplay_ready_to_tick &= frames_buffered >= g_libretro_context.delay_frames;
         }
-        netplay_ready_to_tick &= frames_buffered >= g_libretro_context.delay_frames;
-        if (   netplay_ready_to_tick 
+
+        if (   netplay_ready_to_tick
             && (core_wants_tick_in_seconds(core_wants_tick_at_unix_usec) < 0.0
             || ignore_frame_pacing_so_we_can_catch_up)) {
             // @todo I don't think this makes sense you should keep reasonable timing yourself if you can't the authority should just kick you
@@ -2646,6 +2664,8 @@ int main(int argc, char *argv[]) {
 
             g_frame_cyclic_offset = (g_frame_cyclic_offset + 1) % g_sample_size;
         }
+
+        ImGui::End();
 
         // The imgui frame is updated at the monitor refresh cadence
         // So the core frame needs to be redrawn or you'll get the Windows XP infinite window thing
