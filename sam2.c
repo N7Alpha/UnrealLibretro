@@ -734,7 +734,9 @@ int64_t rle8_encode(const uint8_t *input, int64_t input_size, uint8_t *output) {
 int64_t rle8_decode_extra(const uint8_t* input, int64_t input_size, int64_t *input_consumed, uint8_t* output, int64_t output_capacity) {
     int64_t output_index = 0;
     while (*input_consumed < input_size) {
+        if (output_index >= output_capacity) return output_index;
         if (input[*input_consumed] == 0) {
+            if (input_size - *input_consumed < 3) return output_index;
             (*input_consumed)++; // Move past the zero marker
             uint16_t count = input[*input_consumed] | (input[*input_consumed + 1] << 8); // Decode count as little endian
             (*input_consumed) += 2; // Move past the count bytes
@@ -744,7 +746,6 @@ int64_t rle8_decode_extra(const uint8_t* input, int64_t input_size, int64_t *inp
                 output[output_index++] = 0;
             }
         } else {
-            if (output_index >= output_capacity) return output_index;
             output[output_index++] = input[(*input_consumed)++];
         }
     }
