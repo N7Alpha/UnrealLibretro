@@ -2463,7 +2463,7 @@ int main(int argc, char *argv[]) {
                 g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].core_option[next_buffer_index] = g_core_option_for_next_frame;
                 memset(&g_core_option_for_next_frame, 0, sizeof(g_core_option_for_next_frame));
 
-                if (   (!(g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED))
+                if (   (!(g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED)) // @todo This is why we don't poll input
                     || g_ulnet_session.frame_counter >= g_ulnet_session.peer_joining_on_frame[g_libretro_context.OurPort()]) {
                     for (int i = 0; g_binds[i].k || g_binds[i].rk; ++i) {
                         g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].input_state[next_buffer_index][0][g_binds[i].rk] = g_kbd[g_binds[i].k];
@@ -2525,6 +2525,7 @@ int main(int argc, char *argv[]) {
         timeout_milliseconds = SAM2_MAX(0, timeout_milliseconds);
 
         int ret;
+        // This will call ulnet_receive_packet_callback in a loop
         if ((ret = juice_user_poll(agent, agent_count, timeout_milliseconds))) {
             die("Error polling agent (%d)\n", ret);
         }

@@ -758,7 +758,7 @@ int64_t rle8_decode(const uint8_t* input, int64_t input_size, uint8_t* output, i
     return rle8_decode_extra(input, input_size, &input_consumed, output, output_capacity);
 }
 
-// Calculates the decoded size from the encoded byte stream.
+// Calculates the decoded size from the encoded byte stream. @todo Remove you can just roll these checks into the actual decoder
 int64_t rle8_decode_size(const uint8_t* input, int64_t input_size) {
     int64_t decoded_size = 0;
     int64_t i = 0;
@@ -1160,7 +1160,7 @@ SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *message,
     int message_frame_status = sam2__frame_message(message, buffer, buffer_length);
 
     if (message_frame_status == 0) {
-        SAM2_LOG_DEBUG("Received %d/%d bytes of header", *buffer_length, SAM2_HEADER_SIZE);
+        //SAM2_LOG_DEBUG("Received %d/%d bytes of header", *buffer_length, SAM2_HEADER_SIZE);
         return 0;
     } else if (message_frame_status < 0) {
         SAM2_LOG_ERROR("Message framing failed code (%d)", message_frame_status);
@@ -1525,6 +1525,21 @@ static void on_timeout(uv_timer_t *handle) {
 
         write_error(client, &response);
     }
+}
+
+// Sanus is latin for healthy
+static int sam2__sanitize_and_sanity_check_message(sam2_message_u *message, sam2_room_t *associated_room) {
+
+    if (memcmp(message, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
+
+    } else if (memcmp(message, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
+        join_message->room.name[sizeof(join_message->room.name) - 1] = '\0';
+        // @todo Issue a conventional warning to console log if more than one flag or peer_id has changed
+        //       Even one flag and one peer_id's changing simulaneously is a violation
+    }
+
+    return 0;
 }
 
 static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
