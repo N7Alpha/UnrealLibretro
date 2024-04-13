@@ -726,20 +726,16 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         rle8_decode(input_packet->coded_netplay_input_state, size - 1, (uint8_t *) &frame, sizeof(frame));
 
         SAM2_LOG_DEBUG("Recv input packet for frame %" PRId64 " from peer_ids[%d]=%" PRIx64 "",
-            frame, p, session->room_we_are_in.peer_ids[p]);
+            frame, original_sender_port, session->room_we_are_in.peer_ids[original_sender_port]);
 
-        if (   ulnet_is_authority(session)
-            && frame < session->peer_joining_on_frame[p]) {
-            SAM2_LOG_WARN("Received input packet for frame %" PRId64 " but we agreed the client would start sending input on frame %" PRId64 "",
-                frame, session->peer_joining_on_frame[p]);
-        } else if (frame < session->netplay_input_state[p].frame) {
+        if (frame < session->netplay_input_state[original_sender_port].frame) {
             // UDP packets can arrive out of order this is normal
             SAM2_LOG_DEBUG("Received outdated input packet for frame %" PRId64 ". We are already on frame %" PRId64 ". Dropping it",
-                frame, session->frame_counter);
+                frame, session->netplay_input_state[original_sender_port].frame);
         } else {
             rle8_decode(
                 input_packet->coded_netplay_input_state, size - 1,
-                (uint8_t *) &session->netplay_input_state[p], sizeof(netplay_input_state_t)
+                (uint8_t *) &session->netplay_input_state[original_sender_port], sizeof(netplay_input_state_t)
             );
 
             // Store the input packet in the history buffer. Zero runs decode to no bytes convieniently so we don't need to store the packet size
