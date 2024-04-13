@@ -705,7 +705,7 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         assert(size <= PACKET_MTU_PAYLOAD_SIZE_BYTES);
 
         input_packet_t *input_packet = (input_packet_t *) data;
-        int8_t original_sender_port = input_packet->channel_and_port & FLAGS_MASK;
+        int8_t original_sender_port = data[0] & FLAGS_MASK;
 
         if (   p != original_sender_port
             && p != SAM2_AUTHORITY_INDEX) {
