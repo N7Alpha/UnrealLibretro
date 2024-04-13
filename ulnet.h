@@ -36,7 +36,7 @@
 
 // This constant defines the maximum number of frames that can be buffered before blocking.
 // A value of 2 implies no delay can be accomidated.
-//
+//```
 // Consider the following scenario:
 // logical-time | peer a       | peer b
 // ------------------------------------------
@@ -46,7 +46,7 @@
 // 3            | ------------ | send input 1
 // 4            | recv input 1 | ------------
 // 5            | tick frame 0 | ------------
-//
+//```
 // The issue occurs at logical-time 4 when peer a receives input 1 before ticking frame 0.
 // If the input buffer only holds 1 frame, the input packet for frame 0 would be overwritten.
 // To handle the case where a peer immediately ticks and sends an input after receiving,
@@ -70,9 +70,10 @@ struct core_option_t {
 typedef struct {
     int64_t frame;
     FLibretroInputState input_state[INPUT_DELAY_FRAMES_MAX][PortCount];
+    sam2_room_t room_state[INPUT_DELAY_FRAMES_MAX];
     core_option_t core_option[INPUT_DELAY_FRAMES_MAX]; // Max 1 option per frame provided by the authority
 } netplay_input_state_t;
-static_assert(sizeof(netplay_input_state_t) == (sizeof(netplay_input_state_t::frame) + sizeof(netplay_input_state_t::input_state) + sizeof(netplay_input_state_t::core_option)), "netplay_input_state_t is not packed");
+static_assert(sizeof(netplay_input_state_t) == (sizeof(netplay_input_state_t::frame) + sizeof(netplay_input_state_t::room_state) + sizeof(netplay_input_state_t::input_state) + sizeof(netplay_input_state_t::core_option)), "netplay_input_state_t is not packed");
 
 typedef struct {
     uint8_t channel_and_port;
@@ -129,6 +130,7 @@ static_assert(sizeof(savestate_transfer_packet2_t) == PACKET_MTU_PAYLOAD_SIZE_BY
 typedef struct {
     int64_t total_size_bytes; // @todo This isn't necessary
     int64_t frame_counter;
+    sam2_room_t room;
     uint64_t encoding_chain; // @todo probably won't use this
     uint64_t xxhash;
 
@@ -150,6 +152,7 @@ typedef struct ulnet_session {
     uint64_t our_peer_id;
 
     sam2_room_t room_we_are_in;
+    sam2_room_t room_we_are_in_future;
 
     core_option_t core_options[CORE_OPTIONS_MAX]; // @todo I don't like this here
 
@@ -157,14 +160,12 @@ typedef struct ulnet_session {
     juice_agent_t *agent                     [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX];
     uint64_t       agent_peer_id             [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX];
     int64_t        peer_desynced_frame       [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX];
-    int64_t        peer_joining_on_frame     [SAM2_PORT_MAX + 1 /* Plus Authority */];
     netplay_input_state_t netplay_input_state[SAM2_PORT_MAX + 1 /* Plus Authority */];
     unsigned char netplay_input_packet_history[SAM2_PORT_MAX+1][NETPLAY_INPUT_HISTORY_SIZE][PACKET_MTU_PAYLOAD_SIZE_BYTES];
-    
+
     int64_t spectator_count;
 
     desync_debug_packet_t desync_debug_packet;
-    uint64_t peer_ready_to_join_bitfield; // Used by the authority for tracking join acknowledgements
 
     unsigned char remote_savestate_transfer_packets[COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES + FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * sizeof(savestate_transfer_packet_t)];
     int64_t remote_savestate_transfer_offset;
@@ -202,23 +203,15 @@ static int64_t logical_partition_offset_bytes(uint8_t sequence_hi, uint8_t seque
     return (int64_t) sequence_hi * block_size_bytes + sequence_lo * block_size_bytes * block_stride;
 }
 
-bool FindPeer(ulnet_session_t *session, juice_agent_t** peer_agent, int* peer_existing_port, uint64_t peer_id) {
-    for (int p = 0; p < SAM2_ARRAY_LENGTH(session->agent); p++) {
-        if (session->agent[p] && session->room_we_are_in.peer_ids[p] == peer_id) {
-            *peer_agent = session->agent[p];
-            *peer_existing_port = p;
-            return true;
-        }
-    }
-    return false;
-}
-
 void MovePeer(ulnet_session_t *session, int peer_existing_port, int peer_new_port) {
     assert(peer_existing_port != peer_new_port);
     assert(session->agent[peer_new_port] == NULL);
-    assert(session->agent_peer_id[peer_new_port] == 0);
+    assert(session->agent_peer_id[peer_new_port] <= SAM2_PORT_SENTINELS_MAX);
     assert(session->agent[peer_existing_port] != NULL);
-    assert(session->agent_peer_id[peer_new_port] != 0);
+
+    if (peer_existing_port > SAM2_AUTHORITY_INDEX) {
+        session->agent_peer_id[peer_existing_port] = session->agent_peer_id[--session->spectator_count];
+    }
 
     session->agent[peer_new_port] = session->agent[peer_existing_port];
     session->agent_peer_id[peer_new_port] = session->agent_peer_id[peer_existing_port];
@@ -227,40 +220,13 @@ void MovePeer(ulnet_session_t *session, int peer_existing_port, int peer_new_por
 }
 
 bool ulnet_is_authority(ulnet_session_t *session) {
-    return session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX];
+    return    session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]
+           || session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] == 0;
 }
 
 bool ulnet_is_spectator(ulnet_session_t *session, uint64_t peer_id) {
     return    session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED
            && sam2_get_port_of_peer(&session->room_we_are_in, peer_id) == -1;
-}
-
-bool ulnet_all_peers_ready_for_peer_to_join(ulnet_session_t *session, uint64_t joiner_peer_id) {
-    assert(ulnet_is_authority(session));
-    int joiner_port;
-    SAM2_LOCATE(session->room_we_are_in.peer_ids, joiner_peer_id, joiner_port);
-
-    if (joiner_port == -1) {
-        assert(   session->our_peer_id == joiner_peer_id 
-               || session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]);
-        SAM2_LOG_DEBUG("Assuming %016" PRIx64 " is a spectator", joiner_peer_id);
-        return true;
-    }
-
-    if (joiner_port == SAM2_AUTHORITY_INDEX) {
-        return true;
-    }
-
-    return 0xFFULL == (0xFFULL & (session->peer_ready_to_join_bitfield >> (8 * joiner_port)));
-}
-
-void ulnet_authority_broadcast_acknowledged_join(ulnet_session_t *session, int joiner_port) {
-    sam2_room_acknowledge_join_message_t response = { SAM2_ACKJ_HEADER };
-    response.room = session->room_we_are_in;
-    response.joiner_peer_id = session->room_we_are_in.peer_ids[joiner_port];
-    response.frame_counter = session->peer_joining_on_frame[joiner_port];
-
-    session->sam2_send_callback(session->user_ptr, (char *) &response);
 }
 
 void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent);
@@ -269,7 +235,7 @@ void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent);
 static void on_state_changed(juice_agent_t *agent, juice_state_t state, void *user_ptr);
 static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr);
 static void on_gathering_done(juice_agent_t *agent, void *user_ptr);
-static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *user_ptr); // We get all our packets in this one
+static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data, size_t size, void *user_ptr); // We get all our packets in this one
 
 void startup_ice_for_peer(ulnet_session_t *session, juice_agent_t **agent, uint64_t *agent_peer_id, uint64_t peer_id, const char *remote_description = NULL) {
     juice_config_t config;
@@ -284,7 +250,7 @@ void startup_ice_for_peer(ulnet_session_t *session, juice_agent_t **agent, uint6
     config.cb_state_changed = on_state_changed;
     config.cb_candidate = on_candidate;
     config.cb_gathering_done = on_gathering_done;
-    config.cb_recv = on_recv;
+    config.cb_recv = ulnet_receive_packet_callback;
 
     config.user_ptr = (void *) session;
 
@@ -314,12 +280,9 @@ int ulnet_our_port(ulnet_session_t *session) {
     // @todo There is a bug here where we are sending out packets as the authority when we are not the authority
     if (session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
         int port = sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id);
+        assert(port != -1);
 
-        if (port == -1) {
-            return 0; // @todo This should be handled differently I just don't want to out-of-bounds right now
-        } else {
-            return port;
-        }
+        return port;
     } else {
         return SAM2_AUTHORITY_INDEX;
     }
@@ -397,15 +360,20 @@ static inline void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port
 
     session->agent_peer_id[peer_port] = 0;
     session->peer_desynced_frame[peer_port] = 0;
+}
 
-    // Skip this part for spectators
-    if (peer_port < SAM2_PORT_MAX+1) {
-        session->room_we_are_in.peer_ids[peer_port] = SAM2_PORT_AVAILABLE; // @todo Doing this in here is probably bad, but I was making errors without it
-        session->peer_joining_on_frame[peer_port] = 0;
-        session->peer_ready_to_join_bitfield &= ~(0xFFULL << SAM2_PORT_MAX * peer_port);
-        memset(&session->netplay_input_state[peer_port], 0, sizeof(netplay_input_state_t));
-        memset(session->netplay_input_packet_history[peer_port], 0, sizeof(session->netplay_input_packet_history[peer_port]));
-    }
+static inline void ulnet_reset_save_state_bookkeeping(ulnet_session_t *session) {
+    session->remote_packet_groups = FEC_PACKET_GROUPS_MAX;
+    session->remote_savestate_transfer_offset = 0;
+    memset(session->fec_index_counter, 0, sizeof(session->fec_index_counter));
+    session->flags &= ~ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE;
+}
+
+static inline void ulnet_session_init_defaulted(ulnet_session_t *session) {
+    memset(&session->netplay_input_state, 0, sizeof(session->netplay_input_state));
+    memset(&session->netplay_input_packet_history, 0, sizeof(session->netplay_input_packet_history));
+
+    ulnet_reset_save_state_bookkeeping(session);
 }
 
 int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
@@ -417,7 +385,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
     if (memcmp(response, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_room_make_message_t *room_make = (sam2_room_make_message_t *) response;
         assert(session->our_peer_id == room_make->room.peer_ids[SAM2_AUTHORITY_INDEX]);
-        session->room_we_are_in = room_make->room;
+        session->room_we_are_in = session->room_we_are_in_future = room_make->room;
     } else if (memcmp(response, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_connect_message_t *connect_message = (sam2_connect_message_t *) response;
         SAM2_LOG_INFO("We were assigned the peer id %" PRIx64, connect_message->peer_id);
@@ -425,189 +393,68 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
         session->our_peer_id = connect_message->peer_id;
         session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
     } else if (memcmp(response, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        if (!ulnet_is_authority(session)) {
+            SAM2_LOG_FATAL("We shouldn't get here anymore"); // @todo Make error instead
+        }
         sam2_room_join_message_t *room_join = (sam2_room_join_message_t *) response;
 
-        if (!sam2_same_room(&session->room_we_are_in, &room_join->room)) {
-            SAM2_LOG_INFO("We were let into the server by the authority");
+        SAM2_LOG_INFO("Peer %" PRIx64 " has asked to change something about the room in some way e.g. leaving, joining, etc.", room_join->peer_id);
+        assert(sam2_same_room(&session->room_we_are_in_future, &room_join->room));
 
-            session->flags |= ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE;
-            session->frame_counter = 123456789000; // frame_counter is invalid before we get a savestate this should make logic issues more obvious
-            session->room_we_are_in = room_join->room;
-            session->peer_joining_on_frame[ulnet_our_port(session)] = INT64_MAX; // Upper bound
-            memset(session->netplay_input_state, 0, sizeof(session->netplay_input_state));
-            memset(session->netplay_input_packet_history, 0, sizeof(session->netplay_input_packet_history));
+        int current_port = sam2_get_port_of_peer(&session->room_we_are_in_future, room_join->peer_id);
+        int desired_port = sam2_get_port_of_peer(&room_join->room, room_join->peer_id);
 
-            for (int p = 0; p < SAM2_ARRAY_LENGTH(room_join->room.peer_ids); p++) {
-                if (room_join->room.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
-                if (room_join->room.peer_ids[p] == session->our_peer_id) continue;
-                if (session->agent[p]) {
-                    // We can get here if we're spectating since we already have an agent for the authority
-                    assert(session->agent_peer_id[p] == room_join->room.peer_ids[p]);
-                    continue;
-                }
+        if (desired_port == -1) {
+            if (current_port != -1) {
+                SAM2_LOG_INFO("Peer %" PRIx64 " left", room_join->peer_id);
+                ulnet_disconnect_peer(session, current_port);
 
-                session->peer_ready_to_join_bitfield |= (0xFFULL << SAM2_PORT_MAX * p); // @todo This should be based on a bitflag in the room
+                session->room_we_are_in_future.peer_ids[current_port] = SAM2_PORT_AVAILABLE;
 
-                startup_ice_for_peer(session, &session->agent[p], &session->agent_peer_id[p], room_join->room.peer_ids[p]);
+                sam2_room_join_message_t join_message = {
+                    SAM2_JOIN_HEADER,
+                    session->room_we_are_in_future
+                };
+
+                session->sam2_send_callback(session->user_ptr, (char *) &join_message);
+            } else {
+                SAM2_LOG_WARN("Peer %" PRIx64 " did something that doesn't look like joining or leaving", room_join->peer_id);
+
+                sam2_error_message_t error = {
+                    SAM2_FAIL_HEADER,
+                    SAM2_RESPONSE_AUTHORITY_ERROR,
+                    "Client made unsupported join request",
+                    room_join->peer_id
+                };
+
+                session->sam2_send_callback(session->user_ptr, (char *) &error);
             }
         } else {
-            if (session->our_peer_id == room_join->room.peer_ids[SAM2_AUTHORITY_INDEX]) {
-                SAM2_LOG_INFO("Someone has asked us to change the state of the server in some way e.g. leaving, joining, etc.");
+            if (current_port != desired_port) {
+                if (session->room_we_are_in_future.peer_ids[desired_port] != SAM2_PORT_AVAILABLE) {
+                    SAM2_LOG_INFO("Peer %" PRIx64 " tried to join on unavailable port", room_join->room.peer_ids[current_port]);
+                    sam2_error_message_t error = {
+                        SAM2_FAIL_HEADER,
+                        SAM2_RESPONSE_AUTHORITY_ERROR,
+                        "Peer tried to join on unavailable port",
+                        room_join->peer_id
+                    };
 
-                int sender_port = sam2_get_port_of_peer(&room_join->room, room_join->peer_id);
-
-                if (sender_port == -1) {
-                    // @todo This whole check is basically done twice, I need to have some better logic for leaving
-                    sender_port = sam2_get_port_of_peer(&session->room_we_are_in, room_join->peer_id);
-                    if (sender_port != -1) {
-                        SAM2_LOG_INFO("Peer %" PRIx64 " left", room_join->peer_id);
-                        ulnet_disconnect_peer(session, sender_port);
-
-                        session->room_we_are_in.peer_ids[sender_port] = SAM2_PORT_AVAILABLE;
-                        sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
-                        request.room = session->room_we_are_in;
-                        session->sam2_send_callback(session->user_ptr, (char *) &request);
-                    } else {
-                        SAM2_LOG_WARN("They didn't specify which port they're joining on");
-
-                        sam2_error_message_t error = {
-                            SAM2_FAIL_HEADER,
-                            SAM2_RESPONSE_AUTHORITY_ERROR,
-                            "Client didn't try to join on any ports",
-                            room_join->peer_id
-                        };
-
-                        session->sam2_send_callback(session->user_ptr, (char *) &error);
-                    }
+                    session->sam2_send_callback(session->user_ptr, (char *) &error);
                 } else {
-                    //session->room_we_are_in.flags |= SAM2_FLAG_PORT0_PEER_IS_INACTIVE << p;
+                    session->room_we_are_in_future.peer_ids[desired_port] = room_join->peer_id;
 
-                    juice_agent_t *peer_agent;
-                    int peer_existing_port;
-                    if (FindPeer(session, &peer_agent, &peer_existing_port, room_join->room.peer_ids[sender_port])) {
-                        if (peer_existing_port != sender_port) {
-                            MovePeer(session, peer_existing_port, sender_port); // This only moves spectators to real ports right now
-                        } else {
-                            SAM2_LOG_INFO("Peer %" PRIx64 " has asked to change something about the room", room_join->room.peer_ids[sender_port]);
-
-                        }
-                    } else {
-                        if (session->room_we_are_in.peer_ids[sender_port] != SAM2_PORT_AVAILABLE) {
-                            SAM2_LOG_INFO("Peer %" PRIx64 " tried to join on unavailable port", room_join->room.peer_ids[sender_port]);
-                            sam2_error_message_t error = {
-                                SAM2_FAIL_HEADER,
-                                SAM2_RESPONSE_AUTHORITY_ERROR,
-                                "Peer tried to join on unavailable port",
-                                room_join->peer_id
-                            };
-
-                            session->sam2_send_callback(session->user_ptr, (char *) &error);
-                        } else {
-                            SAM2_LOG_INFO("Peer %" PRIx64 " was let in by us the authority", room_join->room.peer_ids[sender_port]);
-
-                            session->peer_joining_on_frame[sender_port] = session->frame_counter;
-                            session->peer_ready_to_join_bitfield &= ~(0xFFULL << (8 * sender_port));
-
-                            for (int peer_port = 0; peer_port < SAM2_PORT_MAX; peer_port++) {
-                                if (session->room_we_are_in.peer_ids[peer_port] <= SAM2_PORT_SENTINELS_MAX) {
-                                    session->peer_ready_to_join_bitfield |= 1ULL << (SAM2_PORT_MAX * sender_port + peer_port);
-                                }
-                            }
-
-                            session->room_we_are_in.peer_ids[sender_port] = room_join->room.peer_ids[sender_port];
-                            sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
-                            request.room = session->room_we_are_in;
-                            session->sam2_send_callback(session->user_ptr, (char *) &request); // This must come before the next call
-
-                            // This call will immediately send the first ICE candidate, the link-local connection
-                            startup_ice_for_peer(
-                                session,
-                                &session->agent[sender_port],
-                                &session->agent_peer_id[sender_port],
-                                room_join->room.peer_ids[sender_port]
-                            );
-
-                            if (ulnet_all_peers_ready_for_peer_to_join(session, room_join->room.peer_ids[sender_port])) {
-                                ulnet_authority_broadcast_acknowledged_join(session, sender_port);
-                            }
-                        }
+                    if (current_port != -1) {
+                        session->room_we_are_in_future.peer_ids[current_port] = SAM2_PORT_AVAILABLE;
                     }
+
+                    sam2_room_join_message_t join_message = {
+                        SAM2_JOIN_HEADER,
+                        session->room_we_are_in_future
+                    };
+
+                    session->sam2_send_callback(session->user_ptr, (char *) &join_message);
                 }
-            } else {
-                SAM2_LOG_INFO("Something about the room we're in was changed by the authority");
-
-                assert(sam2_same_room(&session->room_we_are_in, &room_join->room));
-
-                if ( !(room_join->room.flags & SAM2_FLAG_ROOM_IS_INITIALIZED)
-                    || room_join->room.peer_ids[ulnet_our_port(session)] == SAM2_PORT_AVAILABLE) {
-                    SAM2_LOG_INFO("We were kicked or the room was abandoned");
-                    for (int peer_port = 0; peer_port < SAM2_PORT_MAX+1; peer_port++) {
-                        ulnet_disconnect_peer(session, peer_port);
-                    }
-
-                    session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
-                    session->room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
-                } else {
-                    for (int p = 0; p < SAM2_ARRAY_LENGTH(room_join->room.peer_ids); p++) {
-                        // @todo Check something other than just joins and leaves
-                        if (room_join->room.peer_ids[p] != session->room_we_are_in.peer_ids[p]) {
-                            if (room_join->room.peer_ids[p] == SAM2_PORT_AVAILABLE) {
-                                SAM2_LOG_INFO("Peer %" PRIx64 " has left the room", session->room_we_are_in.peer_ids[p]);
-                                ulnet_disconnect_peer(session, p);
-                            } else {
-                                SAM2_LOG_INFO("Peer %" PRIx64 " has joined the room", room_join->room.peer_ids[p]);
-
-                                session->room_we_are_in.peer_ids[p] = room_join->room.peer_ids[p]; // This must come before the next call as the next call can generate an ICE candidate before returning
-                                startup_ice_for_peer(session, &session->agent[p], &session->agent_peer_id[p], room_join->room.peer_ids[p]);
-
-                                sam2_room_acknowledge_join_message_t response = { SAM2_ACKJ_HEADER };
-                                response.room = session->room_we_are_in;
-                                response.joiner_peer_id = session->room_we_are_in.peer_ids[p] = room_join->room.peer_ids[p];
-                                response.frame_counter = session->peer_joining_on_frame[p] = session->frame_counter; // Lower bound
-
-                                session->sam2_send_callback(session->user_ptr, (char *) &response);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    } else if (memcmp(response, sam2_ackj_header, SAM2_HEADER_TAG_SIZE) == 0) {
-        sam2_room_acknowledge_join_message_t *acknowledge_room_join_message = (sam2_room_acknowledge_join_message_t *) response;
-
-        int joiner_port = sam2_get_port_of_peer(&session->room_we_are_in, acknowledge_room_join_message->joiner_peer_id);
-        int sender_port = sam2_get_port_of_peer(&session->room_we_are_in, acknowledge_room_join_message->sender_peer_id);
-        assert(joiner_port != -1);
-        assert(sender_port != -1);
-        assert(sender_port != joiner_port);
-
-        if (session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
-            session->peer_ready_to_join_bitfield |= ((1ULL << sender_port) << (8 * joiner_port));
-
-            session->peer_joining_on_frame[joiner_port] = SAM2_MAX(
-                session->peer_joining_on_frame[joiner_port],
-                acknowledge_room_join_message->frame_counter
-            );
-
-            if (ulnet_all_peers_ready_for_peer_to_join(session, acknowledge_room_join_message->joiner_peer_id)) {
-                ulnet_authority_broadcast_acknowledged_join(session, joiner_port);
-            } else {
-                SAM2_LOG_INFO("Peer %" PRIx64 " has been acknowledged by %" PRIx64 " but not all peers", 
-                    acknowledge_room_join_message->joiner_peer_id, acknowledge_room_join_message->sender_peer_id);
-            }
-        } else {
-            assert(acknowledge_room_join_message->sender_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]);
-            assert(acknowledge_room_join_message->frame_counter >= session->peer_joining_on_frame[joiner_port] || session->our_peer_id == acknowledge_room_join_message->joiner_peer_id);
-            SAM2_LOG_INFO("Authority told us peer %" PRIx64 " has been acknowledged by all peers and is joining on frame %" PRId64 " (our current frame %" PRId64 ")", 
-                acknowledge_room_join_message->joiner_peer_id, acknowledge_room_join_message->frame_counter, session->frame_counter);
-
-            session->peer_ready_to_join_bitfield |= 0xFFULL << (8 * joiner_port);
-            session->peer_joining_on_frame[joiner_port] = acknowledge_room_join_message->frame_counter;
-
-            if (acknowledge_room_join_message->joiner_peer_id == session->our_peer_id) {
-                // @todo I feel like this shouldn't really have to be done, but I need it currently
-                // since I use it to bookkeep the number of buffered frames of input
-                session->netplay_input_state[ulnet_our_port(session)].frame = session->peer_joining_on_frame[joiner_port] - 1;
             }
         }
     } else if (memcmp(response, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
@@ -650,7 +497,8 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
                 static sam2_error_message_t error = { 
                     SAM2_FAIL_HEADER,
                     SAM2_RESPONSE_AUTHORITY_ERROR,
-                    "Received unknown signal when we weren't the authority"
+                    "Received unknown signal when we weren't the authority",
+                    room_signal->peer_id
                 };
 
                 session->sam2_send_callback(session->user_ptr, (char *) &error);
@@ -674,7 +522,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
     return 0;
 }
 
-static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *user_ptr) {
+static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data, size_t size, void *user_ptr) {
     ulnet_session_t *session = (ulnet_session_t *) user_ptr;
 
     int p;
@@ -738,13 +586,13 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
                 (uint8_t *) &session->netplay_input_state[original_sender_port], sizeof(netplay_input_state_t)
             );
 
-            // Store the input packet in the history buffer. Zero runs decode to no bytes convieniently so we don't need to store the packet size
+            // Store the input packet in the history buffer. Arbitrary zero runs decode to no bytes conveniently so we don't need to store the packet size
             int i = 0;
             for (; i < size; i++) {
                 session->netplay_input_packet_history[original_sender_port][frame % NETPLAY_INPUT_HISTORY_SIZE][i] = data[i];
             }
 
-            for (; i < PACKET_MTU_PAYLOAD_SIZE_BYTES; i++) {
+            for (; i < SAM2_ARRAY_LENGTH(session->netplay_input_packet_history[0][0]); i++) {
                 session->netplay_input_packet_history[original_sender_port][frame % NETPLAY_INPUT_HISTORY_SIZE][i] = 0;
             }
 
@@ -779,8 +627,6 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
         int64_t total_frames_to_compare = INPUT_DELAY_FRAMES_MAX - frame_difference;
         for (int f = total_frames_to_compare-1; f >= 0 ; f--) {
             int64_t frame_to_compare = latest_common_frame - f;
-            if (frame_to_compare < session->peer_joining_on_frame[p]) continue; // Gets rid of false postives when another peer is joining
-            if (frame_to_compare < session->peer_joining_on_frame[ulnet_our_port(session)]) continue; // Gets rid of false postives when we are joining
             int64_t frame_index = frame_to_compare % INPUT_DELAY_FRAMES_MAX;
 
             if (our_desync_debug_packet.input_state_hash[frame_index] != their_desync_debug_packet.input_state_hash[frame_index]) {
@@ -920,9 +766,7 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
                         } else {
                             SAM2_LOG_DEBUG("Save state loaded");
                             session->frame_counter = savestate_transfer_payload->frame_counter;
-                            session->netplay_input_state[ulnet_our_port(session)].frame = savestate_transfer_payload->frame_counter; // @todo This shouldn't be necessary
-                            memset(&session->netplay_input_state[ulnet_our_port(session)].input_state, 0, // @todo This should probably happen somewhere else
-                             sizeof(session->netplay_input_state[ulnet_our_port(session)].input_state));
+                            session->room_we_are_in = savestate_transfer_payload->room;
                         }
                     }
                 }
@@ -933,11 +777,7 @@ static void on_recv(juice_agent_t *agent, const char *data, size_t size, void *u
 
                 free(savestate_transfer_payload);
 
-                // Reset the savestate transfer state
-                session->remote_packet_groups = FEC_PACKET_GROUPS_MAX;
-                session->remote_savestate_transfer_offset = 0;
-                memset(session->fec_index_counter, 0, sizeof(session->fec_index_counter));
-                session->flags &= ~ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE;
+                ulnet_reset_save_state_bookkeeping(session);
             }
         }
         break;
@@ -996,6 +836,7 @@ void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent) {
     assert(savestate_transfer_payload_plus_parity_bound_bytes >= packet_groups * n * packet_payload_size_bytes); // If this fails my logic calculating the bounds was just wrong
 
     savestate_transfer_payload->frame_counter = session->frame_counter;
+    savestate_transfer_payload->room = session->room_we_are_in;
     savestate_transfer_payload->compressed_savestate_size = savestate_transfer_payload->compressed_savestate_size;
     savestate_transfer_payload->total_size_bytes = sizeof(savestate_transfer_payload_t) + savestate_transfer_payload->compressed_savestate_size;
 

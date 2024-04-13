@@ -1011,13 +1011,6 @@ void draw_imgui() {
                     sam2_signal_message_t *signal_message = (sam2_signal_message_t *) message;
                     ImGui::Text("Peer ID: %016" PRIx64, signal_message->peer_id);
                     ImGui::InputTextMultiline("ICE SDP", signal_message->ice_sdp, sizeof(signal_message->ice_sdp), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 16), ImGuiInputTextFlags_ReadOnly);
-                } else if (memcmp(message, sam2_ackj_header, SAM2_HEADER_SIZE) == 0) {
-                    sam2_room_acknowledge_join_message_t *ack_join_message = (sam2_room_acknowledge_join_message_t *) message;
-                    ImGui::Separator();
-                    show_room(ack_join_message->room);
-                    ImGui::Text("Sender Peer ID: %016" PRIx64, ack_join_message->sender_peer_id);
-                    ImGui::Text("Joiner Peer ID: %016" PRIx64, ack_join_message->joiner_peer_id);
-                    ImGui::Text("Frame Counter: %" PRId64, ack_join_message->frame_counter);
                 } else if (memcmp(message, sam2_make_header, SAM2_HEADER_SIZE) == 0) {
                     sam2_room_make_message_t *make_message = (sam2_room_make_message_t *) message;
                     ImGui::Separator();
@@ -1113,7 +1106,6 @@ void draw_imgui() {
                         sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
                         request.room = g_ulnet_session.room_we_are_in;
                         request.room.peer_ids[p] = g_ulnet_session.our_peer_id;
-                        g_ulnet_session.peer_joining_on_frame[p] = INT64_MAX; // Upper bound
                         g_libretro_context.SAM2Send((char *) &request);
                     }
                 }
@@ -1230,6 +1222,7 @@ void draw_imgui() {
             for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
                 if (g_ulnet_session.room_we_are_in.peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
                     ulnet_disconnect_peer(&g_ulnet_session, p);
+                    g_ulnet_session.room_we_are_in.peer_ids[p] = SAM2_PORT_AVAILABLE;
                 }
             }
 
@@ -1306,50 +1299,25 @@ void draw_imgui() {
         ImGui::EndChild();
 
         if (selected_room_index != -1) {
-
-            // Disable the "Join" button if the selected room has a different hash
             if (   g_sam2_rooms[selected_room_index].core_hash_xxh64 == g_new_room_set_through_gui.core_hash_xxh64 
                 && g_sam2_rooms[selected_room_index].rom_hash_xxh64 == g_new_room_set_through_gui.rom_hash_xxh64) {
-                if (ImGui::Button("Join")) {
-                    // Send a join room request
-                    sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
-                    request.room = g_sam2_rooms[selected_room_index];
-
-                    int p = 0;
-                    for (p = 0; p < SAM2_PORT_MAX; p++) {
-                        if (request.room.peer_ids[p] == SAM2_PORT_AVAILABLE) {
-                            request.room.peer_ids[p] = g_ulnet_session.our_peer_id;
-                            break;
-                        }
-                    }
-
-                    if (p == SAM2_PORT_MAX) {
-                        die("No available ports in the room");
-                    }
-
-                    g_ulnet_session.peer_joining_on_frame[p] = INT64_MAX; // Upper bound
-
-                    g_libretro_context.SAM2Send((char *) &request);
-                }
 
                 ImGui::SameLine();
                 if (ImGui::Button("Spectate")) {
-                    // Directly signaling the authority just means spectate... @todo I probably should add the room as a field as well though incase I decide on multiple rooms per authority in the future
-                    g_ulnet_session.room_we_are_in = g_sam2_rooms[selected_room_index]; 
+                    // Directly signaling the authority just means spectate
+                    ulnet_session_init_defaulted(&g_ulnet_session);
+                    g_ulnet_session.room_we_are_in = g_sam2_rooms[selected_room_index];
+                    g_ulnet_session.flags |= ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE;
+                    g_ulnet_session.frame_counter = 123456789000;
                     startup_ice_for_peer(
                         &g_ulnet_session,
                         &g_ulnet_session.agent[SAM2_AUTHORITY_INDEX],
                         &g_ulnet_session.agent_peer_id[SAM2_AUTHORITY_INDEX],
-                            g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX]
+                         g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX]
                     );
                 }
             } else {
                 ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
-                ImGui::Button("Join");
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Core or ROM hash mismatch with room");
-                }
-
                 ImGui::Button("Spectate");
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("Core or ROM hash mismatch with room");
@@ -1958,18 +1926,10 @@ void FLibretroContext::core_input_poll() {
     for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
         if (ulnet_session.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
 
-        // If the peer was supposed to join on this frame
-        if (g_ulnet_session.frame_counter >= g_ulnet_session.peer_joining_on_frame[p]) {
-
-            if (g_libretro_context.IsAuthority()) {
-                assert(ulnet_all_peers_ready_for_peer_to_join(&g_ulnet_session, g_ulnet_session.room_we_are_in.peer_ids[p]));
-            }
-
-            assert(g_ulnet_session.netplay_input_state[p].frame <= g_ulnet_session.frame_counter + (INPUT_DELAY_FRAMES_MAX-1));
-            assert(g_ulnet_session.netplay_input_state[p].frame >= g_ulnet_session.frame_counter); // Right now it's possible to do "nothing wrong" and trigger this. Calling retro_serialize sometimes causes a frame to advance prematurely which can trigger this
-            for (int i = 0; i < 16; i++) {
-                g_joy[i] |= g_ulnet_session.netplay_input_state[p].input_state[g_ulnet_session.frame_counter % INPUT_DELAY_FRAMES_MAX][0][i];
-            }
+        assert(g_ulnet_session.netplay_input_state[p].frame <= g_ulnet_session.frame_counter + (INPUT_DELAY_FRAMES_MAX-1));
+        assert(g_ulnet_session.netplay_input_state[p].frame >= g_ulnet_session.frame_counter); // Right now it's possible to do "nothing wrong" and trigger this. Calling retro_serialize sometimes causes a frame to advance prematurely which can trigger this
+        for (int i = 0; i < 16; i++) {
+            g_joy[i] |= g_ulnet_session.netplay_input_state[p].input_state[g_ulnet_session.frame_counter % INPUT_DELAY_FRAMES_MAX][0][i];
         }
     }
 }
@@ -2453,34 +2413,36 @@ int main(int argc, char *argv[]) {
         // Always send an input packet if the core is ready to tick. This subsumes retransmission logic and generally makes protocol logic less strict
         if (true) {
             g_kbd = SDL_GetKeyboardState(NULL);
-            
+
             if (g_kbd[SDL_SCANCODE_ESCAPE])
                 running = false;
 
             // Poll input with buffering for netplay
-            if (g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].frame < g_ulnet_session.frame_counter + g_libretro_context.delay_frames) {
+            if (!ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id) && g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].frame < g_ulnet_session.frame_counter + g_libretro_context.delay_frames) {
+                // @todo The preincrement does not make sense to me here, but things have been working
                 int64_t next_buffer_index = ++g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].frame % INPUT_DELAY_FRAMES_MAX;
                 g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].core_option[next_buffer_index] = g_core_option_for_next_frame;
                 memset(&g_core_option_for_next_frame, 0, sizeof(g_core_option_for_next_frame));
 
-                if (   (!(g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED)) // @todo This is why we don't poll input
-                    || g_ulnet_session.frame_counter >= g_ulnet_session.peer_joining_on_frame[g_libretro_context.OurPort()]) {
-                    for (int i = 0; g_binds[i].k || g_binds[i].rk; ++i) {
-                        g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].input_state[next_buffer_index][0][g_binds[i].rk] = g_kbd[g_binds[i].k];
-                    }
+                // @todo You can only update the room state on the last most frame as that's the only one we know clients can't possibly be buffered on
+                //       Otherwise there is a chance for inconsistent inputs to be sent when peers switch ports
+                if (ulnet_is_authority(&g_ulnet_session)) {
+                    g_ulnet_session.netplay_input_state[SAM2_AUTHORITY_INDEX].room_state[next_buffer_index] = g_ulnet_session.room_we_are_in_future;
+                }
 
-                    if (g_libretro_context.fuzz_input) {
-                        for (int i = 0; i < 16; ++i) {
-                            g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].input_state[next_buffer_index][0][i] = rand() & 0x0001;
-                        }
+                for (int i = 0; g_binds[i].k || g_binds[i].rk; ++i) {
+                    g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].input_state[next_buffer_index][0][g_binds[i].rk] = g_kbd[g_binds[i].k];
+                }
+
+                if (g_libretro_context.fuzz_input) {
+                    for (int i = 0; i < 16; ++i) {
+                        g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].input_state[next_buffer_index][0][i] = rand() & 0x0001;
                     }
                 }
             }
 
-            if (   g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED
-                && (!(g_ulnet_session.flags & ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE)  // If we were waiting this would mean our frame_counter is invalid and break the next check
-                && g_ulnet_session.frame_counter >= g_ulnet_session.peer_joining_on_frame[g_libretro_context.OurPort()])) {
-
+            if (   !ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id) 
+                && g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
                 union {
                     uint8_t _[1 /* Packet Header */ + RLE8_ENCODE_UPPER_BOUND(PACKET_MTU_PAYLOAD_SIZE_BYTES)];
                     input_packet_t input_packet;
@@ -2505,7 +2467,8 @@ int main(int argc, char *argv[]) {
                     // Wait until we can send netplay messages to everyone without fail
                     if (state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED) {
                         juice_send(g_ulnet_session.agent[p], (const char *) &input_packet, sizeof(input_packet_t) + actual_payload_size);
-                        SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64, g_ulnet_session.netplay_input_state[p].frame, p, g_ulnet_session.room_we_are_in.peer_ids[p]);
+                        SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64,
+                            g_ulnet_session.netplay_input_state[SAM2_AUTHORITY_INDEX].frame, p, g_ulnet_session.room_we_are_in.peer_ids[p]);
                     }
                 }
             }
@@ -2546,8 +2509,8 @@ int main(int argc, char *argv[]) {
                         int64_t decode_size = rle8_decode_extra(input_packet_that_could_contain_input_for_current_frame->coded_netplay_input_state, PACKET_MTU_PAYLOAD_SIZE_BYTES,
                             &input_consumed, (uint8_t *) &g_ulnet_session.netplay_input_state[p], sizeof(g_ulnet_session.netplay_input_state[p]));
 
-                        SAM2_LOG_DEBUG("Reconstructed input for frame %" PRId64 " from peer %" PRIx64 "consumed %" PRId64 " bytes of input to produce %" PRId64,
-                            g_ulnet_session.frame_counter, g_ulnet_session.room_we_are_in.peer_ids[p], input_consumed, decode_size);
+//                        SAM2_LOG_DEBUG("Reconstructed input for frame %" PRId64 " from peer %" PRIx64 "consumed %" PRId64 " bytes of input to produce %" PRId64,
+//                            g_ulnet_session.frame_counter, g_ulnet_session.room_we_are_in.peer_ids[p], input_consumed, decode_size);
 
                         break;
                     }
@@ -2569,12 +2532,6 @@ int main(int argc, char *argv[]) {
                 netplay_ready_to_tick &= g_ulnet_session.netplay_input_state[p].frame >= g_ulnet_session.frame_counter;
                 if                      (g_ulnet_session.netplay_input_state[p].frame >= g_ulnet_session.frame_counter + INPUT_DELAY_FRAMES_MAX) { ImGui::Text("Input state on port %d is too new (ahead by %d frames)", p, g_ulnet_session.netplay_input_state[p].frame - (g_ulnet_session.frame_counter + INPUT_DELAY_FRAMES_MAX)); }
                 netplay_ready_to_tick &= g_ulnet_session.netplay_input_state[p].frame <  g_ulnet_session.frame_counter + INPUT_DELAY_FRAMES_MAX; // This is needed for spectators only. By protocol it should always true for non-spectators unless we have a bug or someone is misbehaving
-
-                if (g_libretro_context.OurPort() != p && g_libretro_context.IsAuthority()) {
-                    // Wait until we can send UDP packets to peer without fail @todo Now that I think about it this is probably redundant so I can remove it or change it to asserts once I figure out the logic better
-                    if                     (!ulnet_all_peers_ready_for_peer_to_join(&g_ulnet_session, g_ulnet_session.room_we_are_in.peer_ids[p])) { ImGui::Text("Not ready for peer on port %d to join", p); }
-                    netplay_ready_to_tick &= ulnet_all_peers_ready_for_peer_to_join(&g_ulnet_session, g_ulnet_session.room_we_are_in.peer_ids[p]);
-                }
             }
         }
 
@@ -2631,6 +2588,74 @@ int main(int argc, char *argv[]) {
             g_retro.retro_run();
             g_ulnet_session.frame_counter++;
             core_wants_tick_at_unix_usec += 1000000 / g_av.timing.fps;
+
+            sam2_room_t *new_room_state = &g_ulnet_session.netplay_input_state[SAM2_AUTHORITY_INDEX].room_state[g_ulnet_session.frame_counter % INPUT_DELAY_FRAMES_MAX];
+            if (new_room_state->flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
+                ulnet_session_t *session = &g_ulnet_session;
+
+                //SAM2_LOG_INFO("Something about the room we're in was changed by the authority");
+
+                if (   sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id) == -1
+                    && sam2_get_port_of_peer(new_room_state, session->our_peer_id) != -1) {
+                    // @todo This code can be reworked to remove the above if statement as is this conditional really doesn't make sense anyway, but it shouldn't really be a problem for now
+                    SAM2_LOG_INFO("We were let into the server by the authority");
+
+                    int64_t our_new_port = sam2_get_port_of_peer(new_room_state, session->our_peer_id);
+
+                    // @todo This assertion is only true if the peer left on their own and is behaving nicely
+                    assert(session->netplay_input_state[our_new_port].frame < g_ulnet_session.frame_counter);
+                    session->netplay_input_state[our_new_port].frame = g_ulnet_session.frame_counter;
+
+                    for (int p = 0; p < SAM2_ARRAY_LENGTH(new_room_state->peer_ids); p++) {
+                        if (new_room_state->peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
+                        if (new_room_state->peer_ids[p] == session->our_peer_id) continue;
+                        if (session->agent[p] == NULL) {
+                            startup_ice_for_peer(session, &session->agent[p], &session->agent_peer_id[p], new_room_state->peer_ids[p]);
+                        }
+                    }
+                } else {
+                    for (int p = 0; p < SAM2_ARRAY_LENGTH(new_room_state->peer_ids); p++) {
+                        // @todo Check something other than just joins and leaves
+                        if (new_room_state->peer_ids[p] != session->room_we_are_in.peer_ids[p]) {
+                            if (   session->room_we_are_in.peer_ids[p] > SAM2_PORT_SENTINELS_MAX
+                                && new_room_state->peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) {
+                                if (session->room_we_are_in.peer_ids[p] == session->our_peer_id) {
+                                    SAM2_LOG_INFO("We were kicked or the room was abandoned");
+                                    for (int peer_port = 0; peer_port < SAM2_PORT_MAX+1; peer_port++) {
+                                        ulnet_disconnect_peer(session, peer_port);
+                                    }
+
+                                    session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
+                                    session->room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
+                                } else {
+                                    SAM2_LOG_INFO("Peer %" PRIx64 " has left the room", session->room_we_are_in.peer_ids[p]);
+                                    ulnet_disconnect_peer(session, p);
+                                }
+                            } else if (new_room_state->peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
+                                int peer_existing_port;
+                                SAM2_LOCATE(session->agent_peer_id, new_room_state->peer_ids[p], peer_existing_port);
+                                if (peer_existing_port != -1) {
+                                    SAM2_LOG_INFO("Specator %016" PRIx64 " was promoted to peer", new_room_state->peer_ids[p]);
+                                    MovePeer(session, peer_existing_port, p); // This only moves spectators to real ports right now
+                                } else {
+                                    session->room_we_are_in.peer_ids[p] = new_room_state->peer_ids[p]; // This must come before the next call as the next call can generate an ICE candidate before returning
+                                    if (!ulnet_is_spectator(session, session->our_peer_id) && !session->agent[p]) {
+                                        SAM2_LOG_INFO("Peer %" PRIx64 " has joined the room", new_room_state->peer_ids[p]);
+                                        startup_ice_for_peer(session, &session->agent[p], &session->agent_peer_id[p], new_room_state->peer_ids[p]);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                g_ulnet_session.room_we_are_in = *new_room_state;
+                for (int p = 0; p < SAM2_ARRAY_LENGTH(new_room_state->peer_ids); p++) {
+                    if (new_room_state->peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
+                        g_ulnet_session.agent_peer_id[p] = new_room_state->peer_ids[p]; // @todo bad
+                    }
+                }
+            }
 
             // Keep track of frame-times for plotting purposes
             static int64_t last_tick_usec = get_unix_time_microseconds();
