@@ -69,15 +69,15 @@ struct ulnet_core_option_t {
 typedef struct {
     int64_t frame;
     FLibretroInputState input_state[ULNET_DELAY_BUFFER_SIZE][PortCount];
-    sam2_room_t room_state[ULNET_DELAY_BUFFER_SIZE];
+    sam2_room_t room_xor_delta[ULNET_DELAY_BUFFER_SIZE];
     ulnet_core_option_t core_option[ULNET_DELAY_BUFFER_SIZE]; // Max 1 option per frame provided by the authority
 } ulnet_state_t;
 SAM2_STATIC_ASSERT(
-      sizeof(ulnet_state_t) ==
-     (sizeof(ulnet_state_t::frame)
-    + sizeof(ulnet_state_t::room_state)
-    + sizeof(ulnet_state_t::input_state)
-    + sizeof(ulnet_state_t::core_option)),
+    sizeof(ulnet_state_t) ==
+    (sizeof(((ulnet_state_t *)0)->frame)
+    + sizeof(((ulnet_state_t *)0)->input_state)
+    + sizeof(((ulnet_state_t *)0)->room_xor_delta)
+    + sizeof(((ulnet_state_t *)0)->core_option)),
     "ulnet_state_t is not packed"
 );
 
@@ -160,7 +160,7 @@ typedef struct ulnet_session {
     uint64_t our_peer_id;
 
     sam2_room_t room_we_are_in;
-    sam2_room_t room_we_are_in_future;
+    sam2_room_t next_room_xor_delta;
 
     ulnet_core_option_t core_options[ULNET_CORE_OPTIONS_MAX]; // @todo I don't like this here
 
@@ -384,6 +384,12 @@ static inline void ulnet_session_init_defaulted(ulnet_session_t *session) {
     ulnet_reset_save_state_bookkeeping(session);
 }
 
+static inline void ulnet__xor_delta(void *dest, void *src, int size) {
+    for (int i = 0; i < size; i++) {
+        ((uint8_t *) dest)[i] ^= ((uint8_t *) src)[i];
+    }
+}
+
 int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
 
     if (sam2_get_metadata((char *) response) == NULL) {
@@ -393,7 +399,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
     if (memcmp(response, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_room_make_message_t *room_make = (sam2_room_make_message_t *) response;
         assert(session->our_peer_id == room_make->room.peer_ids[SAM2_AUTHORITY_INDEX]);
-        session->room_we_are_in = session->room_we_are_in_future = room_make->room;
+        session->room_we_are_in = room_make->room;
     } else if (memcmp(response, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_connect_message_t *connect_message = (sam2_connect_message_t *) response;
         SAM2_LOG_INFO("We were assigned the peer id %" PRIx64, connect_message->peer_id);
@@ -406,10 +412,22 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
         }
         sam2_room_join_message_t *room_join = (sam2_room_join_message_t *) response;
 
-        SAM2_LOG_INFO("Peer %" PRIx64 " has asked to change something about the room in some way e.g. leaving, joining, etc.", room_join->peer_id);
-        assert(sam2_same_room(&session->room_we_are_in_future, &room_join->room));
+        // This looks weird but really we're just figuring out what the current state of the room
+        // looks like so we can send generate deltas against it. 
+        sam2_room_t future_room_we_are_in = session->room_we_are_in;
+        for (int frame = session->frame_counter+1; frame < session->state[SAM2_AUTHORITY_INDEX].frame; frame++) {
+            ulnet__xor_delta(
+                &future_room_we_are_in,
+                &session->state[SAM2_AUTHORITY_INDEX].room_xor_delta[frame % ULNET_DELAY_BUFFER_SIZE],
+                sizeof(session->room_we_are_in)
+            );
+        }
+        ulnet__xor_delta(&future_room_we_are_in, &session->next_room_xor_delta, sizeof(session->room_we_are_in));
 
-        int current_port = sam2_get_port_of_peer(&session->room_we_are_in_future, room_join->peer_id);
+        SAM2_LOG_INFO("Peer %" PRIx64 " has asked to change something about the room in some way e.g. leaving, joining, etc.", room_join->peer_id);
+        assert(sam2_same_room(&future_room_we_are_in, &room_join->room));
+
+        int current_port = sam2_get_port_of_peer(&future_room_we_are_in, room_join->peer_id);
         int desired_port = sam2_get_port_of_peer(&room_join->room, room_join->peer_id);
 
         if (desired_port == -1) {
@@ -417,14 +435,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
                 SAM2_LOG_INFO("Peer %" PRIx64 " left", room_join->peer_id);
                 ulnet_disconnect_peer(session, current_port);
 
-                session->room_we_are_in_future.peer_ids[current_port] = SAM2_PORT_AVAILABLE;
-
-                sam2_room_join_message_t join_message = {
-                    SAM2_JOIN_HEADER,
-                    session->room_we_are_in_future
-                };
-
-                session->sam2_send_callback(session->user_ptr, (char *) &join_message);
+                session->next_room_xor_delta.peer_ids[current_port] = future_room_we_are_in.peer_ids[current_port] ^ SAM2_PORT_AVAILABLE;
             } else {
                 SAM2_LOG_WARN("Peer %" PRIx64 " did something that doesn't look like joining or leaving", room_join->peer_id);
 
@@ -439,7 +450,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
             }
         } else {
             if (current_port != desired_port) {
-                if (session->room_we_are_in_future.peer_ids[desired_port] != SAM2_PORT_AVAILABLE) {
+                if (future_room_we_are_in.peer_ids[desired_port] != SAM2_PORT_AVAILABLE) {
                     SAM2_LOG_INFO("Peer %" PRIx64 " tried to join on unavailable port", room_join->room.peer_ids[current_port]);
                     sam2_error_message_t error = {
                         SAM2_FAIL_HEADER,
@@ -450,20 +461,26 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
 
                     session->sam2_send_callback(session->user_ptr, (char *) &error);
                 } else {
-                    session->room_we_are_in_future.peer_ids[desired_port] = room_join->peer_id;
+                    session->next_room_xor_delta.peer_ids[desired_port] = future_room_we_are_in.peer_ids[desired_port] ^ room_join->peer_id;
 
                     if (current_port != -1) {
-                        session->room_we_are_in_future.peer_ids[current_port] = SAM2_PORT_AVAILABLE;
+                        future_room_we_are_in.peer_ids[current_port] = SAM2_PORT_AVAILABLE;
                     }
-
-                    sam2_room_join_message_t join_message = {
-                        SAM2_JOIN_HEADER,
-                        session->room_we_are_in_future
-                    };
-
-                    session->sam2_send_callback(session->user_ptr, (char *) &join_message);
                 }
             }
+        }
+
+        sam2_room_t no_xor_delta = {0};
+        if (memcmp(&session->next_room_xor_delta, &no_xor_delta, sizeof(sam2_room_t)) == 0) {
+            SAM2_LOG_WARN("Peer %" PRIx64 " didn't change anything after making join request", room_join->peer_id);
+        } else {
+            ulnet__xor_delta(&future_room_we_are_in, &session->next_room_xor_delta, sizeof(session->room_we_are_in));
+            sam2_room_join_message_t join_message = {
+                SAM2_JOIN_HEADER,
+                future_room_we_are_in
+            };
+
+            session->sam2_send_callback(session->user_ptr, (char *) &join_message);
         }
     } else if (memcmp(response, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_signal_message_t *room_signal = (sam2_signal_message_t *) response;

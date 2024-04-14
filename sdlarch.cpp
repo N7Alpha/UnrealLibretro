@@ -2589,36 +2589,38 @@ int main(int argc, char *argv[]) {
             g_retro.retro_run();
             core_wants_tick_at_unix_usec += 1000000 / g_av.timing.fps;
 
-            sam2_room_t *new_room_state = &g_ulnet_session.state[SAM2_AUTHORITY_INDEX].room_state[g_ulnet_session.frame_counter % ULNET_DELAY_BUFFER_SIZE];
-            if (new_room_state->flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
+            sam2_room_t new_room_state = g_ulnet_session.room_we_are_in;
+            ulnet__xor_delta(&new_room_state, &g_ulnet_session.state[SAM2_AUTHORITY_INDEX].room_xor_delta[g_ulnet_session.frame_counter % ULNET_DELAY_BUFFER_SIZE], sizeof(sam2_room_t));
+
+            if (new_room_state.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
                 ulnet_session_t *session = &g_ulnet_session;
 
                 //SAM2_LOG_INFO("Something about the room we're in was changed by the authority");
 
                 if (   sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id) == -1
-                    && sam2_get_port_of_peer(new_room_state, session->our_peer_id) != -1) {
+                    && sam2_get_port_of_peer(&new_room_state, session->our_peer_id) != -1) {
                     // @todo This code can be reworked to remove the above if statement as is this conditional really doesn't make sense anyway, but it shouldn't really be a problem for now
                     SAM2_LOG_INFO("We were let into the server by the authority");
 
-                    int64_t our_new_port = sam2_get_port_of_peer(new_room_state, session->our_peer_id);
+                    int64_t our_new_port = sam2_get_port_of_peer(&new_room_state, session->our_peer_id);
 
                     // @todo This assertion is only true if the peer left on their own and is behaving nicely
                     assert(session->state[our_new_port].frame < g_ulnet_session.frame_counter);
                     session->state[our_new_port].frame = g_ulnet_session.frame_counter;
 
-                    for (int p = 0; p < SAM2_ARRAY_LENGTH(new_room_state->peer_ids); p++) {
-                        if (new_room_state->peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
-                        if (new_room_state->peer_ids[p] == session->our_peer_id) continue;
+                    for (int p = 0; p < SAM2_ARRAY_LENGTH(new_room_state.peer_ids); p++) {
+                        if (new_room_state.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
+                        if (new_room_state.peer_ids[p] == session->our_peer_id) continue;
                         if (session->agent[p] == NULL) {
-                            startup_ice_for_peer(session, &session->agent[p], &session->agent_peer_id[p], new_room_state->peer_ids[p]);
+                            startup_ice_for_peer(session, &session->agent[p], &session->agent_peer_id[p], new_room_state.peer_ids[p]);
                         }
                     }
                 } else {
-                    for (int p = 0; p < SAM2_ARRAY_LENGTH(new_room_state->peer_ids); p++) {
+                    for (int p = 0; p < SAM2_ARRAY_LENGTH(new_room_state.peer_ids); p++) {
                         // @todo Check something other than just joins and leaves
-                        if (new_room_state->peer_ids[p] != session->room_we_are_in.peer_ids[p]) {
+                        if (new_room_state.peer_ids[p] != session->room_we_are_in.peer_ids[p]) {
                             if (   session->room_we_are_in.peer_ids[p] > SAM2_PORT_SENTINELS_MAX
-                                && new_room_state->peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) {
+                                && new_room_state.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) {
                                 if (session->room_we_are_in.peer_ids[p] == session->our_peer_id) {
                                     SAM2_LOG_INFO("We were kicked or the room was abandoned");
                                     for (int peer_port = 0; peer_port < SAM2_PORT_MAX+1; peer_port++) {
@@ -2631,17 +2633,17 @@ int main(int argc, char *argv[]) {
                                     SAM2_LOG_INFO("Peer %" PRIx64 " has left the room", session->room_we_are_in.peer_ids[p]);
                                     ulnet_disconnect_peer(session, p);
                                 }
-                            } else if (new_room_state->peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
+                            } else if (new_room_state.peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
                                 int peer_existing_port;
-                                SAM2_LOCATE(session->agent_peer_id, new_room_state->peer_ids[p], peer_existing_port);
+                                SAM2_LOCATE(session->agent_peer_id, new_room_state.peer_ids[p], peer_existing_port);
                                 if (peer_existing_port != -1) {
-                                    SAM2_LOG_INFO("Specator %016" PRIx64 " was promoted to peer", new_room_state->peer_ids[p]);
+                                    SAM2_LOG_INFO("Specator %016" PRIx64 " was promoted to peer", new_room_state.peer_ids[p]);
                                     MovePeer(session, peer_existing_port, p); // This only moves spectators to real ports right now
                                 } else {
-                                    session->room_we_are_in.peer_ids[p] = new_room_state->peer_ids[p]; // This must come before the next call as the next call can generate an ICE candidate before returning
+                                    session->room_we_are_in.peer_ids[p] = new_room_state.peer_ids[p]; // This must come before the next call as the next call can generate an ICE candidate before returning
                                     if (!ulnet_is_spectator(session, session->our_peer_id) && !session->agent[p]) {
-                                        SAM2_LOG_INFO("Peer %" PRIx64 " has joined the room", new_room_state->peer_ids[p]);
-                                        startup_ice_for_peer(session, &session->agent[p], &session->agent_peer_id[p], new_room_state->peer_ids[p]);
+                                        SAM2_LOG_INFO("Peer %" PRIx64 " has joined the room", new_room_state.peer_ids[p]);
+                                        startup_ice_for_peer(session, &session->agent[p], &session->agent_peer_id[p], new_room_state.peer_ids[p]);
                                     }
                                 }
                             }
@@ -2649,10 +2651,10 @@ int main(int argc, char *argv[]) {
                     }
                 }
 
-                g_ulnet_session.room_we_are_in = *new_room_state;
-                for (int p = 0; p < SAM2_ARRAY_LENGTH(new_room_state->peer_ids); p++) {
-                    if (new_room_state->peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
-                        g_ulnet_session.agent_peer_id[p] = new_room_state->peer_ids[p]; // @todo bad
+                g_ulnet_session.room_we_are_in = new_room_state;
+                for (int p = 0; p < SAM2_ARRAY_LENGTH(new_room_state.peer_ids); p++) {
+                    if (new_room_state.peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
+                        g_ulnet_session.agent_peer_id[p] = new_room_state.peer_ids[p]; // @todo bad
                     }
                 }
             }
