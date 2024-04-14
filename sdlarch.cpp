@@ -2427,7 +2427,8 @@ int main(int argc, char *argv[]) {
                 // @todo You can only update the room state on the last most frame as that's the only one we know clients can't possibly be buffered on
                 //       Otherwise there is a chance for inconsistent inputs to be sent when peers switch ports
                 if (ulnet_is_authority(&g_ulnet_session)) {
-                    g_ulnet_session.state[SAM2_AUTHORITY_INDEX].room_state[next_buffer_index] = g_ulnet_session.room_we_are_in_future;
+                    g_ulnet_session.state[SAM2_AUTHORITY_INDEX].room_xor_delta[next_buffer_index] = g_ulnet_session.next_room_xor_delta;
+                    memset(&g_ulnet_session.next_room_xor_delta, 0, sizeof(g_ulnet_session.next_room_xor_delta));
                 }
 
                 for (int i = 0; g_binds[i].k || g_binds[i].rk; ++i) {
@@ -2586,7 +2587,6 @@ int main(int argc, char *argv[]) {
             }
 
             g_retro.retro_run();
-            g_ulnet_session.frame_counter++;
             core_wants_tick_at_unix_usec += 1000000 / g_av.timing.fps;
 
             sam2_room_t *new_room_state = &g_ulnet_session.state[SAM2_AUTHORITY_INDEX].room_state[g_ulnet_session.frame_counter % ULNET_DELAY_BUFFER_SIZE];
@@ -2656,6 +2656,9 @@ int main(int argc, char *argv[]) {
                     }
                 }
             }
+
+            // Ideally I'd throw this right after ticking the core, but we need to update the room state first
+            g_ulnet_session.frame_counter++;
 
             // Keep track of frame-times for plotting purposes
             static int64_t last_tick_usec = get_unix_time_microseconds();
