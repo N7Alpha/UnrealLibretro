@@ -318,7 +318,7 @@ struct FLibretroContext {
     void core_input_poll();
 };
 
-core_option_t g_core_option_for_next_frame = {0};
+ulnet_core_option_t g_core_option_for_next_frame = {0};
 
 static struct FLibretroContext g_libretro_context;
 auto &g_ulnet_session = g_libretro_context.ulnet_session;
@@ -711,7 +711,7 @@ static sam2_room_t g_sam2_rooms[MAX_ROOMS];
 static int64_t g_sam2_room_count = 0;
 sam2_room_list_message_t last_sam2_room_list_response;
 int64_t sam2_room_count;
-sam2_room_t sam2_rooms[ULNET_MAX_ROOMS];
+sam2_room_t sam2_rooms[1024];
 
 static const char *g_sam2_address = "sam2.cornbass.com";
 static sam2_socket_t &g_sam2_socket = g_libretro_context.sam2_socket;
@@ -1145,9 +1145,9 @@ void draw_imgui() {
                     }
                 }
 
-                char buffer_depth[INPUT_DELAY_FRAMES_MAX] = {0};
+                char buffer_depth[ULNET_DELAY_BUFFER_SIZE] = {0};
 
-                int64_t peer_num_frames_ahead = g_ulnet_session.netplay_input_state[p].frame - g_ulnet_session.frame_counter;
+                int64_t peer_num_frames_ahead = g_ulnet_session.state[p].frame - g_ulnet_session.frame_counter;
                 for (int f = 0; f < sizeof(buffer_depth)-1; f++) {
                     buffer_depth[f] = f < peer_num_frames_ahead ? 'X' : 'O';
                 }
@@ -1228,7 +1228,7 @@ void draw_imgui() {
 
             g_ulnet_session.room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
             g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = g_ulnet_session.our_peer_id;
-            g_ulnet_session.netplay_input_state[SAM2_AUTHORITY_INDEX].frame = g_ulnet_session.frame_counter; // @todo This is stupid, I should just have a variable for tracking buffered frames
+            g_ulnet_session.state[SAM2_AUTHORITY_INDEX].frame = g_ulnet_session.frame_counter; // @todo This is stupid, I should just have a variable for tracking buffered frames
         }
     } else {
         // Create a "Make" button that sends a make room request when clicked
@@ -1405,7 +1405,7 @@ finished_drawing_sam2_interface:
 
         {
             int64_t min_delay_frames = 0;
-            int64_t max_delay_frames = INPUT_DELAY_FRAMES_MAX/2-1;
+            int64_t max_delay_frames = ULNET_DELAY_BUFFER_SIZE/2-1;
             if (ImGui::SliderScalar("Network Buffered Frames", ImGuiDataType_S64, &g_libretro_context.delay_frames, &min_delay_frames, &max_delay_frames, "%lld", ImGuiSliderFlags_None)) {
                 strcpy(g_core_option_for_next_frame.key, "netplay_delay_frames");
                 sprintf(g_core_option_for_next_frame.value, "%" PRIx64, g_libretro_context.delay_frames);
@@ -1926,10 +1926,10 @@ void FLibretroContext::core_input_poll() {
     for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
         if (ulnet_session.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
 
-        assert(g_ulnet_session.netplay_input_state[p].frame <= g_ulnet_session.frame_counter + (INPUT_DELAY_FRAMES_MAX-1));
-        assert(g_ulnet_session.netplay_input_state[p].frame >= g_ulnet_session.frame_counter); // Right now it's possible to do "nothing wrong" and trigger this. Calling retro_serialize sometimes causes a frame to advance prematurely which can trigger this
+        assert(g_ulnet_session.state[p].frame <= g_ulnet_session.frame_counter + (ULNET_DELAY_BUFFER_SIZE-1));
+        assert(g_ulnet_session.state[p].frame >= g_ulnet_session.frame_counter); // Right now it's possible to do "nothing wrong" and trigger this. Calling retro_serialize sometimes causes a frame to advance prematurely which can trigger this
         for (int i = 0; i < 16; i++) {
-            g_joy[i] |= g_ulnet_session.netplay_input_state[p].input_state[g_ulnet_session.frame_counter % INPUT_DELAY_FRAMES_MAX][0][i];
+            g_joy[i] |= g_ulnet_session.state[p].input_state[g_ulnet_session.frame_counter % ULNET_DELAY_BUFFER_SIZE][0][i];
         }
     }
 }
@@ -2418,25 +2418,25 @@ int main(int argc, char *argv[]) {
                 running = false;
 
             // Poll input with buffering for netplay
-            if (!ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id) && g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].frame < g_ulnet_session.frame_counter + g_libretro_context.delay_frames) {
+            if (!ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id) && g_ulnet_session.state[g_libretro_context.OurPort()].frame < g_ulnet_session.frame_counter + g_libretro_context.delay_frames) {
                 // @todo The preincrement does not make sense to me here, but things have been working
-                int64_t next_buffer_index = ++g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].frame % INPUT_DELAY_FRAMES_MAX;
-                g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].core_option[next_buffer_index] = g_core_option_for_next_frame;
+                int64_t next_buffer_index = ++g_ulnet_session.state[g_libretro_context.OurPort()].frame % ULNET_DELAY_BUFFER_SIZE;
+                g_ulnet_session.state[g_libretro_context.OurPort()].core_option[next_buffer_index] = g_core_option_for_next_frame;
                 memset(&g_core_option_for_next_frame, 0, sizeof(g_core_option_for_next_frame));
 
                 // @todo You can only update the room state on the last most frame as that's the only one we know clients can't possibly be buffered on
                 //       Otherwise there is a chance for inconsistent inputs to be sent when peers switch ports
                 if (ulnet_is_authority(&g_ulnet_session)) {
-                    g_ulnet_session.netplay_input_state[SAM2_AUTHORITY_INDEX].room_state[next_buffer_index] = g_ulnet_session.room_we_are_in_future;
+                    g_ulnet_session.state[SAM2_AUTHORITY_INDEX].room_state[next_buffer_index] = g_ulnet_session.room_we_are_in_future;
                 }
 
                 for (int i = 0; g_binds[i].k || g_binds[i].rk; ++i) {
-                    g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].input_state[next_buffer_index][0][g_binds[i].rk] = g_kbd[g_binds[i].k];
+                    g_ulnet_session.state[g_libretro_context.OurPort()].input_state[next_buffer_index][0][g_binds[i].rk] = g_kbd[g_binds[i].k];
                 }
 
                 if (g_libretro_context.fuzz_input) {
                     for (int i = 0; i < 16; ++i) {
-                        g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].input_state[next_buffer_index][0][i] = rand() & 0x0001;
+                        g_ulnet_session.state[g_libretro_context.OurPort()].input_state[next_buffer_index][0][i] = rand() & 0x0001;
                     }
                 }
             }
@@ -2444,21 +2444,21 @@ int main(int argc, char *argv[]) {
             if (   !ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id) 
                 && g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
                 union {
-                    uint8_t _[1 /* Packet Header */ + RLE8_ENCODE_UPPER_BOUND(PACKET_MTU_PAYLOAD_SIZE_BYTES)];
-                    input_packet_t input_packet;
+                    uint8_t _[1 /* Packet Header */ + RLE8_ENCODE_UPPER_BOUND(ULNET_PACKET_SIZE_BYTES_MAX)];
+                    ulnet_state_packet_t input_packet;
                 };
-                input_packet.channel_and_port = CHANNEL_INPUT | g_libretro_context.OurPort();
+                input_packet.channel_and_port = ULNET_CHANNEL_INPUT | g_libretro_context.OurPort();
                 int64_t actual_payload_size = rle8_encode(
-                    (uint8_t *)&g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()],
-                    sizeof(g_ulnet_session.netplay_input_state[0]),
-                    input_packet.coded_netplay_input_state
+                    (uint8_t *)&g_ulnet_session.state[g_libretro_context.OurPort()],
+                    sizeof(g_ulnet_session.state[0]),
+                    input_packet.coded_state
                 );
 
-                if (sizeof(input_packet_t) + actual_payload_size > PACKET_MTU_PAYLOAD_SIZE_BYTES) {
+                if (sizeof(ulnet_state_packet_t) + actual_payload_size > ULNET_PACKET_SIZE_BYTES_MAX) {
                     die("Input packet too large to send");
                 }
 
-                ImGui::Text("Input packet size: %" PRId64, sizeof(input_packet_t) + actual_payload_size);
+                ImGui::Text("Input packet size: %" PRId64, sizeof(ulnet_state_packet_t) + actual_payload_size);
 
                 for (int p = 0; p < SAM2_ARRAY_LENGTH(g_ulnet_session.agent); p++) {
                     if (!g_ulnet_session.agent[p]) continue;
@@ -2466,9 +2466,9 @@ int main(int argc, char *argv[]) {
 
                     // Wait until we can send netplay messages to everyone without fail
                     if (state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED) {
-                        juice_send(g_ulnet_session.agent[p], (const char *) &input_packet, sizeof(input_packet_t) + actual_payload_size);
+                        juice_send(g_ulnet_session.agent[p], (const char *) &input_packet, sizeof(ulnet_state_packet_t) + actual_payload_size);
                         SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64,
-                            g_ulnet_session.netplay_input_state[SAM2_AUTHORITY_INDEX].frame, p, g_ulnet_session.room_we_are_in.peer_ids[p]);
+                            g_ulnet_session.state[SAM2_AUTHORITY_INDEX].frame, p, g_ulnet_session.room_we_are_in.peer_ids[p]);
                     }
                 }
             }
@@ -2500,14 +2500,14 @@ int main(int argc, char *argv[]) {
                 if (g_ulnet_session.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
 
                 int i;
-                for (i = INPUT_DELAY_FRAMES_MAX-1; i >= 0; i--) {
+                for (i = ULNET_DELAY_BUFFER_SIZE-1; i >= 0; i--) {
                     int64_t frame = -1;
-                    input_packet_t *input_packet_that_could_contain_input_for_current_frame = (input_packet_t *) g_ulnet_session.netplay_input_packet_history[p][(g_ulnet_session.frame_counter + i) % NETPLAY_INPUT_HISTORY_SIZE];
-                    rle8_decode(input_packet_that_could_contain_input_for_current_frame->coded_netplay_input_state, PACKET_MTU_PAYLOAD_SIZE_BYTES, (uint8_t *) &frame, sizeof(frame));
-                    if (SAM2_ABS(frame - g_ulnet_session.frame_counter) < INPUT_DELAY_FRAMES_MAX) {
+                    ulnet_state_packet_t *ulnet_state_packet_that_could_contain_input_for_current_frame = (ulnet_state_packet_t *) g_ulnet_session.state_packet_history[p][(g_ulnet_session.frame_counter + i) % ULNET_STATE_PACKET_HISTORY_SIZE];
+                    rle8_decode(ulnet_state_packet_that_could_contain_input_for_current_frame->coded_state, ULNET_PACKET_SIZE_BYTES_MAX, (uint8_t *) &frame, sizeof(frame));
+                    if (SAM2_ABS(frame - g_ulnet_session.frame_counter) < ULNET_DELAY_BUFFER_SIZE) {
                         int64_t input_consumed = 0;
-                        int64_t decode_size = rle8_decode_extra(input_packet_that_could_contain_input_for_current_frame->coded_netplay_input_state, PACKET_MTU_PAYLOAD_SIZE_BYTES,
-                            &input_consumed, (uint8_t *) &g_ulnet_session.netplay_input_state[p], sizeof(g_ulnet_session.netplay_input_state[p]));
+                        int64_t decode_size = rle8_decode_extra(ulnet_state_packet_that_could_contain_input_for_current_frame->coded_state, ULNET_PACKET_SIZE_BYTES_MAX,
+                            &input_consumed, (uint8_t *) &g_ulnet_session.state[p], sizeof(g_ulnet_session.state[p]));
 
 //                        SAM2_LOG_DEBUG("Reconstructed input for frame %" PRId64 " from peer %" PRIx64 "consumed %" PRId64 " bytes of input to produce %" PRId64,
 //                            g_ulnet_session.frame_counter, g_ulnet_session.room_we_are_in.peer_ids[p], input_consumed, decode_size);
@@ -2516,7 +2516,7 @@ int main(int argc, char *argv[]) {
                     }
                 }
 
-                //if (i == INPUT_DELAY_FRAMES_MAX) {
+                //if (i == ULNET_DELAY_BUFFER_SIZE) {
                 //    die("Failed to reconstruct input for frame %" PRId64 " from peer %" PRIx64 "\n", g_ulnet_session.frame_counter, g_ulnet_session.room_we_are_in.peer_ids[p]);
                 //}
             }
@@ -2528,10 +2528,10 @@ int main(int argc, char *argv[]) {
         if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
             for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
                 if (g_ulnet_session.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
-                if                      (g_ulnet_session.netplay_input_state[p].frame <  g_ulnet_session.frame_counter) { ImGui::Text("Input state on port %d is too old", p); }
-                netplay_ready_to_tick &= g_ulnet_session.netplay_input_state[p].frame >= g_ulnet_session.frame_counter;
-                if                      (g_ulnet_session.netplay_input_state[p].frame >= g_ulnet_session.frame_counter + INPUT_DELAY_FRAMES_MAX) { ImGui::Text("Input state on port %d is too new (ahead by %d frames)", p, g_ulnet_session.netplay_input_state[p].frame - (g_ulnet_session.frame_counter + INPUT_DELAY_FRAMES_MAX)); }
-                netplay_ready_to_tick &= g_ulnet_session.netplay_input_state[p].frame <  g_ulnet_session.frame_counter + INPUT_DELAY_FRAMES_MAX; // This is needed for spectators only. By protocol it should always true for non-spectators unless we have a bug or someone is misbehaving
+                if                      (g_ulnet_session.state[p].frame <  g_ulnet_session.frame_counter) { ImGui::Text("Input state on port %d is too old", p); }
+                netplay_ready_to_tick &= g_ulnet_session.state[p].frame >= g_ulnet_session.frame_counter;
+                if                      (g_ulnet_session.state[p].frame >= g_ulnet_session.frame_counter + ULNET_DELAY_BUFFER_SIZE) { ImGui::Text("Input state on port %d is too new (ahead by %d frames)", p, g_ulnet_session.state[p].frame - (g_ulnet_session.frame_counter + ULNET_DELAY_BUFFER_SIZE)); }
+                netplay_ready_to_tick &= g_ulnet_session.state[p].frame <  g_ulnet_session.frame_counter + ULNET_DELAY_BUFFER_SIZE; // This is needed for spectators only. By protocol it should always true for non-spectators unless we have a bug or someone is misbehaving
             }
         }
 
@@ -2539,11 +2539,11 @@ int main(int argc, char *argv[]) {
         if (g_libretro_context.Spectating()) {
             int64_t authority_frame = -1;
 
-            // The number of packets we check here is reasonable, since if we miss INPUT_DELAY_FRAMES_MAX consecutive packets our connection is irrecoverable anyway
-            for (int i = 0; i < INPUT_DELAY_FRAMES_MAX; i++) {
+            // The number of packets we check here is reasonable, since if we miss ULNET_DELAY_BUFFER_SIZE consecutive packets our connection is irrecoverable anyway
+            for (int i = 0; i < ULNET_DELAY_BUFFER_SIZE; i++) {
                 int64_t frame = -1;
-                input_packet_t *input_packet = (input_packet_t *) g_ulnet_session.netplay_input_packet_history[SAM2_AUTHORITY_INDEX][(g_ulnet_session.frame_counter + i) % NETPLAY_INPUT_HISTORY_SIZE];
-                rle8_decode(input_packet->coded_netplay_input_state, PACKET_MTU_PAYLOAD_SIZE_BYTES, (uint8_t *) &frame, sizeof(frame));
+                ulnet_state_packet_t *input_packet = (ulnet_state_packet_t *) g_ulnet_session.state_packet_history[SAM2_AUTHORITY_INDEX][(g_ulnet_session.frame_counter + i) % ULNET_STATE_PACKET_HISTORY_SIZE];
+                rle8_decode(input_packet->coded_state, ULNET_PACKET_SIZE_BYTES_MAX, (uint8_t *) &frame, sizeof(frame));
                 authority_frame = SAM2_MAX(authority_frame, frame);
             }
 
@@ -2552,8 +2552,8 @@ int main(int argc, char *argv[]) {
         }
 
         if (!(g_ulnet_session.flags & ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE) && !ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
-            int64_t frames_buffered = g_ulnet_session.netplay_input_state[g_libretro_context.OurPort()].frame - g_ulnet_session.frame_counter + 1;
-            assert(frames_buffered <= INPUT_DELAY_FRAMES_MAX);
+            int64_t frames_buffered = g_ulnet_session.state[g_libretro_context.OurPort()].frame - g_ulnet_session.frame_counter + 1;
+            assert(frames_buffered <= ULNET_DELAY_BUFFER_SIZE);
             assert(frames_buffered >= 0);
             if                      (frames_buffered <  g_libretro_context.delay_frames) { ImGui::Text("We have not buffered enough frames still need %d", g_libretro_context.delay_frames - frames_buffered); }
             netplay_ready_to_tick &= frames_buffered >= g_libretro_context.delay_frames;
@@ -2563,14 +2563,14 @@ int main(int argc, char *argv[]) {
             && (core_wants_tick_in_seconds(core_wants_tick_at_unix_usec) < 0.0
             || ignore_frame_pacing_so_we_can_catch_up)) {
             // @todo I don't think this makes sense you should keep reasonable timing yourself if you can't the authority should just kick you
-            //int64_t authority_is_on_frame = g_ulnet_session.netplay_input_state[SAM2_AUTHORITY_INDEX].frame;
+            //int64_t authority_is_on_frame = g_ulnet_session.state[SAM2_AUTHORITY_INDEX].frame;
 
             int64_t target_frame_time_usec = 1000000 / g_av.timing.fps - 1000; // @todo There is a leftover millisecond bias here for some reason
             int64_t current_time_unix_usec = get_unix_time_microseconds();
             core_wants_tick_at_unix_usec = SAM2_MAX(core_wants_tick_at_unix_usec, current_time_unix_usec - target_frame_time_usec);
             core_wants_tick_at_unix_usec = SAM2_MIN(core_wants_tick_at_unix_usec, current_time_unix_usec + target_frame_time_usec);
 
-            core_option_t maybe_core_option_for_this_frame = g_ulnet_session.netplay_input_state[SAM2_AUTHORITY_INDEX].core_option[g_ulnet_session.frame_counter % INPUT_DELAY_FRAMES_MAX];
+            ulnet_core_option_t maybe_core_option_for_this_frame = g_ulnet_session.state[SAM2_AUTHORITY_INDEX].core_option[g_ulnet_session.frame_counter % ULNET_DELAY_BUFFER_SIZE];
             if (strlen(maybe_core_option_for_this_frame.key) > 0) {
                 if (strcmp(maybe_core_option_for_this_frame.key, "netplay_delay_frames") == 0) {
                     g_libretro_context.delay_frames = atoi(maybe_core_option_for_this_frame.value);
@@ -2589,7 +2589,7 @@ int main(int argc, char *argv[]) {
             g_ulnet_session.frame_counter++;
             core_wants_tick_at_unix_usec += 1000000 / g_av.timing.fps;
 
-            sam2_room_t *new_room_state = &g_ulnet_session.netplay_input_state[SAM2_AUTHORITY_INDEX].room_state[g_ulnet_session.frame_counter % INPUT_DELAY_FRAMES_MAX];
+            sam2_room_t *new_room_state = &g_ulnet_session.state[SAM2_AUTHORITY_INDEX].room_state[g_ulnet_session.frame_counter % ULNET_DELAY_BUFFER_SIZE];
             if (new_room_state->flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
                 ulnet_session_t *session = &g_ulnet_session;
 
@@ -2603,8 +2603,8 @@ int main(int argc, char *argv[]) {
                     int64_t our_new_port = sam2_get_port_of_peer(new_room_state, session->our_peer_id);
 
                     // @todo This assertion is only true if the peer left on their own and is behaving nicely
-                    assert(session->netplay_input_state[our_new_port].frame < g_ulnet_session.frame_counter);
-                    session->netplay_input_state[our_new_port].frame = g_ulnet_session.frame_counter;
+                    assert(session->state[our_new_port].frame < g_ulnet_session.frame_counter);
+                    session->state[our_new_port].frame = g_ulnet_session.frame_counter;
 
                     for (int p = 0; p < SAM2_ARRAY_LENGTH(new_room_state->peer_ids); p++) {
                         if (new_room_state->peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
@@ -2674,10 +2674,10 @@ int main(int argc, char *argv[]) {
             }
 
             if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
-                g_ulnet_session.desync_debug_packet.channel_and_flags = CHANNEL_DESYNC_DEBUG;
+                g_ulnet_session.desync_debug_packet.channel_and_flags = ULNET_CHANNEL_DESYNC_DEBUG;
                 g_ulnet_session.desync_debug_packet.frame          = (g_ulnet_session.frame_counter-1); // This was for the previous frame
-                g_ulnet_session.desync_debug_packet.save_state_hash [(g_ulnet_session.frame_counter-1) % INPUT_DELAY_FRAMES_MAX] = savestate_hash;
-                g_ulnet_session.desync_debug_packet.input_state_hash[(g_ulnet_session.frame_counter-1) % INPUT_DELAY_FRAMES_MAX] = fnv1a_hash(g_libretro_context.InputState, sizeof(g_libretro_context.InputState));
+                g_ulnet_session.desync_debug_packet.save_state_hash [(g_ulnet_session.frame_counter-1) % ULNET_DELAY_BUFFER_SIZE] = savestate_hash;
+                g_ulnet_session.desync_debug_packet.input_state_hash[(g_ulnet_session.frame_counter-1) % ULNET_DELAY_BUFFER_SIZE] = fnv1a_hash(g_libretro_context.InputState, sizeof(g_libretro_context.InputState));
 
                 for (int p = 0; p < SAM2_ARRAY_LENGTH(g_ulnet_session.agent); p++) {
                     if (!g_ulnet_session.agent[p]) continue;
@@ -2758,7 +2758,7 @@ int main(int argc, char *argv[]) {
                         if (room_list->room.peer_ids[SAM2_AUTHORITY_INDEX] == SAM2_PORT_UNAVAILABLE) {
                             g_is_refreshing_rooms = false;
                         } else {
-                            if (g_sam2_room_count < ULNET_MAX_ROOMS) {
+                            if (g_sam2_room_count < SAM2_ARRAY_LENGTH(g_sam2_rooms)) {
                                 g_sam2_rooms[g_sam2_room_count++] = room_list->room;
                             }
                         }

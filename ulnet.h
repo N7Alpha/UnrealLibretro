@@ -14,22 +14,21 @@
 // We don't want to exceed the MTU because that can result in guranteed lost packets under certain conditions
 // Considering various things like UDP/IP headers, STUN/TURN headers, and additional junk 
 // load-balancers/routers might add I keep this conservative
-#define PACKET_MTU_PAYLOAD_SIZE_BYTES 1408
+#define ULNET_PACKET_SIZE_BYTES_MAX 1408
 
-#define ULNET_MAX_ROOMS 1024
-#define SPECTATOR_MAX 64
-#define CORE_OPTIONS_MAX 128
+#define ULNET_SPECTATOR_MAX 64
+#define ULNET_CORE_OPTIONS_MAX 128
+#define ULNET_STATE_PACKET_HISTORY_SIZE 256
 
-#define FLAGS_MASK                      0x0F
-#define CHANNEL_MASK                    0xF0
+#define ULNET_FLAGS_MASK                      0x0F
+#define ULNET_CHANNEL_MASK                    0xF0
 
-#define CHANNEL_EXTRA                   0x00
-#define CHANNEL_INPUT                   0x10
-#define CHANNEL_INPUT_AUDIT_CONSISTENCY 0x20
-#define CHANNEL_SAVESTATE_TRANSFER      0x30
-#define CHANNEL_DESYNC_DEBUG            0xF0
+#define ULNET_CHANNEL_EXTRA                   0x00
+#define ULNET_CHANNEL_INPUT                   0x10
+#define ULNET_CHANNEL_INPUT_AUDIT_CONSISTENCY 0x20
+#define ULNET_CHANNEL_SAVESTATE_TRANSFER      0x30
+#define ULNET_CHANNEL_DESYNC_DEBUG            0xF0
 
-#define NETPLAY_INPUT_HISTORY_SIZE 256
 
 #define ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE 0x1
 #define ULNET_SESSION_FLAG_CORE_OPTIONS_DIRTY     0x2
@@ -52,16 +51,16 @@
 // To handle the case where a peer immediately ticks and sends an input after receiving,
 // the input buffer needs to hold at least 2 frames.
 //
-// Setting INPUT_DELAY_FRAMES_MAX to 2 allows for no frame delay while still handling this scenario.
+// Setting ULNET_DELAY_BUFFER_SIZE to 2 allows for no frame delay while still handling this scenario.
 // However, the constant is set to 8 to provide additional buffering capacity if needed.
-#define INPUT_DELAY_FRAMES_MAX 8
+#define ULNET_DELAY_BUFFER_SIZE 8
 
-#define ULNET_DELAY_FRAMES_MAX (INPUT_DELAY_FRAMES_MAX/2-1)
+#define ULNET_DELAY_FRAMES_MAX (ULNET_DELAY_BUFFER_SIZE/2-1)
 
 const int PortCount = 4;
 typedef int16_t FLibretroInputState[64]; // This must be a POD for putting into packets
 
-struct core_option_t {
+struct ulnet_core_option_t {
     char key[128];
     char value[128];
 };
@@ -69,35 +68,44 @@ struct core_option_t {
 // @todo This is really sparse so you should just add routines to read values from it in the serialized format
 typedef struct {
     int64_t frame;
-    FLibretroInputState input_state[INPUT_DELAY_FRAMES_MAX][PortCount];
-    sam2_room_t room_state[INPUT_DELAY_FRAMES_MAX];
-    core_option_t core_option[INPUT_DELAY_FRAMES_MAX]; // Max 1 option per frame provided by the authority
-} netplay_input_state_t;
-static_assert(sizeof(netplay_input_state_t) == (sizeof(netplay_input_state_t::frame) + sizeof(netplay_input_state_t::room_state) + sizeof(netplay_input_state_t::input_state) + sizeof(netplay_input_state_t::core_option)), "netplay_input_state_t is not packed");
+    FLibretroInputState input_state[ULNET_DELAY_BUFFER_SIZE][PortCount];
+    sam2_room_t room_state[ULNET_DELAY_BUFFER_SIZE];
+    ulnet_core_option_t core_option[ULNET_DELAY_BUFFER_SIZE]; // Max 1 option per frame provided by the authority
+} ulnet_state_t;
+SAM2_STATIC_ASSERT(
+      sizeof(ulnet_state_t) ==
+     (sizeof(ulnet_state_t::frame)
+    + sizeof(ulnet_state_t::room_state)
+    + sizeof(ulnet_state_t::input_state)
+    + sizeof(ulnet_state_t::core_option)),
+    "ulnet_state_t is not packed"
+);
 
 typedef struct {
     uint8_t channel_and_port;
-    uint8_t coded_netplay_input_state[];
-} input_packet_t;
+    uint8_t coded_state[];
+} ulnet_state_packet_t;
 
+// @todo Just roll this all into ulnet_state_t
 typedef struct {
     uint8_t channel_and_flags;
     uint8_t spacing[7];
 
     int64_t frame;
-    int64_t save_state_hash[INPUT_DELAY_FRAMES_MAX];
-    int64_t input_state_hash[INPUT_DELAY_FRAMES_MAX];
-    //int64_t options_state_hash[INPUT_DELAY_FRAMES_MAX]; // @todo
+    int64_t save_state_hash[ULNET_DELAY_BUFFER_SIZE];
+    int64_t input_state_hash[ULNET_DELAY_BUFFER_SIZE];
+    //int64_t options_state_hash[ULNET_DELAY_BUFFER_SIZE]; // @todo
 } desync_debug_packet_t;
 
 #define FEC_PACKET_GROUPS_MAX 16
 #define FEC_REDUNDANT_BLOCKS 16 // ULNET is hardcoded based on this value so it can't really be changed
 
-#define SAVESTATE_TRANSFER_FLAG_K_IS_239         0b0001
-#define SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0 0b0010
+#define ULNET_SAVESTATE_TRANSFER_FLAG_K_IS_239         0b0001
+#define ULNET_SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0 0b0010
 
+// @todo Just get rid of these
 #define COMPRESSED_SAVE_STATE_BOUND_BYTES ZSTD_COMPRESSBOUND(20 * 1024 * 1024) // @todo Magic number
-#define COMPRESSED_CORE_OPTIONS_BOUND_BYTES ZSTD_COMPRESSBOUND(sizeof(core_option_t[CORE_OPTIONS_MAX])) // @todo Probably make the type in here a typedef
+#define COMPRESSED_CORE_OPTIONS_BOUND_BYTES ZSTD_COMPRESSBOUND(sizeof(ulnet_core_option_t[ULNET_CORE_OPTIONS_MAX])) // @todo Probably make the type in here a typedef
 #define COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES (255 * (COMPRESSED_SAVE_STATE_BOUND_BYTES + COMPRESSED_CORE_OPTIONS_BOUND_BYTES) / (255 - FEC_REDUNDANT_BLOCKS))
 
 typedef struct {
@@ -110,8 +118,8 @@ typedef struct {
 
     uint8_t sequence_lo;
 
-    uint8_t payload[]; // Variable size; at most PACKET_MTU_PAYLOAD_SIZE_BYTES-3
-} savestate_transfer_packet_t;
+    uint8_t payload[]; // Variable size; at most ULNET_PACKET_SIZE_BYTES_MAX-3
+} ulnet_save_state_packet_fragment_t;
 
 typedef struct {
     uint8_t channel_and_flags;
@@ -123,9 +131,9 @@ typedef struct {
 
     uint8_t sequence_lo;
 
-    uint8_t payload[PACKET_MTU_PAYLOAD_SIZE_BYTES-3]; // Variable size; at most PACKET_MTU_PAYLOAD_SIZE_BYTES-3
-} savestate_transfer_packet2_t;
-static_assert(sizeof(savestate_transfer_packet2_t) == PACKET_MTU_PAYLOAD_SIZE_BYTES, "Savestate transfer is the wrong size");
+    uint8_t payload[ULNET_PACKET_SIZE_BYTES_MAX-3]; // Variable size; at most ULNET_PACKET_SIZE_BYTES_MAX-3
+} ulnet_save_state_packet_fragment2_t;
+SAM2_STATIC_ASSERT(sizeof(ulnet_save_state_packet_fragment2_t) == ULNET_PACKET_SIZE_BYTES_MAX, "Savestate transfer is the wrong size");
 
 typedef struct {
     int64_t total_size_bytes; // @todo This isn't necessary
@@ -154,20 +162,20 @@ typedef struct ulnet_session {
     sam2_room_t room_we_are_in;
     sam2_room_t room_we_are_in_future;
 
-    core_option_t core_options[CORE_OPTIONS_MAX]; // @todo I don't like this here
+    ulnet_core_option_t core_options[ULNET_CORE_OPTIONS_MAX]; // @todo I don't like this here
 
     // @todo Change these so they're all peer_*
-    juice_agent_t *agent                     [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX];
-    uint64_t       agent_peer_id             [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX];
-    int64_t        peer_desynced_frame       [SAM2_PORT_MAX + 1 /* Plus Authority */ + SPECTATOR_MAX];
-    netplay_input_state_t netplay_input_state[SAM2_PORT_MAX + 1 /* Plus Authority */];
-    unsigned char netplay_input_packet_history[SAM2_PORT_MAX+1][NETPLAY_INPUT_HISTORY_SIZE][PACKET_MTU_PAYLOAD_SIZE_BYTES];
+    juice_agent_t *agent               [SAM2_PORT_MAX + 1 /* Plus Authority */ + ULNET_SPECTATOR_MAX];
+    uint64_t       agent_peer_id       [SAM2_PORT_MAX + 1 /* Plus Authority */ + ULNET_SPECTATOR_MAX];
+    int64_t        peer_desynced_frame [SAM2_PORT_MAX + 1 /* Plus Authority */ + ULNET_SPECTATOR_MAX];
+    ulnet_state_t  state               [SAM2_PORT_MAX + 1 /* Plus Authority */];
+    unsigned char  state_packet_history[SAM2_PORT_MAX + 1 /* Plus Authority */][ULNET_STATE_PACKET_HISTORY_SIZE][ULNET_PACKET_SIZE_BYTES_MAX];
 
     int64_t spectator_count;
 
     desync_debug_packet_t desync_debug_packet;
 
-    unsigned char remote_savestate_transfer_packets[COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES + FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * sizeof(savestate_transfer_packet_t)];
+    unsigned char remote_savestate_transfer_packets[COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES + FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * sizeof(ulnet_save_state_packet_fragment_t)];
     int64_t remote_savestate_transfer_offset;
     uint8_t remote_packet_groups; // This is used to bookkeep how much data we actually need to receive to reform the complete savestate
     void *fec_packet[FEC_PACKET_GROUPS_MAX][GF_SIZE - FEC_REDUNDANT_BLOCKS];
@@ -176,7 +184,7 @@ typedef struct ulnet_session {
 
     void *user_ptr;
     int (*sam2_send_callback)(void *user_ptr, char *response);
-    int (*populate_core_options_callback)(void *user_ptr, core_option_t options[CORE_OPTIONS_MAX]);
+    int (*populate_core_options_callback)(void *user_ptr, ulnet_core_option_t options[ULNET_CORE_OPTIONS_MAX]);
 
     size_t (*retro_serialize_size)(void);
     bool (*retro_serialize)(void *data, size_t size);
@@ -370,8 +378,8 @@ static inline void ulnet_reset_save_state_bookkeeping(ulnet_session_t *session) 
 }
 
 static inline void ulnet_session_init_defaulted(ulnet_session_t *session) {
-    memset(&session->netplay_input_state, 0, sizeof(session->netplay_input_state));
-    memset(&session->netplay_input_packet_history, 0, sizeof(session->netplay_input_packet_history));
+    memset(&session->state, 0, sizeof(session->state));
+    memset(&session->state_packet_history, 0, sizeof(session->state_packet_history));
 
     ulnet_reset_save_state_bookkeeping(session);
 }
@@ -468,7 +476,7 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
             SAM2_LOG_INFO("Received signal from unknown peer");
 
             if (session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
-                if (session->spectator_count == SPECTATOR_MAX) {
+                if (session->spectator_count == ULNET_SPECTATOR_MAX) {
                     SAM2_LOG_WARN("We can't let them in as a spectator there are too many spectators");
 
                     static sam2_error_message_t error = { 
@@ -529,7 +537,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
     SAM2_LOCATE(session->agent, agent, p);
 
     if (p == -1) {
-        SAM2_LOG_ERROR("No agent associated for packet on channel 0x%" PRIx8 "", data[0] & CHANNEL_MASK);
+        SAM2_LOG_ERROR("No agent associated for packet on channel 0x%" PRIx8 "", data[0] & ULNET_CHANNEL_MASK);
         return;
     }
 
@@ -539,21 +547,21 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
     }
 
     if (   p >= SAM2_PORT_MAX+1
-        && CHANNEL_INPUT != (data[0] & CHANNEL_MASK)) {
-        SAM2_LOG_WARN("A spectator sent us a UDP packet for unsupported channel %" PRIx8 " for some reason", data[0] & CHANNEL_MASK);
+        && ULNET_CHANNEL_INPUT != (data[0] & ULNET_CHANNEL_MASK)) {
+        SAM2_LOG_WARN("A spectator sent us a UDP packet for unsupported channel %" PRIx8 " for some reason", data[0] & ULNET_CHANNEL_MASK);
         return;
     }
 
     uint8_t channel_and_flags = data[0];
-    switch (channel_and_flags & CHANNEL_MASK) {
-    case CHANNEL_EXTRA: {
+    switch (channel_and_flags & ULNET_CHANNEL_MASK) {
+    case ULNET_CHANNEL_EXTRA: {
         assert(!"This is an error currently\n");
     }
-    case CHANNEL_INPUT: {
-        assert(size <= PACKET_MTU_PAYLOAD_SIZE_BYTES);
+    case ULNET_CHANNEL_INPUT: {
+        assert(size <= ULNET_PACKET_SIZE_BYTES_MAX);
 
-        input_packet_t *input_packet = (input_packet_t *) data;
-        int8_t original_sender_port = data[0] & FLAGS_MASK;
+        ulnet_state_packet_t *input_packet = (ulnet_state_packet_t *) data;
+        int8_t original_sender_port = data[0] & ULNET_FLAGS_MASK;
 
         if (   p != original_sender_port
             && p != SAM2_AUTHORITY_INDEX) {
@@ -565,40 +573,40 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
             break;
         }
 
-        if (rle8_decode_size(input_packet->coded_netplay_input_state, size - 1) != sizeof(netplay_input_state_t)) {
+        if (rle8_decode_size(input_packet->coded_state, size - 1) != sizeof(ulnet_state_t)) {
             SAM2_LOG_WARN("Received input packet with an invalid decode size");
             break;
         }
 
         int64_t frame;
-        rle8_decode(input_packet->coded_netplay_input_state, size - 1, (uint8_t *) &frame, sizeof(frame));
+        rle8_decode(input_packet->coded_state, size - 1, (uint8_t *) &frame, sizeof(frame));
 
         SAM2_LOG_DEBUG("Recv input packet for frame %" PRId64 " from peer_ids[%d]=%" PRIx64 "",
             frame, original_sender_port, session->room_we_are_in.peer_ids[original_sender_port]);
 
-        if (frame < session->netplay_input_state[original_sender_port].frame) {
+        if (frame < session->state[original_sender_port].frame) {
             // UDP packets can arrive out of order this is normal
             SAM2_LOG_DEBUG("Received outdated input packet for frame %" PRId64 ". We are already on frame %" PRId64 ". Dropping it",
-                frame, session->netplay_input_state[original_sender_port].frame);
+                frame, session->state[original_sender_port].frame);
         } else {
             rle8_decode(
-                input_packet->coded_netplay_input_state, size - 1,
-                (uint8_t *) &session->netplay_input_state[original_sender_port], sizeof(netplay_input_state_t)
+                input_packet->coded_state, size - 1,
+                (uint8_t *) &session->state[original_sender_port], sizeof(ulnet_state_t)
             );
 
             // Store the input packet in the history buffer. Arbitrary zero runs decode to no bytes conveniently so we don't need to store the packet size
             int i = 0;
             for (; i < size; i++) {
-                session->netplay_input_packet_history[original_sender_port][frame % NETPLAY_INPUT_HISTORY_SIZE][i] = data[i];
+                session->state_packet_history[original_sender_port][frame % ULNET_STATE_PACKET_HISTORY_SIZE][i] = data[i];
             }
 
-            for (; i < SAM2_ARRAY_LENGTH(session->netplay_input_packet_history[0][0]); i++) {
-                session->netplay_input_packet_history[original_sender_port][frame % NETPLAY_INPUT_HISTORY_SIZE][i] = 0;
+            for (; i < SAM2_ARRAY_LENGTH(session->state_packet_history[0][0]); i++) {
+                session->state_packet_history[original_sender_port][frame % ULNET_STATE_PACKET_HISTORY_SIZE][i] = 0;
             }
 
             // Broadcast the input packet to spectators
             if (ulnet_is_authority(session)) {
-                for (int i = 0; i < SPECTATOR_MAX; i++) {
+                for (int i = 0; i < ULNET_SPECTATOR_MAX; i++) {
                     juice_agent_t *spectator_agent = session->agent[SAM2_PORT_MAX+1 + i];
                     if (spectator_agent) {
                         if (   juice_get_state(spectator_agent) == JUICE_STATE_CONNECTED
@@ -613,7 +621,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
 
         break;
     }
-    case CHANNEL_DESYNC_DEBUG: {
+    case ULNET_CHANNEL_DESYNC_DEBUG: {
         // @todo This channel doesn't receive messages reliably, but I think it should be changed to in the same manner as the input channel
         assert(size == sizeof(desync_debug_packet_t));
 
@@ -624,10 +632,10 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
 
         int64_t latest_common_frame = SAM2_MIN(our_desync_debug_packet.frame, their_desync_debug_packet.frame);
         int64_t frame_difference = SAM2_ABS(our_desync_debug_packet.frame - their_desync_debug_packet.frame);
-        int64_t total_frames_to_compare = INPUT_DELAY_FRAMES_MAX - frame_difference;
+        int64_t total_frames_to_compare = ULNET_DELAY_BUFFER_SIZE - frame_difference;
         for (int f = total_frames_to_compare-1; f >= 0 ; f--) {
             int64_t frame_to_compare = latest_common_frame - f;
-            int64_t frame_index = frame_to_compare % INPUT_DELAY_FRAMES_MAX;
+            int64_t frame_index = frame_to_compare % ULNET_DELAY_BUFFER_SIZE;
 
             if (our_desync_debug_packet.input_state_hash[frame_index] != their_desync_debug_packet.input_state_hash[frame_index]) {
                 SAM2_LOG_ERROR("Input state hash mismatch for frame %" PRId64 " Our hash: %" PRIx64 " Their hash: %" PRIx64 "", 
@@ -651,7 +659,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
 
         break;
     }
-    case CHANNEL_SAVESTATE_TRANSFER: {
+    case ULNET_CHANNEL_SAVESTATE_TRANSFER: {
         if (session->remote_packet_groups == 0) {
             // This is kind of a hack. Since every field in ulnet_session can just be zero-inited
             // besides this one. I just use this check here to set it to it's correct initial value
@@ -663,22 +671,22 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
             break;
         }
 
-        if (size < sizeof(savestate_transfer_packet_t)) {
+        if (size < sizeof(ulnet_save_state_packet_fragment_t)) {
             SAM2_LOG_WARN("Recv savestate transfer packet with size smaller than header");
             break;
         }
 
-        if (size > PACKET_MTU_PAYLOAD_SIZE_BYTES) {
+        if (size > ULNET_PACKET_SIZE_BYTES_MAX) {
             SAM2_LOG_WARN("Recv savestate transfer packet potentially larger than MTU");
         }
 
-        savestate_transfer_packet_t savestate_transfer_header;
-        memcpy(&savestate_transfer_header, data, sizeof(savestate_transfer_packet_t)); // Strict-aliasing
+        ulnet_save_state_packet_fragment_t savestate_transfer_header;
+        memcpy(&savestate_transfer_header, data, sizeof(ulnet_save_state_packet_fragment_t)); // Strict-aliasing
 
         uint8_t sequence_hi = 0;
         int k = 239;
-        if (channel_and_flags & SAVESTATE_TRANSFER_FLAG_K_IS_239) {
-            if (channel_and_flags & SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0) {
+        if (channel_and_flags & ULNET_SAVESTATE_TRANSFER_FLAG_K_IS_239) {
+            if (channel_and_flags & ULNET_SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0) {
                 session->remote_packet_groups = savestate_transfer_header.packet_groups;
             } else {
                 sequence_hi = savestate_transfer_header.sequence_hi;
@@ -698,7 +706,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
         SAM2_LOG_DEBUG("Received savestate packet sequence_hi: %hhu sequence_lo: %hhu", sequence_hi, sequence_lo);
 
         uint8_t *copied_packet_ptr = (uint8_t *) memcpy(session->remote_savestate_transfer_packets + session->remote_savestate_transfer_offset, data, size);
-        session->fec_packet[sequence_hi][sequence_lo] = copied_packet_ptr + sizeof(savestate_transfer_packet_t);
+        session->fec_packet[sequence_hi][sequence_lo] = copied_packet_ptr + sizeof(ulnet_save_state_packet_fragment_t);
         session->remote_savestate_transfer_offset += size;
 
         session->fec_index[sequence_hi][session->fec_index_counter[sequence_hi]++] = sequence_lo;
@@ -708,7 +716,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
 
             int redudant_blocks_sent = k * FEC_REDUNDANT_BLOCKS / (GF_SIZE - FEC_REDUNDANT_BLOCKS);
             void *rs_code = fec_new(k, k + redudant_blocks_sent);
-            int rs_block_size = (int) (size - sizeof(savestate_transfer_packet_t));
+            int rs_block_size = (int) (size - sizeof(ulnet_save_state_packet_fragment_t));
             int status = fec_decode(rs_code, session->fec_packet[sequence_hi], session->fec_index[sequence_hi], rs_block_size);
             assert(status == 0);
             fec_free(rs_code);
@@ -754,7 +762,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
                     int64_t save_state_size = ZSTD_decompress(
                         save_state_data,
                         session->retro_serialize_size(),
-                        savestate_transfer_payload->compressed_data, 
+                        savestate_transfer_payload->compressed_data,
                         savestate_transfer_payload->compressed_savestate_size
                     );
 
@@ -796,7 +804,7 @@ void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent) {
         assert(!"Failed to serialize");
     }
 
-    int packet_payload_size_bytes = PACKET_MTU_PAYLOAD_SIZE_BYTES - sizeof(savestate_transfer_packet_t);
+    int packet_payload_size_bytes = ULNET_PACKET_SIZE_BYTES_MAX - sizeof(ulnet_save_state_packet_fragment_t);
     int n, k, packet_groups;
 
     int64_t save_state_transfer_payload_compressed_bound_size_bytes = ZSTD_COMPRESSBOUND(serialize_size) + ZSTD_COMPRESSBOUND(sizeof(session->core_options));
@@ -845,7 +853,7 @@ void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent) {
 
     // Create parity blocks for Reed-Solomon. n - k in total for each packet group
     // We have "packet grouping" because pretty much every implementation of Reed-Solomon doesn't support more than 255 blocks
-    // and unfragmented UDP packets over ethernet are limited to PACKET_MTU_PAYLOAD_SIZE_BYTES
+    // and unfragmented UDP packets over ethernet are limited to ULNET_PACKET_SIZE_BYTES_MAX
     // This makes the code more complicated and the error correcting properties slightly worse but it's a practical tradeoff
     void *rs_code = fec_new(k, n);
     for (int j = 0; j < packet_groups; j++) {
@@ -865,12 +873,12 @@ void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent) {
     // @todo I wrote this in such a way that you can do a zero-copy when creating the packets to send
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < packet_groups; j++) {
-            savestate_transfer_packet2_t packet;
-            packet.channel_and_flags = CHANNEL_SAVESTATE_TRANSFER;
+            ulnet_save_state_packet_fragment2_t packet;
+            packet.channel_and_flags = ULNET_CHANNEL_SAVESTATE_TRANSFER;
             if (k == 239) {
-                packet.channel_and_flags |= SAVESTATE_TRANSFER_FLAG_K_IS_239;
+                packet.channel_and_flags |= ULNET_SAVESTATE_TRANSFER_FLAG_K_IS_239;
                 if (j == 0) {
-                    packet.channel_and_flags |= SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0;
+                    packet.channel_and_flags |= ULNET_SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0;
                     packet.packet_groups = packet_groups;
                 } else {
                     packet.sequence_hi = j;
@@ -883,7 +891,7 @@ void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent) {
 
             memcpy(packet.payload, (unsigned char *) savestate_transfer_payload + logical_partition_offset_bytes(j, i, packet_payload_size_bytes, packet_groups), packet_payload_size_bytes);
 
-            int status = juice_send(agent, (char *) &packet, sizeof(savestate_transfer_packet_t) + packet_payload_size_bytes);
+            int status = juice_send(agent, (char *) &packet, sizeof(ulnet_save_state_packet_fragment_t) + packet_payload_size_bytes);
             assert(status == 0);
         }
     }
