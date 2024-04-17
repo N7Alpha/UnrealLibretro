@@ -1088,35 +1088,34 @@ void draw_imgui() {
 
         ImGui::SeparatorText("Connection Status");
         for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-            if (p != SAM2_AUTHORITY_INDEX) {
-                ImGui::Text("Port %d:", p);
-            } else {
-                ImGui::Text("Authority:");
-            }
-
-            ImGui::SameLine();
-
-            if      (g_ulnet_session.room_we_are_in.peer_ids[p] == SAM2_PORT_UNAVAILABLE) { ImGui::Text("Unavailable"); }
-            else if (g_ulnet_session.room_we_are_in.peer_ids[p] == SAM2_PORT_AVAILABLE)   {
-                ImGui::Text("Available");
-                if (g_libretro_context.Spectating()) {
-                    ImGui::SameLine();
-                    if (ImGui::Button("Join")) {
-                        // Send a join room request for the available port
-                        sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
-                        request.room = g_ulnet_session.room_we_are_in;
-                        request.room.peer_ids[p] = g_ulnet_session.our_peer_id;
-                        g_libretro_context.SAM2Send((char *) &request);
-                    }
+            if (g_ulnet_session.room_we_are_in.peer_ids[p] == SAM2_PORT_UNAVAILABLE) {
+                ImGui::Text("Port %d: Unavailable", p);
+            } else if (g_ulnet_session.room_we_are_in.peer_ids[p] == SAM2_PORT_AVAILABLE) {
+                char label[32];
+                snprintf(label, sizeof(label), "Port %d", p);
+                if (ImGui::Button(label)) {
+                    // Send a join room request for the available port
+                    sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
+                    request.room = g_ulnet_session.room_we_are_in;
+                    request.room.peer_ids[p] = g_ulnet_session.our_peer_id;
+                    g_libretro_context.SAM2Send((char *) &request);
                 }
             } else {
+                if (p == SAM2_AUTHORITY_INDEX) {
+                    ImGui::Text("Authority:");
+                } else {
+                    ImGui::Text("Port %d:", p);
+                }
+
+                ImGui::SameLine();
+
                 ImVec4 color = WHITE;
 
                 if (g_ulnet_session.agent[p]) {
                     juice_state_t connection_state = juice_get_state(g_ulnet_session.agent[p]);
 
-                    if (   g_ulnet_session.room_we_are_in.flags & (SAM2_FLAG_PORT0_PEER_IS_INACTIVE << p)
-                        || connection_state != JUICE_STATE_COMPLETED) {
+                if (   g_ulnet_session.room_we_are_in.flags & (SAM2_FLAG_PORT0_PEER_IS_INACTIVE << p)
+                    || connection_state != JUICE_STATE_COMPLETED) {
                         color = GREY;
                     } else if (g_ulnet_session.peer_desynced_frame[p]) {
                         color = RED;
