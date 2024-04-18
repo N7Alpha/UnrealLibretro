@@ -1364,6 +1364,7 @@ static void sam2__write_response(uv_stream_t *client, sam2_message_u *message) {
     int status = uv_write((uv_write_t *) write_req, client, &buffer, 1, on_write);
     if (status < 0) {
         SAM2_LOG_ERROR("uv_write error: %s", uv_strerror(status));
+        free(write_req);
         sam2__free_response(server, message);
     }
 }
