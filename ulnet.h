@@ -370,6 +370,15 @@ static inline void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port
     session->peer_desynced_frame[peer_port] = 0;
 }
 
+static inline void ulnet_disconnect_spectator(ulnet_session_t *session, int spectator_index) {
+    assert(session->spectator_count > 0);
+    assert(spectator_index > SAM2_AUTHORITY_INDEX);
+    session->spectator_count--;
+    session->agent_peer_id[spectator_index] = session->agent_peer_id[session->spectator_count];
+    juice_destroy(session->agent[spectator_index]);
+    session->agent[spectator_index] = session->agent[session->spectator_count];
+}
+
 static inline void ulnet_reset_save_state_bookkeeping(ulnet_session_t *session) {
     session->remote_packet_groups = FEC_PACKET_GROUPS_MAX;
     session->remote_savestate_transfer_offset = 0;
@@ -390,7 +399,7 @@ static inline void ulnet__xor_delta(void *dest, void *src, int size) {
     }
 }
 
-int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
+int ulnet_process_message(ulnet_session_t *session, void *response) {
 
     if (sam2_get_metadata((char *) response) == NULL) {
         return -1;
@@ -482,7 +491,8 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
 
             session->sam2_send_callback(session->user_ptr, (char *) &join_message);
         }
-    } else if (memcmp(response, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
+    } else if (   memcmp(response, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0
+               || memcmp(response, sam2_sigx_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_signal_message_t *room_signal = (sam2_signal_message_t *) response;
         SAM2_LOG_INFO("Received signal from peer %" PRIx64 "", room_signal->peer_id);
 
@@ -531,7 +541,9 @@ int ulnet_poll_session(ulnet_session_t *session, sam2_message_u *response) {
         }
 
         if (p != -1) {
-            if (strlen(room_signal->ice_sdp) == 0) {
+            if (room_signal->header[3] == 'X') {
+                ulnet_disconnect_spectator(session, p);
+            } else if (strlen(room_signal->ice_sdp) == 0) {
                 SAM2_LOG_INFO("Received remote gathering done from peer %" PRIx64 "", room_signal->peer_id);
                 juice_set_remote_gathering_done(session->agent[p]);
             } else if (strncmp(room_signal->ice_sdp, "a=ice", strlen("a=ice")) == 0) {

@@ -1201,34 +1201,31 @@ void draw_imgui() {
             ImGui::EndChild();
         }
 
-        if (ImGui::Button("Exit")) {
-            // Spectators should just disconnect they don't need to signal anything
-            if (!ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
-                sam2_room_join_message_t message = { SAM2_JOIN_HEADER };
-                message.room = g_ulnet_session.room_we_are_in;
-                if (ulnet_is_authority(&g_ulnet_session)) {
-                    // Abandon the room
+            sam2_room_join_message_t message = { SAM2_JOIN_HEADER };
+            message.room = g_ulnet_session.room_we_are_in;
+            if (ulnet_is_authority(&g_ulnet_session)) {
+                if (ImGui::Button("Abandon")) {
                     message.room.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
-                } else {
-                    // Tell the server we're no longer in the room
+                    ulnet_process_message(&g_ulnet_session, &message); // *Send* a message to ourselves
+                }
+            } else if (ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
+                if (ImGui::Button("Exit")) {
+                    sam2_signal_message_t response = { SAM2_SIGX_HEADER };
+                    response.peer_id = g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX];
+                    g_libretro_context.SAM2Send((char *) &response);
+                    ulnet_disconnect_peer(&g_ulnet_session, SAM2_AUTHORITY_INDEX);
+                    memcpy(&g_ulnet_session.room_we_are_in, &g_new_room_set_through_gui, sizeof(sam2_room_t));
+                    g_ulnet_session.room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
+                    g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = g_ulnet_session.our_peer_id;
+                    g_ulnet_session.frame_counter = 0;
+                    g_ulnet_session.state[SAM2_AUTHORITY_INDEX].frame = 0;
+                }
+            } else {
+                if (ImGui::Button("Detach Port")) {
                     message.room.peer_ids[ulnet_our_port(&g_ulnet_session)] = SAM2_PORT_AVAILABLE;
-                }
-
-                g_libretro_context.SAM2Send((char *) &message);
-            }
-
-            // Disconnect all peers
-            for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-                if (g_ulnet_session.room_we_are_in.peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
-                    ulnet_disconnect_peer(&g_ulnet_session, p);
-                    g_ulnet_session.room_we_are_in.peer_ids[p] = SAM2_PORT_AVAILABLE;
+                    g_libretro_context.SAM2Send((char *) &message);
                 }
             }
-
-            g_ulnet_session.room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
-            g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = g_ulnet_session.our_peer_id;
-            g_ulnet_session.state[SAM2_AUTHORITY_INDEX].frame = g_ulnet_session.frame_counter; // @todo This is stupid, I should just have a variable for tracking buffered frames
-        }
     } else {
         // Create a "Make" button that sends a make room request when clicked
         if (ImGui::Button("Make")) {
@@ -2747,7 +2744,7 @@ int main(int argc, char *argv[]) {
                     g_ulnet_session.retro_serialize = g_retro.retro_serialize;
                     g_ulnet_session.retro_serialize_size = g_retro.retro_serialize_size;
                     g_ulnet_session.retro_unserialize = g_retro.retro_unserialize;
-                    int status = ulnet_poll_session(
+                    int status = ulnet_process_message(
                         &g_ulnet_session,
                         latest_sam2_message
                     );
