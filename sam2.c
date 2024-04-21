@@ -569,12 +569,17 @@ typedef struct sam2_node {
     KAVLL_HEAD(struct sam2_node) head;
 } sam2_avl_node_t;
 
+#define SAM2__CLIENT_FLAG_CLIENT_CLOSE_DONE 0b00000001
+#define SAM2__CLIENT_FLAG_TIMER_CLOSE_DONE  0b00000010
+#define SAM2__CLIENT_FLAG_MASK_CLOSE_DONE   0b00000011
+
 typedef struct sam2_client {
     uv_tcp_t tcp;
 
     uint64_t peer_id;
 
-    uv_timer_t *timer;
+    int flags;
+    uv_timer_t timer;
     int64_t rooms_sent;
 
     sam2_room_t *hosted_room;
@@ -1282,10 +1287,6 @@ static void sam2__free_response(sam2_server_t *server, void *message) {
     }
 }
 
-static inline void on_close_handle(uv_handle_t *handle) {
-    free(handle);
-}
-
 static void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
     #ifdef _WIN32
     typedef ULONG buf_len_t;
@@ -1293,20 +1294,15 @@ static void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *b
     typedef size_t buf_len_t;
     #endif
 
+#if 1
     buf->base = (char*) malloc(suggested_size);
     buf->len = (buf_len_t) suggested_size;
-}
-
-static void sam2__client_destroy(uv_handle_t *handle) {
-    sam2_client_t *client = (sam2_client_t *) handle;
-    sam2_server_t *server = (sam2_server_t *) handle->data;
-
-    if (client->timer) {
-        uv_close((uv_handle_t *) client->timer, on_close_handle);
-        client->timer = NULL;
-    }
-
-    SAM2_FREE(client);
+#else
+    // @todo Make this a zero-copy with no allocations
+    //       The solution looks something like this:
+    buf->base = client->buffer + client->length;
+    buf->len = sizeof(client->buffer) - client->length;
+#endif
 }
 
 typedef struct {
@@ -1319,7 +1315,6 @@ static void on_write(uv_write_t *req, int status) {
         SAM2_LOG_ERROR("uv_write error: %s", uv_strerror(status));
     }
 
-    // Generally this is a legal cast even in old compilers [ISO C11, section 6.5.2.3]
     sam2_ext_write_t *ext_req = (sam2_ext_write_t *) req;
 
     sam2__free_response(ext_req->server, req->data);
@@ -1329,7 +1324,6 @@ static void on_write(uv_write_t *req, int status) {
 
 // This procedure owns the lifetime of response
 static void sam2__write_response(uv_stream_t *client_tcp, sam2_message_u *message) {
-    sam2_client_t *client = (sam2_client_t *) client_tcp;
     sam2_server_t *server = (sam2_server_t *) client_tcp->data;
 
     sam2_avl_node_t key_only_node = { (uint64_t) message };
@@ -1475,16 +1469,17 @@ static void sam2__remove_room(sam2_server_t *server, sam2_room_t *room) {
     }
 }
 
-static void on_socket_closed(uv_handle_t *handle) {
+static void sam2__on_client_destroy(uv_handle_t *handle) {
     sam2_client_t *client = (sam2_client_t *) handle;
     sam2_server_t *server = (sam2_server_t *) handle->data;
     SAM2_LOG_INFO("Socket for client %016" PRIx64 " closed", client->peer_id);
 
     if (client->hosted_room) {
-        SAM2_LOG_INFO("Removing room %" PRIx64 ":'%s' its owner disconnected", client->peer_id, client->hosted_room->name);
+        SAM2_LOG_INFO("Removing room %016" PRIx64 ":'%s' its owner disconnected", client->peer_id, client->hosted_room->name);
         sam2__remove_room(server, client->hosted_room);
     }
 
+    // In theory this should be performed in a async callback before this one
     struct sam2_node key_only_node = { client->peer_id };
     struct sam2_node *node = sam2_avl_erase(&server->peer_id_map, &key_only_node);
 
@@ -1492,12 +1487,34 @@ static void on_socket_closed(uv_handle_t *handle) {
         SAM2_FREE(node);
     }
 
-    sam2__client_destroy(handle);
+    client->flags |= SAM2__CLIENT_FLAG_CLIENT_CLOSE_DONE;
+
+    if ((client->flags & SAM2__CLIENT_FLAG_MASK_CLOSE_DONE) == SAM2__CLIENT_FLAG_MASK_CLOSE_DONE) {
+        SAM2_FREE(client);
+    }
+}
+
+static void sam2__on_client_timer_close(uv_handle_t *handle) {
+    sam2_client_t *client = (sam2_client_t *) handle->data;
+    client->flags |= SAM2__CLIENT_FLAG_TIMER_CLOSE_DONE;
+
+    if ((client->flags & SAM2__CLIENT_FLAG_MASK_CLOSE_DONE) == SAM2__CLIENT_FLAG_MASK_CLOSE_DONE) {
+        SAM2_FREE(client);
+    }
+}
+
+static void sam2__client_destroy(sam2_client_t *client) {
+    // These aren't closed in order... ask me how I know
+    if (client->timer.data != NULL) {
+        uv_close((uv_handle_t *) &client->timer, sam2__on_client_timer_close);
+    }
+
+    uv_close((uv_handle_t *) &client->tcp, sam2__on_client_destroy);
 }
 
 static void sam2__write_fatal_error(uv_stream_t *client, sam2_error_message_t *response) {
     write_error(client, response);
-    uv_close((uv_handle_t *) client, on_socket_closed);
+    sam2__client_destroy((sam2_client_t *) client);
 }
 
 static void on_timeout(uv_timer_t *handle) {
@@ -1556,9 +1573,9 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
         }
 
         SAM2_LOG_DEBUG("Got EOF");
-        uv_timer_stop(client->timer);
+        uv_timer_stop(&client->timer);
 
-        uv_close((uv_handle_t *) client, on_socket_closed);
+        sam2__client_destroy(client);
 
         goto cleanup;
     }
@@ -1575,7 +1592,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
         if (frame_message_status == 0) {
             if (client->length > 0) {
                 // This is basically a courtesy for clients to warn them they only sent a partial message
-                uv_timer_start(client->timer, on_timeout, 500, 0);  // 0.5 seconds
+                uv_timer_start(&client->timer, on_timeout, 500, 0);  // 0.5 seconds
             }
 
             goto cleanup; // We've processed the last message
@@ -1824,7 +1841,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
         }
 
 finished_processing_last_message:
-        uv_timer_stop(client->timer);
+        uv_timer_stop(&client->timer);
     }
 
 cleanup:
@@ -1865,9 +1882,7 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
             client->peer_id ^= counter++;
         }
 
-        client->timer = (uv_timer_t *) malloc(sizeof(uv_timer_t));
-        client->timer->data = client_tcp;
-
+        client->timer.data = client;
         client_tcp->data = server;
 
         sam2_avl_node_t *node = (sam2_avl_node_t *) calloc(1, sizeof(sam2_avl_node_t));
@@ -1875,7 +1890,7 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
         node->client = client_tcp;
         sam2_avl_insert(&server->peer_id_map, node);
 
-        uv_timer_init(server_tcp->loop, client->timer);
+        uv_timer_init(&server->loop, &client->timer);
         // Reading the request sent by the client
         int status = uv_read_start((uv_stream_t*) client_tcp, alloc_buffer, on_read);
         if (status < 0) {
@@ -1889,13 +1904,13 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
             sam2__write_response((uv_stream_t*) client_tcp, (sam2_message_u *) connect_message);
         }
     } else {
-        uv_close((uv_handle_t*) client_tcp, on_socket_closed);
+        sam2__client_destroy((sam2_client_t *) client_tcp);
     }
 }
 
 static void sam2__kavll_free_node_and_data(sam2_avl_node_t *node) {
     // This next call doesn't free the hosted room, but that's okay since it's not malloced
-    uv_close((uv_handle_t *) node->client, sam2__client_destroy);
+    sam2__client_destroy((sam2_client_t *) node->client);
     SAM2_FREE(node);
 }
 
