@@ -586,7 +586,7 @@ typedef struct sam2_server {
 } sam2_server_t;
 SAM2_STATIC_ASSERT(offsetof(sam2_server_t, handle) == 0, "We need this so we can cast between sam2_server_t and uv_tcp_t");
 
-typedef struct client_data {
+typedef struct sam2_client {
     sam2_server_t *sig_server; // @todo Make loop->data a pointer to the server and remove this
     uint64_t peer_id;
 
@@ -597,7 +597,7 @@ typedef struct client_data {
 
     char buffer[sizeof(sam2_message_u)];
     int length;
-} client_data_t;
+} sam2_client_t;
 
 #if defined(_MSC_VER)
 __pragma(warning(push))
@@ -629,18 +629,18 @@ static uv_tcp_t* sam2__find_client(sam2_server_t *server, uint64_t peer_id) {
     }
 }
 
-static client_data_t* sam2__find_client_data(sam2_server_t *server, uint64_t peer_id) {
+static sam2_client_t* sam2__find_client_data(sam2_server_t *server, uint64_t peer_id) {
     uv_tcp_t *client = sam2__find_client(server, peer_id);
 
     if (client) {
-        return (client_data_t *) client->data;
+        return (sam2_client_t *) client->data;
     } else {
         return NULL;
     }
 }
 
 static sam2_room_t* sam2__find_hosted_room(sam2_server_t *server, sam2_room_t *room) {
-    client_data_t *client_data = sam2__find_client_data(server, room->peer_ids[SAM2_AUTHORITY_INDEX]);
+    sam2_client_t *client_data = sam2__find_client_data(server, room->peer_ids[SAM2_AUTHORITY_INDEX]);
 
     if (client_data) {
         if (sam2_same_room(room, client_data->hosted_room)) {
@@ -1308,7 +1308,7 @@ static void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *b
 }
 
 static void sam2__client_destroy(uv_handle_t *client) {
-    client_data_t *client_data = (client_data_t *) client->data;
+    sam2_client_t *client_data = (sam2_client_t *) client->data;
     sam2_server_t *server_data = client_data->sig_server;
 
     if (client_data->timer) {
@@ -1342,7 +1342,7 @@ static void on_write(uv_write_t *req, int status) {
 
 // This procedure owns the lifetime of response
 static void sam2__write_response(uv_stream_t *client, sam2_message_u *message) {
-    client_data_t *client_data = (client_data_t *) client->data;
+    sam2_client_t *client_data = (sam2_client_t *) client->data;
     sam2_server_t *server = client_data->sig_server;
 
     sam2_avl_node_t key_only_node = { (uint64_t) message };
@@ -1399,7 +1399,7 @@ static void sam2__write_response(uv_stream_t *client, sam2_message_u *message) {
 
 static void on_write_error(uv_write_t *req, int status) {
     uv_stream_t *client = (uv_stream_t *) req->data;
-    client_data_t *client_data = (client_data_t *) client->data;
+    sam2_client_t *client_data = (sam2_client_t *) client->data;
 
     if (status < 0) {
         SAM2_LOG_WARN("Failed to send error message to client: %s", uv_strerror(status));
@@ -1451,7 +1451,7 @@ static void sam2__dump_data_to_file(const char *prefix, void* data, size_t len) 
 static void sam2__remove_room(sam2_server_t *server_data, sam2_room_t *room) {
     room = sam2__find_hosted_room(server_data, room);
     if (room) {
-        client_data_t *client_data = sam2__find_client_data(server_data, room->peer_ids[SAM2_AUTHORITY_INDEX]);
+        sam2_client_t *client_data = sam2__find_client_data(server_data, room->peer_ids[SAM2_AUTHORITY_INDEX]);
 
         if (client_data) {
             client_data->hosted_room = NULL;
@@ -1494,7 +1494,7 @@ static void on_socket_closed(uv_handle_t *handle) {
     uv_tcp_t *client = (uv_tcp_t *) handle;
 
     if (client->data) {
-        client_data_t *client_data = (client_data_t *) client->data;
+        sam2_client_t *client_data = (sam2_client_t *) client->data;
         sam2_server_t *server_data = client_data->sig_server;
 
         if (client_data->hosted_room) {
@@ -1524,7 +1524,7 @@ static void sam2__write_fatal_error(uv_stream_t *client, sam2_error_message_t *r
 static void on_timeout(uv_timer_t *handle) {
     // Dereferencing client should be fine here since before we free the client we close the timer which prevents this callback from triggering
     uv_stream_t *client = (uv_stream_t *) handle->data;
-    client_data_t *client_data = (client_data_t *) client->data;
+    sam2_client_t *client_data = (sam2_client_t *) client->data;
 
     // Check if client connection is still open
     if (uv_is_closing((uv_handle_t*) client)) {
@@ -1560,7 +1560,7 @@ static int sam2__sanitize_and_sanity_check_message(sam2_message_u *message, sam2
 }
 
 static void on_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
-    client_data_t *client_data = (client_data_t *) client->data;
+    sam2_client_t *client_data = (sam2_client_t *) client->data;
     sam2_server_t *sig_server = (sam2_server_t *) client_data->sig_server;
 
     if (sig_server->_debug_allocated_message_set != NULL) {
@@ -1867,7 +1867,7 @@ void on_new_connection(uv_stream_t *server, int status) {
 
     if (uv_accept(server, (uv_stream_t*) client) == 0) {
 
-        client_data_t *client_data = (client_data_t *) calloc(1, sizeof(client_data_t));
+        sam2_client_t *client_data = (sam2_client_t *) calloc(1, sizeof(sam2_client_t));
         sam2_server_t *server_data = (sam2_server_t *) server->data;
         
         { // Create a peer id based on hashed IP address mixed with a counter
