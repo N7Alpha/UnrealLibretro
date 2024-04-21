@@ -1942,42 +1942,44 @@ SAM2_LINKAGE int sam2_server_create(sam2_server_t *server, int port) {
     int server_size_bytes = sizeof(sam2_server_t) + sizeof(sam2_room_t) * room_capacity;
     if (server == NULL) {
         return server_size_bytes;
-    } else {
-        memset(server, 0, server_size_bytes);
-
-        if (uv_loop_init(&server->loop)) {
-            SAM2_LOG_ERROR("Loop initialization failed");
-            return -1;
-        }
-
-        server->room_capacity = room_capacity;
-        if (uv_tcp_init(&server->loop, &server->tcp)) {
-            SAM2_LOG_ERROR("TCP initialization failed");
-            uv_loop_close(&server->loop);
-            return -1;
-        }
-
-        struct sockaddr_in addr;
-        uv_ip4_addr("0.0.0.0", port, &addr);
-
-        int ret = uv_tcp_bind(&server->tcp, (const struct sockaddr*)&addr, 0);
-        if (ret) {
-            SAM2_LOG_ERROR("Bind error %s", uv_strerror(ret));
-            uv_close((uv_handle_t*)&server->tcp, NULL);
-            uv_loop_close(&server->loop);
-            return ret;
-        }
-
-        ret = uv_listen((uv_stream_t*) &server->tcp, SAM2_DEFAULT_BACKLOG, on_new_connection);
-        if (ret) {
-            SAM2_LOG_ERROR("Listen error %s", uv_strerror(ret));
-            uv_close((uv_handle_t*)&server->tcp, NULL);
-            uv_loop_close(&server->loop);
-            return ret;
-        }
-
-        return 0;
     }
+
+    memset(server, 0, server_size_bytes);
+
+    int err = uv_loop_init(&server->loop);
+    if (err) {
+        SAM2_LOG_ERROR("Loop initialization failed");
+        goto _30;
+    }
+
+    server->room_capacity = room_capacity;
+
+    err = uv_tcp_init(&server->loop, &server->tcp);
+    if (err) {
+        SAM2_LOG_ERROR("TCP initialization failed");
+        goto _20;
+    }
+
+    struct sockaddr_in addr;
+    uv_ip4_addr("0.0.0.0", port, &addr);
+
+    err = uv_tcp_bind(&server->tcp, (const struct sockaddr*)&addr, 0);
+    if (err) {
+        SAM2_LOG_ERROR("Bind error %s", uv_strerror(err));
+        goto _10;
+    }
+
+    err = uv_listen((uv_stream_t*) &server->tcp, SAM2_DEFAULT_BACKLOG, on_new_connection);
+    if (err) {
+        SAM2_LOG_ERROR("Listen error %s", uv_strerror(err));
+        goto _10;
+    }
+
+    return 0;
+
+_10:uv_close((uv_handle_t*)&server->tcp, NULL);
+_20:uv_loop_close(&server->loop);
+_30:return err;
 }
 
 SAM2_LINKAGE int sam2_server_begin_destroy(sam2_server_t *server) {
