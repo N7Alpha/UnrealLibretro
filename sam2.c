@@ -570,6 +570,9 @@ typedef struct sam2_node {
 } sam2_avl_node_t;
 
 typedef struct sam2_server {
+    uv_tcp_t handle;
+    uv_loop_t loop;
+
     sam2_message_u *message_freelist;
 
     struct client_data *clients;
@@ -581,9 +584,10 @@ typedef struct sam2_server {
     int64_t room_capacity;
     sam2_room_t rooms[/*room_capacity*/];
 } sam2_server_t;
+SAM2_STATIC_ASSERT(offsetof(sam2_server_t, handle) == 0, "We need this so we can cast between sam2_server_t and uv_tcp_t");
 
 typedef struct client_data {
-    sam2_server_t *sig_server;
+    sam2_server_t *sig_server; // @todo Make loop->data a pointer to the server and remove this
     uint64_t peer_id;
 
     uv_timer_t *timer;
@@ -653,10 +657,31 @@ static sam2_room_t* sam2__find_hosted_room(sam2_server_t *server, sam2_room_t *r
 // == Server interface - Depends on libuv       ==
 // ===============================================
 
-SAM2_LINKAGE int sam2_server_create(struct sam2_server **server, int64_t room_size) {return 0;}
-SAM2_LINKAGE int sam2_server_destroy(struct sam2_server *server);
-#endif
+// Note: You must allocate the memory for `server`
+// ```c
+// int server_size_bytes = sam2_server_create(NULL, 0);
+//
+// // Create server
+// sam2_server_t *server = malloc(server_size_bytes);
+// sam2_server_create(server, 1234);
+//
+// // Wait for some events
+// for (int i = 0; i < 10; i++) {
+//     uv_run(&server->loop, UV_RUN_NOWAIT);
+// }
+//
+// // Start asynchronous destruction
+// sam2_server_begin_destroy(server);
+//
+// // Do the needful
+// uv_run(&server->loop, UV_RUN_DEFAULT);
+// uv_loop_close(&server->loop);
+// free(server);
+// ```
+SAM2_LINKAGE int sam2_server_create(sam2_server_t *server, int port);
 
+SAM2_LINKAGE int sam2_server_begin_destroy(sam2_server_t *server);
+#endif
 
 // ===============================================
 // == Client interface                          ==
@@ -1838,7 +1863,7 @@ void on_new_connection(uv_stream_t *server, int status) {
     }
 
     uv_tcp_t *client = (uv_tcp_t*) calloc(1, sizeof(uv_tcp_t));
-    uv_tcp_init(uv_default_loop(), client);
+    uv_tcp_init(server->loop, client);
 
     if (uv_accept(server, (uv_stream_t*) client) == 0) {
 
@@ -1873,7 +1898,7 @@ void on_new_connection(uv_stream_t *server, int status) {
         node->client = client;
         sam2_avl_insert(&server_data->peer_id_map, node);
 
-        uv_timer_init(uv_default_loop(), client_data->timer);
+        uv_timer_init(server->loop, client_data->timer);
         // Reading the request sent by the client
         int status = uv_read_start((uv_stream_t*) client, alloc_buffer, on_read);
         if (status < 0) {
@@ -1893,33 +1918,14 @@ void on_new_connection(uv_stream_t *server, int status) {
     }
 }
 
-#if defined(SAM2_EXECUTABLE)
 static void sam2__kavll_free_node_and_data(sam2_avl_node_t *node) {
     // This next call doesn't free the hosted room, but that's okay since it's not malloced
     uv_close((uv_handle_t *) node->client, sam2__client_destroy);
     SAM2_FREE(node);
 }
 
-static void sam2__server_on_close(uv_handle_t* handle) {
-    SAM2_LOG_INFO("Server closing");
-
-    sam2_server_t *server_data = (sam2_server_t *) handle->data;
-    free(server_data);
-
-    //free(handle); // @todo This is on main()'s stack
-}
-
-static void on_signal(uv_signal_t *handle, int signum) {
-    uv_tcp_t *server = (uv_tcp_t *) handle->data;
-    sam2_server_t *server_data = (sam2_server_t *) server->data;
-    kavll_free(sam2_avl_node_t, head, server_data->peer_id_map, sam2__kavll_free_node_and_data);
-    server_data->peer_id_map = NULL;
-    uv_close((uv_handle_t*) server, sam2__server_on_close);
-    uv_stop(handle->loop);
-}
-
 // Secret knowledge hidden within libuv's test folder
-#define ASSERT(expr) if ((expr)) exit(1);
+#define ASSERT(expr) if (!(expr)) exit(69);
 static void close_walk_cb(uv_handle_t* handle, void* arg) {
     if (!uv_is_closing(handle)) {
         uv_close(handle, NULL);
@@ -1941,36 +1947,100 @@ static void close_loop(uv_loop_t* loop) {
     uv_library_shutdown();                          \
   } while (0)
 
-int main() {
-    uv_loop_t *loop = uv_default_loop();
-
+SAM2_LINKAGE int sam2_server_create(sam2_server_t *server, int port) {
     int64_t room_capacity = 65536;
-    sam2_server_t *sig_server = (sam2_server_t *) calloc(1, sizeof(sam2_server_t) + sizeof(sam2_room_t) * room_capacity);
-    sig_server->room_capacity = room_capacity;
-    //sig_server->rooms_internal = calloc(room_capacity, sizeof(sig_room_internal_t));
-    uv_tcp_t server;
-    server.data = sig_server;
-    uv_tcp_init(loop, &server);
+    int server_size_bytes = sizeof(sam2_server_t) + sizeof(sam2_room_t) * room_capacity;
+    if (server == NULL) {
+        return server_size_bytes;
+    } else {
+        memset(server, 0, server_size_bytes);
 
-    struct sockaddr_in addr;
-    uv_ip4_addr("0.0.0.0", SAM2_SERVER_DEFAULT_PORT, &addr);
+        if (uv_loop_init(&server->loop)) {
+            SAM2_LOG_ERROR("Loop initialization failed");
+            return -1;
+        }
 
-    uv_tcp_bind(&server, (const struct sockaddr*)&addr, 0);
-    int r = uv_listen((uv_stream_t*) &server, SAM2_DEFAULT_BACKLOG, on_new_connection);
-    if (r) {
-        SAM2_LOG_ERROR("Listen error %s", uv_strerror(r));
+        server->room_capacity = room_capacity;
+        server->handle.data = server;
+        if (uv_tcp_init(&server->loop, &server->handle)) {
+            SAM2_LOG_ERROR("TCP initialization failed");
+            uv_loop_close(&server->loop);
+            return -1;
+        }
+
+        struct sockaddr_in addr;
+        uv_ip4_addr("0.0.0.0", port, &addr);
+
+        int ret = uv_tcp_bind(&server->handle, (const struct sockaddr*)&addr, 0);
+        if (ret) {
+            SAM2_LOG_ERROR("Bind error %s", uv_strerror(ret));
+            uv_close((uv_handle_t*)&server->handle, NULL);
+            uv_loop_close(&server->loop);
+            return ret;
+        }
+
+        ret = uv_listen((uv_stream_t*) &server->handle, SAM2_DEFAULT_BACKLOG, on_new_connection);
+        if (ret) {
+            SAM2_LOG_ERROR("Listen error %s", uv_strerror(ret));
+            uv_close((uv_handle_t*)&server->handle, NULL);
+            uv_loop_close(&server->loop);
+            return ret;
+        }
+
+        return 0;
+    }
+}
+
+SAM2_LINKAGE int sam2_server_begin_destroy(sam2_server_t *server) {
+    // Kill all clients first since they might be reading from the server
+    kavll_free(sam2_avl_node_t, head, server->peer_id_map, sam2__kavll_free_node_and_data);
+    server->peer_id_map = NULL;
+
+    uv_stop(&server->loop); // This will cause the event loop to exit uv_run once all events are processed
+    return 0;
+}
+
+static void on_signal(uv_signal_t *handle, int signum) {
+    sam2_server_begin_destroy((sam2_server_t *) handle->data);
+    uv_close((uv_handle_t*) handle->data, NULL);
+}
+
+#if defined(SAM2_EXECUTABLE)
+
+int main() {
+    sam2_server_t *server = NULL;
+
+    int ret = sam2_server_create(server, SAM2_SERVER_DEFAULT_PORT);
+
+    if (ret < 0) {
+        SAM2_LOG_FATAL("Error while getting server memory size");
+        return ret;
+    }
+
+    server = malloc(ret);
+    if (server == NULL) {
+        SAM2_LOG_FATAL("Error while allocating %d bytes of server memory", ret);
         return 1;
     }
 
+    ret = sam2_server_create(server, SAM2_SERVER_DEFAULT_PORT);
+
+    if (ret < 0) {
+        SAM2_LOG_FATAL("Error while initializing server");
+        free(server);
+        return ret;
+    }
+
     uv_signal_t sig;
-    uv_signal_init(loop, &sig);
-    sig.data = &server;
+    uv_signal_init(&server->loop, &sig);
+    sig.data = server;
     uv_signal_start(&sig, on_signal, SIGINT);
 
-    uv_run(loop, UV_RUN_DEFAULT);
+    uv_run(&server->loop, UV_RUN_DEFAULT);
 
-    uv_loop_close(loop);
-    MAKE_VALGRIND_HAPPY(uv_default_loop());
+    MAKE_VALGRIND_HAPPY(&server->loop);
+    free(server);
+
     return 0;
 }
 
