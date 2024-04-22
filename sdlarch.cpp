@@ -2534,11 +2534,18 @@ int main(int argc, char *argv[]) {
                     input_packet.coded_state
                 );
 
+                ulnet_session_t *session = &g_ulnet_session;
+                void *next_history_packet = &session->state_packet_history[ulnet_our_port(session)][session->state[ulnet_our_port(session)].frame % ULNET_STATE_PACKET_HISTORY_SIZE];
+                memset(next_history_packet, 0, sizeof(session->state_packet_history[0][0]));
+                memcpy(
+                    next_history_packet,
+                    &input_packet,
+                    actual_payload_size
+                );
+
                 if (sizeof(ulnet_state_packet_t) + actual_payload_size > ULNET_PACKET_SIZE_BYTES_MAX) {
                     die("Input packet too large to send");
                 }
-
-                ImGui::Text("Input packet size: %" PRId64, sizeof(ulnet_state_packet_t) + actual_payload_size);
 
                 for (int p = 0; p < SAM2_ARRAY_LENGTH(g_ulnet_session.agent); p++) {
                     if (!g_ulnet_session.agent[p]) continue;
@@ -2548,10 +2555,50 @@ int main(int argc, char *argv[]) {
                     if (state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED) {
                         juice_send(g_ulnet_session.agent[p], (const char *) &input_packet, sizeof(ulnet_state_packet_t) + actual_payload_size);
                         SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64,
-                            g_ulnet_session.state[SAM2_AUTHORITY_INDEX].frame, p, g_ulnet_session.room_we_are_in.peer_ids[p]);
+                            g_ulnet_session.state[SAM2_AUTHORITY_INDEX].frame, p, g_ulnet_session.agent_peer_id[p]);
                     }
                 }
             }
+        }
+
+        // @todo The gaps in the graph can be explained by out-of-order arrival of packets I think I don't even record those to history but I should
+        //       There is some other weird behavior that might be related to not checking the frame field in the packet if its too old it shouldn't be in the plot obviously
+        ImPlot::SetNextAxisLimits(ImAxis_X1, g_ulnet_session.frame_counter - g_sample_size, g_ulnet_session.frame_counter, ImGuiCond_Always);
+        ImPlot::SetNextAxisLimits(ImAxis_Y1, 0.0f, 512, ImGuiCond_Always);
+        if (   g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED
+            && ImPlot::BeginPlot("Packet Size vs. Frame")) {
+            ImPlot::SetupAxis(ImAxis_X1, "ulnet_state_t::frame");
+            ImPlot::SetupAxis(ImAxis_Y1, "Packet Size Bytes");
+            for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+                if (g_ulnet_session.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
+                static int input_packet_size[SAM2_PORT_MAX+1][MAX_SAMPLE_SIZE] = {0};
+
+                uint8_t *peer_packet = g_ulnet_session.state_packet_history[p][g_ulnet_session.frame_counter % ULNET_STATE_PACKET_HISTORY_SIZE];
+                int packet_size_bytes = 0;
+                uint16_t u16_0 = 0;
+                for (; packet_size_bytes < ULNET_PACKET_SIZE_BYTES_MAX; packet_size_bytes++) {
+                    if (memcmp(peer_packet + packet_size_bytes, &u16_0, sizeof(u16_0)) == 0) break;
+                }
+                input_packet_size[p][g_ulnet_session.frame_counter % g_sample_size] = packet_size_bytes;
+
+                char label[32] = {0};
+                if (p == SAM2_AUTHORITY_INDEX) {
+                    strcpy(label, "Authority");
+                } else {
+                    sprintf(label, "Port %d", p);
+                }
+
+                int xs[MAX_SAMPLE_SIZE];
+                int ys[MAX_SAMPLE_SIZE];
+                for (int frame = SAM2_MAX(0, g_ulnet_session.frame_counter - g_sample_size + 1), j = 0; j < g_sample_size; frame++, j++) {
+                    xs[j] = frame;
+                    ys[j] = input_packet_size[p][frame % g_sample_size];
+                }
+
+                ImPlot::PlotLine(label, xs, ys, g_sample_size);
+            }
+
+            ImPlot::EndPlot();
         }
 
 #if JUICE_CONCURRENCY_MODE == JUICE_CONCURRENCY_MODE_USER
