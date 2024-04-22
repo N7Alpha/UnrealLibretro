@@ -713,7 +713,9 @@ sam2_room_list_message_t last_sam2_room_list_response;
 int64_t sam2_room_count;
 sam2_room_t sam2_rooms[1024];
 
-static const char *g_sam2_address = "sam2.cornbass.com";
+static sam2_server_t *g_sam2_server = NULL;
+static char g_sam2_address[64] = "::1";
+static int g_sam2_port = SAM2_SERVER_DEFAULT_PORT;
 static sam2_socket_t &g_sam2_socket = g_libretro_context.sam2_socket;
 
 
@@ -940,12 +942,73 @@ void draw_imgui() {
     {
         ImGui::Begin("Signaling Server and a Match Maker", NULL, ImGuiWindowFlags_AlwaysAutoResize);
 
-        if (g_connected_to_sam2) {
-            ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to %s:%d", g_sam2_address, SAM2_SERVER_DEFAULT_PORT);
-        } else {
-            ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1), "Connecting to %s:%d %c", g_sam2_address, SAM2_SERVER_DEFAULT_PORT, spinnerGlyph);
-            goto finished_drawing_sam2_interface;
+        if (g_sam2_server) {
+            ImGui::SeparatorText("Server");
+            ImGui::TextColored(ImVec4(0, 1, 0, 1), "We're listening on [::]:%d (IPv4 tunneling is OS dependent)", g_sam2_port);
+
+            if (ImGui::CollapsingHeader("Server Information")) {
+                ImGui::Text("Room count: %d", g_sam2_server->room_count);
+
+                int messages_free = 0;
+                for (sam2_message_u *m = g_sam2_server->message_freelist; m != NULL;) {
+                    m = m->next;
+                    messages_free++;
+                }
+                ImGui::Text("Messages free: %d", messages_free);
+            }
+
+            ImGui::SeparatorText("Client");
         }
+
+        if (g_connected_to_sam2) {
+            bool is_ipv6 = false;
+            for (int i = strlen(g_sam2_address)-1; i >= 0 ; i--) {
+                if (g_sam2_address[i] == ':') {
+                    is_ipv6 = true;
+                    break;
+                }
+            }
+
+            if (is_ipv6) ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to [" "%s" "]:%d", g_sam2_address, g_sam2_port);
+            else         ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to "  "%s"  ":%d", g_sam2_address, g_sam2_port);
+
+            ImGui::SameLine();
+            if (ImGui::Button("Disconnect")) {
+                if (sam2_client_disconnect(&g_libretro_context.sam2_socket)) {
+                    SAM2_LOG_FATAL("Couldn't disconnect socket");
+                }
+                g_libretro_context.sam2_socket = SAM2_SOCKET_INVALID;
+            }
+        } else {
+            if (g_libretro_context.sam2_socket == SAM2_SOCKET_INVALID) {
+                char port_str[64]; // Buffer to store the input text
+                sprintf(port_str, "%d\0", g_sam2_port);
+                bool connect = false;
+
+                connect |= ImGui::InputText("##input_address", g_sam2_address, sizeof(g_sam2_address), ImGuiInputTextFlags_EnterReturnsTrue); ImGui::SameLine();
+                connect |= ImGui::InputText("##input_port", port_str, sizeof(port_str), ImGuiInputTextFlags_EnterReturnsTrue); ImGui::SameLine();
+                connect |= ImGui::Button("Connect");
+
+                if (atoi(port_str) > 0 && atoi(port_str) < 65536) {
+                    g_sam2_port = atoi(port_str);
+                }
+
+                if (connect) {
+                    sam2_client_connect(&g_libretro_context.sam2_socket, g_sam2_address, g_sam2_port);
+                }
+            } else {
+                ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1), "Connecting to %s:%d %c", g_sam2_address, g_sam2_port, spinnerGlyph);
+                ImGui::SameLine();
+                if (ImGui::Button("Stop")) {
+                    if (sam2_client_disconnect(&g_libretro_context.sam2_socket)) {
+                        SAM2_LOG_FATAL("Couldn't disconnect socket");
+                    }
+                    g_libretro_context.sam2_socket = SAM2_SOCKET_INVALID;
+                }
+            }
+        }
+
+        if (!g_connected_to_sam2) goto finished_drawing_sam2_interface; // We're not connected, so don't draw the rest of the interface
 
         if (g_last_sam2_error.code) {
             ImGui::TextColored(ImVec4(1, 0, 0, 1), "Last error: %s", g_last_sam2_error.description);
@@ -2284,6 +2347,26 @@ int main(int argc, char *argv[]) {
 	if (argc < 2)
 		die("usage: %s <core> [game]", argv[0]);
 
+    if (   strcmp(g_sam2_address, "localhost")
+        || strcmp(g_sam2_address, "127.0.0.1")
+        || strcmp(g_sam2_address, "::1")) {
+        SAM2_LOG_INFO("g_sam2_address=%s attempting to host signaling and match-making server ourselves", g_sam2_address);
+        int server_size_bytes = sam2_server_create(NULL, 0);
+
+        // Create server
+        g_sam2_server = (sam2_server_t *) malloc(server_size_bytes);
+        int err = sam2_server_create(g_sam2_server, g_sam2_port);
+        if (err) {
+            SAM2_LOG_INFO("Couldn't create server ourselves probably we're already hosting one in another instance");
+            free(g_sam2_server);
+            g_sam2_server = NULL;
+        }
+    }
+
+    if (sam2_client_connect(&g_sam2_socket, g_sam2_address, g_sam2_port)) {
+        SAM2_LOG_FATAL("Failed to connect to Signaling-Server and a Match-Maker\n");
+    }
+
     SDL_SetMainReady();
     juice_set_log_level(JUICE_LOG_LEVEL_WARN);
 
@@ -2704,17 +2787,18 @@ int main(int argc, char *argv[]) {
         // and still try to update on vertical sync or use another thread, but I don't like threads
         SDL_GL_SwapWindow(g_win);
 
-        if (g_sam2_socket == 0) {
-            if (sam2_client_connect(&g_sam2_socket, g_sam2_address, SAM2_SERVER_DEFAULT_PORT) == 0) {
-                printf("Socket created successfully SAM2\n");
-            }
-        }
-
+        g_connected_to_sam2 &= g_sam2_socket != SAM2_SOCKET_INVALID;
         if (g_connected_to_sam2 || (g_connected_to_sam2 = sam2_client_poll_connection(g_sam2_socket, 0))) {
             for (int _prevent_infinite_loop_counter = 0; _prevent_infinite_loop_counter < 64; _prevent_infinite_loop_counter++) {
                 sam2_message_u *latest_sam2_message = &g_received_response[g_num_received_response];
                 static char buffer[sizeof(sam2_message_u)];
                 static int buffer_length = 0;
+
+                if (g_sam2_server) {
+                    for (int i = 0; i < 128; i++) {
+                        if (uv_run(&g_sam2_server->loop, UV_RUN_NOWAIT) == 0) break;
+                    }
+                }
 
                 int status = sam2_client_poll(
                     g_sam2_socket,

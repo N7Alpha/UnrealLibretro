@@ -874,6 +874,7 @@ static int sam2__resolve_hostname(const char *hostname, char *ip) {
     memset(&desired_address, 0, sizeof(desired_address));
     desired_address.ai_family = AF_UNSPEC;
 
+    // I knew this could block but it just hangs on Windows at least for a very long time before timing out @todo
     if (getaddrinfo(hostname, NULL, &hints, &res)) {
         SAM2_LOG_ERROR("Address resolution failed for %s", hostname);
         return -1;
@@ -924,6 +925,7 @@ static int sam2__resolve_hostname(const char *hostname, char *ip) {
 #endif
 
 SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host, int port) {
+    struct sockaddr_storage server_addr = {0};
     // Initialize winsock / Increment winsock reference count
 #ifdef _WIN32
     WSADATA wsaData;
@@ -933,95 +935,72 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
     }
 #endif
 
-    // Resolve host through DNS if it's not a numeric address
     char ip[INET6_ADDRSTRLEN];
-    int family = AF_INET;
-    if (!sam2__addr_is_numeric_hostname(host)) {
-        family = sam2__resolve_hostname(host, ip); // This blocks
-        if (family < 0) {
-            SAM2_LOG_ERROR("Failed to resolve hostname");
-            return -1;
-        }
-        host = ip;
+    int family = sam2__resolve_hostname(host, ip); // This blocks
+    if (family < 0) {
+        SAM2_LOG_ERROR("Failed to resolve hostname");
+        return -1;
     }
+    host = ip;
 
-    // Create a socket
     sam2_socket_t sockfd = socket(family, SOCK_STREAM, 0);
     if (sockfd == SAM2_SOCKET_INVALID) {
         SAM2_LOG_ERROR("Failed to create socket");
         return -1;
     }
 
-    // Set the socket to non-blocking mode
-    #ifdef _WIN32
+#ifdef _WIN32
     u_long flags = 1; // 1 for non-blocking, 0 for blocking
     if (ioctlsocket(sockfd, FIONBIO, &flags) < 0) {
         SAM2_LOG_ERROR("Failed to set socket to non-blocking mode");
-        SAM2_CLOSESOCKET(sockfd);
-        return -1;
+        goto fail;
     }
-    #else
+#else
     int current_flags = fcntl(sockfd, F_GETFL, 0);
-    if (current_flags < 0) {
-        SAM2_LOG_ERROR("Failed to get current socket flags");
-        SAM2_CLOSESOCKET(sockfd);
-        return -1;
-    }
-
-    if (fcntl(sockfd, F_SETFL, current_flags | O_NONBLOCK) < 0) {
+    if (current_flags < 0 || fcntl(sockfd, F_SETFL, current_flags | O_NONBLOCK) < 0) {
         SAM2_LOG_ERROR("Failed to set socket to non-blocking mode");
-        SAM2_CLOSESOCKET(sockfd);
-        return -1;
+        goto fail;
     }
-    #endif
+#endif
 
-    // Specify the numerical address of the server we're trying to connnect to
     if (family == AF_INET) {
-        struct sockaddr_in server_addr = {0};
-        server_addr.sin_family = AF_INET;
-        server_addr.sin_port = htons(port);
-        if (inet_pton(AF_INET, host, &server_addr.sin_addr) <= 0) {
+        ((struct sockaddr_in *)&server_addr)->sin_family = AF_INET;
+        ((struct sockaddr_in *)&server_addr)->sin_port = htons(port);
+        if (inet_pton(AF_INET, host, &((struct sockaddr_in *)&server_addr)->sin_addr) <= 0) {
             SAM2_LOG_ERROR("Failed to convert IPv4 address");
-            SAM2_CLOSESOCKET(sockfd);
-            return -1;
-        }
-        if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-            if (SAM2_SOCKERRNO != SAM2_EINPROGRESS) {
-                SAM2_LOG_ERROR("Failed to connect to server");
-                SAM2_CLOSESOCKET(sockfd);
-                return -1;
-            }
+            goto fail;
         }
     } else if (family == AF_INET6) {
-        struct sockaddr_in6 server_addr = {0};
-        server_addr.sin6_family = AF_INET6;
-        server_addr.sin6_port = htons(port);
-        if (inet_pton(AF_INET6, host, &server_addr.sin6_addr) <= 0) {
+        ((struct sockaddr_in6 *)&server_addr)->sin6_family = AF_INET6;
+        ((struct sockaddr_in6 *)&server_addr)->sin6_port = htons(port);
+        if (inet_pton(AF_INET6, host, &((struct sockaddr_in6 *)&server_addr)->sin6_addr) <= 0) {
             SAM2_LOG_ERROR("Failed to convert IPv6 address");
-            SAM2_CLOSESOCKET(sockfd);
-            return -1;
+            goto fail; 
         }
-        if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-            if (SAM2_SOCKERRNO != SAM2_EINPROGRESS) {
-                SAM2_LOG_ERROR("Failed to connect to server");
-                SAM2_CLOSESOCKET(sockfd);
-                return -1;
-            }
+    } 
+
+    if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        if (SAM2_SOCKERRNO != SAM2_EINPROGRESS) {
+            SAM2_LOG_ERROR("Failed to connect to server");
+            goto fail;
         }
-    } else {
-        SAM2_LOG_ERROR("Unknown address family");
-        SAM2_CLOSESOCKET(sockfd);
-        return -1;
     }
 
     *sockfd_ptr = sockfd;
     return 0;
+
+fail:
+    if (sockfd != SAM2_SOCKET_INVALID) {
+        SAM2_CLOSESOCKET(sockfd);
+    }
+    return -1;
 }
 
-SAM2_LINKAGE int sam2_client_disconnect(sam2_socket_t *sockfd_ptr, const char *host) {
+SAM2_LINKAGE int sam2_client_disconnect(sam2_socket_t *sockfd_ptr) {
     int status = 0;
 
     #ifdef _WIN32
+    // Cleanup winsock / Decrement winsock reference count
     if (WSACleanup() == SOCKET_ERROR) {
         SAM2_LOG_ERROR("WSACleanup failed: %d", WSAGetLastError());
         status = -1;
@@ -1948,7 +1927,7 @@ SAM2_LINKAGE int sam2_server_create(sam2_server_t *server, int port) {
 
     int err = uv_loop_init(&server->loop);
     if (err) {
-        SAM2_LOG_ERROR("Loop initialization failed");
+        SAM2_LOG_ERROR("Loop initialization failed: %s", uv_strerror(err));
         goto _30;
     }
 
@@ -1956,30 +1935,34 @@ SAM2_LINKAGE int sam2_server_create(sam2_server_t *server, int port) {
 
     err = uv_tcp_init(&server->loop, &server->tcp);
     if (err) {
-        SAM2_LOG_ERROR("TCP initialization failed");
+        SAM2_LOG_ERROR("TCP initialization failed: %s", uv_strerror(err));
         goto _20;
     }
 
-    struct sockaddr_in addr;
-    uv_ip4_addr("0.0.0.0", port, &addr);
-
-    err = uv_tcp_bind(&server->tcp, (const struct sockaddr*)&addr, 0);
+    struct sockaddr_in6 addr6;
+    err = uv_ip6_addr("::", port, &addr6);
     if (err) {
-        SAM2_LOG_ERROR("Bind error %s", uv_strerror(err));
+        SAM2_LOG_ERROR("Bind error: %s", uv_strerror(err));
         goto _10;
     }
 
-    err = uv_listen((uv_stream_t*) &server->tcp, SAM2_DEFAULT_BACKLOG, on_new_connection);
+    err = uv_tcp_bind(&server->tcp, (const struct sockaddr*)&addr6, 0);
     if (err) {
-        SAM2_LOG_ERROR("Listen error %s", uv_strerror(err));
+        SAM2_LOG_ERROR("Bind error: %s", uv_strerror(err));
+        goto _10;
+    }
+
+    err = uv_listen((uv_stream_t*)&server->tcp, SAM2_DEFAULT_BACKLOG, on_new_connection);
+    if (err) {
+        SAM2_LOG_ERROR("Listen error: %s", uv_strerror(err));
         goto _10;
     }
 
     return 0;
 
-_10:uv_close((uv_handle_t*)&server->tcp, NULL);
-_20:uv_loop_close(&server->loop);
-_30:return err;
+_10: uv_close((uv_handle_t*)&server->tcp, NULL);
+_20: uv_loop_close(&server->loop);
+_30: return err;
 }
 
 SAM2_LINKAGE int sam2_server_begin_destroy(sam2_server_t *server) {
