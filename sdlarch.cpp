@@ -2560,9 +2560,9 @@ int main(int argc, char *argv[]) {
         ImPlot::SetNextAxisLimits(ImAxis_X1, g_ulnet_session.frame_counter - g_sample_size, g_ulnet_session.frame_counter, ImGuiCond_Always);
         ImPlot::SetNextAxisLimits(ImAxis_Y1, 0.0f, 512, ImGuiCond_Always);
         if (   g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED
-            && ImPlot::BeginPlot("Packet Size vs. Frame")) {
+            && ImPlot::BeginPlot("State-Packet Size vs. Frame")) {
             ImPlot::SetupAxis(ImAxis_X1, "ulnet_state_t::frame");
-            ImPlot::SetupAxis(ImAxis_Y1, "Packet Size Bytes");
+            ImPlot::SetupAxis(ImAxis_Y1, "Size Bytes");
             for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
                 if (g_ulnet_session.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
                 static int input_packet_size[SAM2_PORT_MAX+1][MAX_SAMPLE_SIZE] = {0};
