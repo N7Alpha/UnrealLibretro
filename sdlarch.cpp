@@ -245,8 +245,8 @@ struct FLibretroContext {
     sam2_socket_t sam2_socket = 0;
     ulnet_session_t ulnet_session = {0};
 
-    int sent_requests = 0;
-    sam2_message_u requests[1024] = {0};
+    sam2_message_u message_history[2048];
+    int message_history_length = 0;
     int64_t delay_frames = 0;
 
     FLibretroInputState InputState[PortCount] = {0};
@@ -270,8 +270,8 @@ struct FLibretroContext {
         int ret = sam2_client_send(sam2_socket, message);
 
         // Bookkeep all sent requests for debugging purposes
-        if (sent_requests < SAM2_ARRAY_LENGTH(requests)) {
-            memcpy(&requests[sent_requests++], message, sam2_get_metadata(message)->message_size);
+        if (message_history_length < SAM2_ARRAY_LENGTH(message_history)) {
+            memcpy(&message_history[message_history_length++], message, sam2_get_metadata(message)->message_size);
         }
 
         return ret;
@@ -764,9 +764,7 @@ static bool g_vsync_enabled = true;
 
 static ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 static bool g_connected_to_sam2 = false;
-static sam2_message_u g_received_response[2048];
-static int g_num_received_response = 0;
-static sam2_error_message_t g_last_sam2_error = {SAM2_RESPONSE_SUCCESS};
+static sam2_error_message_t g_last_sam2_error = { SAM2_RESPONSE_SUCCESS };
 
 static void peer_ids_to_string(uint64_t peer_ids[], char *output) {
     for (int i = 0; i < SAM2_PORT_MAX; i++) {
@@ -1018,99 +1016,95 @@ void draw_imgui() {
             }
         }
 
-        const char *title[]         = { "Requests", "Responses" };
-        int num_received[]          = { g_libretro_context.sent_requests, g_num_received_response };
-        static bool isWindowOpen[]  = { false, false };
-        static int response_index[] = { 0, 0 };
-        for (int j = 0; j < SAM2_ARRAY_LENGTH(title); j++) {
-            if (ImGui::CollapsingHeader(title[j])) {
-                if (ImGui::BeginTable("MessagesTable", 1, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
-                    ImGui::TableSetupColumn("Header", ImGuiTableColumnFlags_WidthFixed, 150.0f);
-                    ImGui::TableHeadersRow();
+        static bool isWindowOpen = false;
+        static int selected_message_index = 0;
+        if (ImGui::CollapsingHeader("Messages")) {
+            if (ImGui::BeginTable("MessagesTable", 1, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+                ImGui::TableSetupColumn("Header", ImGuiTableColumnFlags_WidthFixed, 150.0f);
+                ImGui::TableHeadersRow();
 
-                    for (int i = 0; i < num_received[j]; ++i) {
-                        char *message = j == 0 ? (char *) &g_libretro_context.requests[i] : (char *) &g_received_response[i];
-                        ImGui::TableNextRow();
-                        ImGui::TableSetColumnIndex(0);
+                for (int i = 0; i < g_libretro_context.message_history_length; ++i) {
+                    sam2_message_u *message = &g_libretro_context.message_history[i];
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
 
-                        ImGui::Text("%.8s", message);
-                        ImGui::SameLine();
-                        char button_label[64] = {0};
-                        snprintf(button_label, sizeof(button_label), "Show##%d_%d", j, i);
+                    ImGui::Text("%.8s", (char *) message);
+                    ImGui::SameLine();
+                    char button_label[64] = {0};
+                    snprintf(button_label, sizeof(button_label), "Show##%d", i);
 
-                        if (ImGui::Button(button_label)) {
-                            response_index[j] = i;
-                            isWindowOpen[j] = true;
-                        }
+                    if (ImGui::Button(button_label)) {
+                        selected_message_index = i;
+                        isWindowOpen = true;
                     }
+                }
 
-                    ImGui::EndTable();
+                ImGui::EndTable();
+            }
+        }
+
+        auto show_room = [](const sam2_room_t& room) {
+            ImGui::Text("Room: %s", room.name);
+            ImGui::Text("Flags: %016" PRIx64, room.flags);
+            ImGui::Text("Core Hash: %016" PRIx64, room.core_hash_xxh64);
+            ImGui::Text("ROM Hash: %016" PRIx64, room.rom_hash_xxh64);
+            
+            for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+                if (p == SAM2_AUTHORITY_INDEX) {
+                    ImGui::Text("Authority Peer ID: %016" PRIx64, room.peer_ids[p]);
+                } else {
+                    ImGui::Text("Port %d Peer ID: %016" PRIx64, p, room.peer_ids[p]);
                 }
             }
+        };
 
-            auto show_room = [](const sam2_room_t& room) {
-                ImGui::Text("Room: %s", room.name);
-                ImGui::Text("Flags: %016" PRIx64, room.flags);
-                ImGui::Text("Core Hash: %016" PRIx64, room.core_hash_xxh64);
-                ImGui::Text("ROM Hash: %016" PRIx64, room.rom_hash_xxh64);
-                
-                for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-                    if (p == SAM2_AUTHORITY_INDEX) {
-                        ImGui::Text("Authority Peer ID: %016" PRIx64, room.peer_ids[p]);
-                    } else {
-                        ImGui::Text("Port %d Peer ID: %016" PRIx64, p, room.peer_ids[p]);
-                    }
-                }
-            };
+        if (isWindowOpen && selected_message_index != -1) {
+            ImGui::Begin("Messages", &isWindowOpen); // Use isWindowOpen to allow closing the window
 
-            if (isWindowOpen[j] && response_index[j] != -1) {
-                ImGui::Begin(title[j], &isWindowOpen[j]); // Use isWindowOpen to allow closing the window
+            char *message = (char *) &g_libretro_context.message_history[selected_message_index];
 
-                char *message = j == 0 ? (char *) &g_libretro_context.requests[response_index[j]] : (char *) &g_received_response[response_index[j]];
+            ImGui::Text("Header: %.8s", (char *) message);
 
-                ImGui::Text("Header: %.8s", (char *) message);
-
-                if (memcmp(message, sam2_sign_header, SAM2_HEADER_SIZE) == 0) {
-                    sam2_signal_message_t *signal_message = (sam2_signal_message_t *) message;
-                    ImGui::Text("Peer ID: %016" PRIx64, signal_message->peer_id);
-                    ImGui::InputTextMultiline("ICE SDP", signal_message->ice_sdp, sizeof(signal_message->ice_sdp), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 16), ImGuiInputTextFlags_ReadOnly);
-                } else if (memcmp(message, sam2_make_header, SAM2_HEADER_SIZE) == 0) {
-                    sam2_room_make_message_t *make_message = (sam2_room_make_message_t *) message;
+            if (memcmp(message, sam2_sign_header, SAM2_HEADER_SIZE) == 0) {
+                sam2_signal_message_t *signal_message = (sam2_signal_message_t *) message;
+                ImGui::Text("Peer ID: %016" PRIx64, signal_message->peer_id);
+                ImGui::InputTextMultiline("ICE SDP", signal_message->ice_sdp, sizeof(signal_message->ice_sdp), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 16), ImGuiInputTextFlags_ReadOnly);
+            } else if (memcmp(message, sam2_make_header, SAM2_HEADER_SIZE) == 0) {
+                sam2_room_make_message_t *make_message = (sam2_room_make_message_t *) message;
+                ImGui::Separator();
+                show_room(make_message->room);
+            } else if (memcmp(message, sam2_list_header, SAM2_HEADER_SIZE) == 0) {
+                if (message[7] == 'r') {
+                    // Request
+                    ImGui::Text("Room List Request");
+                } else {
+                    // Response
+                    sam2_room_list_message_t *list_response = (sam2_room_list_message_t *) message;
                     ImGui::Separator();
-                    show_room(make_message->room);
-                } else if (memcmp(message, sam2_list_header, SAM2_HEADER_SIZE) == 0) {
-                    if (j == 0) {
-                        // Request
-                        ImGui::Text("Room List Request");
-                    } else {
-                        // Response
-                        sam2_room_list_message_t *list_response = (sam2_room_list_message_t *) message;
-                        ImGui::Separator();
-                        show_room(list_response->room);
-                    }
-                } else if (memcmp(message, sam2_join_header, SAM2_HEADER_SIZE) == 0) {
-                    sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
-                    ImGui::Text("Peer ID: %016" PRIx64, join_message->peer_id);
-                    ImGui::Separator();
-                    show_room(join_message->room);
-                } else if (memcmp(message, sam2_conn_header, SAM2_HEADER_SIZE) == 0) {
-                    sam2_connect_message_t *connect_message = (sam2_connect_message_t *) message;
-                    ImGui::Text("Peer ID: %016" PRIx64, connect_message->peer_id);
-                    ImGui::Text("Flags: %016" PRIx64, connect_message->flags);
-                } else if (memcmp(message, sam2_fail_header, SAM2_HEADER_SIZE) == 0) {
-                    sam2_error_message_t *error_response = (sam2_error_message_t *) message;
-                    ImGui::Text("Code: %" PRId64, error_response->code);
-                    ImGui::Text("Description: %s", error_response->description);
-                    ImGui::Text("Peer ID: %016" PRIx64, error_response->peer_id);
+                    show_room(list_response->room);
                 }
-
-                // Optionally, provide a way to close the window manually
-                if (ImGui::Button("Close")) {
-                    isWindowOpen[j] = false; // Close the window
-                }
-
-                ImGui::End();
+            } else if (memcmp(message, sam2_join_header, SAM2_HEADER_SIZE) == 0) {
+                sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
+                ImGui::Text("Peer ID: %016" PRIx64, join_message->peer_id);
+                ImGui::Separator();
+                show_room(join_message->room);
+            } else if (memcmp(message, sam2_conn_header, SAM2_HEADER_SIZE) == 0) {
+                sam2_connect_message_t *connect_message = (sam2_connect_message_t *) message;
+                ImGui::Text("Peer ID: %016" PRIx64, connect_message->peer_id);
+                ImGui::Text("Flags: %016" PRIx64, connect_message->flags);
+            } else if (memcmp(message, sam2_fail_header, SAM2_HEADER_SIZE) == 0) {
+                sam2_error_message_t *error_response = (sam2_error_message_t *) message;
+                ImGui::Text("Code: %" PRId64, error_response->code);
+                ImGui::Text("Description: %s", error_response->description);
+                ImGui::Text("Peer ID: %016" PRIx64, error_response->peer_id);
             }
+
+            // Optionally, provide a way to close the window manually
+            if (ImGui::Button("Close")) {
+                isWindowOpen = false; // Close the window
+            }
+
+            ImGui::End();
         }
 
         if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
@@ -2837,9 +2831,9 @@ int main(int argc, char *argv[]) {
         g_connected_to_sam2 &= g_sam2_socket != SAM2_SOCKET_INVALID;
         if (g_connected_to_sam2 || (g_connected_to_sam2 = sam2_client_poll_connection(g_sam2_socket, 0))) {
             for (int _prevent_infinite_loop_counter = 0; _prevent_infinite_loop_counter < 64; _prevent_infinite_loop_counter++) {
-                sam2_message_u *latest_sam2_message = &g_received_response[g_num_received_response];
-                static char buffer[sizeof(sam2_message_u)];
-                static int buffer_length = 0;
+                static sam2_message_u latest_sam2_message = {0}; // @todo Clearing this should be handled by sam2_client_poll
+                char buffer[sizeof(sam2_message_u)];
+                int buffer_length = 0;
 
                 if (g_sam2_server) {
                     for (int i = 0; i < 128; i++) {
@@ -2849,7 +2843,7 @@ int main(int argc, char *argv[]) {
 
                 int status = sam2_client_poll(
                     g_sam2_socket,
-                    latest_sam2_message,
+                    &latest_sam2_message,
                     buffer,
                     &buffer_length
                 );
@@ -2860,8 +2854,8 @@ int main(int argc, char *argv[]) {
                 } else if (status == 0) {
                     break;
                 } else {
-                    if (g_num_received_response+1 < SAM2_ARRAY_LENGTH(g_received_response)) {
-                        g_num_received_response++;
+                    if (g_libretro_context.message_history_length < SAM2_ARRAY_LENGTH(g_libretro_context.message_history)) {
+                        g_libretro_context.message_history[g_libretro_context.message_history_length++] = latest_sam2_message;
                     }
 
                     g_ulnet_session.zstd_compress_level = g_zstd_compress_level;
@@ -2877,15 +2871,15 @@ int main(int argc, char *argv[]) {
                     g_ulnet_session.retro_unserialize = g_retro.retro_unserialize;
                     int status = ulnet_process_message(
                         &g_ulnet_session,
-                        latest_sam2_message
+                        &latest_sam2_message
                     );
 
-                    if (memcmp(latest_sam2_message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
-                        g_last_sam2_error = *((sam2_error_message_t *) latest_sam2_message);
+                    if (memcmp(&latest_sam2_message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
+                        g_last_sam2_error = *((sam2_error_message_t *) &latest_sam2_message);
                         printf("Received error response from SAM2 (%" PRId64 "): %s\n", g_last_sam2_error.code, g_last_sam2_error.description);
                         fflush(stdout);
-                    } else if (memcmp(latest_sam2_message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
-                        sam2_room_list_message_t *room_list = (sam2_room_list_message_t *) latest_sam2_message;
+                    } else if (memcmp(&latest_sam2_message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
+                        sam2_room_list_message_t *room_list = (sam2_room_list_message_t *) &latest_sam2_message;
 
                         if (room_list->room.peer_ids[SAM2_AUTHORITY_INDEX] == SAM2_PORT_UNAVAILABLE) {
                             g_is_refreshing_rooms = false;
@@ -2895,6 +2889,8 @@ int main(int argc, char *argv[]) {
                             }
                         }
                     }
+
+                    memset(&latest_sam2_message, 0, sizeof(latest_sam2_message));
                 }
             }
         }
