@@ -2828,6 +2828,12 @@ int main(int argc, char *argv[]) {
         // and still try to update on vertical sync or use another thread, but I don't like threads
         SDL_GL_SwapWindow(g_win);
 
+        if (g_sam2_server) {
+            for (int i = 0; i < 128; i++) {
+                if (uv_run(&g_sam2_server->loop, UV_RUN_NOWAIT) == 0) break;
+            }
+        }
+
         g_connected_to_sam2 &= g_sam2_socket != SAM2_SOCKET_INVALID;
         if (g_connected_to_sam2 || (g_connected_to_sam2 = sam2_client_poll_connection(g_sam2_socket, 0))) {
             for (int _prevent_infinite_loop_counter = 0; _prevent_infinite_loop_counter < 64; _prevent_infinite_loop_counter++) {
@@ -2835,11 +2841,6 @@ int main(int argc, char *argv[]) {
                 char buffer[sizeof(sam2_message_u)];
                 int buffer_length = 0;
 
-                if (g_sam2_server) {
-                    for (int i = 0; i < 128; i++) {
-                        if (uv_run(&g_sam2_server->loop, UV_RUN_NOWAIT) == 0) break;
-                    }
-                }
 
                 int status = sam2_client_poll(
                     g_sam2_socket,
