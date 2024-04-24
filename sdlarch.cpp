@@ -1065,15 +1065,15 @@ void draw_imgui() {
 
             ImGui::Text("Header: %.8s", (char *) message);
 
-            if (memcmp(message, sam2_sign_header, SAM2_HEADER_SIZE) == 0) {
+            if (memcmp(message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
                 sam2_signal_message_t *signal_message = (sam2_signal_message_t *) message;
                 ImGui::Text("Peer ID: %016" PRIx64, signal_message->peer_id);
                 ImGui::InputTextMultiline("ICE SDP", signal_message->ice_sdp, sizeof(signal_message->ice_sdp), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 16), ImGuiInputTextFlags_ReadOnly);
-            } else if (memcmp(message, sam2_make_header, SAM2_HEADER_SIZE) == 0) {
+            } else if (memcmp(message, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
                 sam2_room_make_message_t *make_message = (sam2_room_make_message_t *) message;
                 ImGui::Separator();
                 show_room(make_message->room);
-            } else if (memcmp(message, sam2_list_header, SAM2_HEADER_SIZE) == 0) {
+            } else if (memcmp(message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
                 if (message[7] == 'r') {
                     // Request
                     ImGui::Text("Room List Request");
@@ -1083,16 +1083,16 @@ void draw_imgui() {
                     ImGui::Separator();
                     show_room(list_response->room);
                 }
-            } else if (memcmp(message, sam2_join_header, SAM2_HEADER_SIZE) == 0) {
+            } else if (memcmp(message, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
                 sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
                 ImGui::Text("Peer ID: %016" PRIx64, join_message->peer_id);
                 ImGui::Separator();
                 show_room(join_message->room);
-            } else if (memcmp(message, sam2_conn_header, SAM2_HEADER_SIZE) == 0) {
+            } else if (memcmp(message, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
                 sam2_connect_message_t *connect_message = (sam2_connect_message_t *) message;
                 ImGui::Text("Peer ID: %016" PRIx64, connect_message->peer_id);
                 ImGui::Text("Flags: %016" PRIx64, connect_message->flags);
-            } else if (memcmp(message, sam2_fail_header, SAM2_HEADER_SIZE) == 0) {
+            } else if (memcmp(message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
                 sam2_error_message_t *error_response = (sam2_error_message_t *) message;
                 ImGui::Text("Code: %" PRId64, error_response->code);
                 ImGui::Text("Description: %s", error_response->description);
