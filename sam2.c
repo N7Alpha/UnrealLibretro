@@ -1121,6 +1121,48 @@ static int sam2__frame_message(sam2_message_u *message, char *buffer, int *lengt
     }
 }
 
+static void sam2__sanitize_message(void *message) {
+    if (!message) return;
+
+    // Sanitize C-Strings. This will also clear extra uninitialized bytes past the null terminator
+    if (memcmp(message, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        sam2_room_make_message_t *make_message = (sam2_room_make_message_t *)message;
+        strncpy(make_message->room.name,
+                make_message->room.name,
+                sizeof(make_message->room.name) - 1);
+        make_message->room.name[sizeof(make_message->room.name) - 1] = '\0';
+    } else if (memcmp(message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        sam2_room_list_message_t *list_message = (sam2_room_list_message_t *)message;
+        strncpy(list_message->room.name,
+                list_message->room.name,
+                sizeof(list_message->room.name) - 1);
+        list_message->room.name[sizeof(list_message->room.name) - 1] = '\0';
+    } else if (memcmp(message, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        sam2_room_join_message_t *join_message = (sam2_room_join_message_t *)message;
+        strncpy(join_message->room.name,
+                join_message->room.name,
+                sizeof(join_message->room.name) - 1);
+        join_message->room.name[sizeof(join_message->room.name) - 1] = '\0';
+        strncpy(join_message->room_secret,
+                join_message->room_secret,
+                sizeof(join_message->room_secret) - 1);
+        join_message->room_secret[sizeof(join_message->room_secret) - 1] = '\0';
+    } else if (   memcmp(message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0
+               || memcmp(message, sam2_sigx_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        sam2_signal_message_t *signal_message = (sam2_signal_message_t *)message;
+        strncpy(signal_message->ice_sdp,
+                signal_message->ice_sdp,
+                sizeof(signal_message->ice_sdp) - 1);
+        signal_message->ice_sdp[sizeof(signal_message->ice_sdp) - 1] = '\0';
+    } else if (memcmp(message, sam2_fail_header, 8) == 0) {
+        sam2_error_message_t *error_message = (sam2_error_message_t *)message;
+        strncpy(error_message->description,
+                error_message->description,
+                sizeof(error_message->description) - 1);
+        error_message->description[sizeof(error_message->description) - 1] = '\0';
+    }
+}
+
 SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *message, char *buffer, int *buffer_length) {
     int bytes_desired = sizeof(sam2_message_u) - *buffer_length;
     int bytes_read = 0;
@@ -1157,7 +1199,9 @@ SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *message,
         return -1;
     } else {
         SAM2_LOG_DEBUG("Received complete message with header '%.8s'", (char *) message);
-        ((char *) message)[7] = 'r';
+        ((char *) message)[7] = 'R';
+        sam2__sanitize_message(message);
+
         return 1;
     }
 }
@@ -1520,7 +1564,7 @@ static void on_timeout(uv_timer_t *handle) {
 }
 
 // Sanus is latin for healthy
-static int sam2__sanitize_and_sanity_check_message(sam2_message_u *message, sam2_room_t *associated_room) {
+static int sam2__sanity_check_message(sam2_message_u *message, sam2_room_t *associated_room) {
 
     if (memcmp(message, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
 
