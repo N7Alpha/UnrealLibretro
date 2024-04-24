@@ -436,10 +436,10 @@
 
 typedef struct sam2_room {
     char name[64]; // Unique name that identifies the room
-    uint64_t peer_ids[SAM2_PORT_MAX+1]; // Must be unique per port (including authority)
     uint64_t flags;
     uint64_t core_hash_xxh64;
     uint64_t rom_hash_xxh64;
+    uint64_t peer_ids[SAM2_PORT_MAX+1]; // Must be unique per port (including authority)
 } sam2_room_t;
 
 // This is a test for identity not equality
@@ -598,7 +598,7 @@ typedef struct sam2_server {
     sam2_avl_node_t *_debug_allocated_message_set;
 
     sam2_avl_node_t *peer_id_map;
-    int64_t room_count; 
+    int64_t room_count;
     int64_t room_capacity;
     sam2_room_t rooms[/*room_capacity*/];
 } sam2_server_t;
@@ -975,9 +975,9 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
         ((struct sockaddr_in6 *)&server_addr)->sin6_port = htons(port);
         if (inet_pton(AF_INET6, host, &((struct sockaddr_in6 *)&server_addr)->sin6_addr) <= 0) {
             SAM2_LOG_ERROR("Failed to convert IPv6 address");
-            goto fail; 
+            goto fail;
         }
-    } 
+    }
 
     if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         if (SAM2_SOCKERRNO != SAM2_EINPROGRESS) {
@@ -1552,7 +1552,7 @@ static void on_timeout(uv_timer_t *handle) {
         SAM2_LOG_WARN("Client %" PRIx64 " sent incomplete message with header '%.*s' and size %" PRId64 "",
             client->peer_id, (int)SAM2_MIN(client->length, SAM2_HEADER_SIZE), client->buffer, client->length);
 
-        static sam2_error_message_t response = { 
+        static sam2_error_message_t response = {
             SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_HEADER,
              "An incomplete TCP message was received before timing out"
         };
@@ -1887,7 +1887,7 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
     if (uv_accept(server_tcp, (uv_stream_t*) client_tcp) == 0) {
         sam2_client_t *client = (sam2_client_t *) client_tcp;
         sam2_server_t *server = (sam2_server_t *) server_tcp;
-        
+
         { // Create a peer id based on hashed IP address mixed with a counter
             struct sockaddr_storage name;
             int len = sizeof(name);

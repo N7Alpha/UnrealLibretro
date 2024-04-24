@@ -702,7 +702,7 @@ int g_argc;
 char **g_argv;
 
 static sam2_room_t g_new_room_set_through_gui = { 
-    "My Room Name",
+    "My Room Name", 0, 0, 0,
     { SAM2_PORT_UNAVAILABLE, SAM2_PORT_AVAILABLE, SAM2_PORT_AVAILABLE, SAM2_PORT_AVAILABLE },
 };
 
@@ -1266,7 +1266,8 @@ void draw_imgui() {
                     ulnet_process_message(&g_ulnet_session, &message); // *Send* a message to ourselves
                 }
             } else if (ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
-                if (ImGui::Button("Exit")) {
+                if (   ImGui::Button("Exit")
+                    && ulnet_our_port(&g_ulnet_session) == -1 /* Can't disconnect before leaving the room */) {
                     sam2_signal_message_t response = { SAM2_SIGX_HEADER };
                     response.peer_id = g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX];
                     g_libretro_context.SAM2Send((char *) &response);
@@ -1279,8 +1280,16 @@ void draw_imgui() {
                 }
             } else {
                 if (ImGui::Button("Detach Port")) {
+#if 1
                     message.room.peer_ids[ulnet_our_port(&g_ulnet_session)] = SAM2_PORT_AVAILABLE;
                     g_libretro_context.SAM2Send((char *) &message);
+#else
+                    sam2_room_t future_room_we_are_in = ulnet_future_room_we_are_in(&g_ulnet_session);
+                    int future_our_port = sam2_get_port_of_peer(&future_room_we_are_in, g_ulnet_session.our_peer_id);
+                    if (future_our_port != -1) {
+                        g_ulnet_session.next_room_xor_delta.peer_ids[future_our_port] = future_room_we_are_in.peer_ids[future_our_port] ^ SAM2_PORT_AVAILABLE;
+                    }
+#endif
                 }
             }
     } else {
@@ -1979,6 +1988,9 @@ void FLibretroContext::core_input_poll() {
     for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
         if (ulnet_session.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
 
+        if (!(g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED)) {
+            assert(p == SAM2_AUTHORITY_INDEX);
+        }
         assert(g_ulnet_session.state[p].frame <= g_ulnet_session.frame_counter + (ULNET_DELAY_BUFFER_SIZE-1));
         assert(g_ulnet_session.state[p].frame >= g_ulnet_session.frame_counter); // Right now it's possible to do "nothing wrong" and trigger this. Calling retro_serialize sometimes causes a frame to advance prematurely which can trigger this
         for (int i = 0; i < 16; i++) {
@@ -2494,13 +2506,14 @@ int main(int argc, char *argv[]) {
             if (!ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id) && g_ulnet_session.state[g_libretro_context.OurPort()].frame < g_ulnet_session.frame_counter + g_libretro_context.delay_frames) {
                 // @todo The preincrement does not make sense to me here, but things have been working
                 int64_t next_buffer_index = ++g_ulnet_session.state[g_libretro_context.OurPort()].frame % ULNET_DELAY_BUFFER_SIZE;
+
                 g_ulnet_session.state[g_libretro_context.OurPort()].core_option[next_buffer_index] = g_core_option_for_next_frame;
                 memset(&g_core_option_for_next_frame, 0, sizeof(g_core_option_for_next_frame));
 
                 // @todo You can only update the room state on the last most frame as that's the only one we know clients can't possibly be buffered on
                 //       Otherwise there is a chance for inconsistent inputs to be sent when peers switch ports
                 if (ulnet_is_authority(&g_ulnet_session)) {
-                    g_ulnet_session.state[SAM2_AUTHORITY_INDEX].room_xor_delta[next_buffer_index] = g_ulnet_session.next_room_xor_delta;
+                    g_ulnet_session.state[g_libretro_context.OurPort()].room_xor_delta[next_buffer_index] = g_ulnet_session.next_room_xor_delta;
                     memset(&g_ulnet_session.next_room_xor_delta, 0, sizeof(g_ulnet_session.next_room_xor_delta));
                 }
 
@@ -2546,7 +2559,8 @@ int main(int argc, char *argv[]) {
                     juice_state_t state = juice_get_state(g_ulnet_session.agent[p]);
 
                     // Wait until we can send netplay messages to everyone without fail
-                    if (state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED) {
+                    if (   state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED
+                        && !ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
                         juice_send(g_ulnet_session.agent[p], (const char *) &input_packet, sizeof(ulnet_state_packet_t) + actual_payload_size);
                         SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64,
                             g_ulnet_session.state[SAM2_AUTHORITY_INDEX].frame, p, g_ulnet_session.agent_peer_id[p]);
@@ -2709,6 +2723,22 @@ int main(int argc, char *argv[]) {
             g_retro.retro_run();
             core_wants_tick_at_unix_usec += 1000000 / g_av.timing.fps;
 
+#if 0
+            if (ulnet_is_authority(session)) {
+                for (int p = 0; p < SAM2_PORT_MAX; p++) {
+                    sam2_room_t no_xor_delta = {0};
+                    sam2_room_t *suggested_room_xor_delta = &session->state[p].room_xor_delta[g_ulnet_session.frame_counter % ULNET_DELAY_BUFFER_SIZE];
+                    if (memcmp(suggested_room_xor_delta, &no_xor_delta, sizeof(sam2_room_t)) != 0) {
+                        sam2_room_join_message_t message = { SAM2_JOIN_HEADER };
+                        message.room = session->room_we_are_in;
+                        message.peer_id = session->room_we_are_in.peer_ids[p];
+                        ulnet__xor_delta(&message.room, suggested_room_xor_delta, sizeof(sam2_room_t));
+                        ulnet_process_message(session, &message);
+                    }
+                }
+            }
+#endif
+
             sam2_room_t new_room_state = g_ulnet_session.room_we_are_in;
             ulnet__xor_delta(&new_room_state, &g_ulnet_session.state[SAM2_AUTHORITY_INDEX].room_xor_delta[g_ulnet_session.frame_counter % ULNET_DELAY_BUFFER_SIZE], sizeof(sam2_room_t));
 
@@ -2807,7 +2837,8 @@ int main(int argc, char *argv[]) {
                 for (int p = 0; p < SAM2_ARRAY_LENGTH(g_ulnet_session.agent); p++) {
                     if (!g_ulnet_session.agent[p]) continue;
                     juice_state_t juice_state = juice_get_state(g_ulnet_session.agent[p]);
-                    if (juice_state == JUICE_STATE_CONNECTED || juice_state == JUICE_STATE_COMPLETED) {
+                    if (   juice_state == JUICE_STATE_CONNECTED || juice_state == JUICE_STATE_COMPLETED
+                        && !ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
                         juice_send(g_ulnet_session.agent[p], (char *) &g_ulnet_session.desync_debug_packet, sizeof(g_ulnet_session.desync_debug_packet));
                     }
                 }

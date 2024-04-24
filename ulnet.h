@@ -387,8 +387,15 @@ static inline void ulnet_reset_save_state_bookkeeping(ulnet_session_t *session) 
 }
 
 static inline void ulnet_session_init_defaulted(ulnet_session_t *session) {
+    assert(session->spectator_count == 0);
+    for (int i = 0; i < SAM2_PORT_MAX+1; i++) {
+        assert(session->agent[i] == NULL);
+    }
+
     memset(&session->state, 0, sizeof(session->state));
     memset(&session->state_packet_history, 0, sizeof(session->state_packet_history));
+
+    session->frame_counter = 0;
 
     ulnet_reset_save_state_bookkeeping(session);
 }
@@ -422,7 +429,7 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
         sam2_room_join_message_t *room_join = (sam2_room_join_message_t *) response;
 
         // This looks weird but really we're just figuring out what the current state of the room
-        // looks like so we can send generate deltas against it. 
+        // looks like so we can send generate deltas against it
         sam2_room_t future_room_we_are_in = session->room_we_are_in;
         for (int frame = session->frame_counter+1; frame < session->state[SAM2_AUTHORITY_INDEX].frame; frame++) {
             ulnet__xor_delta(
@@ -442,7 +449,6 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
         if (desired_port == -1) {
             if (current_port != -1) {
                 SAM2_LOG_INFO("Peer %" PRIx64 " left", room_join->peer_id);
-                ulnet_disconnect_peer(session, current_port);
 
                 session->next_room_xor_delta.peer_ids[current_port] = future_room_we_are_in.peer_ids[current_port] ^ SAM2_PORT_AVAILABLE;
             } else {
@@ -542,7 +548,20 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
 
         if (p != -1) {
             if (room_signal->header[3] == 'X') {
-                ulnet_disconnect_spectator(session, p);
+                if (p > SAM2_AUTHORITY_INDEX) {
+                    ulnet_disconnect_spectator(session, p);
+                } else {
+                    SAM2_LOG_WARN("Protocol violation: room.peer_ids[%d]=%016" PRIx64 " signaled disconnect before exiting room", p, room_signal->peer_id);
+                    sam2_error_message_t error = {
+                        SAM2_FAIL_HEADER,
+                        SAM2_RESPONSE_AUTHORITY_ERROR,
+                        "Protocol violation: Signaled disconnect before detatching port",
+                        room_signal->peer_id
+                    };
+
+                    session->sam2_send_callback(session->user_ptr, (char *) &error);
+                    // @todo Resync broadcast
+                }
             } else if (strlen(room_signal->ice_sdp) == 0) {
                 SAM2_LOG_INFO("Received remote gathering done from peer %" PRIx64 "", room_signal->peer_id);
                 juice_set_remote_gathering_done(session->agent[p]);
@@ -575,8 +594,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
         return;
     }
 
-    if (   p >= SAM2_PORT_MAX+1
-        && ULNET_CHANNEL_INPUT != (data[0] & ULNET_CHANNEL_MASK)) {
+    if (p >= SAM2_PORT_MAX+1) {
         SAM2_LOG_WARN("A spectator sent us a UDP packet for unsupported channel %" PRIx8 " for some reason", data[0] & ULNET_CHANNEL_MASK);
         return;
     }
