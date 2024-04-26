@@ -1121,45 +1121,33 @@ static int sam2__frame_message(sam2_message_u *message, char *buffer, int *lengt
     }
 }
 
+#define SAM2__SANITIZE_STRING(string) do { \
+    int i = 0; \
+    for (; i < SAM2_ARRAY_LENGTH(string) - 1; i++) if (string[i] == '\0') break; \
+    for (; i < SAM2_ARRAY_LENGTH(string)    ; i++) string[i] = '\0'; \
+} while (0);
+
 static void sam2__sanitize_message(void *message) {
     if (!message) return;
 
     // Sanitize C-Strings. This will also clear extra uninitialized bytes past the null terminator
     if (memcmp(message, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_room_make_message_t *make_message = (sam2_room_make_message_t *)message;
-        strncpy(make_message->room.name,
-                make_message->room.name,
-                sizeof(make_message->room.name) - 1);
-        make_message->room.name[sizeof(make_message->room.name) - 1] = '\0';
+        SAM2__SANITIZE_STRING(make_message->room.name);
     } else if (memcmp(message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_room_list_message_t *list_message = (sam2_room_list_message_t *)message;
-        strncpy(list_message->room.name,
-                list_message->room.name,
-                sizeof(list_message->room.name) - 1);
-        list_message->room.name[sizeof(list_message->room.name) - 1] = '\0';
+        SAM2__SANITIZE_STRING(list_message->room.name);
     } else if (memcmp(message, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_room_join_message_t *join_message = (sam2_room_join_message_t *)message;
-        strncpy(join_message->room.name,
-                join_message->room.name,
-                sizeof(join_message->room.name) - 1);
-        join_message->room.name[sizeof(join_message->room.name) - 1] = '\0';
-        strncpy(join_message->room_secret,
-                join_message->room_secret,
-                sizeof(join_message->room_secret) - 1);
-        join_message->room_secret[sizeof(join_message->room_secret) - 1] = '\0';
+        SAM2__SANITIZE_STRING(join_message->room.name)
+        SAM2__SANITIZE_STRING(join_message->room_secret);
     } else if (   memcmp(message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0
                || memcmp(message, sam2_sigx_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_signal_message_t *signal_message = (sam2_signal_message_t *)message;
-        strncpy(signal_message->ice_sdp,
-                signal_message->ice_sdp,
-                sizeof(signal_message->ice_sdp) - 1);
-        signal_message->ice_sdp[sizeof(signal_message->ice_sdp) - 1] = '\0';
+        SAM2__SANITIZE_STRING(signal_message->ice_sdp);
     } else if (memcmp(message, sam2_fail_header, 8) == 0) {
         sam2_error_message_t *error_message = (sam2_error_message_t *)message;
-        strncpy(error_message->description,
-                error_message->description,
-                sizeof(error_message->description) - 1);
-        error_message->description[sizeof(error_message->description) - 1] = '\0';
+        SAM2__SANITIZE_STRING(error_message->description);
     }
 }
 
