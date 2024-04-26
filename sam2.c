@@ -846,22 +846,6 @@ static void sam2__log_write(int level, const char *file, int line, const char *f
     fflush(stdout);
 }
 
-static int sam2__addr_is_numeric_hostname(const char *hostname) {
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_DGRAM;
-    hints.ai_protocol = IPPROTO_UDP;
-    hints.ai_flags = AI_NUMERICHOST;
-    struct addrinfo *ai_list = NULL;
-    if (getaddrinfo(hostname, NULL, &hints, &ai_list)) {
-        return 0;
-    }
-
-    freeaddrinfo(ai_list);
-    return 1;
-}
-
 // Resolve hostname with DNS query and prioritize IPv6
 static int sam2__resolve_hostname(const char *hostname, char *ip) {
     struct addrinfo hints, *res, *p, desired_address;
