@@ -11,16 +11,15 @@ int g_log_level = 1; // Info
 
 #include "glad.h"
 #include "imgui.h"
-#include "imgui_impl_sdl2.h"
+#include "imgui_impl_sdl3.h"
 #include "imgui_impl_opengl3.h"
 #include "implot.h"
 
 #define ZDICT_STATIC_LINKING_ONLY
 #include "zdict.h"
 
-#define SDL_MAIN_HANDLED
-#include "SDL.h"
-#include "SDL_opengl.h"
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_opengl.h>
 #include "libretro.h"
 
 #include <ctype.h>
@@ -38,7 +37,7 @@ int g_log_level = 1; // Info
 
 static SDL_Window *g_win = NULL;
 static SDL_GLContext g_ctx = NULL;
-static SDL_AudioDeviceID g_pcm = 0;
+static SDL_AudioStream *g_pcm = NULL;
 static struct retro_frame_time_callback runloop_frame_time;
 static retro_usec_t runloop_frame_time_last = 0;
 static const uint8_t *g_kbd = NULL;
@@ -505,7 +504,7 @@ static void create_window(int width, int height) {
         SAM2_LOG_FATAL("Unsupported hw context %i. (only OPENGL, OPENGL_CORE and OPENGLES2 supported)", g_video.hw.context_type);
     }
 
-    g_win = SDL_CreateWindow("sdlarch", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_OPENGL);
+    g_win = SDL_CreateWindow("sdlarch", width, height, SDL_WINDOW_OPENGL);
 
     if (!g_win)
         SAM2_LOG_FATAL("Failed to create window: %s", SDL_GetError());
@@ -757,12 +756,12 @@ static void peer_ids_to_string(uint64_t peer_ids[], char *output) {
 }
 
 static int read_whole_file(const char *filename, void **data, size_t *size) {
-    SDL_RWops *file = SDL_RWFromFile(filename, "rb");
+    SDL_IOStream *file = SDL_IOFromFile(filename, "rb");
 
     if (!file)
         SAM2_LOG_FATAL("Failed to load %s: %s", filename, SDL_GetError());
 
-    *size = SDL_RWsize(file);
+    *size = SDL_GetIOSize(file);
 
     if (*size < 0)
         SAM2_LOG_FATAL("Failed to query file size: %s", SDL_GetError());
@@ -772,10 +771,10 @@ static int read_whole_file(const char *filename, void **data, size_t *size) {
     if (!*data)
         SAM2_LOG_FATAL("Failed to allocate memory for the content");
 
-    if (!SDL_RWread(file, *data, *size, 1))
+    if (!SDL_ReadIO(file, *data, *size))
         SAM2_LOG_FATAL("Failed to read file data: %s", SDL_GetError());
 
-    SDL_RWclose(file);
+    SDL_CloseIO(file);
     return 0;
 }
 
@@ -1617,22 +1616,16 @@ static void video_deinit() {
 
 
 static void audio_init(int frequency) {
-    SDL_AudioSpec desired;
-    SDL_AudioSpec obtained;
+    SDL_AudioSpec spec;
+    spec.format = SDL_AUDIO_S16;
+    spec.channels = 2;
+    spec.freq = frequency;
 
-    SDL_zero(desired);
-    SDL_zero(obtained);
-
-    desired.format = AUDIO_S16;
-    desired.freq   = frequency;
-    desired.channels = 2;
-    desired.samples = 4096;
-
-    g_pcm = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained, 0);
+    g_pcm = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_OUTPUT, &spec, NULL, NULL);
     if (!g_pcm)
         SAM2_LOG_FATAL("Failed to open playback device: %s", SDL_GetError());
 
-    SDL_PauseAudioDevice(g_pcm, 0);
+    SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(g_pcm));
 
     // Let the core know that the audio device has been initialized.
     if (audio_callback.set_state) {
@@ -1642,7 +1635,8 @@ static void audio_init(int frequency) {
 
 
 static void audio_deinit() {
-    SDL_CloseAudioDevice(g_pcm);
+    SDL_CloseAudioDevice(SDL_GetAudioStreamDevice(g_pcm));
+    SDL_DestroyAudioStream(g_pcm);
 }
 
 static size_t audio_write(const int16_t *buf, unsigned frames) {
@@ -1650,7 +1644,8 @@ static size_t audio_write(const int16_t *buf, unsigned frames) {
     for (unsigned i = 0; i < frames * 2; i++) {
         scaled_buf[i] = (buf[i] * g_volume) / 100;
     }
-    SDL_QueueAudio(g_pcm, scaled_buf, sizeof(*buf) * frames * 2);
+
+    SDL_PutAudioStreamData(g_pcm, scaled_buf, sizeof(*buf) * frames * 2);
     return frames;
 }
 
@@ -2079,27 +2074,9 @@ static void core_load_game(const char *filename) {
         g_retro.retro_get_system_info(&g_libretro_context.system_info);
 
         if (!g_libretro_context.system_info.need_fullpath) {
-            SDL_RWops *file = SDL_RWFromFile(filename, "rb");
-            Sint64 size;
+            SDL_IOStream *file = SDL_IOFromFile(filename, "rb");
 
-            if (!file)
-                SAM2_LOG_FATAL("Failed to load %s: %s", filename, SDL_GetError());
-
-            size = SDL_RWsize(file);
-
-            if (size < 0)
-                SAM2_LOG_FATAL("Failed to query game file size: %s", SDL_GetError());
-
-            info.size = size;
-            info.data = SDL_malloc(info.size);
-
-            if (!info.data)
-                SAM2_LOG_FATAL("Failed to allocate memory for the content");
-
-            if (!SDL_RWread(file, (void*)info.data, info.size, 1))
-                SAM2_LOG_FATAL("Failed to read file data: %s", SDL_GetError());
-
-            SDL_RWclose(file);
+            read_whole_file(filename, (void **)&info.data, &info.size);
         }
     }
 
@@ -2354,7 +2331,6 @@ int main(int argc, char *argv[]) {
         SAM2_LOG_FATAL("Failed to connect to Signaling-Server and a Match-Maker\n");
     }
 
-    SDL_SetMainReady();
     juice_set_log_level(JUICE_LOG_LEVEL_WARN);
 
     g_parameters.d = 8;
@@ -2420,7 +2396,7 @@ int main(int argc, char *argv[]) {
     //ImGui::StyleColorsLight();
 
     // Setup Platform/Renderer backends
-    ImGui_ImplSDL2_InitForOpenGL(g_win, g_ctx);
+    ImGui_ImplSDL3_InitForOpenGL(g_win, g_ctx);
     ImGui_ImplOpenGL3_Init("#version 150");
 
     SDL_Event ev;
@@ -2444,16 +2420,11 @@ int main(int argc, char *argv[]) {
         }
 
         while (SDL_PollEvent(&ev)) {
-            ImGui_ImplSDL2_ProcessEvent(&ev);
+            ImGui_ImplSDL3_ProcessEvent(&ev);
             switch (ev.type) {
-            case SDL_QUIT: running = false; break;
-            case SDL_WINDOWEVENT:
-                switch (ev.window.event) {
-                case SDL_WINDOWEVENT_CLOSE: running = false; break;
-                case SDL_WINDOWEVENT_RESIZED:
-                    resize_cb(ev.window.data1, ev.window.data2);
-                    break;
-                }
+            case SDL_EVENT_QUIT: running = false; break;
+            case SDL_EVENT_WINDOW_CLOSE_REQUESTED: running = false; break;
+            case SDL_EVENT_WINDOW_RESIZED: resize_cb(ev.window.data1, ev.window.data2); break;
             }
         }
 
@@ -2472,7 +2443,7 @@ int main(int argc, char *argv[]) {
         g_core_wants_tick_in_milliseconds[g_main_loop_cyclic_offset] = core_wants_tick_in_seconds(core_wants_tick_at_unix_usec) * 1000.0;
 
         ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplSDL2_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
         ImGui::Begin("P2P UDP Netplay", NULL, ImGuiWindowFlags_AlwaysAutoResize);
 

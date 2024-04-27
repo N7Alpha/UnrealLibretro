@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+set(SDL_STATIC ON)
+
 # Enable include-what-you-use if it exists
 # It was hitting an assertin the code I cared about checking
 #find_program(IWYU_PATH NAMES include-what-you-use iwyu)
@@ -70,7 +72,7 @@ set(SOURCE_FILES
     fec.cpp
     glad.c
     imgui/imgui.cpp
-    imgui/backends/imgui_impl_sdl2.cpp
+    imgui/backends/imgui_impl_sdl3.cpp
     imgui/backends/imgui_impl_opengl3.cpp
     imgui/imgui_draw.cpp
     imgui/imgui_demo.cpp
@@ -101,7 +103,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 # Static link everything so we don't have to deal with dll hell
-target_link_libraries(${PROJECT_NAME} SDL2-static SDL2main uv_a juice-static libzstd_static)
+target_link_libraries(${PROJECT_NAME} uv_a juice-static libzstd_static SDL3::SDL3-static)
 
 if(WIN32)
     target_link_libraries(${PROJECT_NAME} ws2_32)
