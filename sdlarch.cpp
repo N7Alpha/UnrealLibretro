@@ -1657,7 +1657,6 @@ static size_t audio_write(const int16_t *buf, unsigned frames) {
 
 static void core_log(enum retro_log_level level, const char *fmt, ...) {
     char buffer[4096] = {0};
-    static const char * levelstr[] = { "dbg", "inf", "wrn", "err" };
 
     va_list va;
     va_start(va, fmt);
