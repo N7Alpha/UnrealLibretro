@@ -244,6 +244,7 @@ struct FLibretroContext {
 
     sam2_socket_t sam2_socket = 0;
     ulnet_session_t ulnet_session = {0};
+    struct retro_system_info system_info = {0};
 
     sam2_message_u message_history[2048];
     int message_history_length = 0;
@@ -1686,8 +1687,8 @@ static size_t audio_write(const int16_t *buf, unsigned frames) {
 static void core_log(enum retro_log_level level, const char *fmt, ...) {
 	char buffer[4096] = {0};
 	static const char * levelstr[] = { "dbg", "inf", "wrn", "err" };
-	va_list va;
 
+	va_list va;
 	va_start(va, fmt);
 	vsnprintf(buffer, sizeof(buffer), fmt, va);
 	va_end(va);
@@ -1695,11 +1696,20 @@ static void core_log(enum retro_log_level level, const char *fmt, ...) {
 	if (level == 0)
 		return;
 
-	fprintf(stderr, "[%s] %s", levelstr[level], buffer);
-	fflush(stderr);
-
-	if (level == RETRO_LOG_ERROR)
-		exit(EXIT_FAILURE);
+    // This is duplicated code wrt SAM2_LOG_DEBUG, SAM2_LOG_INFO, etc. but it would be tricky to do a refactor
+    time_t t = time(NULL);
+    struct tm lt;
+    char timestamp[16];
+    if (sam2__get_localtime(&t, &lt) != 0 || strftime(timestamp, 16, "%H:%M:%S", &lt) == 0) {
+        timestamp[0] = '\0';
+    }
+    switch (level) { 
+    default:
+    case 0: fprintf(stdout, SAM2__GREY                                   "%s "    "DEBUG "  "%16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
+    case 1: fprintf(stdout, SAM2__DEFAULT                                "%s "    "INFO  "  "%16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
+    case 2: fprintf(stdout, SAM2__YELLOW                                 "%s "    "WARN  "  "%16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
+    case 3: sam2__log_fatal(__FILE__, __LINE__, SAM2__WHITE SAM2__BG_RED "%s "    "FATAL "  "%16s | ", fmt, va); // calls exit(1)
+    }
 }
 
 static uintptr_t core_get_current_framebuffer() {
@@ -2088,7 +2098,6 @@ static void core_load(const char *sofile) {
 }
 
 static void core_load_game(const char *filename) {
-	struct retro_system_info system = {0};
 	struct retro_game_info info = { filename, 0 };
 
     info.path = filename;
@@ -2097,9 +2106,9 @@ static void core_load_game(const char *filename) {
     info.size = 0;
 
     if (filename) {
-        g_retro.retro_get_system_info(&system);
+        g_retro.retro_get_system_info(&g_libretro_context.system_info);
 
-        if (!system.need_fullpath) {
+        if (!g_libretro_context.system_info.need_fullpath) {
             SDL_RWops *file = SDL_RWFromFile(filename, "rb");
             Sint64 size;
 
@@ -2137,7 +2146,9 @@ static void core_load_game(const char *filename) {
 
     // Now that we have the system info, set the window title.
     char window_title[255];
-    snprintf(window_title, sizeof(window_title), "netplayarch %s %s", system.library_name, system.library_version);
+    snprintf(window_title, sizeof(window_title), "netplayarch %s %s",
+        g_libretro_context.system_info.library_name,
+        g_libretro_context.system_info.library_version);
     SDL_SetWindowTitle(g_win, window_title);
 }
 
