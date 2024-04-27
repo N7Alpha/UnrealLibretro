@@ -1453,7 +1453,7 @@ finished_drawing_sam2_interface:
         if (g_vsync_enabled != old_vsync_enabled) {
             printf("Toggled vsync\n");
             if (SDL_GL_SetSwapInterval((int) g_vsync_enabled) < 0) {
-                SDL_Log("Unable to set VSync off: %s", SDL_GetError());
+                SAM2_LOG_ERROR("Unable to set VSync off: %s", SDL_GetError());
                 g_vsync_enabled = true;
             }
         }
