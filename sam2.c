@@ -432,13 +432,17 @@
 #define SAM2__RESET   "\x1B[0m"
 
 // @enhancement Maybe use stb_sprintf instead to avoid malloc calls? Couple this with a platform write function instead of printf
+#ifndef SAM2_LOG_WRITE
+//#define SAM2_LOG_WRITE(level, file, line, prefix_fmt, ...) printf(__VA_ARGS__); printf("\n"); // Ex. Use plain printf... This is kind of nice since it allows the compiler to emit format-string warnings
+#define SAM2_LOG_WRITE sam2__log_write
+#endif
 
-//                                                                 ANSI color escape-codes  HH:MM:SS level     filename:line  |    log
-#define SAM2_LOG_DEBUG(...) sam2__log_write(0, __FILE__, __LINE__, SAM2__GREY               "%s "    "DEBUG "  "%11s:%-5d"   "| ", __VA_ARGS__)
-#define SAM2_LOG_INFO(...)  sam2__log_write(1, __FILE__, __LINE__, SAM2__DEFAULT            "%s "    "INFO  "  "%11s:%-5d"   "| ", __VA_ARGS__)
-#define SAM2_LOG_WARN(...)  sam2__log_write(2, __FILE__, __LINE__, SAM2__YELLOW             "%s "    "WARN  "  "%11s:%-5d"   "| ", __VA_ARGS__)
-#define SAM2_LOG_ERROR(...) sam2__log_write(3, __FILE__, __LINE__, SAM2__RED                "%s "    "ERROR "  "%11s:%-5d"   "| ", __VA_ARGS__)
-#define SAM2_LOG_FATAL(...) sam2__log_write(4, __FILE__, __LINE__, SAM2__WHITE SAM2__BG_RED "%s "    "FATAL "  "%11s:%-5d"   "| ", __VA_ARGS__)
+//                                                                ANSI color escape-codes  HH:MM:SS level     filename:line  |    log
+#define SAM2_LOG_DEBUG(...) SAM2_LOG_WRITE(0, __FILE__, __LINE__, SAM2__GREY               "%s "    "DEBUG "  "%11s:%-5d"   "| ", __VA_ARGS__)
+#define SAM2_LOG_INFO(...)  SAM2_LOG_WRITE(1, __FILE__, __LINE__, SAM2__DEFAULT            "%s "    "INFO  "  "%11s:%-5d"   "| ", __VA_ARGS__)
+#define SAM2_LOG_WARN(...)  SAM2_LOG_WRITE(2, __FILE__, __LINE__, SAM2__YELLOW             "%s "    "WARN  "  "%11s:%-5d"   "| ", __VA_ARGS__)
+#define SAM2_LOG_ERROR(...) SAM2_LOG_WRITE(3, __FILE__, __LINE__, SAM2__RED                "%s "    "ERROR "  "%11s:%-5d"   "| ", __VA_ARGS__)
+#define SAM2_LOG_FATAL(...) SAM2_LOG_WRITE(4, __FILE__, __LINE__, SAM2__WHITE SAM2__BG_RED "%s "    "FATAL "  "%11s:%-5d"   "| ", __VA_ARGS__)
 
 // All data is sent in little-endian format
 // All strings are utf-8 encoded unless stated otherwise... @todo Actually I should just add _utf8 if the field isn't ascii
