@@ -18,7 +18,18 @@ int g_log_level = 1; // Info
 #define ZDICT_STATIC_LINKING_ONLY
 #include "zdict.h"
 
-#include <SDL3/SDL.h>
+#include <SDL3/SDL_stdinc.h>
+#include <SDL3/SDL_assert.h>
+#include <SDL3/SDL_audio.h>
+#include <SDL3/SDL_cpuinfo.h>
+#include <SDL3/SDL_error.h>
+#include <SDL3/SDL_events.h>
+#include <SDL3/SDL_init.h>
+#include <SDL3/SDL_keyboard.h>
+#include <SDL3/SDL_keycode.h>
+#include <SDL3/SDL_loadso.h>
+#include <SDL3/SDL_quit.h>
+#include <SDL3/SDL_video.h>
 #include <SDL3/SDL_opengl.h>
 #include "libretro.h"
 
@@ -1681,6 +1692,7 @@ static uintptr_t core_get_current_framebuffer() {
     return g_video.fbo_id;
 }
 
+int64_t get_unix_time_microseconds();
 /**
  * cpu_features_get_time_usec:
  *
@@ -1689,7 +1701,7 @@ static uintptr_t core_get_current_framebuffer() {
  * Returns: time in microseconds.
  **/
 retro_time_t cpu_features_get_time_usec(void) {
-    return (retro_time_t)SDL_GetTicks() * 1000;
+    return get_unix_time_microseconds();
 }
 
 /**
@@ -1727,6 +1739,7 @@ static uint64_t core_get_cpu_features() {
     return cpu;
 }
 
+uint64_t rdtsc();
 /**
  * A simple counter. Usually nanoseconds, but can also be CPU cycles.
  *
@@ -1734,7 +1747,7 @@ static uint64_t core_get_cpu_features() {
  * @return retro_perf_tick_t The current value of the high resolution counter.
  */
 static retro_perf_tick_t core_get_perf_counter() {
-    return (retro_perf_tick_t)SDL_GetPerformanceCounter();
+    return (retro_perf_tick_t)rdtsc();
 }
 
 /**
