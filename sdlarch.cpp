@@ -325,7 +325,7 @@ static struct keymap g_binds[] = {
 
 
 #define load_sym(V, S) do {\
-    if (!((*(void**)&V) = SDL_LoadFunction(g_retro.handle, #S))) \
+    if (!((*(SDL_FunctionPointer*)&V) = SDL_LoadFunction(g_retro.handle, #S))) \
         SAM2_LOG_FATAL("Failed to load symbol '" #S "'': %s", SDL_GetError()); \
     } while (0)
 #define load_retro_sym(S) load_sym(g_retro.S, S)
