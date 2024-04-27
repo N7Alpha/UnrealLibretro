@@ -34,31 +34,6 @@
 #include <SDL_opengl.h>
 #include "libretro.h"
 
-static void die(const char *fmt, ...) {
-    char buffer[4096];
-    va_list va;
-    va_start(va, fmt);
-    vsnprintf(buffer, sizeof(buffer), fmt, va);
-    va_end(va);
-
-    fputs(buffer, stderr);
-    fputc('\n', stderr);
-    fflush(stderr);
-
-    // Check for a debugger
-#ifdef _WIN32
-    if (IsDebuggerPresent()) {
-        __debugbreak(); // Break into the debugger on Windows
-    }
-#else
-    if (signal(SIGTRAP, SIG_IGN) != SIG_IGN) {
-        __builtin_trap(); // Break into the debugger on POSIX systems
-    }
-#endif
-
-    exit(EXIT_FAILURE);
-}
-
 static SDL_Window *g_win = NULL;
 static SDL_GLContext g_ctx = NULL;
 static SDL_AudioDeviceID g_pcm = 0;
@@ -260,11 +235,11 @@ struct FLibretroContext {
             assert(signal_message->peer_id > SAM2_PORT_SENTINELS_MAX);
 
             if (signal_message->peer_id == ulnet_session.our_peer_id) {
-                die("We tried to signal ourself");
+                SAM2_LOG_FATAL("We tried to signal ourself");
             }
 
             if (signal_message->peer_id == 0) {
-                die("We tried to signal no one");
+                SAM2_LOG_FATAL("We tried to signal no one");
             }
         }
 
@@ -339,7 +314,7 @@ static struct keymap g_binds[] = {
 
 #define load_sym(V, S) do {\
     if (!((*(void**)&V) = SDL_LoadFunction(g_retro.handle, #S))) \
-        die("Failed to load symbol '" #S "'': %s", SDL_GetError()); \
+        SAM2_LOG_FATAL("Failed to load symbol '" #S "'': %s", SDL_GetError()); \
 	} while (0)
 #define load_retro_sym(S) load_sym(g_retro.S, S)
 
@@ -359,7 +334,7 @@ static GLuint compile_shader(unsigned type, unsigned count, const char **strings
     if (status == GL_FALSE) {
         char buffer[4096];
         glGetShaderInfoLog(shader, sizeof(buffer), NULL, buffer);
-        die("Failed to compile %s shader: %s", type == GL_VERTEX_SHADER ? "vertex" : "fragment", buffer);
+        SAM2_LOG_FATAL("Failed to compile %s shader: %s", type == GL_VERTEX_SHADER ? "vertex" : "fragment", buffer);
     }
 
     return shader;
@@ -402,7 +377,7 @@ static void init_shaders() {
     if(status == GL_FALSE) {
         char buffer[4096];
         glGetProgramInfoLog(program, sizeof(buffer), NULL, buffer);
-        die("Failed to link shader program: %s", buffer);
+        SAM2_LOG_FATAL("Failed to link shader program: %s", buffer);
     }
 
     g_shader.program = program;
@@ -525,27 +500,27 @@ static void create_window(int width, int height) {
             SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
         break;
     default:
-        die("Unsupported hw context %i. (only OPENGL, OPENGL_CORE and OPENGLES2 supported)", g_video.hw.context_type);
+        SAM2_LOG_FATAL("Unsupported hw context %i. (only OPENGL, OPENGL_CORE and OPENGLES2 supported)", g_video.hw.context_type);
     }
 
     g_win = SDL_CreateWindow("sdlarch", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_OPENGL);
 
 	if (!g_win)
-        die("Failed to create window: %s", SDL_GetError());
+        SAM2_LOG_FATAL("Failed to create window: %s", SDL_GetError());
 
     g_ctx = SDL_GL_CreateContext(g_win);
 
     SDL_GL_MakeCurrent(g_win, g_ctx);
 
     if (!g_ctx)
-        die("Failed to create OpenGL context: %s", SDL_GetError());
+        SAM2_LOG_FATAL("Failed to create OpenGL context: %s", SDL_GetError());
 
     if (g_video.hw.context_type == RETRO_HW_CONTEXT_OPENGLES2) {
         if (!gladLoadGLES2Loader((GLADloadproc)SDL_GL_GetProcAddress))
-            die("Failed to initialize glad.");
+            SAM2_LOG_FATAL("Failed to initialize glad.");
     } else {
         if (!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress))
-            die("Failed to initialize glad.");
+            SAM2_LOG_FATAL("Failed to initialize glad.");
     }
 
     fprintf(stderr, "GL_SHADING_LANGUAGE_VERSION: %s\n", glGetString(GL_SHADING_LANGUAGE_VERSION));
@@ -599,7 +574,7 @@ static void video_configure(const struct retro_game_geometry *geom) {
 	glGenTextures(1, &g_video.tex_id);
 
 	if (!g_video.tex_id)
-		die("Failed to create the video texture");
+		SAM2_LOG_FATAL("Failed to create the video texture");
 
 	g_video.pitch = geom->max_width * g_video.bpp;
 
@@ -647,7 +622,7 @@ static bool video_set_pixel_format(unsigned format) {
 		g_video.bpp = sizeof(uint16_t);
 		break;
 	default:
-		die("Unknown pixel type %u", format);
+		SAM2_LOG_FATAL("Unknown pixel type %u", format);
 	}
 
 	return true;
@@ -783,20 +758,20 @@ static int read_whole_file(const char *filename, void **data, size_t *size) {
     SDL_RWops *file = SDL_RWFromFile(filename, "rb");
 
     if (!file)
-        die("Failed to load %s: %s", filename, SDL_GetError());
+        SAM2_LOG_FATAL("Failed to load %s: %s", filename, SDL_GetError());
 
     *size = SDL_RWsize(file);
 
     if (*size < 0)
-        die("Failed to query file size: %s", SDL_GetError());
+        SAM2_LOG_FATAL("Failed to query file size: %s", SDL_GetError());
 
     *data = SDL_malloc(*size);
 
     if (!*data)
-        die("Failed to allocate memory for the content");
+        SAM2_LOG_FATAL("Failed to allocate memory for the content");
 
     if (!SDL_RWread(file, *data, *size, 1))
-        die("Failed to read file data: %s", SDL_GetError());
+        SAM2_LOG_FATAL("Failed to read file data: %s", SDL_GetError());
 
     SDL_RWclose(file);
     return 0;
@@ -1650,7 +1625,7 @@ static void audio_init(int frequency) {
 
     g_pcm = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained, 0);
     if (!g_pcm)
-        die("Failed to open playback device: %s", SDL_GetError());
+        SAM2_LOG_FATAL("Failed to open playback device: %s", SDL_GetError());
 
     SDL_PauseAudioDevice(g_pcm, 0);
 
@@ -2052,7 +2027,7 @@ static void core_load(const char *sofile) {
     g_retro.handle = SDL_LoadObject(sofile);
 
 	if (!g_retro.handle)
-        die("Failed to load core: %s", SDL_GetError());
+        SAM2_LOG_FATAL("Failed to load core: %s", SDL_GetError());
 
 	load_retro_sym(retro_init);
 	load_retro_sym(retro_deinit);
@@ -2104,28 +2079,28 @@ static void core_load_game(const char *filename) {
             Sint64 size;
 
             if (!file)
-                die("Failed to load %s: %s", filename, SDL_GetError());
+                SAM2_LOG_FATAL("Failed to load %s: %s", filename, SDL_GetError());
 
             size = SDL_RWsize(file);
 
             if (size < 0)
-                die("Failed to query game file size: %s", SDL_GetError());
+                SAM2_LOG_FATAL("Failed to query game file size: %s", SDL_GetError());
 
             info.size = size;
             info.data = SDL_malloc(info.size);
 
             if (!info.data)
-                die("Failed to allocate memory for the content");
+                SAM2_LOG_FATAL("Failed to allocate memory for the content");
 
             if (!SDL_RWread(file, (void*)info.data, info.size, 1))
-                die("Failed to read file data: %s", SDL_GetError());
+                SAM2_LOG_FATAL("Failed to read file data: %s", SDL_GetError());
 
             SDL_RWclose(file);
         }
     }
 
 	if (!g_retro.retro_load_game(&info))
-		die("The core failed to load the content.");
+		SAM2_LOG_FATAL("The core failed to load the content.");
 
 	g_retro.retro_get_system_av_info(&g_av);
 
@@ -2353,7 +2328,7 @@ int main(int argc, char *argv[]) {
     g_argv = argv;
 
 	if (argc < 2)
-		die("usage: %s <core> [game]", argv[0]);
+		SAM2_LOG_FATAL("usage: %s <core> [game]", argv[0]);
 
     if (   strcmp(g_sam2_address, "localhost")
         || strcmp(g_sam2_address, "127.0.0.1")
@@ -2400,7 +2375,7 @@ int main(int argc, char *argv[]) {
     core_data = NULL;
 
     if (SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS) < 0)
-        die("Failed to initialize SDL");
+        SAM2_LOG_FATAL("Failed to initialize SDL");
 
     // Setup Platform/Renderer backends
     // GL 3.0 + GLSL 130
@@ -2553,7 +2528,7 @@ int main(int argc, char *argv[]) {
                 );
 
                 if (sizeof(ulnet_state_packet_t) + actual_payload_size > ULNET_PACKET_SIZE_BYTES_MAX) {
-                    die("Input packet too large to send");
+                    SAM2_LOG_FATAL("Input packet too large to send");
                 }
 
                 for (int p = 0; p < SAM2_ARRAY_LENGTH(g_ulnet_session.agent); p++) {
@@ -2627,7 +2602,7 @@ int main(int argc, char *argv[]) {
         int ret;
         // This will call ulnet_receive_packet_callback in a loop
         if ((ret = juice_user_poll(agent, agent_count, timeout_milliseconds))) {
-            die("Error polling agent (%d)\n", ret);
+            SAM2_LOG_FATAL("Error polling agent (%d)\n", ret);
         }
 #endif
 
@@ -2654,7 +2629,7 @@ int main(int argc, char *argv[]) {
                 }
 
                 //if (i == ULNET_DELAY_BUFFER_SIZE) {
-                //    die("Failed to reconstruct input for frame %" PRId64 " from peer %" PRIx64 "\n", g_ulnet_session.frame_counter, g_ulnet_session.room_we_are_in.peer_ids[p]);
+                //    SAM2_LOG_FATAL("Failed to reconstruct input for frame %" PRId64 " from peer %" PRIx64 "\n", g_ulnet_session.frame_counter, g_ulnet_session.room_we_are_in.peer_ids[p]);
                 //}
             }
         }
