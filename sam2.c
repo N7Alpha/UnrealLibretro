@@ -433,16 +433,15 @@
 
 // @enhancement Maybe use stb_sprintf instead to avoid malloc calls? Couple this with a platform write function instead of printf
 #ifndef SAM2_LOG_WRITE
-//#define SAM2_LOG_WRITE(level, file, line, prefix_fmt, ...) printf(__VA_ARGS__); printf("\n"); // Ex. Use plain printf... This is kind of nice since it allows the compiler to emit format-string warnings
+//#define SAM2_LOG_WRITE(level, file, line, ...) printf(__VA_ARGS__); printf("\n"); // Ex. Use plain printf... This is kind of nice since it allows the compiler to emit format-string warnings
 #define SAM2_LOG_WRITE sam2__log_write
 #endif
 
-//                                                                ANSI color escape-codes  HH:MM:SS level     filename:line  |    log
-#define SAM2_LOG_DEBUG(...) SAM2_LOG_WRITE(0, __FILE__, __LINE__, SAM2__GREY               "%s "    "DEBUG "  "%11s:%-5d"   "| ", __VA_ARGS__)
-#define SAM2_LOG_INFO(...)  SAM2_LOG_WRITE(1, __FILE__, __LINE__, SAM2__DEFAULT            "%s "    "INFO  "  "%11s:%-5d"   "| ", __VA_ARGS__)
-#define SAM2_LOG_WARN(...)  SAM2_LOG_WRITE(2, __FILE__, __LINE__, SAM2__YELLOW             "%s "    "WARN  "  "%11s:%-5d"   "| ", __VA_ARGS__)
-#define SAM2_LOG_ERROR(...) SAM2_LOG_WRITE(3, __FILE__, __LINE__, SAM2__RED                "%s "    "ERROR "  "%11s:%-5d"   "| ", __VA_ARGS__)
-#define SAM2_LOG_FATAL(...) SAM2_LOG_WRITE(4, __FILE__, __LINE__, SAM2__WHITE SAM2__BG_RED "%s "    "FATAL "  "%11s:%-5d"   "| ", __VA_ARGS__)
+#define SAM2_LOG_DEBUG(...) SAM2_LOG_WRITE(0, __FILE__, __LINE__, __VA_ARGS__)
+#define SAM2_LOG_INFO(...)  SAM2_LOG_WRITE(1, __FILE__, __LINE__, __VA_ARGS__)
+#define SAM2_LOG_WARN(...)  SAM2_LOG_WRITE(2, __FILE__, __LINE__, __VA_ARGS__)
+#define SAM2_LOG_ERROR(...) SAM2_LOG_WRITE(3, __FILE__, __LINE__, __VA_ARGS__)
+#define SAM2_LOG_FATAL(...) SAM2_LOG_WRITE(4, __FILE__, __LINE__, __VA_ARGS__)
 
 // All data is sent in little-endian format
 // All strings are utf-8 encoded unless stated otherwise... @todo Actually I should just add _utf8 if the field isn't ascii
@@ -818,7 +817,7 @@ static int sam2__get_localtime(const time_t *t, struct tm *buf) {
 #endif
 }
 
-static void sam2__log_write(int level, const char *file, int line, const char *prefix_fmt, const char *log_fmt, ...) {
+static void sam2__log_write(int level, const char *file, int line, const char *log_fmt, ...) {
     const char *filename = file + strlen(file);
     while (filename != file && *filename != '/' && *filename != '\\') {
         --filename;
@@ -834,7 +833,17 @@ static void sam2__log_write(int level, const char *file, int line, const char *p
         timestamp[0] = '\0';
     }
 
-    if (!SAM2__USE_COLOR(stdout)) while (*prefix_fmt == '\x1B') prefix_fmt += 5; // Skip ANSI color escape codes
+    const char *prefix_fmt;
+    switch (level) {
+    default: //          ANSI color escape-codes  HH:MM:SS level     filename:line  |
+    case 4: prefix_fmt = SAM2__WHITE SAM2__BG_RED "%s "    "FATAL "  "%11s:%-5d"   "| "; break;
+    case 0: prefix_fmt = SAM2__GREY               "%s "    "DEBUG "  "%11s:%-5d"   "| "; break;
+    case 1: prefix_fmt = SAM2__DEFAULT            "%s "    "INFO  "  "%11s:%-5d"   "| "; break;
+    case 2: prefix_fmt = SAM2__YELLOW             "%s "    "WARN  "  "%11s:%-5d"   "| "; break;
+    case 3: prefix_fmt = SAM2__RED                "%s "    "ERROR "  "%11s:%-5d"   "| "; break;
+    }
+
+    if (!SAM2__USE_COLOR(stdout)) while (*prefix_fmt == '\x1B') prefix_fmt += 5; // Skip ANSI color-escape codes
 
     printf(prefix_fmt, timestamp, filename, line);
 
