@@ -18,6 +18,11 @@ int g_log_level = 1; // Info
 #define ZDICT_STATIC_LINKING_ONLY
 #include "zdict.h"
 
+#define SDL_MAIN_HANDLED
+#include "SDL.h"
+#include "SDL_opengl.h"
+#include "libretro.h"
+
 #include <ctype.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -30,11 +35,6 @@ int g_log_level = 1; // Info
 #else
 #include <unistd.h> // for sleep
 #endif
-
-#define SDL_MAIN_HANDLED
-#include <SDL.h>
-#include <SDL_opengl.h>
-#include "libretro.h"
 
 static SDL_Window *g_win = NULL;
 static SDL_GLContext g_ctx = NULL;
