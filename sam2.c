@@ -345,6 +345,14 @@
     #define SAM2_RESTRICT
 #endif
 
+#if defined(_MSC_VER)
+#define SAM2_UNUSED __pragma(warning(suppress: 4505))
+#elif defined(__GNUC__) || defined(__clang__)
+#define SAM2_UNUSED __attribute__((unused))
+#else
+#define SAM2_UNUSED
+#endif
+
 #define SAM2_ARRAY_LENGTH(arr) (sizeof(arr) / sizeof((arr)[0]))
 
 #define SAM2_MAX(a,b) ((a) < (b) ? (b) : (a))
@@ -422,26 +430,6 @@
 
 #define SAM2_PORT_MAX 8
 #define SAM2_AUTHORITY_INDEX SAM2_PORT_MAX
-
-#define SAM2__GREY    "\x1B[90m"
-#define SAM2__DEFAULT "\x1B[39m"
-#define SAM2__YELLOW  "\x1B[93m"
-#define SAM2__RED     "\x1B[91m"
-#define SAM2__WHITE   "\x1B[97m"
-#define SAM2__BG_RED  "\x1B[41m"
-#define SAM2__RESET   "\x1B[0m"
-
-// @enhancement Maybe use stb_sprintf instead to avoid malloc calls? Couple this with a platform write function instead of printf
-#ifndef SAM2_LOG_WRITE
-//#define SAM2_LOG_WRITE(level, file, line, ...) printf(__VA_ARGS__); printf("\n"); // Ex. Use plain printf... This is kind of nice since it allows the compiler to emit format-string warnings
-#define SAM2_LOG_WRITE sam2__log_write
-#endif
-
-#define SAM2_LOG_DEBUG(...) SAM2_LOG_WRITE(0, __FILE__, __LINE__, __VA_ARGS__)
-#define SAM2_LOG_INFO(...)  SAM2_LOG_WRITE(1, __FILE__, __LINE__, __VA_ARGS__)
-#define SAM2_LOG_WARN(...)  SAM2_LOG_WRITE(2, __FILE__, __LINE__, __VA_ARGS__)
-#define SAM2_LOG_ERROR(...) SAM2_LOG_WRITE(3, __FILE__, __LINE__, __VA_ARGS__)
-#define SAM2_LOG_FATAL(...) SAM2_LOG_WRITE(4, __FILE__, __LINE__, __VA_ARGS__)
 
 // All data is sent in little-endian format
 // All strings are utf-8 encoded unless stated otherwise... @todo Actually I should just add _utf8 if the field isn't ascii
@@ -802,6 +790,22 @@ int64_t rle8_decode_size(const uint8_t* input, int64_t input_size) {
     return decoded_size;
 }
 
+#define SAM2__GREY    "\x1B[90m"
+#define SAM2__DEFAULT "\x1B[39m"
+#define SAM2__YELLOW  "\x1B[93m"
+#define SAM2__RED     "\x1B[91m"
+#define SAM2__WHITE   "\x1B[97m"
+#define SAM2__BG_RED  "\x1B[41m"
+#define SAM2__RESET   "\x1B[0m"
+
+//#define SAM2_LOG_WRITE(level, file, line, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0); // Use printf... This is kind of nice since it allows the compiler to emit format-string warnings
+
+#define SAM2_LOG_DEBUG(...) SAM2_LOG_WRITE(0, __FILE__, __LINE__, __VA_ARGS__)
+#define SAM2_LOG_INFO(...)  SAM2_LOG_WRITE(1, __FILE__, __LINE__, __VA_ARGS__)
+#define SAM2_LOG_WARN(...)  SAM2_LOG_WRITE(2, __FILE__, __LINE__, __VA_ARGS__)
+#define SAM2_LOG_ERROR(...) SAM2_LOG_WRITE(3, __FILE__, __LINE__, __VA_ARGS__)
+#define SAM2_LOG_FATAL(...) SAM2_LOG_WRITE(4, __FILE__, __LINE__, __VA_ARGS__)
+
 #ifdef _WIN32
 #define SAM2__USE_COLOR(fd) (_isatty(_fileno(fd)) != 0) // POSIX + NT kino
 #else
@@ -810,14 +814,19 @@ int64_t rle8_decode_size(const uint8_t* input, int64_t input_size) {
 
 static int sam2__get_localtime(const time_t *t, struct tm *buf) {
 #ifdef _WIN32
-	// Windows does not have POSIX localtime_r...
-	return localtime_s(buf, t) == 0 ? 0 : -1;
+    // Windows does not have POSIX localtime_r...
+    return localtime_s(buf, t) == 0 ? 0 : -1;
 #else // POSIX
-	return localtime_r(t, buf) != NULL ? 0 : -1;
+    return localtime_r(t, buf) != NULL ? 0 : -1;
 #endif
 }
 
-static void sam2__log_write(int level, const char *file, int line, const char *log_fmt, ...) {
+#ifndef SAM2_LOG_WRITE
+#define SAM2_LOG_WRITE sam2__log_write
+#endif
+
+// @enhancement Maybe use stb_sprintf instead to avoid malloc calls? Couple this with a platform write function instead of printf
+static void SAM2_UNUSED sam2__log_write(int level, const char *file, int line, const char *log_fmt, ...) {
     const char *filename = file + strlen(file);
     while (filename != file && *filename != '/' && *filename != '\\') {
         --filename;
@@ -1546,7 +1555,7 @@ static void on_timeout(uv_timer_t *handle) {
     if (uv_is_closing((uv_handle_t*) client_tcp)) {
         SAM2_LOG_INFO("Client %" PRIx64 " connection is already closing or closed", client->peer_id);
     } else {
-        SAM2_LOG_WARN("Client %" PRIx64 " sent incomplete message with header '%.*s' and size %" PRId64 "",
+        SAM2_LOG_WARN("Client %" PRIx64 " sent incomplete message with header '%.*s' and size %d",
             client->peer_id, (int)SAM2_MIN(client->length, SAM2_HEADER_SIZE), client->buffer, client->length);
 
         static sam2_error_message_t response = {
@@ -1643,7 +1652,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
             goto cleanup;
         }
 
-        SAM2_LOG_DEBUG("client->length=%" PRId64, client->length);
+        SAM2_LOG_DEBUG("client->length=%d", client->length);
 
         SAM2_LOG_INFO("Client %" PRIx64 " sent message with header '%.8s'", client->peer_id, (char *) &message);
 

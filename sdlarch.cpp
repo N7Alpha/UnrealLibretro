@@ -1671,10 +1671,10 @@ static void core_log(enum retro_log_level level, const char *fmt, ...) {
     }
     switch (level) { 
     default:
-    case 0: fprintf(stdout, SAM2__GREY                                      "%s "    "DEBUG "  "%16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
-    case 1: fprintf(stdout, SAM2__DEFAULT                                   "%s "    "INFO  "  "%16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
-    case 2: fprintf(stdout, SAM2__YELLOW                                    "%s "    "WARN  "  "%16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
-    case 3: sam2__log_write(4, __FILE__, __LINE__, SAM2__WHITE SAM2__BG_RED "%s "    "FATAL "  "%16s | ", fmt, va); // calls exit(1)
+    case 0: fprintf(stdout, SAM2__GREY    "%s "    "DEBUG "  "%16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
+    case 1: fprintf(stdout, SAM2__DEFAULT "%s "    "INFO  "  "%16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
+    case 2: fprintf(stdout, SAM2__YELLOW  "%s "    "WARN  "  "%16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
+    case 3: SAM2_LOG_WRITE(4, __FILE__, __LINE__, fmt, va); // calls exit(1)
     }
 }
 
