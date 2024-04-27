@@ -4,6 +4,8 @@
 
 #define SAM2_IMPLEMENTATION
 #define SAM2_SERVER
+#define SAM2_LOG_WRITE(level, file, line, ...) if (level >= g_log_level) { sam2__log_write(level, __FILE__, __LINE__, __VA_ARGS__); }
+int g_log_level = 1; // Info
 #include "ulnet.h"
 #include "sam2.c"
 
@@ -1010,6 +1012,9 @@ void draw_imgui() {
             }
         }
 
+        const char* levelNames[] = {"Debug", "Info", "Warn", "Error", "Fatal"};
+        ImGui::SliderInt("Log Level", &g_log_level, 0, 4, levelNames[g_log_level]);
+
         auto show_room = [](const sam2_room_t& room) {
             ImGui::Text("Room: %s", room.name);
             ImGui::Text("Flags: %016" PRIx64, room.flags);
@@ -1659,7 +1664,7 @@ static void core_log(enum retro_log_level level, const char *fmt, ...) {
 	vsnprintf(buffer, sizeof(buffer), fmt, va);
 	va_end(va);
 
-	if (level == 0)
+    if (level < g_log_level)
 		return;
 
     // This is duplicated code wrt SAM2_LOG_DEBUG, SAM2_LOG_INFO, etc. but it would be tricky to do a refactor
