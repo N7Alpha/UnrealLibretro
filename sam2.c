@@ -885,8 +885,6 @@ static int sam2__resolve_hostname(const char *hostname, char *ip) {
         return -1;
     }
 
-    SAM2_LOG_INFO("Host: %s", hostname);
-
     for(p = res; p != NULL; p = p->ai_next) {
         if (p->ai_family == AF_INET) {
             ptr = &((struct sockaddr_in *) p->ai_addr)->sin_addr;
@@ -902,7 +900,7 @@ static int sam2__resolve_hostname(const char *hostname, char *ip) {
             continue;
         }
 
-        SAM2_LOG_INFO("%s hosted on IPv%d address: %s", hostname, p->ai_family == AF_INET6 ? 6 : 4, ipvx);
+        SAM2_LOG_INFO("URL %s hosted on IPv%d address: %s", hostname, p->ai_family == AF_INET6 ? 6 : 4, ipvx);
         if (desired_address.ai_family != AF_INET6) {
             memcpy(ip, ipvx, INET6_ADDRSTRLEN);
             memcpy(&desired_address, p, sizeof(desired_address));
@@ -943,7 +941,7 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
     char ip[INET6_ADDRSTRLEN];
     int family = sam2__resolve_hostname(host, ip); // This blocks
     if (family < 0) {
-        SAM2_LOG_ERROR("Failed to resolve hostname");
+        SAM2_LOG_ERROR("Failed to resolve hostname for '%s'", host);
         return -1;
     }
     host = ip;
