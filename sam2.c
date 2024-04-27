@@ -433,12 +433,12 @@
 
 // @enhancement Maybe use stb_sprintf instead to avoid malloc calls? Couple this with a platform write function instead of printf
 
-//                                                              ANSI color               HH:MM:SS level     filename:line  |    log
-#define SAM2_LOG_DEBUG(...) sam2__log_write(__FILE__, __LINE__, SAM2__GREY               "%s "    "DEBUG "  "%11s:%-5d"   "| ", __VA_ARGS__)
-#define SAM2_LOG_INFO(...)  sam2__log_write(__FILE__, __LINE__, SAM2__DEFAULT            "%s "    "INFO  "  "%11s:%-5d"   "| ", __VA_ARGS__)
-#define SAM2_LOG_WARN(...)  sam2__log_write(__FILE__, __LINE__, SAM2__YELLOW             "%s "    "WARN  "  "%11s:%-5d"   "| ", __VA_ARGS__)
-#define SAM2_LOG_ERROR(...) sam2__log_write(__FILE__, __LINE__, SAM2__RED                "%s "    "ERROR "  "%11s:%-5d"   "| ", __VA_ARGS__)
-#define SAM2_LOG_FATAL(...) sam2__log_fatal(__FILE__, __LINE__, SAM2__WHITE SAM2__BG_RED "%s "    "FATAL "  "%11s:%-5d"   "| ", __VA_ARGS__)
+//                                                                 ANSI color escape-codes  HH:MM:SS level     filename:line  |    log
+#define SAM2_LOG_DEBUG(...) sam2__log_write(0, __FILE__, __LINE__, SAM2__GREY               "%s "    "DEBUG "  "%11s:%-5d"   "| ", __VA_ARGS__)
+#define SAM2_LOG_INFO(...)  sam2__log_write(1, __FILE__, __LINE__, SAM2__DEFAULT            "%s "    "INFO  "  "%11s:%-5d"   "| ", __VA_ARGS__)
+#define SAM2_LOG_WARN(...)  sam2__log_write(2, __FILE__, __LINE__, SAM2__YELLOW             "%s "    "WARN  "  "%11s:%-5d"   "| ", __VA_ARGS__)
+#define SAM2_LOG_ERROR(...) sam2__log_write(3, __FILE__, __LINE__, SAM2__RED                "%s "    "ERROR "  "%11s:%-5d"   "| ", __VA_ARGS__)
+#define SAM2_LOG_FATAL(...) sam2__log_write(4, __FILE__, __LINE__, SAM2__WHITE SAM2__BG_RED "%s "    "FATAL "  "%11s:%-5d"   "| ", __VA_ARGS__)
 
 // All data is sent in little-endian format
 // All strings are utf-8 encoded unless stated otherwise... @todo Actually I should just add _utf8 if the field isn't ascii
@@ -814,7 +814,7 @@ static int sam2__get_localtime(const time_t *t, struct tm *buf) {
 #endif
 }
 
-static void sam2__log_write(const char *file, int line, const char *prefix_fmt, const char *log_fmt, ...) {
+static void sam2__log_write(int level, const char *file, int line, const char *prefix_fmt, const char *log_fmt, ...) {
     const char *filename = file + strlen(file);
     while (filename != file && *filename != '/' && *filename != '\\') {
         --filename;
@@ -841,30 +841,23 @@ static void sam2__log_write(const char *file, int line, const char *prefix_fmt, 
 
     fprintf(stdout, SAM2__USE_COLOR(stdout) ? SAM2__RESET "\n" : "\n");
     fflush(stdout);
-}
 
-static void sam2__log_fatal(const char *file, int line, const char *prefix_fmt, const char *log_fmt, ...) {
-    va_list args;
-    va_start(args, log_fmt);
-
-    sam2__log_write(file, line, prefix_fmt, log_fmt, args);
-
-    va_end(args);
-
+    if (level >= 4) {
 #ifdef _WIN32
-    // Break into the debugger on Windows
-    if (IsDebuggerPresent()) {
-        __debugbreak(); // HIT FATAL ERROR
-    }
-#elif defined(__has_builtin) && __has_builtin(__builtin_trap)
-    // Break into the debugger on POSIX systems
-    if (signal(SIGTRAP, SIG_IGN) != SIG_IGN) {
-        __builtin_trap(); // HIT FATAL ERROR
-    }
+        // Break into the debugger on Windows
+        if (IsDebuggerPresent()) {
+            __debugbreak(); // HIT FATAL ERROR
+        }
+#elif defined(__has_builtin)
+#if __has_builtin(__builtin_trap)
+        // Break into the debugger on POSIX systems
+        if (signal(SIGTRAP, SIG_IGN) != SIG_IGN) {
+            __builtin_trap(); // HIT FATAL ERROR
+        }
 #endif
-
-    // Exit the program with a failure status
-    exit(EXIT_FAILURE);
+#endif
+        exit(EXIT_FAILURE);
+    }
 }
 
 // Resolve hostname with DNS query and prioritize IPv6
