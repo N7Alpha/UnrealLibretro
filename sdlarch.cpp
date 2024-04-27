@@ -2085,7 +2085,7 @@ static void core_load(const char *sofile) {
 	g_retro.retro_init();
 	g_retro.initialized = true;
 
-	puts("Core loaded");
+	SAM2_LOG_INFO("Core loaded");
 }
 
 static void core_load_game(const char *filename) {
@@ -2414,7 +2414,7 @@ int main(int argc, char *argv[]) {
     core_load(argv[1]);
 
     if (!g_retro.supports_no_game && argc < 3)
-        die("This core requires a game in order to run");
+        SAM2_LOG_FATAL("This core requires a game in order to run");
 
     // Load the game.
     core_load_game(argc > 2 ? argv[2] : NULL);
@@ -2910,8 +2910,7 @@ int main(int argc, char *argv[]) {
 
                     if (memcmp(&latest_sam2_message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
                         g_last_sam2_error = *((sam2_error_message_t *) &latest_sam2_message);
-                        printf("Received error response from SAM2 (%" PRId64 "): %s\n", g_last_sam2_error.code, g_last_sam2_error.description);
-                        fflush(stdout);
+                        SAM2_LOG_ERROR("Received error response from SAM2 (%" PRId64 "): %s", g_last_sam2_error.code, g_last_sam2_error.description);
                     } else if (memcmp(&latest_sam2_message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
                         sam2_room_list_message_t *room_list = (sam2_room_list_message_t *) &latest_sam2_message;
 
