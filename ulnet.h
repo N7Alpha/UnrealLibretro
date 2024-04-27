@@ -233,7 +233,7 @@ bool ulnet_is_authority(ulnet_session_t *session) {
 }
 
 bool ulnet_is_spectator(ulnet_session_t *session, uint64_t peer_id) {
-    return    session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED
+    return    session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED
            && sam2_get_port_of_peer(&session->room_we_are_in, peer_id) == -1;
 }
 
@@ -286,7 +286,7 @@ void startup_ice_for_peer(ulnet_session_t *session, juice_agent_t **agent, uint6
 
 int ulnet_our_port(ulnet_session_t *session) {
     // @todo There is a bug here where we are sending out packets as the authority when we are not the authority
-    if (session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
+    if (session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
         int port = sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id);
         assert(port != -1);
 

@@ -381,7 +381,7 @@
 #define SAM2_FLAG_SPECTATOR                0b00001000ULL
 #define SAM2_FLAG_ROOM_NEEDS_AUTHORIZATION 0b00010000ULL
 #define SAM2_FLAG_AUTHORITY_IPv6           0b00100000ULL
-#define SAM2_FLAG_ROOM_IS_INITIALIZED      0b01000000ULL // This should probably actually be IS_NETWORK_HOSTED
+#define SAM2_FLAG_ROOM_IS_NETWORK_HOSTED   0b01000000ULL
 
 #define SAM2_FLAG_PORT0_CAN_SET_ALL_INPUTS (0b00000001ULL << 8)
 #define SAM2_FLAG_PORT1_CAN_SET_ALL_INPUTS (0b00000010ULL << 8)
@@ -1470,7 +1470,7 @@ static void sam2__remove_room(sam2_server_t *server, sam2_room_t *room) {
         }
 
         // Kick everyone in the room
-        room->flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
+        room->flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
         for (int p = 0; p < SAM2_PORT_MAX; p++) {
             if (room->peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
 
@@ -1697,7 +1697,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
             SAM2_LOG_DEBUG("Copying &request->room:%p into room+server->room_count:%p room_count+1:%lld", &request->room, new_room, (long long int)server->room_count);
             memcpy(new_room, &request->room, sizeof(*new_room));
             new_room->name[sizeof(new_room->name) - 1] = '\0';
-            new_room->flags |= SAM2_FLAG_ROOM_IS_INITIALIZED;
+            new_room->flags |= SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
 
             sam2_room_make_message_t *response = (sam2_room_make_message_t *) sam2__alloc_message(server, sam2_make_header);
             memcpy(&response->room, new_room, sizeof(*new_room));
@@ -1721,7 +1721,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
             }
 
             if (   request->room.peer_ids[SAM2_AUTHORITY_INDEX] == client->peer_id
-                && !(request->room.flags & SAM2_FLAG_ROOM_IS_INITIALIZED)) {
+                && !(request->room.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
                 SAM2_LOG_INFO("Authority %" PRIx64 " abandoned the room '%s'", client->peer_id, associated_room->name);
                 sam2__remove_room(server, associated_room);
                 goto finished_processing_last_message;

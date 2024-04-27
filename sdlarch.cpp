@@ -1079,14 +1079,14 @@ void draw_imgui() {
             ImGui::End();
         }
 
-        if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
+        if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
             ImGui::SeparatorText("In Room");
         } else {
             ImGui::SeparatorText("Create a Room");
         }
 
 
-        if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
+        if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
             ImGui::Text("Room: %s", g_ulnet_session.room_we_are_in.name);
             // Fixed text fields to display binary values
             //char ports_str[65] = {0};
@@ -1105,7 +1105,7 @@ void draw_imgui() {
         }
     }
 
-    if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
+    if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
         ImGui::Text("Our Peer ID:");
         ImGui::SameLine();
         //0xe0 0xc9 0x1b
@@ -1234,7 +1234,7 @@ void draw_imgui() {
             message.room = g_ulnet_session.room_we_are_in;
             if (ulnet_is_authority(&g_ulnet_session)) {
                 if (ImGui::Button("Abandon")) {
-                    message.room.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
+                    message.room.flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
                     ulnet_process_message(&g_ulnet_session, &message); // *Send* a message to ourselves
                 }
             } else if (ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
@@ -1245,7 +1245,7 @@ void draw_imgui() {
                     g_libretro_context.SAM2Send((char *) &response);
                     ulnet_disconnect_peer(&g_ulnet_session, SAM2_AUTHORITY_INDEX);
                     memcpy(&g_ulnet_session.room_we_are_in, &g_new_room_set_through_gui, sizeof(sam2_room_t));
-                    g_ulnet_session.room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
+                    g_ulnet_session.room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
                     g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = g_ulnet_session.our_peer_id;
                     g_ulnet_session.frame_counter = 0;
                     g_ulnet_session.state[SAM2_AUTHORITY_INDEX].frame = 0;
@@ -1969,7 +1969,7 @@ void FLibretroContext::core_input_poll() {
     for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
         if (ulnet_session.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
 
-        if (!(g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED)) {
+        if (!(g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
             assert(p == SAM2_AUTHORITY_INDEX);
         }
         assert(g_ulnet_session.state[p].frame <= g_ulnet_session.frame_counter + (ULNET_DELAY_BUFFER_SIZE-1));
@@ -2511,7 +2511,7 @@ int main(int argc, char *argv[]) {
             }
 
             if (   !ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id) 
-                && g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
+                && g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
                 union {
                     uint8_t _[1 /* Packet Header */ + RLE8_ENCODE_UPPER_BOUND(ULNET_PACKET_SIZE_BYTES_MAX)];
                     ulnet_state_packet_t input_packet;
@@ -2555,7 +2555,7 @@ int main(int argc, char *argv[]) {
         //       There is some other weird behavior that might be related to not checking the frame field in the packet if its too old it shouldn't be in the plot obviously
         ImPlot::SetNextAxisLimits(ImAxis_X1, g_ulnet_session.frame_counter - g_sample_size, g_ulnet_session.frame_counter, ImGuiCond_Always);
         ImPlot::SetNextAxisLimits(ImAxis_Y1, 0.0f, 512, ImGuiCond_Always);
-        if (   g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED
+        if (   g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED
             && ImPlot::BeginPlot("State-Packet Size vs. Frame")) {
             ImPlot::SetupAxis(ImAxis_X1, "ulnet_state_t::frame");
             ImPlot::SetupAxis(ImAxis_Y1, "Size Bytes");
@@ -2642,7 +2642,7 @@ int main(int argc, char *argv[]) {
         ImGui::SeparatorText("Things We are Waiting on Before we can Tick");
         if                            (g_ulnet_session.flags & ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE) { ImGui::Text("Waiting for savestate"); }
         bool netplay_ready_to_tick = !(g_ulnet_session.flags & ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE);
-        if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
+        if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
             for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
                 if (g_ulnet_session.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
                 if                      (g_ulnet_session.state[p].frame <  g_ulnet_session.frame_counter) { ImGui::Text("Input state on port %d is too old", p); }
@@ -2724,7 +2724,7 @@ int main(int argc, char *argv[]) {
             sam2_room_t new_room_state = g_ulnet_session.room_we_are_in;
             ulnet__xor_delta(&new_room_state, &g_ulnet_session.state[SAM2_AUTHORITY_INDEX].room_xor_delta[g_ulnet_session.frame_counter % ULNET_DELAY_BUFFER_SIZE], sizeof(sam2_room_t));
 
-            if (new_room_state.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
+            if (new_room_state.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
                 ulnet_session_t *session = &g_ulnet_session;
 
                 //SAM2_LOG_INFO("Something about the room we're in was changed by the authority");
@@ -2760,7 +2760,7 @@ int main(int argc, char *argv[]) {
                                     }
 
                                     session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
-                                    session->room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_INITIALIZED;
+                                    session->room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
                                 } else {
                                     SAM2_LOG_INFO("Peer %" PRIx64 " has left the room", session->room_we_are_in.peer_ids[p]);
                                     ulnet_disconnect_peer(session, p);
@@ -2810,7 +2810,7 @@ int main(int argc, char *argv[]) {
                 g_save_state_index = (g_save_state_index + 1) % MAX_SAVE_STATES;
             }
 
-            if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_INITIALIZED) {
+            if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
                 g_ulnet_session.desync_debug_packet.channel_and_flags = ULNET_CHANNEL_DESYNC_DEBUG;
                 g_ulnet_session.desync_debug_packet.frame          = (g_ulnet_session.frame_counter-1); // This was for the previous frame
                 g_ulnet_session.desync_debug_packet.save_state_hash [(g_ulnet_session.frame_counter-1) % ULNET_DELAY_BUFFER_SIZE] = savestate_hash;
