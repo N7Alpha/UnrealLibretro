@@ -298,15 +298,6 @@ struct FLibretroContext {
         return NULL;
     }
 
-    void DisconnectPeer(int peer_port) {
-        assert(ulnet_session.agent[peer_port] != NULL);
-        assert(ulnet_session.agent_peer_id[peer_port] != 0);
-
-        juice_destroy(ulnet_session.agent[peer_port]);
-        ulnet_session.agent[peer_port] = NULL;
-        ulnet_session.agent_peer_id[peer_port] = 0;
-    }
-
     bool IsAuthority() const {
         return ulnet_session.our_peer_id == ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX];
     }
