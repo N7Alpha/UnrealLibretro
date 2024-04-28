@@ -924,7 +924,7 @@ void draw_imgui() {
             ImGui::TextColored(ImVec4(0, 1, 0, 1), "We're listening on [::]:%d (IPv4 tunneling is OS dependent)", g_sam2_port);
 
             if (ImGui::CollapsingHeader("Server Information")) {
-                ImGui::Text("Room count: %d", g_sam2_server->room_count);
+                ImGui::Text("Room count: %" PRId64, g_sam2_server->room_count);
 
                 int messages_free = 0;
                 for (sam2_message_u *m = g_sam2_server->message_freelist; m != NULL;) {
@@ -2630,7 +2630,7 @@ int main(int argc, char *argv[]) {
                 if (g_ulnet_session.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
                 if                      (g_ulnet_session.state[p].frame <  g_ulnet_session.frame_counter) { ImGui::Text("Input state on port %d is too old", p); }
                 netplay_ready_to_tick &= g_ulnet_session.state[p].frame >= g_ulnet_session.frame_counter;
-                if                      (g_ulnet_session.state[p].frame >= g_ulnet_session.frame_counter + ULNET_DELAY_BUFFER_SIZE) { ImGui::Text("Input state on port %d is too new (ahead by %d frames)", p, g_ulnet_session.state[p].frame - (g_ulnet_session.frame_counter + ULNET_DELAY_BUFFER_SIZE)); }
+                if                      (g_ulnet_session.state[p].frame >= g_ulnet_session.frame_counter + ULNET_DELAY_BUFFER_SIZE) { ImGui::Text("Input state on port %d is too new (ahead by %" PRId64 " frames)", p, g_ulnet_session.state[p].frame - (g_ulnet_session.frame_counter + ULNET_DELAY_BUFFER_SIZE)); }
                 netplay_ready_to_tick &= g_ulnet_session.state[p].frame <  g_ulnet_session.frame_counter + ULNET_DELAY_BUFFER_SIZE; // This is needed for spectators only. By protocol it should always true for non-spectators unless we have a bug or someone is misbehaving
             }
         }
@@ -2655,7 +2655,7 @@ int main(int argc, char *argv[]) {
             int64_t frames_buffered = g_ulnet_session.state[g_libretro_context.OurPort()].frame - g_ulnet_session.frame_counter + 1;
             assert(frames_buffered <= ULNET_DELAY_BUFFER_SIZE);
             assert(frames_buffered >= 0);
-            if                      (frames_buffered <  g_libretro_context.delay_frames) { ImGui::Text("We have not buffered enough frames still need %d", g_libretro_context.delay_frames - frames_buffered); }
+            if                      (frames_buffered <  g_libretro_context.delay_frames) { ImGui::Text("We have not buffered enough frames still need %" PRId64, g_libretro_context.delay_frames - frames_buffered); }
             netplay_ready_to_tick &= frames_buffered >= g_libretro_context.delay_frames;
         }
 
