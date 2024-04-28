@@ -852,7 +852,7 @@ static int sam2__get_localtime(const time_t *t, struct tm *buf) {
 #endif
 
 // @enhancement Maybe use stb_sprintf instead to avoid malloc calls? Couple this with a platform write function instead of printf
-static void SAM2_UNUSED sam2__log_write(int level, const char *file, int line, const char *log_fmt, ...) {
+static void SAM2_UNUSED sam2__log_write(int level, const char *file, int line, const char *fmt, ...) {
     const char *filename = file + strlen(file);
     while (filename != file && *filename != '/' && *filename != '\\') {
         --filename;
@@ -883,8 +883,8 @@ static void SAM2_UNUSED sam2__log_write(int level, const char *file, int line, c
     printf(prefix_fmt, timestamp, filename, line);
 
     va_list args;
-    va_start(args, log_fmt);
-    vfprintf(stdout, log_fmt, args);
+    va_start(args, fmt);
+    vfprintf(stdout, fmt, args);
     va_end(args);
 
     fprintf(stdout, sam2__terminal_supports_ansi_colors() ? SAM2__RESET "\n" : "\n");
