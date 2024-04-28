@@ -153,8 +153,6 @@ typedef struct {
 } savestate_transfer_payload_t;
 
 typedef struct ulnet_session {
-    int zstd_compress_level;
-
     int64_t frame_counter;
     int64_t flags;
     uint64_t our_peer_id;
@@ -175,6 +173,7 @@ typedef struct ulnet_session {
 
     desync_debug_packet_t desync_debug_packet;
 
+    int zstd_compress_level;
     unsigned char remote_savestate_transfer_packets[COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES + FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * sizeof(ulnet_save_state_packet_fragment_t)];
     int64_t remote_savestate_transfer_offset;
     uint8_t remote_packet_groups; // This is used to bookkeep how much data we actually need to receive to reform the complete savestate
