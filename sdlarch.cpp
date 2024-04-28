@@ -2039,7 +2039,7 @@ static void core_load(const char *sofile) {
     g_retro.handle = SDL_LoadObject(sofile);
 
     if (!g_retro.handle)
-        SAM2_LOG_FATAL("Failed to load core: %s", SDL_GetError());
+        SAM2_LOG_FATAL("Failed to load core: %s", SDL_GetError()); // @todo I've got to add a x86_64,x86/aarch64,arm32 check here. It does not give reasonable errors on its own
 
     load_retro_sym(retro_init);
     load_retro_sym(retro_deinit);
