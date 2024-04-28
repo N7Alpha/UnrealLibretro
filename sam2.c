@@ -1023,9 +1023,9 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
         }
     }
 
-    if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+    if (connect(sockfd, (struct sockaddr *)&server_addr, family == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6)) < 0) {
         if (SAM2_SOCKERRNO != SAM2_EINPROGRESS) {
-            SAM2_LOG_ERROR("Failed to connect to server");
+            SAM2_LOG_ERROR("connect returned error (%d)", SAM2_SOCKERRNO);
             goto fail;
         }
     }
