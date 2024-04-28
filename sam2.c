@@ -830,7 +830,10 @@ int sam2__terminal_supports_ansi_colors() {
     return 1;
 }
 
-//#define SAM2_LOG_WRITE(level, file, line, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0); // Use printf... This is kind of nice since it allows the compiler to emit format-string warnings
+//#define SAM2_LOG_WRITE(level, file, line, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0); // Ex. Use print
+#ifndef SAM2_LOG_WRITE
+#define SAM2_LOG_WRITE sam2__log_write
+#endif
 
 #define SAM2_LOG_DEBUG(...) SAM2_LOG_WRITE(0, __FILE__, __LINE__, __VA_ARGS__)
 #define SAM2_LOG_INFO(...)  SAM2_LOG_WRITE(1, __FILE__, __LINE__, __VA_ARGS__)
@@ -846,10 +849,6 @@ static int sam2__get_localtime(const time_t *t, struct tm *buf) {
     return localtime_r(t, buf) != NULL ? 0 : -1;
 #endif
 }
-
-#ifndef SAM2_LOG_WRITE
-#define SAM2_LOG_WRITE sam2__log_write
-#endif
 
 // @enhancement Maybe use stb_sprintf instead to avoid malloc calls? Couple this with a platform write function instead of printf
 static void SAM2_UNUSED sam2__log_write(int level, const char *file, int line, const char *fmt, ...) {
