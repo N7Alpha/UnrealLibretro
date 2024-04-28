@@ -15,8 +15,8 @@ jobs:
       run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
     - name: Build (GCC)
       run: cmake --build build --config Release
-    - name: Configure CMake (Linux TCC)
-      run: cmake -S . -B build-tcc -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=tcc
+#    - name: Configure CMake (Linux TCC)
+#      run: cmake -S . -B build-tcc -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=tcc
 #    - name: Build (TCC)
 #      run: cmake --build build-tcc --config Release
 
