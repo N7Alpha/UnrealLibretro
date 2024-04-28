@@ -798,6 +798,38 @@ int64_t rle8_decode_size(const uint8_t* input, int64_t input_size) {
 #define SAM2__BG_RED  "\x1B[41m"
 #define SAM2__RESET   "\x1B[0m"
 
+int sam2__terminal_supports_ansi_colors() {
+#if defined(_WIN32)
+    // Windows
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+
+    DWORD dwMode = 0;
+    if (!GetConsoleMode(hOut, &dwMode)) {
+        return 0;
+    }
+
+    dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+    if (!SetConsoleMode(hOut, dwMode)) {
+        return 0;
+    }
+#else
+    // POSIX
+    if (!isatty(STDOUT_FILENO)) {
+        return 0;
+    }
+
+    const char *term = getenv("TERM");
+    if (term == NULL || strcmp(term, "dumb") == 0) {
+        return 0;
+    }
+#endif
+
+    return 1;
+}
+
 //#define SAM2_LOG_WRITE(level, file, line, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0); // Use printf... This is kind of nice since it allows the compiler to emit format-string warnings
 
 #define SAM2_LOG_DEBUG(...) SAM2_LOG_WRITE(0, __FILE__, __LINE__, __VA_ARGS__)
@@ -805,12 +837,6 @@ int64_t rle8_decode_size(const uint8_t* input, int64_t input_size) {
 #define SAM2_LOG_WARN(...)  SAM2_LOG_WRITE(2, __FILE__, __LINE__, __VA_ARGS__)
 #define SAM2_LOG_ERROR(...) SAM2_LOG_WRITE(3, __FILE__, __LINE__, __VA_ARGS__)
 #define SAM2_LOG_FATAL(...) SAM2_LOG_WRITE(4, __FILE__, __LINE__, __VA_ARGS__)
-
-#ifdef _WIN32
-#define SAM2__USE_COLOR(fd) (_isatty(_fileno(fd)) != 0) // POSIX + NT kino
-#else
-#define SAM2__USE_COLOR(fd) (isatty(fileno(fd)) != 0)
-#endif
 
 static int sam2__get_localtime(const time_t *t, struct tm *buf) {
 #ifdef _WIN32
@@ -852,7 +878,7 @@ static void SAM2_UNUSED sam2__log_write(int level, const char *file, int line, c
     case 3: prefix_fmt = SAM2__RED                "%s "    "ERROR "  "%11s:%-5d"   "| "; break;
     }
 
-    if (!SAM2__USE_COLOR(stdout)) while (*prefix_fmt == '\x1B') prefix_fmt += 5; // Skip ANSI color-escape codes
+    if (!sam2__terminal_supports_ansi_colors()) while (*prefix_fmt == '\x1B') prefix_fmt += 5; // Skip ANSI color-escape codes
 
     printf(prefix_fmt, timestamp, filename, line);
 
@@ -861,7 +887,7 @@ static void SAM2_UNUSED sam2__log_write(int level, const char *file, int line, c
     vfprintf(stdout, log_fmt, args);
     va_end(args);
 
-    fprintf(stdout, SAM2__USE_COLOR(stdout) ? SAM2__RESET "\n" : "\n");
+    fprintf(stdout, sam2__terminal_supports_ansi_colors() ? SAM2__RESET "\n" : "\n");
     fflush(stdout);
 
     if (level >= 4) {
