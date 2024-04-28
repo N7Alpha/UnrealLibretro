@@ -959,7 +959,7 @@ void draw_imgui() {
         } else {
             if (g_libretro_context.sam2_socket == SAM2_SOCKET_INVALID) {
                 char port_str[64]; // Buffer to store the input text
-                sprintf(port_str, "%d\0", g_sam2_port);
+                sprintf(port_str, "%d", g_sam2_port);
                 bool connect = false;
 
                 connect |= ImGui::InputText("##input_address", g_sam2_address, sizeof(g_sam2_address), ImGuiInputTextFlags_EnterReturnsTrue); ImGui::SameLine();
@@ -2341,7 +2341,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (sam2_client_connect(&g_sam2_socket, g_sam2_address, g_sam2_port)) {
-        SAM2_LOG_FATAL("Failed to connect to Signaling-Server and a Match-Maker\n");
+        SAM2_LOG_WARN("Failed to connect to Signaling-Server and a Match-Maker\n");
     }
 
     juice_set_log_level(JUICE_LOG_LEVEL_WARN);
