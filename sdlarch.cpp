@@ -4,6 +4,7 @@
 
 #define SAM2_IMPLEMENTATION
 #define SAM2_SERVER
+//#define SAM2_LOG_WRITE(level, file, line, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0); // Ex. Use print
 #define SAM2_LOG_WRITE(level, file, line, ...) if (level >= g_log_level) { sam2__log_write(level, __FILE__, __LINE__, __VA_ARGS__); }
 int g_log_level = 1; // Info
 #include "ulnet.h"
@@ -693,7 +694,7 @@ int64_t sam2_room_count;
 sam2_room_t sam2_rooms[1024];
 
 static sam2_server_t *g_sam2_server = NULL;
-static char g_sam2_address[64] = "::1";
+static char g_sam2_address[64] = "127.0.0.1"; //"sam2.cornbass.com";
 static int g_sam2_port = SAM2_SERVER_DEFAULT_PORT;
 static sam2_socket_t &g_sam2_socket = g_libretro_context.sam2_socket;
 
@@ -772,10 +773,13 @@ static int read_whole_file(const char *filename, void **data, size_t *size) {
     if (!file)
         SAM2_LOG_FATAL("Failed to load %s: %s", filename, SDL_GetError());
 
-    *size = SDL_GetIOSize(file);
+    int64_t ret = SDL_GetIOSize(file);
 
-    if (*size < 0)
+    if (ret < 0) {
         SAM2_LOG_FATAL("Failed to query file size: %s", SDL_GetError());
+    } else {
+        *size = ret;
+    }
 
     *data = SDL_malloc(*size);
 
@@ -925,13 +929,7 @@ void draw_imgui() {
 
             if (ImGui::CollapsingHeader("Server Information")) {
                 ImGui::Text("Room count: %" PRId64, g_sam2_server->room_count);
-
-                int messages_free = 0;
-                for (sam2_message_u *m = g_sam2_server->message_freelist; m != NULL;) {
-                    m = m->next;
-                    messages_free++;
-                }
-                ImGui::Text("Messages free: %d", messages_free);
+                ImGui::Text("Messages allocated: %d", g_sam2_server->_debug_allocated_messages);
             }
 
             ImGui::SeparatorText("Client");
@@ -1019,6 +1017,16 @@ void draw_imgui() {
                 }
 
                 ImGui::EndTable();
+            }
+        }
+
+        if (ImGui::CollapsingHeader("Tests")) {
+            if (ImGui::Button("Stress test message framing")) {
+                for (int i = 0; i < 1000; ++i) {
+                    sam2_room_make_message_t message = {SAM2_MAKE_HEADER};
+                    snprintf((char *) &message.room.name, sizeof(message.room.name), "Test message %d", i);
+                    sam2_client_send(g_libretro_context.sam2_socket, (char *) &message);
+                }
             }
         }
 
@@ -1214,7 +1222,7 @@ void draw_imgui() {
                     ImGui::TableSetColumnIndex(0);
 
                     // Display peer ID
-                    ImGui::Text("%" PRIx64, g_ulnet_session.agent_peer_id[SAM2_PORT_MAX+1 + s]);
+                    ImGui::Text("%" PRIx64, g_ulnet_session.spectator_peer_ids[s]);
 
                     ImGui::TableSetColumnIndex(1);
                     // Display ICE connection status
@@ -1244,12 +1252,14 @@ void draw_imgui() {
             message.room = g_ulnet_session.room_we_are_in;
             if (ulnet_is_authority(&g_ulnet_session)) {
                 if (ImGui::Button("Abandon")) {
+                    message.room = g_ulnet_session.room_we_are_in;
                     message.room.flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+                    message.peer_id = g_ulnet_session.our_peer_id;
                     ulnet_process_message(&g_ulnet_session, &message); // *Send* a message to ourselves
                 }
             } else if (ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
                 if (   ImGui::Button("Exit")
-                    && ulnet_our_port(&g_ulnet_session) == -1 /* Can't disconnect before leaving the room */) {
+                    && sam2_get_port_of_peer(&g_ulnet_session.room_we_are_in, g_ulnet_session.our_peer_id) == -1 /* Can't disconnect before leaving the room */) {
                     sam2_signal_message_t response = { SAM2_SIGX_HEADER };
                     response.peer_id = g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX];
                     g_libretro_context.SAM2Send((char *) &response);
@@ -1355,8 +1365,6 @@ void draw_imgui() {
                     g_ulnet_session.frame_counter = 123456789000;
                     startup_ice_for_peer(
                         &g_ulnet_session,
-                        &g_ulnet_session.agent[SAM2_AUTHORITY_INDEX],
-                        &g_ulnet_session.agent_peer_id[SAM2_AUTHORITY_INDEX],
                          g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX]
                     );
                 }
@@ -1413,7 +1421,7 @@ finished_drawing_sam2_interface:
         if (ImGui::CollapsingHeader("Core Options")) {
             static int option_modified_at_index = -1;
 
-            for (int i = 0; strlen(g_ulnet_session.core_options[i].key) > 0; i++) {
+            for (int i = 0; g_ulnet_session.core_options[i].key[0] != '\0'; i++) {
                 // Determine if the current option is editable
                 ImGuiInputTextFlags flags = 0;
                 if (option_modified_at_index > -1) {
@@ -2076,7 +2084,7 @@ static void core_load(const char *sofile) {
 }
 
 static void core_load_game(const char *filename) {
-    struct retro_game_info info = { filename, 0 };
+    struct retro_game_info info = { filename };
 
     info.path = filename;
     info.meta = "";
@@ -2528,7 +2536,7 @@ int main(int argc, char *argv[]) {
                         && !ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
                         juice_send(g_ulnet_session.agent[p], (const char *) &input_packet, sizeof(ulnet_state_packet_t) + actual_payload_size);
                         SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64,
-                            g_ulnet_session.state[SAM2_AUTHORITY_INDEX].frame, p, g_ulnet_session.agent_peer_id[p]);
+                            g_ulnet_session.state[SAM2_AUTHORITY_INDEX].frame, p, g_ulnet_session.room_we_are_in.peer_ids[p]);
                     }
                 }
             }
@@ -2671,7 +2679,7 @@ int main(int argc, char *argv[]) {
             core_wants_tick_at_unix_usec = SAM2_MIN(core_wants_tick_at_unix_usec, current_time_unix_usec + target_frame_time_usec);
 
             ulnet_core_option_t maybe_core_option_for_this_frame = g_ulnet_session.state[SAM2_AUTHORITY_INDEX].core_option[g_ulnet_session.frame_counter % ULNET_DELAY_BUFFER_SIZE];
-            if (strlen(maybe_core_option_for_this_frame.key) > 0) {
+            if (maybe_core_option_for_this_frame.key[0] != '\0') {
                 if (strcmp(maybe_core_option_for_this_frame.key, "netplay_delay_frames") == 0) {
                     g_libretro_context.delay_frames = atoi(maybe_core_option_for_this_frame.value);
                 }
@@ -2707,17 +2715,16 @@ int main(int argc, char *argv[]) {
             sam2_room_t new_room_state = g_ulnet_session.room_we_are_in;
             ulnet__xor_delta(&new_room_state, &g_ulnet_session.state[SAM2_AUTHORITY_INDEX].room_xor_delta[g_ulnet_session.frame_counter % ULNET_DELAY_BUFFER_SIZE], sizeof(sam2_room_t));
 
-            if (new_room_state.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+            if (memcmp(&new_room_state, &g_ulnet_session.room_we_are_in, sizeof(sam2_room_t)) != 0) {
+                SAM2_LOG_INFO("Something about the room we're in was changed by the authority");
+
                 ulnet_session_t *session = &g_ulnet_session;
 
-                //SAM2_LOG_INFO("Something about the room we're in was changed by the authority");
-
+                int64_t our_new_port = sam2_get_port_of_peer(&new_room_state, session->our_peer_id);
                 if (   sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id) == -1
-                    && sam2_get_port_of_peer(&new_room_state, session->our_peer_id) != -1) {
+                    && our_new_port != -1) {
                     // @todo This code can be reworked to remove the above if statement as is this conditional really doesn't make sense anyway, but it shouldn't really be a problem for now
                     SAM2_LOG_INFO("We were let into the server by the authority");
-
-                    int64_t our_new_port = sam2_get_port_of_peer(&new_room_state, session->our_peer_id);
 
                     // @todo This assertion is only true if the peer left on their own and is behaving nicely
                     assert(session->state[our_new_port].frame < g_ulnet_session.frame_counter);
@@ -2727,7 +2734,8 @@ int main(int argc, char *argv[]) {
                         if (new_room_state.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
                         if (new_room_state.peer_ids[p] == session->our_peer_id) continue;
                         if (session->agent[p] == NULL) {
-                            startup_ice_for_peer(session, &session->agent[p], &session->agent_peer_id[p], new_room_state.peer_ids[p]);
+                            SAM2_LOG_INFO("Starting Interactive-Connectivity-Establishment for peer %016" PRIx64, new_room_state.peer_ids[p]);
+                            startup_ice_for_peer(session, new_room_state.peer_ids[p]);
                         }
                     }
                 } else {
@@ -2737,44 +2745,44 @@ int main(int argc, char *argv[]) {
                             if (   session->room_we_are_in.peer_ids[p] > SAM2_PORT_SENTINELS_MAX
                                 && new_room_state.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) {
                                 if (session->room_we_are_in.peer_ids[p] == session->our_peer_id) {
-                                    SAM2_LOG_INFO("We were kicked or the room was abandoned");
-                                    for (int peer_port = 0; peer_port < SAM2_PORT_MAX+1; peer_port++) {
-                                        ulnet_disconnect_peer(session, peer_port);
+                                    SAM2_LOG_INFO("We were removed from port %d", p);
+                                    for (int peer_port = 0; peer_port < SAM2_PORT_MAX; peer_port++) {
+                                        if (session->agent[peer_port]) {
+                                            ulnet_disconnect_peer(session, peer_port);
+                                        }
                                     }
-
-                                    session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
-                                    session->room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
                                 } else {
                                     SAM2_LOG_INFO("Peer %" PRIx64 " has left the room", session->room_we_are_in.peer_ids[p]);
-                                    ulnet_disconnect_peer(session, p);
+                                    if (ulnet_is_authority(session)) {
+                                        MovePeer(session, p, SAM2_PORT_MAX+1 + g_ulnet_session.spectator_count++);
+                                    } else {
+                                        ulnet_disconnect_peer(session, p);
+                                    }
                                 }
                             } else if (new_room_state.peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
-                                int peer_existing_port;
-                                SAM2_LOCATE(session->agent_peer_id, new_room_state.peer_ids[p], peer_existing_port);
+                                int peer_existing_port = ulnet_locate_peer(session, new_room_state.peer_ids[p]);
                                 if (peer_existing_port != -1) {
-                                    SAM2_LOG_INFO("Specator %016" PRIx64 " was promoted to peer", new_room_state.peer_ids[p]);
+                                    SAM2_LOG_INFO("Spectator %016" PRIx64 " was promoted to peer", new_room_state.peer_ids[p]);
                                     MovePeer(session, peer_existing_port, p); // This only moves spectators to real ports right now
-                                } else {
-                                    session->room_we_are_in.peer_ids[p] = new_room_state.peer_ids[p]; // This must come before the next call as the next call can generate an ICE candidate before returning
-                                    if (!ulnet_is_spectator(session, session->our_peer_id) && !session->agent[p]) {
-                                        SAM2_LOG_INFO("Peer %" PRIx64 " has joined the room", new_room_state.peer_ids[p]);
-                                        startup_ice_for_peer(session, &session->agent[p], &session->agent_peer_id[p], new_room_state.peer_ids[p]);
-                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                g_ulnet_session.room_we_are_in = new_room_state;
-                for (int p = 0; p < SAM2_ARRAY_LENGTH(new_room_state.peer_ids); p++) {
-                    if (new_room_state.peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
-                        g_ulnet_session.agent_peer_id[p] = new_room_state.peer_ids[p]; // @todo bad
+                session->room_we_are_in = new_room_state;
+                if (!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
+                    SAM2_LOG_INFO("The room %016" PRIx64 ":'%s' was abandoned", session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX], session->room_we_are_in.name);
+                    for (int peer_port = 0; peer_port < SAM2_PORT_MAX+1; peer_port++) {
+                        if (session->agent[peer_port]) {
+                            ulnet_disconnect_peer(session, peer_port);
+                        }
                     }
+                    ulnet_session_init_defaulted(session);
                 }
             }
 
-            // Ideally I'd throw this right after ticking the core, but we need to update the room state first
+            // Ideally I'd place this right after ticking the core, but we need to update the room state first
             g_ulnet_session.frame_counter++;
 
             // Keep track of frame-times for plotting purposes
@@ -2802,7 +2810,7 @@ int main(int argc, char *argv[]) {
                 for (int p = 0; p < SAM2_ARRAY_LENGTH(g_ulnet_session.agent); p++) {
                     if (!g_ulnet_session.agent[p]) continue;
                     juice_state_t juice_state = juice_get_state(g_ulnet_session.agent[p]);
-                    if (   juice_state == JUICE_STATE_CONNECTED || juice_state == JUICE_STATE_COMPLETED
+                    if (   (juice_state == JUICE_STATE_CONNECTED || juice_state == JUICE_STATE_COMPLETED)
                         && !ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
                         juice_send(g_ulnet_session.agent[p], (char *) &g_ulnet_session.desync_debug_packet, sizeof(g_ulnet_session.desync_debug_packet));
                     }
@@ -2866,13 +2874,13 @@ int main(int argc, char *argv[]) {
                     g_ulnet_session.retro_serialize = g_retro.retro_serialize;
                     g_ulnet_session.retro_serialize_size = g_retro.retro_serialize_size;
                     g_ulnet_session.retro_unserialize = g_retro.retro_unserialize;
-                    int status = ulnet_process_message(
+                    status = ulnet_process_message(
                         &g_ulnet_session,
                         &latest_sam2_message
                     );
 
                     if (memcmp(&latest_sam2_message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
-                        g_last_sam2_error = *((sam2_error_message_t *) &latest_sam2_message);
+                        g_last_sam2_error = latest_sam2_message.error_response;
                         SAM2_LOG_ERROR("Received error response from SAM2 (%" PRId64 "): %s", g_last_sam2_error.code, g_last_sam2_error.description);
                     } else if (memcmp(&latest_sam2_message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
                         sam2_room_list_message_t *room_list = (sam2_room_list_message_t *) &latest_sam2_message;

@@ -596,6 +596,7 @@ typedef struct sam2_server {
     uv_loop_t loop;
 
     sam2_message_u *message_freelist;
+    int64_t _debug_allocated_messages;
 
     sam2_avl_node_t *_debug_allocated_message_set;
 
@@ -1154,7 +1155,7 @@ static int sam2__frame_message(sam2_message_u *message, char *buffer, int *lengt
     }
 
     if (message_bytes_read == metadata->message_size) {
-        // Theoretically the memmove here is inefficient, but it shouldn't be actually matter
+        // Theoretically the memmove here is inefficient, but it shouldn't actually matter
         memmove(buffer, buffer + input_consumed, *length - input_consumed);
         *length -= input_consumed;
 
@@ -1227,6 +1228,9 @@ SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *message,
         return 0;
     } else if (message_frame_status < 0) {
         SAM2_LOG_ERROR("Message framing failed code (%d)", message_frame_status);
+        if (message_frame_status == SAM2_RESPONSE_INVALID_HEADER) {
+            SAM2_LOG_WARN("Invalid header received '%.4s'", buffer);
+        }
         return -1;
     } else {
         SAM2_LOG_DEBUG("Received complete message with header '%.8s'", (char *) message);
@@ -1302,6 +1306,7 @@ static sam2_message_u *sam2__alloc_message_raw(sam2_server_t *server) {
     //} else {
     //    assert(0); // Just check we have ample responses to send out >~32 in case of broadcast. This beats checking for NULL from an allocator every single time we make an allocation
     //}
+    server->_debug_allocated_messages++;
 
     return (sam2_message_u *) calloc(1, sizeof(sam2_message_u));
 }
@@ -1309,6 +1314,7 @@ static sam2_message_u *sam2__alloc_message_raw(sam2_server_t *server) {
 static void sam2__free_message_raw(sam2_server_t *server, void *message) {
     //response->next = response_freelist;
     //response_freelist = response;
+    server->_debug_allocated_messages--;
     free(message);
 }
 
@@ -1326,7 +1332,11 @@ static sam2_message_u *sam2__alloc_message(sam2_server_t *server, const char *he
         );
     }
 
-    memcpy((void *) message, header, SAM2_HEADER_SIZE);
+    if (message == NULL) {
+        SAM2_LOG_FATAL("Out of memory");
+    } else {
+        memcpy((void*)message, header, SAM2_HEADER_SIZE);
+    }
 
     return message;
 }
@@ -1492,22 +1502,6 @@ static void sam2__remove_room(sam2_server_t *server, sam2_room_t *room) {
         } else {
             SAM2_LOG_WARN("Failed to find client data for room %016" PRIx64 ":'%s'",
                 room->peer_ids[SAM2_AUTHORITY_INDEX], room->name);
-        }
-
-        // Kick everyone in the room
-        room->flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
-        for (int p = 0; p < SAM2_PORT_MAX; p++) {
-            if (room->peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
-
-            uv_tcp_t *peer_tcp = (uv_tcp_t *) sam2__find_client(server, room->peer_ids[p]);
-            if (peer_tcp) {
-                sam2_room_join_message_t *request = (sam2_room_join_message_t *) sam2__alloc_message(server, sam2_join_header);
-                request->room = *room;
-                request->peer_id = room->peer_ids[SAM2_AUTHORITY_INDEX]; // @todo This is a lie, but maybe it makes sense since this server is higher privileged than the authority
-                sam2__write_response((uv_stream_t*) peer_tcp, (sam2_message_u *) request);
-            } else {
-                SAM2_LOG_WARN("Failed to find peer socket for room %016" PRIx64 ":'%s'", room->peer_ids[SAM2_AUTHORITY_INDEX], room->name);
-            }
         }
 
         int64_t i = room - server->rooms;
@@ -1864,7 +1858,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
 
             uv_tcp_t *peer_tcp = (uv_tcp_t *) sam2__find_client(server, request->peer_id);
 
-            SAM2_LOG_INFO("Forwarding sdp information from peer %" PRIx64 " to peer %" PRIx64 "", client->peer_id, request->peer_id);
+            SAM2_LOG_INFO("Forwarding sdp information from peer %" PRIx64 " to peer %" PRIx64 " it contains '%s'", client->peer_id, request->peer_id, request->ice_sdp);
             if (!peer_tcp) {
                 SAM2_LOG_WARN("Forwarding failed Client attempted to send sdp information to non-existent peer");
                 static sam2_error_message_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_PEER_DOES_NOT_EXIST, "Peer not found"};
@@ -1912,7 +1906,8 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
         return;
     }
 
-    uv_tcp_t *client_tcp = (uv_tcp_t *) calloc(1, sizeof(sam2_client_t));
+    sam2_client_t *client = (sam2_client_t *) calloc(1, sizeof(sam2_client_t));
+    uv_tcp_t *client_tcp = &client->tcp;
     uv_tcp_init(server_tcp->loop, client_tcp);
 
     if (uv_accept(server_tcp, (uv_stream_t*) client_tcp) == 0) {
