@@ -2834,8 +2834,8 @@ int main(int argc, char *argv[]) {
         if (g_connected_to_sam2 || (g_connected_to_sam2 = sam2_client_poll_connection(g_sam2_socket, 0))) {
             for (int _prevent_infinite_loop_counter = 0; _prevent_infinite_loop_counter < 64; _prevent_infinite_loop_counter++) {
                 static sam2_message_u latest_sam2_message; // This is gradually buffered so it has to be static
-                char buffer[sizeof(sam2_message_u)];
-                int buffer_length = 0;
+                static char buffer[sizeof(sam2_message_u)];
+                static int buffer_length = 0;
 
 
                 int status = sam2_client_poll(
