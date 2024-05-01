@@ -70,7 +70,6 @@ endif()
 set(SOURCE_FILES 
     sdlarch.cpp
     fec.cpp
-    glad.c
     imgui/imgui.cpp
     imgui/backends/imgui_impl_sdl3.cpp
     imgui/backends/imgui_impl_opengl3.cpp
@@ -106,5 +105,10 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 target_link_libraries(${PROJECT_NAME} uv_a juice-static libzstd_static SDL3::SDL3-static)
 
 if(WIN32)
-    target_link_libraries(${PROJECT_NAME} ws2_32)
+    target_link_libraries(${PROJECT_NAME} ws2_32 opengl32)
+elseif(APPLE)
+    find_library(OPENGL_LIBRARY OpenGL)
+    target_link_libraries(${PROJECT_NAME} ${OPENGL_LIBRARY})
+else()
+    target_link_libraries(${PROJECT_NAME} GL)
 endif()

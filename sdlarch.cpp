@@ -10,7 +10,6 @@ int g_log_level = 1; // Info
 #include "ulnet.h"
 #include "sam2.c"
 
-#include "glad.h"
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_opengl3.h"
@@ -31,7 +30,6 @@ int g_log_level = 1; // Info
 #include <SDL3/SDL_loadso.h>
 #include <SDL3/SDL_quit.h>
 #include <SDL3/SDL_video.h>
-#include <SDL3/SDL_opengl.h>
 #include "libretro.h"
 
 #include <ctype.h>
@@ -46,6 +44,76 @@ int g_log_level = 1; // Info
 #else
 #include <unistd.h> // for sleep
 #endif
+
+#define glActiveTexture RENAMED_BY_SDLARCH_CPP_glActiveTexture // SDL defines this with external linkage which just does not work with Windows
+#include <SDL3/SDL_opengl.h>
+#undef glActiveTexture
+
+typedef void (GLAPIENTRYP PFNGLACTIVETEXTUREPROC) (GLenum texture);
+typedef void (APIENTRYP PFNGLTEXIMAGE2DPROC) (GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *pixels);
+#define ENUM_GL_PROCEDURES(EnumMacro) \
+        EnumMacro(PFNGLACTIVETEXTUREPROC, glActiveTexture) \
+        EnumMacro(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer) \
+        EnumMacro(PFNGLBINDRENDERBUFFERPROC, glBindRenderbuffer) \
+        /* EnumMacro(PFNGLBINDTEXTUREPROC, glBindTexture) */ \
+        EnumMacro(PFNGLCHECKFRAMEBUFFERSTATUSPROC, glCheckFramebufferStatus) \
+        /* EnumMacro(PFNGLCLEARPROC, glClear) */ \
+        /* EnumMacro(PFNGLCLEARCOLORPROC, glClearColor) */ \
+        EnumMacro(PFNGLDEBUGMESSAGECALLBACKPROC, glDebugMessageCallback) \
+        EnumMacro(PFNGLDEBUGMESSAGECONTROLPROC, glDebugMessageControl) \
+        EnumMacro(PFNGLDELETEBUFFERSPROC, glDeleteBuffers) \
+        /* EnumMacro(PFNGLDELETETEXTURESPROC, glDeleteTextures) */ \
+        /* EnumMacro(PFNGLENABLEPROC, glEnable) */ \
+        EnumMacro(PFNGLFRAMEBUFFERRENDERBUFFERPROC, glFramebufferRenderbuffer) \
+        EnumMacro(PFNGLFRAMEBUFFERTEXTURE2DPROC, glFramebufferTexture2D) \
+        EnumMacro(PFNGLGENFRAMEBUFFERSPROC, glGenFramebuffers) \
+        EnumMacro(PFNGLGENRENDERBUFFERSPROC, glGenRenderbuffers) \
+        /* EnumMacro(PFNGLGENTEXTURESPROC, glGenTextures) */ \
+        /* EnumMacro(PFNGLGETINTEGERVPROC, glGetIntegerv) */ \
+        /* EnumMacro(PFNGLGETSTRINGPROC, glGetString) */ \
+        /* EnumMacro(PFNGLREADPIXELSPROC, glReadPixels) */ \
+        /* EnumMacro(PFNGLPIXELSTOREIPROC, glPixelStorei) */ \
+        EnumMacro(PFNGLRENDERBUFFERSTORAGEPROC, glRenderbufferStorage) \
+        /*EnumMacro(PFNGLTEXIMAGE2DPROC, glTexImage2D)*/ \
+        EnumMacro(PFNGLFENCESYNCPROC, glFenceSync) \
+        EnumMacro(PFNGLDELETESYNCPROC, glDeleteSync) \
+        EnumMacro(PFNGLCLIENTWAITSYNCPROC, glClientWaitSync) \
+        EnumMacro(PFNGLGENBUFFERSPROC, glGenBuffers) \
+        EnumMacro(PFNGLBINDBUFFERPROC, glBindBuffer) \
+        EnumMacro(PFNGLMAPBUFFERRANGEPROC, glMapBufferRange) \
+        EnumMacro(PFNGLUNMAPBUFFERPROC, glUnmapBuffer) \
+        EnumMacro(PFNGLBUFFERDATAPROC, glBufferData) \
+        /* EnumMacro(PFNGLREADBUFFERPROC, glReadBuffer) */ \
+        EnumMacro(PFNGLCREATEPROGRAMPROC, glCreateProgram) \
+        EnumMacro(PFNGLATTACHSHADERPROC, glAttachShader) \
+        EnumMacro(PFNGLLINKPROGRAMPROC, glLinkProgram) \
+        EnumMacro(PFNGLVALIDATEPROGRAMPROC, glValidateProgram) \
+        EnumMacro(PFNGLGETPROGRAMIVPROC, glGetProgramiv) \
+        EnumMacro(PFNGLGETPROGRAMINFOLOGPROC, glGetProgramInfoLog) \
+        EnumMacro(PFNGLGETATTRIBLOCATIONPROC, glGetAttribLocation) \
+        EnumMacro(PFNGLGETUNIFORMLOCATIONPROC, glGetUniformLocation) \
+        EnumMacro(PFNGLGENVERTEXARRAYSPROC, glGenVertexArrays) \
+        EnumMacro(PFNGLBINDVERTEXARRAYPROC, glBindVertexArray) \
+        EnumMacro(PFNGLUSEPROGRAMPROC, glUseProgram) \
+        EnumMacro(PFNGLUNIFORM1IPROC, glUniform1i) \
+        EnumMacro(PFNGLUNIFORMMATRIX4FVPROC, glUniformMatrix4fv) \
+        EnumMacro(PFNGLBINDVERTEXBUFFERPROC, glBindVertexBuffer) \
+        EnumMacro(PFNGLVERTEXATTRIBPOINTERPROC, glVertexAttribPointer) \
+        EnumMacro(PFNGLDISABLEVERTEXATTRIBARRAYPROC, glDisableVertexAttribArray) \
+        EnumMacro(PFNGLENABLEVERTEXATTRIBARRAYPROC, glEnableVertexAttribArray) \
+        EnumMacro(PFNGLCREATESHADERPROC, glCreateShader) \
+        EnumMacro(PFNGLSHADERSOURCEPROC, glShaderSource) \
+        EnumMacro(PFNGLCOMPILESHADERPROC, glCompileShader) \
+        EnumMacro(PFNGLGETSHADERIVPROC, glGetShaderiv) \
+        EnumMacro(PFNGLGETSHADERINFOLOGPROC, glGetShaderInfoLog) \
+        EnumMacro(PFNGLDELETESHADERPROC, glDeleteShader) \
+        EnumMacro(PFNGLDELETEFRAMEBUFFERSPROC, glDeleteFramebuffers) \
+        EnumMacro(PFNGLDELETEVERTEXARRAYSPROC, glDeleteVertexArrays) \
+        EnumMacro(PFNGLDELETEPROGRAMPROC, glDeleteProgram) \
+
+
+#define DEFINE_GL_PROCEDURES(Type,Func) Type Func = NULL;
+ENUM_GL_PROCEDURES(DEFINE_GL_PROCEDURES);
 
 static SDL_Window *g_win = NULL;
 static SDL_GLContext g_ctx = NULL;
@@ -528,12 +596,17 @@ static void create_window(int width, int height) {
     if (!g_ctx)
         SAM2_LOG_FATAL("Failed to create OpenGL context: %s", SDL_GetError());
 
-    if (g_video.hw.context_type == RETRO_HW_CONTEXT_OPENGLES2) {
-        if (!gladLoadGLES2Loader((GLADloadproc)SDL_GL_GetProcAddress))
-            SAM2_LOG_FATAL("Failed to initialize glad.");
-    } else {
-        if (!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress))
-            SAM2_LOG_FATAL("Failed to initialize glad.");
+    // Initialize all entry points.
+    #define GET_GL_PROCEDURES(Type,Func) Func = (Type)SDL_GL_GetProcAddress(#Func);
+    ENUM_GL_PROCEDURES(GET_GL_PROCEDURES);
+
+    // Check that all of the entry points have been initialized.
+    bool bFoundAllEntryPoints = true;
+    #define CHECK_GL_PROCEDURES(Type,Func) if (Func == NULL) { bFoundAllEntryPoints = false; SAM2_LOG_ERROR("Failed to find entry point for %s", #Func); }
+    ENUM_GL_PROCEDURES(CHECK_GL_PROCEDURES);
+
+    if (!bFoundAllEntryPoints) {
+        SAM2_LOG_FATAL("Failed to find all OpenGL entry points");
     }
 
     fprintf(stderr, "GL_SHADING_LANGUAGE_VERSION: %s\n", glGetString(GL_SHADING_LANGUAGE_VERSION));
