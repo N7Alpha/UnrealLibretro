@@ -103,12 +103,3 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 
 # Static link everything so we don't have to deal with dll hell
 target_link_libraries(${PROJECT_NAME} uv_a juice-static libzstd_static SDL3::SDL3-static)
-
-if(WIN32)
-    target_link_libraries(${PROJECT_NAME} ws2_32 opengl32)
-elseif(APPLE)
-    find_library(OPENGL_LIBRARY OpenGL)
-    target_link_libraries(${PROJECT_NAME} ${OPENGL_LIBRARY})
-else()
-    target_link_libraries(${PROJECT_NAME} GL)
-endif()

@@ -45,36 +45,86 @@ int g_log_level = 1; // Info
 #include <unistd.h> // for sleep
 #endif
 
-#define glActiveTexture RENAMED_BY_SDLARCH_CPP_glActiveTexture // SDL defines this with external linkage which just does not work with Windows
+// Hide OpenGL functions SDL declares with external linkage we just load all of them dynamically to support headless operation
+#define glActiveTexture RENAMED_BY_SDLARCH_CPP_glActiveTexture
+#define glBindTexture RENAMED_BY_SDLARCH_CPP_glBindTexture
+#define glClear RENAMED_BY_SDLARCH_CPP_glClear
+#define glClearColor RENAMED_BY_SDLARCH_CPP_glClearColor
+#define glDeleteTextures RENAMED_BY_SDLARCH_CPP_glDeleteTextures
+#define glEnable RENAMED_BY_SDLARCH_CPP_glEnable
+#define glGenTextures RENAMED_BY_SDLARCH_CPP_glGenTextures
+#define glGetIntegerv RENAMED_BY_SDLARCH_CPP_glGetIntegerv
+#define glGetString RENAMED_BY_SDLARCH_CPP_glGetString
+#define glReadPixels RENAMED_BY_SDLARCH_CPP_glReadPixels
+#define glPixelStorei RENAMED_BY_SDLARCH_CPP_glPixelStorei
+#define glTexImage2D RENAMED_BY_SDLARCH_CPP_glTexImage2D
+#define glReadBuffer RENAMED_BY_SDLARCH_CPP_glReadBuffer
+#define glViewport RENAMED_BY_SDLARCH_CPP_glViewport
+#define glDrawArrays RENAMED_BY_SDLARCH_CPP_glDrawArrays
+#define glTexParameteri RENAMED_BY_SDLARCH_CPP_glTexParameteri
+#define glTexSubImage2D RENAMED_BY_SDLARCH_CPP_glTexSubImage2D
 #include <SDL3/SDL_opengl.h>
 #undef glActiveTexture
+#undef glBindTexture
+#undef glClear
+#undef glClearColor
+#undef glDeleteTextures
+#undef glEnable
+#undef glGenTextures
+#undef glGetIntegerv
+#undef glGetString
+#undef glReadPixels
+#undef glPixelStorei
+#undef glTexImage2D
+#undef glReadBuffer
+#undef glViewport
+#undef glDrawArrays
+#undef glTexParameteri
+#undef glTexSubImage2D
 
-typedef void (GLAPIENTRYP PFNGLACTIVETEXTUREPROC) (GLenum texture);
-typedef void (APIENTRYP PFNGLTEXIMAGE2DPROC) (GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *pixels);
+//typedef void (APIENTRYP * PFNGLACTIVETEXTUREPROC)(GLenum texture);
+typedef void (APIENTRYP PFNGLBINDTEXTUREPROC)(GLenum target, GLuint texture);
+typedef void (APIENTRYP PFNGLCLEARPROC)(GLbitfield mask);
+typedef void (APIENTRYP PFNGLCLEARCOLORPROC)(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha);
+typedef void (APIENTRYP PFNGLDELETETEXTURESPROC)(GLsizei n, const GLuint *textures);
+typedef void (APIENTRYP PFNGLENABLEPROC)(GLenum cap);
+typedef void (APIENTRYP PFNGLGENTEXTURESPROC)(GLsizei n, GLuint *textures);
+typedef void (APIENTRYP PFNGLGETINTEGERVPROC)(GLenum pname, GLint *data);
+typedef const GLubyte * (APIENTRYP PFNGLGETSTRINGPROC)(GLenum name);
+typedef void (APIENTRYP PFNGLREADPIXELSPROC)(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *pixels);
+typedef void (APIENTRYP PFNGLPIXELSTOREIPROC)(GLint pname, GLint param);
+typedef void (APIENTRYP PFNGLTEXIMAGE2DPROC)(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *pixels);
+typedef void (APIENTRYP PFNGLREADBUFFERPROC)(GLenum mode);
+typedef void (APIENTRYP PFNGLGENVERTEXARRAYSPROC) (GLsizei n, GLuint *arrays);
+typedef void (APIENTRYP PFNGLVIEWPORTPROC)(GLint x, GLint y, GLsizei width, GLsizei height);
+typedef void (APIENTRYP PFNGLDRAWARRAYSPROC)(GLenum mode, GLint first, GLsizei count);
+typedef void (APIENTRYP PFNGLTEXPARAMETERIPROC)(GLenum target, GLenum pname, GLint param);
+typedef void (APIENTRYP PFNGLTEXSUBIMAGE2DPROC)(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels);
+
 #define ENUM_GL_PROCEDURES(EnumMacro) \
         EnumMacro(PFNGLACTIVETEXTUREPROC, glActiveTexture) \
         EnumMacro(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer) \
         EnumMacro(PFNGLBINDRENDERBUFFERPROC, glBindRenderbuffer) \
-        /* EnumMacro(PFNGLBINDTEXTUREPROC, glBindTexture) */ \
+        EnumMacro(PFNGLBINDTEXTUREPROC, glBindTexture) \
         EnumMacro(PFNGLCHECKFRAMEBUFFERSTATUSPROC, glCheckFramebufferStatus) \
-        /* EnumMacro(PFNGLCLEARPROC, glClear) */ \
-        /* EnumMacro(PFNGLCLEARCOLORPROC, glClearColor) */ \
+        EnumMacro(PFNGLCLEARPROC, glClear) \
+        EnumMacro(PFNGLCLEARCOLORPROC, glClearColor) \
         EnumMacro(PFNGLDEBUGMESSAGECALLBACKPROC, glDebugMessageCallback) \
         EnumMacro(PFNGLDEBUGMESSAGECONTROLPROC, glDebugMessageControl) \
         EnumMacro(PFNGLDELETEBUFFERSPROC, glDeleteBuffers) \
-        /* EnumMacro(PFNGLDELETETEXTURESPROC, glDeleteTextures) */ \
-        /* EnumMacro(PFNGLENABLEPROC, glEnable) */ \
+        EnumMacro(PFNGLDELETETEXTURESPROC, glDeleteTextures) \
+        EnumMacro(PFNGLENABLEPROC, glEnable) \
         EnumMacro(PFNGLFRAMEBUFFERRENDERBUFFERPROC, glFramebufferRenderbuffer) \
         EnumMacro(PFNGLFRAMEBUFFERTEXTURE2DPROC, glFramebufferTexture2D) \
         EnumMacro(PFNGLGENFRAMEBUFFERSPROC, glGenFramebuffers) \
         EnumMacro(PFNGLGENRENDERBUFFERSPROC, glGenRenderbuffers) \
-        /* EnumMacro(PFNGLGENTEXTURESPROC, glGenTextures) */ \
-        /* EnumMacro(PFNGLGETINTEGERVPROC, glGetIntegerv) */ \
-        /* EnumMacro(PFNGLGETSTRINGPROC, glGetString) */ \
-        /* EnumMacro(PFNGLREADPIXELSPROC, glReadPixels) */ \
-        /* EnumMacro(PFNGLPIXELSTOREIPROC, glPixelStorei) */ \
+        EnumMacro(PFNGLGENTEXTURESPROC, glGenTextures) \
+        EnumMacro(PFNGLGETINTEGERVPROC, glGetIntegerv) \
+        EnumMacro(PFNGLGETSTRINGPROC, glGetString) \
+        EnumMacro(PFNGLREADPIXELSPROC, glReadPixels) \
+        EnumMacro(PFNGLPIXELSTOREIPROC, glPixelStorei) \
         EnumMacro(PFNGLRENDERBUFFERSTORAGEPROC, glRenderbufferStorage) \
-        /*EnumMacro(PFNGLTEXIMAGE2DPROC, glTexImage2D)*/ \
+        EnumMacro(PFNGLTEXIMAGE2DPROC, glTexImage2D) \
         EnumMacro(PFNGLFENCESYNCPROC, glFenceSync) \
         EnumMacro(PFNGLDELETESYNCPROC, glDeleteSync) \
         EnumMacro(PFNGLCLIENTWAITSYNCPROC, glClientWaitSync) \
@@ -83,7 +133,7 @@ typedef void (APIENTRYP PFNGLTEXIMAGE2DPROC) (GLenum target, GLint level, GLint 
         EnumMacro(PFNGLMAPBUFFERRANGEPROC, glMapBufferRange) \
         EnumMacro(PFNGLUNMAPBUFFERPROC, glUnmapBuffer) \
         EnumMacro(PFNGLBUFFERDATAPROC, glBufferData) \
-        /* EnumMacro(PFNGLREADBUFFERPROC, glReadBuffer) */ \
+        EnumMacro(PFNGLREADBUFFERPROC, glReadBuffer) \
         EnumMacro(PFNGLCREATEPROGRAMPROC, glCreateProgram) \
         EnumMacro(PFNGLATTACHSHADERPROC, glAttachShader) \
         EnumMacro(PFNGLLINKPROGRAMPROC, glLinkProgram) \
@@ -110,6 +160,10 @@ typedef void (APIENTRYP PFNGLTEXIMAGE2DPROC) (GLenum target, GLint level, GLint 
         EnumMacro(PFNGLDELETEFRAMEBUFFERSPROC, glDeleteFramebuffers) \
         EnumMacro(PFNGLDELETEVERTEXARRAYSPROC, glDeleteVertexArrays) \
         EnumMacro(PFNGLDELETEPROGRAMPROC, glDeleteProgram) \
+        EnumMacro(PFNGLVIEWPORTPROC, glViewport) \
+        EnumMacro(PFNGLDRAWARRAYSPROC, glDrawArrays) \
+        EnumMacro(PFNGLTEXPARAMETERIPROC, glTexParameteri) \
+        EnumMacro(PFNGLTEXSUBIMAGE2DPROC, glTexSubImage2D) \
 
 
 #define DEFINE_GL_PROCEDURES(Type,Func) Type Func = NULL;
