@@ -82,7 +82,6 @@ int g_log_level = 1; // Info
 #undef glTexParameteri
 #undef glTexSubImage2D
 
-//typedef void (APIENTRYP * PFNGLACTIVETEXTUREPROC)(GLenum texture);
 typedef void (APIENTRYP PFNGLBINDTEXTUREPROC)(GLenum target, GLuint texture);
 typedef void (APIENTRYP PFNGLCLEARPROC)(GLbitfield mask);
 typedef void (APIENTRYP PFNGLCLEARCOLORPROC)(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha);
@@ -2610,8 +2609,6 @@ int main(int argc, char *argv[]) {
                 g_ulnet_session.state[g_libretro_context.OurPort()].core_option[next_buffer_index] = g_core_option_for_next_frame;
                 memset(&g_core_option_for_next_frame, 0, sizeof(g_core_option_for_next_frame));
 
-                // @todo You can only update the room state on the last most frame as that's the only one we know clients can't possibly be buffered on
-                //       Otherwise there is a chance for inconsistent inputs to be sent when peers switch ports
                 if (ulnet_is_authority(&g_ulnet_session)) {
                     g_ulnet_session.state[g_libretro_context.OurPort()].room_xor_delta[next_buffer_index] = g_ulnet_session.next_room_xor_delta;
                     memset(&g_ulnet_session.next_room_xor_delta, 0, sizeof(g_ulnet_session.next_room_xor_delta));
