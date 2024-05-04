@@ -10,6 +10,7 @@ int g_log_level = 1; // Info
 #include "ulnet.h"
 #include "sam2.c"
 
+#include "NetImgui_Api.h"
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_opengl3.h"
@@ -824,6 +825,8 @@ static char g_sam2_address[64] = "127.0.0.1"; //"sam2.cornbass.com";
 static int g_sam2_port = SAM2_SERVER_DEFAULT_PORT;
 static sam2_socket_t &g_sam2_socket = g_libretro_context.sam2_socket;
 
+static bool g_headless = 0;
+static int g_netimgui_port = 0;
 
 static int g_zstd_compress_level = 0;
 #define MAX_SAMPLE_SIZE 128
@@ -1682,8 +1685,36 @@ finished_drawing_sam2_interface:
     //    // @todo Add a shortcut to collapse and uncollapse windows
     //}
 
-    ImGui::Render();
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+    // @todo Add more information through dualui instead of window title
+    //       See usages of mpContextExtra in netImgui/Code/Sample/SampleDualUI/SampleDualUI.cpp for example.
+    static bool netimgui_was_connected = true; // Initialization to true so that the first frame sets the window title
+    if (netimgui_was_connected != NetImgui::IsConnected()) {
+        netimgui_was_connected = !netimgui_was_connected;
+
+        char window_title[255];
+        if (NetImgui::IsConnected()) {
+            snprintf(window_title, sizeof(window_title), "netarch %s %s - CONNECTED TO NETIMGUI SERVER",
+                g_libretro_context.system_info.library_name,
+                g_libretro_context.system_info.library_version);
+        } else {
+            snprintf(window_title, sizeof(window_title), "netarch %s %s",
+                g_libretro_context.system_info.library_name,
+                g_libretro_context.system_info.library_version);
+        }
+
+        SDL_SetWindowTitle(g_win, window_title);
+    }
+
+    if (g_netimgui_port) {
+        NetImgui::EndFrame();
+    } else {
+        ImGui::Render();
+    }
+
+    if (!g_headless && !NetImgui::IsConnected()) {
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    }
 }
 
 static int g_h, g_w;
@@ -2237,13 +2268,6 @@ static void core_load_game(const char *filename) {
 
     if (info.data)
         SDL_free((void*)info.data);
-
-    // Now that we have the system info, set the window title.
-    char window_title[255];
-    snprintf(window_title, sizeof(window_title), "netplayarch %s %s",
-        g_libretro_context.system_info.library_name,
-        g_libretro_context.system_info.library_version);
-    SDL_SetWindowTitle(g_win, window_title);
 }
 
 static void core_unload() {
@@ -2455,8 +2479,19 @@ int main(int argc, char *argv[]) {
     g_argc = argc;
     g_argv = argv;
 
+    bool no_netimgui = false;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp("--headless", argv[i]) == 0) {
+            g_headless = true;
+        } else if (strcmp("--no-netimgui", argv[i]) == 0) {
+            no_netimgui = true;
+        } else if (argv[i][0] == '-') {
+            SAM2_LOG_FATAL("Unknown option: %s\n", argv[i]);
+        }
+    }
+
     if (argc < 2)
-        SAM2_LOG_FATAL("usage: %s <core> [game]", argv[0]);
+        SAM2_LOG_FATAL("Usage: %s <core> [game] [options...]\n", argv[0]);
 
     if (   strcmp(g_sam2_address, "localhost")
         || strcmp(g_sam2_address, "127.0.0.1")
@@ -2530,7 +2565,7 @@ int main(int argc, char *argv[]) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, g_video.hw.version_major);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, g_video.hw.version_minor);
 
-    //IMGUI_CHECKVERSION();
+    IMGUI_CHECKVERSION();
     ImGui::SetCurrentContext(ImGui::CreateContext());
     ImPlot::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
@@ -2542,9 +2577,37 @@ int main(int argc, char *argv[]) {
     ImGui::StyleColorsDark();
     //ImGui::StyleColorsLight();
 
-    // Setup Platform/Renderer backends
-    ImGui_ImplSDL3_InitForOpenGL(g_win, g_ctx);
-    ImGui_ImplOpenGL3_Init("#version 150");
+    {
+        // Doing font initialization manually is a special case for netImgui and using the ImGui "null" backend
+        // Confusingly, you don't manually set the null backend see imgui/examples/example_null/main.cpp for details
+        // You'll hit a variety of asserts if you don't execute the following boilerplate this
+        io.Fonts->AddFontDefault();
+        io.Fonts->Build();
+        io.Fonts->SetTexID(0);
+        io.DisplaySize = ImVec2(8, 8);
+    }
+
+    if (!no_netimgui) {
+        // netImgui Wants fonts setup like this or it will assert later on when running in headless mode
+
+        if (!NetImgui::Startup()) {
+            SAM2_LOG_FATAL("Failed to initialize NetImgui");
+        }
+
+        for (g_netimgui_port = 8889; g_netimgui_port < 65535; g_netimgui_port++) {
+            NetImgui::ConnectFromApp("netarch (ImGui " IMGUI_VERSION ")", g_netimgui_port);
+            if (NetImgui::IsConnectionPending()) {
+                SAM2_LOG_INFO("NetImgui is listening on port %i", g_netimgui_port);
+                break;
+            }
+        }
+    }
+
+    if (!g_headless) {
+        // Setup Platform/Renderer backends
+        ImGui_ImplSDL3_InitForOpenGL(g_win, g_ctx);
+        ImGui_ImplOpenGL3_Init("#version 150");
+    }
 
     SDL_Event ev;
 
@@ -2567,7 +2630,10 @@ int main(int argc, char *argv[]) {
         }
 
         while (SDL_PollEvent(&ev)) {
-            ImGui_ImplSDL3_ProcessEvent(&ev);
+            if (!g_headless && !NetImgui::IsConnected()) {
+                ImGui_ImplSDL3_ProcessEvent(&ev);
+            }
+
             switch (ev.type) {
             case SDL_EVENT_QUIT: running = false; break;
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED: running = false; break;
@@ -2589,9 +2655,17 @@ int main(int argc, char *argv[]) {
 
         g_core_wants_tick_in_milliseconds[g_main_loop_cyclic_offset] = core_wants_tick_in_seconds(core_wants_tick_at_unix_usec) * 1000.0;
 
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplSDL3_NewFrame();
-        ImGui::NewFrame();
+        if (!g_headless && !NetImgui::IsConnected()) {
+            ImGui_ImplOpenGL3_NewFrame();
+            ImGui_ImplSDL3_NewFrame();
+        }
+
+        if (g_netimgui_port) {
+            NetImgui::NewFrame();
+        } else {
+            ImGui::NewFrame();
+        }
+
         ImGui::Begin("P2P UDP Netplay", NULL, ImGuiWindowFlags_AlwaysAutoResize);
 
         // Always send an input packet if the core is ready to tick. This subsumes retransmission logic and generally makes protocol logic less strict
@@ -3040,6 +3114,8 @@ int main(int argc, char *argv[]) {
         }
         free(g_vars);
     }
+
+    NetImgui::Shutdown(); //ImGui::Shutdown();
 
     SDL_Quit();
 

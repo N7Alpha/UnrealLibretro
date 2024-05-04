@@ -70,6 +70,7 @@ endif()
 set(SOURCE_FILES 
     sdlarch.cpp
     fec.cpp
+    NetImgui_Implementation.cpp
     imgui/imgui.cpp
     imgui/backends/imgui_impl_sdl3.cpp
     imgui/backends/imgui_impl_opengl3.cpp
@@ -99,6 +100,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     imgui/backends/
     implot/
     SDL/include
+    netImgui/Code/Client
 )
 
 # Static link everything so we don't have to deal with dll hell
