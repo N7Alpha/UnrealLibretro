@@ -662,8 +662,8 @@ static void create_window(int width, int height) {
         SAM2_LOG_FATAL("Failed to find all OpenGL entry points");
     }
 
-    fprintf(stderr, "GL_SHADING_LANGUAGE_VERSION: %s\n", glGetString(GL_SHADING_LANGUAGE_VERSION));
-    fprintf(stderr, "GL_VERSION: %s\n", glGetString(GL_VERSION));
+    SAM2_LOG_INFO("GL_SHADING_LANGUAGE_VERSION: %s\n", glGetString(GL_SHADING_LANGUAGE_VERSION));
+    SAM2_LOG_INFO("GL_VERSION: %s\n", glGetString(GL_VERSION));
 
 
     init_shaders();
