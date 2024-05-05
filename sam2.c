@@ -864,6 +864,7 @@ static int sam2__get_localtime(const time_t *t, struct tm *buf) {
 #endif
 }
 
+// @todo Logging is slower than I'd like it to be. I want some simple solution to this that at least applies to non-debug builds since I think those should be fast
 // @enhancement Maybe use stb_sprintf instead to avoid malloc calls? Couple this with a platform write function instead of printf
 static void SAM2_UNUSED sam2__log_write(int level, const char *file, int line, const char *fmt, ...) {
     const char *filename = file + strlen(file);
