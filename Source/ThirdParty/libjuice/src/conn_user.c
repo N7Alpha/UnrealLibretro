@@ -63,7 +63,8 @@ JUICE_EXPORT int juice_user_poll(juice_agent_t **agents, int agents_count, int t
 		}
 
 		conn_impl_t *conn_impl = agents[i]->conn_impl;
-		if (agents[i]->state != JUICE_STATE_CONNECTED || agents[i]->state == JUICE_STATE_COMPLETED) {
+		// @todo This might be a hack I was getting warnings after I removed it though. I think at worst it just performs extra work until we connect
+		if (agents[i]->state != JUICE_STATE_COMPLETED) {
 			if (agent_conn_update(agents[i], &conn_impl->next_timestamp) != 0) {
 				JLOG_WARN("Agent update failed");
 				conn_impl->state = CONN_STATE_FINISHED;
