@@ -347,7 +347,9 @@ void server_run(juice_server_t *server) {
 			timediff = 0;
 
 		if (!pfd || nfd != (nfds_t)(1 + server->allocs_count)) {
-			free(pfd);
+			if (pfd) {
+				free(pfd);
+			}
 			nfd = (nfds_t)(1 + server->allocs_count);
 			pfd = calloc(nfd, sizeof(struct pollfd));
 			if (!pfd) {
