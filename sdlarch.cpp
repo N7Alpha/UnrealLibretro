@@ -1446,9 +1446,8 @@ void draw_imgui() {
 
         static int selected_room_index = -1;  // Initialize as -1 to indicate no selection
         // Table
-        if (ImGui::BeginTable("Rooms", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+        if (ImGui::BeginTable("Rooms", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY)) {
             ImGui::TableSetupColumn("Room Name");
-            ImGui::TableSetupColumn("Peers");
             ImGui::TableSetupColumn("Core Hash");
             ImGui::TableSetupColumn("ROM Hash");
             ImGui::TableHeadersRow();
@@ -1500,10 +1499,16 @@ void draw_imgui() {
             } else {
                 ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
                 ImGui::Button("Spectate");
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Core or ROM hash mismatch with room");
-                }
                 ImGui::PopStyleVar();
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(
+                        "Core or ROM hash mismatch\n"
+                        "server ROM hash: %016" PRIx64 " core: %s\n"
+                        "client ROM hash: %016" PRIx64 " core: %s",
+                        g_sam2_rooms[selected_room_index].rom_hash_xxh64, g_sam2_rooms[selected_room_index].core_and_version,
+                        g_new_room_set_through_gui.rom_hash_xxh64, g_new_room_set_through_gui.core_and_version
+                    );
+                }
             }
         }
     }
