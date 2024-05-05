@@ -424,6 +424,8 @@ ulnet_core_option_t g_core_option_for_next_frame = {0};
 
 static struct FLibretroContext g_libretro_context;
 auto &g_ulnet_session = g_libretro_context.ulnet_session;
+static bool g_headless = 0;
+static int g_netimgui_port = 0;
 
 struct keymap {
     unsigned k;
@@ -824,9 +826,6 @@ static sam2_server_t *g_sam2_server = NULL;
 static char g_sam2_address[64] = "127.0.0.1"; //"sam2.cornbass.com";
 static int g_sam2_port = SAM2_SERVER_DEFAULT_PORT;
 static sam2_socket_t &g_sam2_socket = g_libretro_context.sam2_socket;
-
-static bool g_headless = 0;
-static int g_netimgui_port = 0;
 
 static int g_zstd_compress_level = 0;
 #define MAX_SAMPLE_SIZE 128
@@ -1689,7 +1688,7 @@ finished_drawing_sam2_interface:
     // @todo Add more information through dualui instead of window title
     //       See usages of mpContextExtra in netImgui/Code/Sample/SampleDualUI/SampleDualUI.cpp for example.
     static bool netimgui_was_connected = true; // Initialization to true so that the first frame sets the window title
-    if (netimgui_was_connected != NetImgui::IsConnected()) {
+    if (netimgui_was_connected != NetImgui::IsConnected() && g_win) {
         netimgui_was_connected = !netimgui_was_connected;
 
         char window_title[255];
@@ -2148,6 +2147,7 @@ static bool core_environment(unsigned cmd, void *data) {
 
 
 static void core_video_refresh(const void *data, unsigned width, unsigned height, size_t pitch) {
+    if (!g_win) return;
     video_refresh(data, width, height, pitch);
 }
 
@@ -2294,8 +2294,10 @@ static void core_load_game(const char *filename) {
 
     g_retro.retro_get_system_av_info(&g_av);
 
-    video_configure(&g_av.geometry);
-    audio_init(g_av.timing.sample_rate);
+    if (!g_headless) {
+        video_configure(&g_av.geometry);
+        audio_init(g_av.timing.sample_rate);
+    }
 
     if (info.data)
         SDL_free((void*)info.data);
@@ -2522,7 +2524,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (argc < 2)
-        SAM2_LOG_FATAL("Usage: %s <core> [game] [options...]\n", argv[0]);
+        SAM2_LOG_FATAL("Usage: %s <core> [game] [options...]", argv[0]);
 
     if (   strcmp(g_sam2_address, "localhost")
         || strcmp(g_sam2_address, "127.0.0.1")
@@ -2559,7 +2561,7 @@ int main(int argc, char *argv[]) {
         read_whole_file(g_argv[2], &rom_data, &rom_size);
     }
 
-    if (SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS) < 0)
+    if (SDL_Init(g_headless ? 0 : SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS) < 0)
         SAM2_LOG_FATAL("Failed to initialize SDL");
 
     // Setup Platform/Renderer backends
@@ -2671,7 +2673,9 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (!g_headless) {
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        }
 #if 0
         // Timing for frame rate
         struct timespec start_time, end_time;
@@ -3052,13 +3056,17 @@ int main(int argc, char *argv[]) {
 
         // The imgui frame is updated at the monitor refresh cadence
         // So the core frame needs to be redrawn or you'll get the Windows XP infinite window thing
-        draw_core_frame();
+        if (!g_headless) {
+            draw_core_frame();
+        }
         draw_imgui();
 
-        // We hope vsync is disabled or else this will block
-        // I think you have to write platform specific code / not use OpenGL if you want this to be non-blocking
-        // and still try to update on vertical sync or use another thread, but I don't like threads
-        SDL_GL_SwapWindow(g_win);
+        if (!g_headless) {
+            // We hope vsync is disabled or else this will block
+            // I think you have to write platform specific code / not use OpenGL if you want this to be non-blocking
+            // and still try to update on vertical sync or use another thread, but I don't like threads
+            SDL_GL_SwapWindow(g_win);
+        }
 
         if (g_sam2_server) {
             for (int i = 0; i < 128; i++) {
