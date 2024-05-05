@@ -127,7 +127,8 @@ int stun_write(void *buf, size_t size, const stun_message_t *msg, const char *pa
 		JLOG_VERBOSE("Writing XOR mapped address");
 		uint8_t value[32];
 		uint8_t mask[16];
-		*((uint32_t *)mask) = htonl(STUN_MAGIC);
+		uint32_t magic = htonl(STUN_MAGIC);
+		memcpy(mask, &magic, sizeof(magic));
 		memcpy(mask + 4, msg->transaction_id, 12);
 		int value_len = stun_write_value_mapped_address(
 		    value, 32, (const struct sockaddr *)&msg->mapped.addr, msg->mapped.len, mask);
@@ -186,7 +187,8 @@ int stun_write(void *buf, size_t size, const stun_message_t *msg, const char *pa
 		JLOG_VERBOSE("Writing XOR peer address");
 		uint8_t value[32];
 		uint8_t mask[16];
-		*((uint32_t *)mask) = htonl(STUN_MAGIC);
+		uint32_t magic = htonl(STUN_MAGIC);
+		memcpy(mask, &magic, sizeof(magic));
 		memcpy(mask + 4, msg->transaction_id, 12);
 		int value_len = stun_write_value_mapped_address(
 		    value, 32, (const struct sockaddr *)&msg->peer.addr, msg->peer.len, mask);
@@ -201,7 +203,8 @@ int stun_write(void *buf, size_t size, const stun_message_t *msg, const char *pa
 		JLOG_VERBOSE("Writing XOR relay address");
 		uint8_t value[32];
 		uint8_t mask[16];
-		*((uint32_t *)mask) = htonl(STUN_MAGIC);
+		uint32_t magic = htonl(STUN_MAGIC);
+		memcpy(mask, &magic, sizeof(magic));
 		memcpy(mask + 4, msg->transaction_id, 12);
 		int value_len = stun_write_value_mapped_address(
 		    value, 32, (const struct sockaddr *)&msg->relayed.addr, msg->relayed.len, mask);
