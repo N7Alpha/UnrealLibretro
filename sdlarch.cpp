@@ -1066,7 +1066,7 @@ void draw_imgui() {
 
         if (g_connected_to_sam2) {
             bool is_ipv6 = false;
-            for (int i = strlen(g_sam2_address)-1; i >= 0 ; i--) {
+            for (int i = 0; g_sam2_address[i] != '\0'; i++) {
                 if (g_sam2_address[i] == ':') {
                     is_ipv6 = true;
                     break;
