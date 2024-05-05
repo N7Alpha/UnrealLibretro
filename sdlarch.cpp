@@ -922,7 +922,7 @@ static int read_whole_file(const char *filename, void **data, size_t *size) {
     return 0;
 }
 
-
+#include "imgui_internal.h"
 void draw_imgui() {
     static int spinnerIndex = 0;
     char spinnerFrames[4] = { '|', '/', '-', '\\' };
@@ -1681,11 +1681,6 @@ finished_drawing_sam2_interface:
         ImGui::End();
     }
 
-    //if (g_kbd[SDL_SCANCODE_LCTRL] && g_kbd[SDL_SCANCODE_LSHIFT] && g_kbd[SDL_SCANCODE_A]) {
-    //    // @todo Add a shortcut to collapse and uncollapse windows
-    //}
-
-
     // @todo Add more information through dualui instead of window title
     //       See usages of mpContextExtra in netImgui/Code/Sample/SampleDualUI/SampleDualUI.cpp for example.
     static bool netimgui_was_connected = true; // Initialization to true so that the first frame sets the window title
@@ -1706,13 +1701,44 @@ finished_drawing_sam2_interface:
         SDL_SetWindowTitle(g_win, window_title);
     }
 
+       if (ImGui::IsKeyDown(ImGuiKey_LeftShift) && ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
+        // If only Ctrl+Shift is pressed, show available shortcuts
+        ImGui::Begin("Shortcuts Window", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNav
+            | ImGuiWindowFlags_NoDecoration |ImGuiWindowFlags_NoInputs);
+        ImGui::Text("Ctrl+Shift+S: Toggle visibility");
+        ImGui::Text("Ctrl+Shift+A: Toggle collapse/expand");
+        ImGui::End();
+    }
+
+    if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_A)) {
+        auto &windows = ImGui::GetCurrentContext()->Windows;
+
+        bool all_collapsed = true;
+        for (ImGuiWindow* window : windows) {
+            if (!window->ParentWindow) {
+                SAM2_LOG_DEBUG("Checking if window %s is collapsed", window->Name);
+                all_collapsed &= window->Collapsed;
+            }
+        }
+
+        for (ImGuiWindow* window : windows) {
+            SAM2_LOG_DEBUG("Collapsing window %s", window->Name);
+            window->Collapsed = !all_collapsed;
+        }
+    }
+
+    static bool render_windows_locally = true;
+    if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S)) {
+        render_windows_locally = !render_windows_locally;
+    }
+
     if (g_netimgui_port) {
         NetImgui::EndFrame();
     } else {
         ImGui::Render();
     }
 
-    if (!g_headless && !NetImgui::IsConnected()) {
+    if (!g_headless && !NetImgui::IsConnected() && render_windows_locally) {
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     }
 }
