@@ -438,7 +438,7 @@
 typedef struct sam2_room {
     char name[64]; // Unique name that identifies the room
     uint64_t flags;
-    uint64_t core_hash_xxh64;
+    char core_and_version[32];
     uint64_t rom_hash_xxh64;
     uint64_t peer_ids[SAM2_PORT_MAX+1]; // Must be unique per port (including authority)
 } sam2_room_t;
@@ -545,6 +545,19 @@ sam2_message_metadata_t *sam2_get_metadata(const char *message) {
     }
 
     return NULL; // No matching header found
+}
+
+int sam2_format_core_version(sam2_room_t *room, const char *name, const char *vers) {
+    int i = 0;
+    int version_len = strlen(vers);
+    char *dst = room->core_and_version;
+    int dst_size = sizeof(room->core_and_version) - 1;
+
+    const char     *srcp = name; while (i < dst_size - version_len - 1 && *srcp != '\0') dst[i++] = *(srcp++);
+    dst[i++] = ' '; srcp = vers; while (i < dst_size                   && *srcp != '\0') dst[i++] = *(srcp++);
+    dst[i] = '\0';
+
+    return i;
 }
 
 #ifdef _WIN32
@@ -2144,7 +2157,7 @@ int main() {
 // If these fail then this server won't be binary compatible with the protocol and would fail horrendously
 // Resort to packing pragmas until these succeed if you run into this issue yourself
 SAM2_STATIC_ASSERT(SAM2_BYTEORDER_ENDIAN == SAM2_BYTEORDER_LITTLE_ENDIAN, "Platform is big-endian which is unsupported");
-SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == 64 + sizeof(uint64_t) + sizeof(uint64_t) + (SAM2_PORT_MAX+1)*sizeof(uint64_t) + sizeof(uint64_t), "sam2_room_t is not packed");
+SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == 64 + sizeof(uint64_t) + 32 + (SAM2_PORT_MAX+1)*sizeof(uint64_t) + sizeof(uint64_t), "sam2_room_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_make_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_make_message_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_list_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_list_message_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_join_message_t) == 8 + 8 + 64 + sizeof(sam2_room_t), "sam2_room_join_message_t is not packed");

@@ -809,7 +809,7 @@ int g_argc;
 char **g_argv;
 
 static sam2_room_t g_new_room_set_through_gui = { 
-    "My Room Name", 0, 0, 0,
+    "My Room Name", 0, "VERSIONCORE", 0,
     { SAM2_PORT_UNAVAILABLE, SAM2_PORT_AVAILABLE, SAM2_PORT_AVAILABLE, SAM2_PORT_AVAILABLE },
 };
 
@@ -1165,7 +1165,7 @@ void draw_imgui() {
         auto show_room = [](const sam2_room_t& room) {
             ImGui::Text("Room: %s", room.name);
             ImGui::Text("Flags: %016" PRIx64, room.flags);
-            ImGui::Text("Core Hash: %016" PRIx64, room.core_hash_xxh64);
+            ImGui::Text("Core: %s", room.core_and_version);
             ImGui::Text("ROM Hash: %016" PRIx64, room.rom_hash_xxh64);
             
             for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
@@ -1470,7 +1470,7 @@ void draw_imgui() {
                 ImGui::Text("%s", ports_str);
 
                 ImGui::TableNextColumn();
-                ImGui::Text("%" PRIx64, g_sam2_rooms[room_index].core_hash_xxh64);
+                ImGui::TextUnformatted(g_sam2_rooms[room_index].core_and_version);
 
                 ImGui::TableNextColumn();
                 ImGui::Text("%" PRIx64, g_sam2_rooms[room_index].rom_hash_xxh64);
@@ -1482,7 +1482,7 @@ void draw_imgui() {
         ImGui::EndChild();
 
         if (selected_room_index != -1) {
-            if (   g_sam2_rooms[selected_room_index].core_hash_xxh64 == g_new_room_set_through_gui.core_hash_xxh64 
+            if (   0 == strcmp(g_sam2_rooms[selected_room_index].core_and_version, g_new_room_set_through_gui.core_and_version)
                 && g_sam2_rooms[selected_room_index].rom_hash_xxh64 == g_new_room_set_through_gui.rom_hash_xxh64) {
 
                 ImGui::SameLine();
@@ -2553,14 +2553,6 @@ int main(int argc, char *argv[]) {
     if (argc > 2) {
         read_whole_file(g_argv[2], &rom_data, &rom_size);
     }
-    size_t core_size;
-    void *core_data;
-    read_whole_file(g_argv[1], &core_data, &core_size);
-    
-    g_new_room_set_through_gui.rom_hash_xxh64 = ZSTD_XXH64(rom_data, rom_size, 0);
-    g_new_room_set_through_gui.core_hash_xxh64 = ZSTD_XXH64(core_data, core_size, 0);
-    SDL_free(core_data);
-    core_data = NULL;
 
     if (SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS) < 0)
         SAM2_LOG_FATAL("Failed to initialize SDL");
@@ -2581,6 +2573,13 @@ int main(int argc, char *argv[]) {
 
     // Load the game.
     core_load_game(argc > 2 ? argv[2] : NULL);
+
+    g_new_room_set_through_gui.rom_hash_xxh64 = ZSTD_XXH64(rom_data, rom_size, 0);
+    sam2_format_core_version(
+        &g_new_room_set_through_gui,
+        g_libretro_context.system_info.library_name,
+        g_libretro_context.system_info.library_version
+    );
 
     // Configure the player input devices.
     g_retro.retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
