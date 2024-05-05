@@ -663,8 +663,8 @@ static void create_window(int width, int height) {
         SAM2_LOG_FATAL("Failed to find all OpenGL entry points");
     }
 
-    SAM2_LOG_INFO("GL_SHADING_LANGUAGE_VERSION: %s\n", glGetString(GL_SHADING_LANGUAGE_VERSION));
-    SAM2_LOG_INFO("GL_VERSION: %s\n", glGetString(GL_VERSION));
+    SAM2_LOG_INFO("GL_SHADING_LANGUAGE_VERSION: %s", glGetString(GL_SHADING_LANGUAGE_VERSION));
+    SAM2_LOG_INFO("GL_VERSION: %s", glGetString(GL_VERSION));
 
 
     init_shaders();
@@ -2606,7 +2606,7 @@ int main(int argc, char *argv[]) {
     {
         // Doing font initialization manually is a special case for netImgui and using the ImGui "null" backend
         // Confusingly, you don't manually set the null backend see imgui/examples/example_null/main.cpp for details
-        // You'll hit a variety of asserts if you don't execute the following boilerplate this
+        // You'll hit a variety of asserts if you don't execute the following boilerplate
         io.Fonts->AddFontDefault();
         io.Fonts->Build();
         io.Fonts->SetTexID(0);
