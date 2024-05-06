@@ -424,9 +424,9 @@
 #define SAM2_RESPONSE_VERSION_MISMATCH         -17
 #define SAM2_RESPONSE_INVALID_ENCODE_TYPE      -18
 
-#define SAM2_PORT_UNAVAILABLE                 0
-#define SAM2_PORT_AVAILABLE                   1
-#define SAM2_PORT_SENTINELS_MAX               SAM2_PORT_AVAILABLE
+#define SAM2_PORT_AVAILABLE                   0
+#define SAM2_PORT_UNAVAILABLE                 1
+#define SAM2_PORT_SENTINELS_MAX               SAM2_PORT_UNAVAILABLE
 
 #define SAM2_PORT_MAX 8
 #define SAM2_AUTHORITY_INDEX SAM2_PORT_MAX

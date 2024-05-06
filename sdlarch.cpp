@@ -811,7 +811,8 @@ char **g_argv;
 
 static sam2_room_t g_new_room_set_through_gui = { 
     "My Room Name", 0, "VERSIONCORE", 0,
-    { SAM2_PORT_UNAVAILABLE, SAM2_PORT_AVAILABLE, SAM2_PORT_AVAILABLE, SAM2_PORT_AVAILABLE },
+    { SAM2_PORT_UNAVAILABLE,   SAM2_PORT_AVAILABLE,   SAM2_PORT_AVAILABLE,   SAM2_PORT_AVAILABLE,
+      SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE }
 };
 
 #define MAX_ROOMS 1024
@@ -3003,10 +3004,11 @@ int main(int argc, char *argv[]) {
                 session->room_we_are_in = new_room_state;
                 if (!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
                     SAM2_LOG_INFO("The room %016" PRIx64 ":'%s' was abandoned", session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX], session->room_we_are_in.name);
-                    for (int peer_port = 0; peer_port < SAM2_PORT_MAX+1; peer_port++) {
+                    for (int peer_port = 0; peer_port < SAM2_ARRAY_LENGTH(session->agent); peer_port++) {
                         if (session->agent[peer_port]) {
                             ulnet_disconnect_peer(session, peer_port);
                         }
+                        session->room_we_are_in.peer_ids[peer_port] = SAM2_PORT_AVAILABLE;
                     }
                     ulnet_session_init_defaulted(session);
                 }
@@ -3119,7 +3121,7 @@ int main(int argc, char *argv[]) {
                     } else if (memcmp(&latest_sam2_message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
                         sam2_room_list_message_t *room_list = (sam2_room_list_message_t *) &latest_sam2_message;
 
-                        if (room_list->room.peer_ids[SAM2_AUTHORITY_INDEX] == SAM2_PORT_UNAVAILABLE) {
+                        if (room_list->room.peer_ids[SAM2_AUTHORITY_INDEX] == 0) {
                             g_is_refreshing_rooms = false;
                         } else {
                             if (g_sam2_room_count < SAM2_ARRAY_LENGTH(g_sam2_rooms)) {

@@ -417,6 +417,7 @@ static inline void ulnet_session_init_defaulted(ulnet_session_t *session) {
     memset(&session->state_packet_history, 0, sizeof(session->state_packet_history));
 
     session->frame_counter = 0;
+    session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
 
     ulnet_reset_save_state_bookkeeping(session);
 }
