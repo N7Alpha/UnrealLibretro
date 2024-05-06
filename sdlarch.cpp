@@ -2162,7 +2162,6 @@ int64_t byte_swap_int64(int64_t val) {
     return swapped;
 }
 
-// @todo Handle partial join races... I didn't know where to put this todo
 void FLibretroContext::core_input_poll() {
     memset(InputState, 0, sizeof(InputState));
 
