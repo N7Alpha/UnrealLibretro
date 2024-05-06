@@ -29,7 +29,6 @@ int g_log_level = 1; // Info
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_keycode.h>
 #include <SDL3/SDL_loadso.h>
-#include <SDL3/SDL_quit.h>
 #include <SDL3/SDL_video.h>
 #include "libretro.h"
 
