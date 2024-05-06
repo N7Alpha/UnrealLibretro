@@ -1183,7 +1183,7 @@ static int sam2__frame_message(sam2_message_u *message, char *buffer, int *lengt
     int i = 0; \
     for (; i < SAM2_ARRAY_LENGTH(string) - 1; i++) if (string[i] == '\0') break; \
     for (; i < SAM2_ARRAY_LENGTH(string)    ; i++) string[i] = '\0'; \
-} while (0);
+} while (0)
 
 static void sam2__sanitize_message(void *message) {
     if (!message) return;
@@ -1197,7 +1197,7 @@ static void sam2__sanitize_message(void *message) {
         SAM2__SANITIZE_STRING(list_message->room.name);
     } else if (memcmp(message, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_room_join_message_t *join_message = (sam2_room_join_message_t *)message;
-        SAM2__SANITIZE_STRING(join_message->room.name)
+        SAM2__SANITIZE_STRING(join_message->room.name);
         SAM2__SANITIZE_STRING(join_message->room_secret);
     } else if (   memcmp(message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0
                || memcmp(message, sam2_sigx_header, SAM2_HEADER_TAG_SIZE) == 0) {
@@ -1275,7 +1275,7 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message) {
     // Write the message to the socket
     int total_bytes_written = 0;
     while (total_bytes_written < message_size) {
-        int bytes_written = send(sockfd, (char *) message + total_bytes_written, message_size - total_bytes_written, 0);
+        int bytes_written = send(sockfd, message + total_bytes_written, message_size - total_bytes_written, 0);
         if (bytes_written < 0) {
             // @todo This will busy wait
             if (SAM2_SOCKERRNO == SAM2_EAGAIN || SAM2_SOCKERRNO == EWOULDBLOCK) {
