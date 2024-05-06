@@ -547,7 +547,7 @@ sam2_message_metadata_t *sam2_get_metadata(const char *message) {
     return NULL; // No matching header found
 }
 
-int sam2_format_core_version(sam2_room_t *room, const char *name, const char *vers) {
+static int sam2_format_core_version(sam2_room_t *room, const char *name, const char *vers) {
     int i = 0;
     int version_len = strlen(vers);
     char *dst = room->core_and_version;
