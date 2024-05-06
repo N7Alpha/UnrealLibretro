@@ -1707,12 +1707,14 @@ finished_drawing_sam2_interface:
         SDL_SetWindowTitle(g_win, window_title);
     }
 
-       if (ImGui::IsKeyDown(ImGuiKey_LeftShift) && ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
+    static bool render_imgui_windows_locally = true;
+    if (ImGui::IsKeyDown(ImGuiKey_LeftShift) && ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
         // If only Ctrl+Shift is pressed, show available shortcuts
         ImGui::Begin("Shortcuts Window", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNav
             | ImGuiWindowFlags_NoDecoration |ImGuiWindowFlags_NoInputs);
-        ImGui::Text("Ctrl+Shift+S: Toggle visibility");
+        ImGui::Text("Ctrl+Shift+S: Toggle visibility"); render_imgui_windows_locally ^= ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S);
         ImGui::Text("Ctrl+Shift+A: Toggle collapse/expand");
+        ImGui::Text("Ctrl+Shift+D: Toggle input fuzzing"); g_libretro_context.fuzz_input ^= ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_D);
         ImGui::End();
     }
 
@@ -1721,7 +1723,7 @@ finished_drawing_sam2_interface:
 
         bool all_collapsed = true;
         for (ImGuiWindow* window : windows) {
-            if (!window->ParentWindow) {
+            if (!window->ParentWindow && !(window->Flags & ImGuiWindowFlags_NoCollapse)) {
                 SAM2_LOG_DEBUG("Checking if window %s is collapsed", window->Name);
                 all_collapsed &= window->Collapsed;
             }
@@ -1733,18 +1735,13 @@ finished_drawing_sam2_interface:
         }
     }
 
-    static bool render_windows_locally = true;
-    if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S)) {
-        render_windows_locally = !render_windows_locally;
-    }
-
     if (g_netimgui_port) {
         NetImgui::EndFrame();
     } else {
         ImGui::Render();
     }
 
-    if (!g_headless && !NetImgui::IsConnected() && render_windows_locally) {
+    if (!g_headless && !NetImgui::IsConnected() && render_imgui_windows_locally) {
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     }
 }
