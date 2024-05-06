@@ -29,8 +29,8 @@
 #define ULNET_CHANNEL_SAVESTATE_TRANSFER      0x30
 #define ULNET_CHANNEL_DESYNC_DEBUG            0xF0
 
+#define ULNET_WAITING_FOR_SAVE_STATE_SENTINEL INT64_MAX
 
-#define ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE 0x1
 #define ULNET_SESSION_FLAG_CORE_OPTIONS_DIRTY     0x2
 
 // This constant defines the maximum number of frames that can be buffered before blocking.
@@ -405,7 +405,6 @@ static inline void ulnet_reset_save_state_bookkeeping(ulnet_session_t *session) 
     session->remote_packet_groups = FEC_PACKET_GROUPS_MAX;
     session->remote_savestate_transfer_offset = 0;
     memset(session->fec_index_counter, 0, sizeof(session->fec_index_counter));
-    session->flags &= ~ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE;
 }
 
 static inline void ulnet_session_init_defaulted(ulnet_session_t *session) {

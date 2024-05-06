@@ -1393,7 +1393,6 @@ void draw_imgui() {
                     g_libretro_context.SAM2Send((char *) &response);
                     ulnet_disconnect_peer(&g_ulnet_session, SAM2_AUTHORITY_INDEX);
                     memcpy(&g_ulnet_session.room_we_are_in, &g_new_room_set_through_gui, sizeof(sam2_room_t));
-                    g_ulnet_session.room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
                     g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = g_ulnet_session.our_peer_id;
                     g_ulnet_session.frame_counter = 0;
                     g_ulnet_session.state[SAM2_AUTHORITY_INDEX].frame = 0;
@@ -1488,8 +1487,7 @@ void draw_imgui() {
                     // Directly signaling the authority just means spectate
                     ulnet_session_init_defaulted(&g_ulnet_session);
                     g_ulnet_session.room_we_are_in = g_sam2_rooms[selected_room_index];
-                    g_ulnet_session.flags |= ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE;
-                    g_ulnet_session.frame_counter = 123456789000;
+                    g_ulnet_session.frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
                     startup_ice_for_peer(
                         &g_ulnet_session,
                          g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX]
@@ -1625,7 +1623,11 @@ finished_drawing_sam2_interface:
             }
         }
 
-        ImGui::Text("Core ticks %" PRId64, g_ulnet_session.frame_counter);
+        if (g_ulnet_session.frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) {
+            ImGui::Text("Core ticks: waiting for save state...");
+        } else {
+            ImGui::Text("Core ticks: %" PRId64, g_ulnet_session.frame_counter);
+        }
         ImGui::Text("Core tick time (ms)");
 
         float *frame_time_dataset[] = {
@@ -2863,8 +2865,8 @@ int main(int argc, char *argv[]) {
         }
 
         ImGui::SeparatorText("Things We are Waiting on Before we can Tick");
-        if                            (g_ulnet_session.flags & ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE) { ImGui::Text("Waiting for savestate"); }
-        bool netplay_ready_to_tick = !(g_ulnet_session.flags & ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE);
+        if                            (g_ulnet_session.frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) { ImGui::Text("Waiting for savestate"); }
+        bool netplay_ready_to_tick = !(g_ulnet_session.frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL);
         if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
             for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
                 if (g_ulnet_session.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
@@ -2891,7 +2893,7 @@ int main(int argc, char *argv[]) {
             ignore_frame_pacing_so_we_can_catch_up = authority_frame > g_ulnet_session.frame_counter + max_frame_tolerance_a_peer_can_be_behind;
         }
 
-        if (!(g_ulnet_session.flags & ULNET_SESSION_FLAG_WAITING_FOR_SAVE_STATE) && !ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
+        if (!(g_ulnet_session.frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) && !ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
             int64_t frames_buffered = g_ulnet_session.state[g_libretro_context.OurPort()].frame - g_ulnet_session.frame_counter + 1;
             assert(frames_buffered <= ULNET_DELAY_BUFFER_SIZE);
             assert(frames_buffered >= 0);
