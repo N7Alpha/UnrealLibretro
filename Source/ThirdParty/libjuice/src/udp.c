@@ -485,14 +485,19 @@ int udp_get_addrs(socket_t sock, addr_record_t *records, size_t count) {
 #endif
 
 #ifdef _WIN32
-	char buf[4096];
+	// The union avoids strict-aliasing/alignment issues
+	union {
+		char buf[4096];
+		SOCKET_ADDRESS_LIST list;
+	} u;
+
 	DWORD len = 0;
-	if (WSAIoctl(sock, SIO_ADDRESS_LIST_QUERY, NULL, 0, buf, sizeof(buf), &len, NULL, NULL)) {
+	if (WSAIoctl(sock, SIO_ADDRESS_LIST_QUERY, NULL, 0, u.buf, sizeof(u.buf), &len, NULL, NULL)) {
 		JLOG_ERROR("WSAIoctl with SIO_ADDRESS_LIST_QUERY failed, errno=%d", WSAGetLastError());
 		return -1;
 	}
 
-	SOCKET_ADDRESS_LIST *list = (SOCKET_ADDRESS_LIST *)buf;
+	SOCKET_ADDRESS_LIST *list = &u.list;
 	for (int i = 0; i < list->iAddressCount; ++i) {
 		struct sockaddr *sa = list->Address[i].lpSockaddr;
 		socklen_t len = list->Address[i].iSockaddrLength;
