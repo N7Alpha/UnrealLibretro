@@ -16,7 +16,7 @@
 // load-balancers/routers might add I keep this conservative
 #define ULNET_PACKET_SIZE_BYTES_MAX 1408
 
-#define ULNET_SPECTATOR_MAX 64
+#define ULNET_SPECTATOR_MAX 55
 #define ULNET_CORE_OPTIONS_MAX 128
 #define ULNET_STATE_PACKET_HISTORY_SIZE 256
 
@@ -144,6 +144,7 @@ typedef struct {
 
     int64_t compressed_options_size;
     int64_t compressed_savestate_size;
+    int64_t decompressed_savestate_size;
 #if 0
     uint8_t compressed_savestate_data[compressed_savestate_size];
     uint8_t compressed_options_data[compressed_options_size];
@@ -168,6 +169,7 @@ typedef struct ulnet_session {
     int64_t        peer_desynced_frame [SAM2_PORT_MAX + 1 /* Plus Authority */ + ULNET_SPECTATOR_MAX];
     ulnet_state_t  state               [SAM2_PORT_MAX + 1 /* Plus Authority */];
     unsigned char  state_packet_history[SAM2_PORT_MAX + 1 /* Plus Authority */][ULNET_STATE_PACKET_HISTORY_SIZE][ULNET_PACKET_SIZE_BYTES_MAX];
+    uint64_t       peer_needs_sync_bitfield;
 
     int64_t spectator_count;
 
@@ -186,7 +188,6 @@ typedef struct ulnet_session {
     int (*populate_core_options_callback)(void *user_ptr, ulnet_core_option_t options[ULNET_CORE_OPTIONS_MAX]);
 
     size_t (*retro_serialize_size)(void);
-    bool (*retro_serialize)(void *data, size_t size);
     bool (*retro_unserialize)(const void *data, size_t size);
 } ulnet_session_t;
 
@@ -270,8 +271,6 @@ bool ulnet_is_spectator(ulnet_session_t *session, uint64_t peer_id) {
            && sam2_get_port_of_peer(&session->room_we_are_in, peer_id) == -1;
 }
 
-void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent);
-
 // Interactive-Connectivity-Establishment callbacks that libjuice calls
 static void on_state_changed(juice_agent_t *agent, juice_state_t state, void *user_ptr);
 static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr);
@@ -346,10 +345,8 @@ static void on_state_changed(juice_agent_t *agent, juice_state_t state, void *us
 
     if (   state == JUICE_STATE_CONNECTED
         && session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
-        SAM2_LOG_INFO("Sending savestate to peer %016" PRIx64, session->our_peer_id);
-        // @todo Probably this should be changed to a needs save state flag since this function is called from a callback
-        //       but it might not matter
-        ulnet_send_save_state(session, agent);
+        SAM2_LOG_INFO("Setting peer needs sync bit for peer %016" PRIx64, session->our_peer_id);
+        session->peer_needs_sync_bitfield |= (1ULL << p);
     } else if (state == JUICE_STATE_FAILED) {
         if (p >= SAM2_PORT_MAX+1) {
             SAM2_LOG_INFO("Spectator %016" PRIx64 " left" , session->room_we_are_in.peer_ids[p]);
@@ -726,7 +723,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
                         session->peer_desynced_frame[p] = frame_to_compare;
                     }
 
-                    SAM2_LOG_ERROR("Save state hash mismatch for frame %" PRId64 " Our hash: %" PRIx64 " Their hash: %" PRIx64 "",
+                    SAM2_LOG_ERROR("Save state hash mismatch for frame %" PRId64 " Our hash: %016" PRIx64 " Their hash: %016" PRIx64 "",
                         frame_to_compare, our_desync_debug_packet.save_state_hash[frame_index], their_desync_debug_packet.save_state_hash[frame_index]);
                 } else if (session->peer_desynced_frame[p]) {
                     session->peer_desynced_frame[p] = 0;
@@ -779,6 +776,11 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
             break;
         }
 
+        if (sequence_hi >= FEC_PACKET_GROUPS_MAX) {
+            SAM2_LOG_WARN("Received savestate transfer packet with sequence_hi >= FEC_PACKET_GROUPS_MAX");
+            break;
+        }
+
         uint8_t sequence_lo = savestate_transfer_header.sequence_lo;
 
         SAM2_LOG_DEBUG("Received savestate packet sequence_hi: %hhu sequence_lo: %hhu", sequence_hi, sequence_lo);
@@ -818,6 +820,21 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
 
                 SAM2_LOG_INFO("Received savestate transfer payload for frame %" PRId64 "", savestate_transfer_payload->frame_counter);
 
+                if (   savestate_transfer_payload->total_size_bytes > k * (int) size * session->remote_packet_groups
+                    || savestate_transfer_payload->total_size_bytes < 0) {
+                    SAM2_LOG_ERROR("Savestate transfer payload total size would out-of-bounds when computing hash: %" PRId64 "", savestate_transfer_payload->total_size_bytes);
+                    break;
+                }
+
+                uint64_t their_savestate_transfer_payload_xxhash = savestate_transfer_payload->xxhash;
+                savestate_transfer_payload->xxhash = 0;
+                uint64_t our_savestate_transfer_payload_xxhash = ZSTD_XXH64(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes, 0);
+
+                if (their_savestate_transfer_payload_xxhash != our_savestate_transfer_payload_xxhash) {
+                    SAM2_LOG_ERROR("Savestate transfer payload hash mismatch: %" PRIx64 " != %" PRIx64 "", their_savestate_transfer_payload_xxhash, our_savestate_transfer_payload_xxhash);
+                    break;
+                }
+
                 size_t ret = ZSTD_decompress(
                     session->core_options, sizeof(session->core_options),
                     savestate_transfer_payload->compressed_data + savestate_transfer_payload->compressed_savestate_size,
@@ -831,15 +848,11 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
                     session->flags |= ULNET_SESSION_FLAG_CORE_OPTIONS_DIRTY;
                     //session.retro_run(); // Apply options before loading savestate; Lets hope this isn't necessary
 
-                    int64_t remote_savestate_hash = fnv1a_hash(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes);
-                    SAM2_LOG_INFO("Received savestate payload with hash: %llx size: %llu bytes",
-                        remote_savestate_hash, savestate_transfer_payload->total_size_bytes);
-
-                    save_state_data = (unsigned char *) malloc(session->retro_serialize_size());
+                    save_state_data = (unsigned char *) malloc(savestate_transfer_payload->decompressed_savestate_size);
 
                     int64_t save_state_size = ZSTD_decompress(
                         save_state_data,
-                        session->retro_serialize_size(),
+                        savestate_transfer_payload->decompressed_savestate_size,
                         savestate_transfer_payload->compressed_data,
                         savestate_transfer_payload->compressed_savestate_size
                     );
@@ -874,18 +887,14 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
     }
 }
 
-void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent) {
-    size_t serialize_size = session->retro_serialize_size();
-    void *savebuffer = malloc(serialize_size);
-
-    if (!session->retro_serialize(savebuffer, serialize_size)) {
-        assert(!"Failed to serialize");
-    }
+// Pass in save state since often retro_serialize can tick the core
+void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent, void *save_state, size_t save_state_size, int64_t save_state_frame) {
+    assert(save_state);
 
     int packet_payload_size_bytes = ULNET_PACKET_SIZE_BYTES_MAX - sizeof(ulnet_save_state_packet_fragment_t);
     int n, k, packet_groups;
 
-    int64_t save_state_transfer_payload_compressed_bound_size_bytes = ZSTD_COMPRESSBOUND(serialize_size) + ZSTD_COMPRESSBOUND(sizeof(session->core_options));
+    int64_t save_state_transfer_payload_compressed_bound_size_bytes = ZSTD_COMPRESSBOUND(save_state_size) + ZSTD_COMPRESSBOUND(sizeof(session->core_options));
     logical_partition(sizeof(savestate_transfer_payload_t) /* Header */ + save_state_transfer_payload_compressed_bound_size_bytes,
                       FEC_REDUNDANT_BLOCKS, &n, &k, &packet_payload_size_bytes, &packet_groups);
 
@@ -895,10 +904,11 @@ void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent) {
     // Having this data in a single contiguous buffer makes indexing easier
     savestate_transfer_payload_t *savestate_transfer_payload = (savestate_transfer_payload_t *) malloc(savestate_transfer_payload_plus_parity_bound_bytes);
 
+    savestate_transfer_payload->decompressed_savestate_size = save_state_size;
     savestate_transfer_payload->compressed_savestate_size = ZSTD_compress(
         savestate_transfer_payload->compressed_data,
         save_state_transfer_payload_compressed_bound_size_bytes,
-        savebuffer, serialize_size, session->zstd_compress_level
+        save_state, save_state_size, session->zstd_compress_level
     );
 
     if (ZSTD_isError(savestate_transfer_payload->compressed_savestate_size)) {
@@ -921,13 +931,12 @@ void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent) {
                       FEC_REDUNDANT_BLOCKS, &n, &k, &packet_payload_size_bytes, &packet_groups);
     assert(savestate_transfer_payload_plus_parity_bound_bytes >= packet_groups * n * packet_payload_size_bytes); // If this fails my logic calculating the bounds was just wrong
 
-    savestate_transfer_payload->frame_counter = session->frame_counter;
+    savestate_transfer_payload->frame_counter = save_state_frame;
     savestate_transfer_payload->room = session->room_we_are_in;
     savestate_transfer_payload->total_size_bytes = sizeof(savestate_transfer_payload_t) + savestate_transfer_payload->compressed_savestate_size + savestate_transfer_payload->compressed_options_size;
 
-    uint64_t hash = fnv1a_hash(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes);
-    printf("Sending savestate payload with hash: %" PRIx64 " size: %" PRId64 " bytes\n", hash, savestate_transfer_payload->total_size_bytes);
-
+    savestate_transfer_payload->xxhash = 0;
+    savestate_transfer_payload->xxhash = ZSTD_XXH64(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes, 0);
     // Create parity blocks for Reed-Solomon. n - k in total for each packet group
     // We have "packet grouping" because pretty much every implementation of Reed-Solomon doesn't support more than 255 blocks
     // and unfragmented UDP packets over ethernet are limited to ULNET_PACKET_SIZE_BYTES_MAX
@@ -973,6 +982,5 @@ void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent) {
         }
     }
 
-    free(savebuffer);
     free(savestate_transfer_payload);
 }

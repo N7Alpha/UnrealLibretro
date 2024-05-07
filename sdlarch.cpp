@@ -5,7 +5,7 @@
 #define SAM2_IMPLEMENTATION
 #define SAM2_SERVER
 //#define SAM2_LOG_WRITE(level, file, line, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0); // Ex. Use print
-#define SAM2_LOG_WRITE(level, file, line, ...) if (level >= g_log_level) { sam2__log_write(level, __FILE__, __LINE__, __VA_ARGS__); }
+#define SAM2_LOG_WRITE(level, file, line, ...) do { if (level >= g_log_level) { sam2__log_write(level, __FILE__, __LINE__, __VA_ARGS__); } } while (0)
 int g_log_level = 1; // Info
 #include "ulnet.h"
 #include "sam2.c"
@@ -863,8 +863,6 @@ static unsigned char g_savebuffer[MAX_SAVE_STATES][20 * 1024 * 1024] = {0};
 static int g_save_state_index = 0;
 static int g_save_state_used_for_delta_index_offset = 1;
 
-static bool g_send_savestate_next_frame = false;
-
 static bool g_is_refreshing_rooms = false;
 
 static int g_volume = 3;
@@ -996,7 +994,6 @@ void draw_imgui() {
             display_count = format_unit_count(g_serialize_size / avg_zstd_cycle_count, unit);
             ImGui::Text("%s compression average speed: %.2f %s", algorithm_name, display_count, unit);
 
-            g_send_savestate_next_frame = ImGui::Button("Send Savestate");
             ImGui::Text("Remote Savestate hash: %" PRIx64 "", g_remote_savestate_hash);
         }
 
@@ -2181,7 +2178,9 @@ void FLibretroContext::core_input_poll() {
     }
 }
 
+static bool g_we_ticked = false;
 static void core_input_poll(void) {
+    g_we_ticked = true;
     g_libretro_context.core_input_poll();
 }
 
@@ -2404,16 +2403,7 @@ static void heuristic_byte_swap(uint32_t *data, size_t size) {
 }
 
 // I pulled this out of main because it kind of clutters the logic and to get back some indentation
-void tick_compression_investigation(void *rom_data, size_t rom_size) {
-    g_serialize_size = g_retro.retro_serialize_size();
-    if (sizeof(g_savebuffer[0]) >= g_serialize_size) {
-        uint64_t start = rdtsc();
-        g_retro.retro_serialize(g_savebuffer[g_save_state_index], sizeof(g_savebuffer[0]));
-        g_save_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
-    } else {
-        fprintf(stderr, "Save buffer too small to save state\n");
-    }
-
+void tick_compression_investigation(void *save_state, size_t save_state_size, void *rom_data, size_t rom_size) {
     uint64_t start = rdtsc();
     unsigned char *buffer = g_savebuffer[g_save_state_index];
     static unsigned char g_savebuffer_delta[sizeof(g_savebuffer[0])];
@@ -2495,15 +2485,6 @@ void tick_compression_investigation(void *rom_data, size_t rom_size) {
     }
 
     g_zstd_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
-
-    if (g_send_savestate_next_frame) {
-        g_send_savestate_next_frame = false;
-
-        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-            if (!g_ulnet_session.agent[p]) continue;
-            ulnet_send_save_state(&g_ulnet_session, g_ulnet_session.agent[p]);
-        }
-    }
 }
 
 int main(int argc, char *argv[]) {
@@ -2923,7 +2904,40 @@ int main(int argc, char *argv[]) {
                 }
             }
 
-            g_retro.retro_run();
+            bool we_ticked_in_retro_serialize = false; // Hack but its simple
+            int64_t save_state_frame = g_ulnet_session.frame_counter;
+            if (g_do_zstd_compress || g_ulnet_session.peer_needs_sync_bitfield) {
+                g_serialize_size = g_retro.retro_serialize_size();
+                if (sizeof(g_savebuffer[g_save_state_index]) >= g_serialize_size) {
+                    g_we_ticked = false;
+                    uint64_t start = rdtsc();
+                    g_retro.retro_serialize(g_savebuffer[g_save_state_index], sizeof(g_savebuffer[g_save_state_index]));
+                    g_save_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
+                } else {
+                    SAM2_LOG_FATAL("Save buffer too small to save state");
+                }
+
+                if (g_we_ticked) {
+                    SAM2_LOG_DEBUG("We ticked while saving state on frame %" PRId64, g_ulnet_session.frame_counter);
+                    we_ticked_in_retro_serialize = true;
+                    save_state_frame++; // @todo I think this is right I really need to write some kind of test though
+                }
+            }
+
+            if (g_ulnet_session.peer_needs_sync_bitfield) {
+                for (uint64_t p = 0; p < SAM2_ARRAY_LENGTH(g_ulnet_session.agent); p++) {
+                    if (g_ulnet_session.peer_needs_sync_bitfield & (1ULL << p)) {
+                        ulnet_send_save_state(&g_ulnet_session, g_ulnet_session.agent[p], &g_savebuffer[g_save_state_index], g_serialize_size, save_state_frame);
+                        g_ulnet_session.peer_needs_sync_bitfield &= ~(1ULL << p);
+                    }
+                }
+            }
+
+            // We've only buffered enough input to advance a frame also this would mess up netplay logic
+            if (!we_ticked_in_retro_serialize) {
+                g_retro.retro_run();
+            }
+
             core_wants_tick_at_unix_usec += 1000000 / g_av.timing.fps;
 
 #if 0
@@ -3013,19 +3027,9 @@ int main(int argc, char *argv[]) {
                 }
             }
 
-            // Ideally I'd place this right after ticking the core, but we need to update the room state first
-            g_ulnet_session.frame_counter++;
-
-            // Keep track of frame-times for plotting purposes
-            static int64_t last_tick_usec = get_unix_time_microseconds();
-            int64_t current_time_usec = get_unix_time_microseconds();
-            int64_t elapsed_time_milliseconds = (current_time_usec - last_tick_usec) / 1000;
-            g_frame_time_milliseconds[g_frame_cyclic_offset] = elapsed_time_milliseconds;
-            last_tick_usec = current_time_usec;
-
             int64_t savestate_hash = 0;
             if (g_do_zstd_compress) {
-                tick_compression_investigation(rom_data, rom_size);
+                tick_compression_investigation(g_savebuffer, g_serialize_size, rom_data, rom_size);
 
                 savestate_hash = fnv1a_hash(g_savebuffer[g_save_state_index], g_serialize_size);
 
@@ -3034,9 +3038,9 @@ int main(int argc, char *argv[]) {
 
             if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
                 g_ulnet_session.desync_debug_packet.channel_and_flags = ULNET_CHANNEL_DESYNC_DEBUG;
-                g_ulnet_session.desync_debug_packet.frame          = (g_ulnet_session.frame_counter-1); // This was for the previous frame
-                g_ulnet_session.desync_debug_packet.save_state_hash [(g_ulnet_session.frame_counter-1) % ULNET_DELAY_BUFFER_SIZE] = savestate_hash;
-                g_ulnet_session.desync_debug_packet.input_state_hash[(g_ulnet_session.frame_counter-1) % ULNET_DELAY_BUFFER_SIZE] = fnv1a_hash(g_libretro_context.InputState, sizeof(g_libretro_context.InputState));
+                g_ulnet_session.desync_debug_packet.frame          = save_state_frame;
+                g_ulnet_session.desync_debug_packet.save_state_hash [save_state_frame % ULNET_DELAY_BUFFER_SIZE] = savestate_hash;
+                g_ulnet_session.desync_debug_packet.input_state_hash[save_state_frame % ULNET_DELAY_BUFFER_SIZE] = fnv1a_hash(g_libretro_context.InputState, sizeof(g_libretro_context.InputState));
 
                 for (int p = 0; p < SAM2_ARRAY_LENGTH(g_ulnet_session.agent); p++) {
                     if (!g_ulnet_session.agent[p]) continue;
@@ -3047,6 +3051,16 @@ int main(int argc, char *argv[]) {
                     }
                 }
             }
+
+            // Ideally I'd place this right after ticking the core, but we need to update the room state first
+            g_ulnet_session.frame_counter++;
+
+            // Keep track of frame-times for plotting purposes
+            static int64_t last_tick_usec = get_unix_time_microseconds();
+            int64_t current_time_usec = get_unix_time_microseconds();
+            int64_t elapsed_time_milliseconds = (current_time_usec - last_tick_usec) / 1000;
+            g_frame_time_milliseconds[g_frame_cyclic_offset] = elapsed_time_milliseconds;
+            last_tick_usec = current_time_usec;
 
             g_frame_cyclic_offset = (g_frame_cyclic_offset + 1) % g_sample_size;
         }
@@ -3106,7 +3120,6 @@ int main(int argc, char *argv[]) {
                         return LibretroContext->SAM2Send(response);
                     };
 
-                    g_ulnet_session.retro_serialize = g_retro.retro_serialize;
                     g_ulnet_session.retro_serialize_size = g_retro.retro_serialize_size;
                     g_ulnet_session.retro_unserialize = g_retro.retro_unserialize;
                     status = ulnet_process_message(
