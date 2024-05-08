@@ -806,7 +806,8 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
                 all_data_decoded &= session->fec_index_counter[i] >= k;
             }
 
-            if (all_data_decoded) { 
+            if (all_data_decoded) {
+                unsigned char *save_state_data = NULL;
                 savestate_transfer_payload_t *savestate_transfer_payload = (savestate_transfer_payload_t *) malloc(sizeof(savestate_transfer_payload_t) /* Fixed size header */ + COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES);
 
                 int64_t remote_payload_size = 0;
@@ -820,10 +821,10 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
 
                 SAM2_LOG_INFO("Received savestate transfer payload for frame %" PRId64 "", savestate_transfer_payload->frame_counter);
 
-                if (   savestate_transfer_payload->total_size_bytes > k * (int) size * session->remote_packet_groups
+                if (   savestate_transfer_payload->total_size_bytes > k * (int) rs_block_size * session->remote_packet_groups
                     || savestate_transfer_payload->total_size_bytes < 0) {
                     SAM2_LOG_ERROR("Savestate transfer payload total size would out-of-bounds when computing hash: %" PRId64 "", savestate_transfer_payload->total_size_bytes);
-                    break;
+                    goto cleanup;
                 }
 
                 uint64_t their_savestate_transfer_payload_xxhash = savestate_transfer_payload->xxhash;
@@ -832,7 +833,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
 
                 if (their_savestate_transfer_payload_xxhash != our_savestate_transfer_payload_xxhash) {
                     SAM2_LOG_ERROR("Savestate transfer payload hash mismatch: %" PRIx64 " != %" PRIx64 "", their_savestate_transfer_payload_xxhash, our_savestate_transfer_payload_xxhash);
-                    break;
+                    goto cleanup;
                 }
 
                 size_t ret = ZSTD_decompress(
@@ -841,7 +842,6 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
                     savestate_transfer_payload->compressed_options_size
                 );
 
-                unsigned char *save_state_data = NULL;
                 if (ZSTD_isError(ret)) {
                     SAM2_LOG_ERROR("Error decompressing core options: %s", ZSTD_getErrorName(ret));
                 } else {
@@ -870,6 +870,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
                     }
                 }
 
+cleanup:
                 if (save_state_data != NULL) {
                     free(save_state_data);
                 }
