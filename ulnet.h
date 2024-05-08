@@ -785,11 +785,11 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
 
         SAM2_LOG_DEBUG("Received savestate packet sequence_hi: %hhu sequence_lo: %hhu", sequence_hi, sequence_lo);
 
-        uint8_t *copied_packet_ptr = (uint8_t *) memcpy(session->remote_savestate_transfer_packets + session->remote_savestate_transfer_offset, data, size);
-        session->fec_packet[sequence_hi][sequence_lo] = copied_packet_ptr + sizeof(ulnet_save_state_packet_fragment_t);
+        uint8_t *copied_packet_ptr = (uint8_t *) memcpy(&session->remote_savestate_transfer_packets[session->remote_savestate_transfer_offset], data, size);
         session->remote_savestate_transfer_offset += size;
 
-        session->fec_index[sequence_hi][session->fec_index_counter[sequence_hi]++] = sequence_lo;
+        session->fec_packet[sequence_hi][session->fec_index_counter[sequence_hi]] = copied_packet_ptr + sizeof(ulnet_save_state_packet_fragment_t);
+        session->fec_index [sequence_hi][session->fec_index_counter[sequence_hi]++] = sequence_lo;
 
         if (session->fec_index_counter[sequence_hi] == k) {
             SAM2_LOG_DEBUG("Received all the savestate data for packet group: %hhu", sequence_hi);
