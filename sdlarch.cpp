@@ -924,9 +924,38 @@ void draw_imgui() {
     static int spinnerIndex = 0;
     char spinnerFrames[4] = { '|', '/', '-', '\\' };
     char spinnerGlyph = spinnerFrames[(spinnerIndex++/4)%4];
+    const ImVec4 WHITE(1.0f, 1.0f, 1.0f, 1.0f);
+    const ImVec4 GREY(0.5f, 0.5f, 0.5f, 1.0f);
+    const ImVec4 GOLD(1.0f, 0.843f, 0.0f, 1.0f);
+    const ImVec4 RED(1.0f, 0.0f, 0.0f, 1.0f);
 
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     static bool show_demo_window = false;
+
+    auto show_room = [=](const sam2_room_t& room) {
+        ImGui::Text("Room: %s", room.name);
+        ImGui::Text("Flags: %016" PRIx64, room.flags);
+        ImGui::Text("Core: %s", room.core_and_version);
+        ImGui::Text("ROM Hash: %016" PRIx64, room.rom_hash_xxh64);
+        
+        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+            ImVec4 color = g_ulnet_session.our_peer_id == room.peer_ids[p] ? GOLD : WHITE;
+            if (p == SAM2_AUTHORITY_INDEX) {
+                ImGui::Text("Authority Peer ID: ", room.peer_ids[p]);
+            } else {
+                ImGui::Text("Port %d Peer ID: ", p, room.peer_ids[p]);
+            }
+
+            ImGui::SameLine();
+            if (room.peer_ids[p] == SAM2_PORT_AVAILABLE) {
+                ImGui::Text("Available");
+            } else if (room.peer_ids[p] == SAM2_PORT_UNAVAILABLE) {
+                ImGui::Text("Unavailable");
+            } else {
+                ImGui::TextColored(color, "%016" PRIx64, room.peer_ids[p]);
+            }
+        }
+    };
 
     // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
     if (show_demo_window)
@@ -960,9 +989,12 @@ void draw_imgui() {
         avg_cycle_count        /= g_sample_size;
         avg_zstd_compress_size /= g_sample_size;
         avg_zstd_cycle_count   /= g_sample_size;
-        strcpy(unit, "cycles");
-        double display_count = format_unit_count(avg_cycle_count, unit);
 
+        strcpy(unit, "bits");
+        double display_count = format_unit_count(8 * g_retro.retro_serialize_size(), unit);
+        ImGui::Text("retro_serialize_size: %g %s", display_count, unit);
+        strcpy(unit, "cycles");
+        display_count = format_unit_count(avg_cycle_count, unit);
         ImGui::Text("retro_serialize average cycle count: %.2f %s", display_count, unit);
         ImGui::Checkbox("Compress serialized data with zstd", &g_do_zstd_compress);
         if (g_do_zstd_compress) {
@@ -1053,7 +1085,15 @@ void draw_imgui() {
             ImGui::TextColored(ImVec4(0, 1, 0, 1), "We're listening on [::]:%d (IPv4 tunneling is OS dependent)", g_sam2_port);
 
             if (ImGui::CollapsingHeader("Server Information")) {
-                ImGui::Text("Room count: %" PRId64, g_sam2_server->room_count);
+
+                char label[64];
+                snprintf(label, 64, "Room Count: %" PRId64, g_sam2_server->room_count);
+                if (ImGui::CollapsingHeader(label)) {
+                    for (int i = 0; i < g_sam2_server->room_count; i++) {
+                        show_room(g_sam2_server->rooms[i]);
+                    }
+                }
+
                 ImGui::Text("Messages allocated: %d", g_sam2_server->_debug_allocated_messages);
             }
 
@@ -1158,21 +1198,6 @@ void draw_imgui() {
         const char* levelNames[] = {"Debug", "Info", "Warn", "Error", "Fatal"};
         ImGui::SliderInt("Log Level", &g_log_level, 0, 4, levelNames[g_log_level]);
 
-        auto show_room = [](const sam2_room_t& room) {
-            ImGui::Text("Room: %s", room.name);
-            ImGui::Text("Flags: %016" PRIx64, room.flags);
-            ImGui::Text("Core: %s", room.core_and_version);
-            ImGui::Text("ROM Hash: %016" PRIx64, room.rom_hash_xxh64);
-            
-            for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-                if (p == SAM2_AUTHORITY_INDEX) {
-                    ImGui::Text("Authority Peer ID: %016" PRIx64, room.peer_ids[p]);
-                } else {
-                    ImGui::Text("Port %d Peer ID: %016" PRIx64, p, room.peer_ids[p]);
-                }
-            }
-        };
-
         if (isWindowOpen && selected_message_index != -1) {
             ImGui::Begin("Messages", &isWindowOpen); // Use isWindowOpen to allow closing the window
 
@@ -1251,11 +1276,6 @@ void draw_imgui() {
     if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
         ImGui::Text("Our Peer ID:");
         ImGui::SameLine();
-        //0xe0 0xc9 0x1b
-        const ImVec4 WHITE(1.0f, 1.0f, 1.0f, 1.0f);
-        const ImVec4 GREY(0.5f, 0.5f, 0.5f, 1.0f);
-        const ImVec4 GOLD(1.0f, 0.843f, 0.0f, 1.0f);
-        const ImVec4 RED(1.0f, 0.0f, 0.0f, 1.0f);
         ImGui::TextColored(GOLD, "%" PRIx64, g_ulnet_session.our_peer_id);
 
         ImGui::SeparatorText("Connection Status");
