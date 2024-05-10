@@ -449,9 +449,9 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
         sam2_room_join_message_t *room_join = (sam2_room_join_message_t *) response;
 
         // This looks weird but really we're just figuring out what the current state of the room
-        // looks like so we can send generate deltas against it
+        // looks like so we can generate deltas against it
         sam2_room_t future_room_we_are_in = session->room_we_are_in;
-        for (int frame = session->frame_counter+1; frame < session->state[SAM2_AUTHORITY_INDEX].frame; frame++) {
+        for (int64_t frame = session->frame_counter+1LL; frame < session->state[SAM2_AUTHORITY_INDEX].frame; frame++) {
             ulnet__xor_delta(
                 &future_room_we_are_in,
                 &session->state[SAM2_AUTHORITY_INDEX].room_xor_delta[frame % ULNET_DELAY_BUFFER_SIZE],

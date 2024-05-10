@@ -3244,7 +3244,6 @@ int main(int argc, char *argv[]) {
                 static char buffer[sizeof(sam2_message_u)];
                 static int buffer_length = 0;
 
-
                 int status = sam2_client_poll(
                     g_sam2_socket,
                     &latest_sam2_message,
