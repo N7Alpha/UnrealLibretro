@@ -2402,8 +2402,45 @@ static void heuristic_byte_swap(uint32_t *data, size_t size) {
     }
 }
 
+#if NETARCH_EXTRA_COMPRESSION_INVESTIGATION
+#define BASE 257  // A prime base, slightly larger than the number of characters in the input set
+#define MODULUS 1000000007  // A large prime modulus
+
+// Function to compute the initial hash of a string of length `len`
+uint32_t compute_initial_hash(const char *str, int len) {
+    uint32_t hash = 0;
+    for (int i = 0; i < len; ++i) {
+        hash = (hash * BASE + str[i]) % MODULUS;
+    }
+    return hash;
+}
+
+// Function to update the hash when moving the window one character to the right
+static inline uint32_t update_hash(uint32_t old_hash, char old_char, char new_char, uint32_t highest_base, int len) {
+    uint32_t new_hash = old_hash;
+    new_hash = (new_hash - highest_base * old_char % MODULUS + MODULUS) % MODULUS; // Remove the old char
+    new_hash = (new_hash * BASE + new_char) % MODULUS;  // Add the new char
+    return new_hash;
+}
+
+// Precompute the highest power of BASE modulo MODULUS for length `len`
+uint32_t precompute_highest_base(int len) {
+    uint32_t highest_base = 1;
+    for (int i = 1; i < len; ++i) {
+        highest_base = (highest_base * BASE) % MODULUS;
+    }
+    return highest_base;
+}
+#include <unordered_map>
+#include <set>
+
+extern "C" {
+#include "fastcdc.h"
+}
+#endif
+
 // I pulled this out of main because it kind of clutters the logic and to get back some indentation
-void tick_compression_investigation(void *save_state, size_t save_state_size, void *rom_data, size_t rom_size) {
+void tick_compression_investigation(char *save_state, size_t save_state_size, char *rom_data, size_t rom_size) {
     uint64_t start = rdtsc();
     unsigned char *buffer = g_savebuffer[g_save_state_index];
     static unsigned char g_savebuffer_delta[sizeof(g_savebuffer[0])];
@@ -2485,6 +2522,99 @@ void tick_compression_investigation(void *save_state, size_t save_state_size, vo
     }
 
     g_zstd_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
+
+    // I'm trying to compress the save state data by finding matching blocks that are in the ROM.
+    // This doesn't seem to work. Here are my theories:
+    // - Data is compressed in the rom and decompressed in the save state (very likely, this could be verified by comparing entropy)
+    // - Endianess mismatch (unlikely)
+    // - Coincidently bad alignment or fragmentation
+    // - My code is broken
+    // The FastCDC code is from https://github.com/sleepybishop/fastcdc
+#if NETARCH_EXTRA_COMPRESSION_INVESTIGATION
+    ImGui::Begin("Extra Compression Investigation");
+
+    std::unordered_map<size_t, size_t> unique_blocks; // Hash -> Block Size
+
+    // Lambda for processing blocks (no captures)
+    auto process_block_func = [](void *arg, size_t offset, size_t len) -> int {
+        // Cast arg back to the original data structure
+        auto *data_info = static_cast<std::pair<std::unordered_map<size_t, size_t>*, void*>*>(arg);
+        auto &unique_blocks = data_info->first;
+        auto data = data_info->second;
+
+        size_t hash = ZSTD_XXH64((uint8_t*)data + offset, len, 0);
+        (*unique_blocks)[hash] = len;
+        return 0;
+    };
+
+    // Process save state blocks
+    fcdc_ctx ctx_copy_from = fastcdc_init(32, 64, 128);
+    {
+        std::pair<std::unordered_map<size_t, size_t>*, void*> data_info{&unique_blocks, save_state};
+        fcdc_ctx ctx = ctx_copy_from;
+        fastcdc_update(&ctx, (uint8_t*)save_state, save_state_size, 1, process_block_func, &data_info);
+    }
+
+    struct SharedSizeData {
+        std::unordered_map<size_t, size_t>* unique_blocks;
+        size_t shared_size;
+        uint8_t* data; // Pointer to the actual data buffer
+    } args = {&unique_blocks, 0, (uint8_t*)(rom_data)};
+
+    // Process ROM blocks and calculate shared size
+    auto shared_size_func = [](void *arg, size_t offset, size_t len) -> int {
+        // Cast arg back to the original data structure
+        auto *data_info = static_cast<SharedSizeData *>(arg);
+        // Dereference the pointer to access the map
+        auto &unique_blocks = *data_info->unique_blocks;  // Change here
+        auto &shared_size = data_info->shared_size;
+
+        size_t hash = ZSTD_XXH64(data_info->data + offset, len, 0);
+        auto it = unique_blocks.find(hash);
+        if (it != unique_blocks.end()) {
+            shared_size += it->second;
+        }
+        return 0;
+    };
+    {
+        fcdc_ctx ctx = ctx_copy_from;
+        //fastcdc_update(&ctx, (uint8_t*)rom_data, rom_size, 1, shared_size_func, &data_info);
+        fastcdc_update(&ctx, (uint8_t*)rom_data, rom_size, 1, shared_size_func, &args);
+    }
+
+    // Display results
+    std::set<size_t> block_hashes;
+    char unit_str[64] = "bits";
+    double unit = format_unit_count(8 * args.shared_size, unit_str);
+    ImGui::Text("FastCDC shared data size: %.3g %s", unit, unit_str);
+
+
+    const size_t window_size = 64;  // Example window size
+    uint32_t highest_base = precompute_highest_base(window_size);
+    uint32_t hash = compute_initial_hash((char *)save_state, window_size);
+
+    for (size_t i = 0; i <= save_state_size - window_size; ++i) {
+        hash = update_hash(hash, save_state[i], save_state[i + window_size], highest_base, window_size);
+        block_hashes.insert(hash);
+    }
+
+    hash = compute_initial_hash(rom_data, window_size);
+
+    int shared_block_count = 0;
+    for (size_t i = 0; i <= rom_size - window_size; ++i) {
+        hash = update_hash(hash, rom_data[i], rom_data[i + window_size], highest_base, window_size);
+        if (block_hashes.find(hash) != block_hashes.end()) {
+            shared_block_count++;
+        }
+    }
+
+    strcpy(unit_str, "bits");
+    unit = format_unit_count(8 * window_size * shared_block_count, unit_str);
+    ImGui::Text("Fixed window size: %d bytes", window_size);
+    ImGui::Text("FastCDC shared data size: %g %s", unit, unit_str);
+
+    ImGui::End();
+#endif
 }
 
 int main(int argc, char *argv[]) {
@@ -3029,7 +3159,7 @@ int main(int argc, char *argv[]) {
 
             int64_t savestate_hash = 0;
             if (g_do_zstd_compress) {
-                tick_compression_investigation(g_savebuffer, g_serialize_size, rom_data, rom_size);
+                tick_compression_investigation((char *)g_savebuffer, g_serialize_size, (char*)rom_data, rom_size);
 
                 savestate_hash = fnv1a_hash(g_savebuffer[g_save_state_index], g_serialize_size);
 
