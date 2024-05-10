@@ -434,6 +434,7 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
     if (memcmp(response, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_room_make_message_t *room_make = (sam2_room_make_message_t *) response;
         assert(session->our_peer_id == room_make->room.peer_ids[SAM2_AUTHORITY_INDEX]);
+        assert(!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED));
         session->room_we_are_in = room_make->room;
     } else if (memcmp(response, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_connect_message_t *connect_message = (sam2_connect_message_t *) response;
@@ -514,12 +515,12 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
             SAM2_LOG_WARN("Peer %" PRIx64 " didn't change anything after making join request", room_join->peer_id);
         } else {
             ulnet__xor_delta(&future_room_we_are_in, &session->next_room_xor_delta, sizeof(session->room_we_are_in));
-            sam2_room_join_message_t join_message = {
-                SAM2_JOIN_HEADER,
+            sam2_room_make_message_t make_message = {
+                SAM2_MAKE_HEADER,
                 future_room_we_are_in
             };
 
-            session->sam2_send_callback(session->user_ptr, (char *) &join_message);
+            session->sam2_send_callback(session->user_ptr, (char *) &make_message);
         }
     } else if (   memcmp(response, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0
                || memcmp(response, sam2_sigx_header, SAM2_HEADER_TAG_SIZE) == 0) {
