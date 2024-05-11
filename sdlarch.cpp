@@ -2191,7 +2191,7 @@ void FLibretroContext::core_input_poll() {
             assert(p == SAM2_AUTHORITY_INDEX);
         }
         assert(g_ulnet_session.state[p].frame <= g_ulnet_session.frame_counter + (ULNET_DELAY_BUFFER_SIZE-1));
-        assert(g_ulnet_session.state[p].frame >= g_ulnet_session.frame_counter); // Right now it's possible to do "nothing wrong" and trigger this. Calling retro_serialize sometimes causes a frame to advance prematurely which can trigger this
+        assert(g_ulnet_session.state[p].frame >= g_ulnet_session.frame_counter);
         for (int i = 0; i < 16; i++) {
             g_joy[i] |= g_ulnet_session.state[p].input_state[g_ulnet_session.frame_counter % ULNET_DELAY_BUFFER_SIZE][0][i];
         }
