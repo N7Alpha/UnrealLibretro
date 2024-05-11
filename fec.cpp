@@ -42,6 +42,8 @@
 #define GF_BITS  8	/* code over GF(2**GF_BITS) - change to suit */
 #endif
 
+#include "fec.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -618,7 +620,7 @@ invert_vdm(gf *src, int k)
 }
 
 static int fec_initialized = 0 ;
-static void
+void
 init_fec()
 {
     TICK(ticks[0]);
@@ -891,28 +893,3 @@ int get_k(void *code0)
 	struct fec_parms * code= (struct fec_parms *)code0;
 	return code->k;
 }
-/*********** end of FEC code -- beginning of test code ************/
-
-#if (TEST || DEBUG)
-void
-test_gf()
-{
-    int i ;
-    /*
-     * test gf tables. Sufficiently tested...
-     */
-    for (i=0; i<= GF_SIZE; i++) {
-        if (gf_exp[gf_log[i]] != i)
-	    fprintf(stderr, "bad exp/log i %d log %d exp(log) %d\n",
-		i, gf_log[i], gf_exp[gf_log[i]]);
-
-        if (i != 0 && gf_mul(i, inverse[i]) != 1)
-	    fprintf(stderr, "bad mul/inv i %d inv %d i*inv(i) %d\n",
-		i, inverse[i], gf_mul(i, inverse[i]) );
-	if (gf_mul(0,i) != 0)
-	    fprintf(stderr, "bad mul table 0,%d\n",i);
-	if (gf_mul(i,0) != 0)
-	    fprintf(stderr, "bad mul table %d,0\n",i);
-    }
-}
-#endif /* TEST */
