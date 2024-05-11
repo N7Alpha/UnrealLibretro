@@ -5,6 +5,7 @@
 #define SAM2_IMPLEMENTATION
 #define SAM2_SERVER
 //#define SAM2_LOG_WRITE(level, file, line, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0); // Ex. Use print
+#define SAM2_LOG_WRITE_DEFINITION
 #define SAM2_LOG_WRITE(level, file, line, ...) do { if (level >= g_log_level) { sam2__log_write(level, __FILE__, __LINE__, __VA_ARGS__); } } while (0)
 int g_log_level = 1; // Info
 #include "ulnet.h"
