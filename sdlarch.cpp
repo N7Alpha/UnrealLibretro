@@ -941,9 +941,9 @@ void draw_imgui() {
         for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
             ImVec4 color = g_ulnet_session.our_peer_id == room.peer_ids[p] ? GOLD : WHITE;
             if (p == SAM2_AUTHORITY_INDEX) {
-                ImGui::Text("Authority Peer ID: ", room.peer_ids[p]);
+                ImGui::Text("Authority Peer ID: ");
             } else {
-                ImGui::Text("Port %d Peer ID: ", p, room.peer_ids[p]);
+                ImGui::Text("Port %d Peer ID: ", p);
             }
 
             ImGui::SameLine();
@@ -1094,7 +1094,7 @@ void draw_imgui() {
                     }
                 }
 
-                ImGui::Text("Messages allocated: %d", g_sam2_server->_debug_allocated_messages);
+                ImGui::Text("Messages allocated: %" PRId64, g_sam2_server->_debug_allocated_messages);
             }
 
             ImGui::SeparatorText("Client");
