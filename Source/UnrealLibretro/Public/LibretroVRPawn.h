@@ -48,8 +48,13 @@ public:
         
         MotionControllerLeft->MotionSource = "Left";
         MotionControllerRight->MotionSource = "Right";
+
+        // Controllers not displayed on 5.4 @todo
+#if    ENGINE_MAJOR_VERSION <  5 \
+    || ENGINE_MINOR_VERSION <  4
         MotionControllerLeft->bDisplayDeviceModel = true;
         MotionControllerRight->bDisplayDeviceModel = true;
+#endif
         
 #if    ENGINE_MAJOR_VERSION >  4 \
     || ENGINE_MINOR_VERSION >= 26
@@ -139,7 +144,7 @@ protected:
         decltype(MotionControllerLeftAim)& MotionControllerAim;
     };
 
-    CONSTEXPR FHand GetHand(EControllerHand ControllerHand)
+    constexpr FHand GetHand(EControllerHand ControllerHand)
     {
         if (ControllerHand == EControllerHand::Left)
         {
@@ -151,7 +156,7 @@ protected:
         }
     }
 
-    CONSTEXPR FHand GetOtherHand(EControllerHand ControllerHand)
+    constexpr FHand GetOtherHand(EControllerHand ControllerHand)
     {
         if (ControllerHand == EControllerHand::Left)
         {
@@ -170,7 +175,14 @@ protected:
         // Begin Play - Set Tracking Origin to floor
         if (UHeadMountedDisplayFunctionLibrary::IsHeadMountedDisplayEnabled())
         {
-            UHeadMountedDisplayFunctionLibrary::SetTrackingOrigin(EHMDTrackingOrigin::Floor);
+            UHeadMountedDisplayFunctionLibrary::SetTrackingOrigin(
+#if    ENGINE_MAJOR_VERSION == 5 \
+    && ENGINE_MINOR_VERSION >= 4
+                EHMDTrackingOrigin::LocalFloor
+#else
+                EHMDTrackingOrigin::Floor
+#endif
+            );
         }
     }
 

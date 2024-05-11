@@ -20,7 +20,7 @@ struct FLibretroOptionDescription
 {
     GENERATED_BODY()
 
-    static CONSTEXPR int DefaultOptionIndex = 0; // By libretro convention
+    static constexpr int DefaultOptionIndex = 0; // By libretro convention
 
     UPROPERTY(BlueprintReadOnly, Category = "Libretro")
     FString         Key;

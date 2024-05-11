@@ -40,7 +40,8 @@ jobs:
           - {major: 5, minor: 1}
           - {major: 5, minor: 2}
           - {major: 5, minor: 3}
-        
+          - {major: 5, minor: 4}
+
     steps:
       - uses: actions/checkout@v3.5.2
 

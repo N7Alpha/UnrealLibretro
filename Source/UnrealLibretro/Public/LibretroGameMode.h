@@ -10,6 +10,7 @@
 #include "HeadMountedDisplayFunctionLibrary.h"
 #if    ENGINE_MAJOR_VERSION == 5 \
     && ENGINE_MINOR_VERSION >= 1 \
+    && ENGINE_MINOR_VERSION <  4 \
     && WITH_EDITOR
 #include "Misc/MessageDialog.h"
 #include "OpenXRInputSettings.h"
@@ -63,8 +64,10 @@ protected:
         SpawnParams.Owner = NewPlayer;
         SpawnParams.Instigator = nullptr;
 
+// @todo This check broke in 5.4 so I've disabled it. Check commit 8529eca in the UnrealEngine repo for how to fix
 #if    ENGINE_MAJOR_VERSION == 5 \
     && ENGINE_MINOR_VERSION >= 1 \
+    && ENGINE_MINOR_VERSION <  4 \
     && WITH_EDITOR
         UOpenXRInputSettings* OpenXRInputSettings = GetMutableDefault<UOpenXRInputSettings>();
         if (OpenXRInputSettings && OpenXRInputSettings->MappableInputConfig != nullptr)
