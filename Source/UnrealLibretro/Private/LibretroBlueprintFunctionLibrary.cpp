@@ -1,11 +1,16 @@
 #include "LibretroBlueprintFunctionLibrary.h"
 
+#include "Runtime/Launch/Resources/Version.h"
 #include "GameFramework/Actor.h"
 
 #include "Engine/Engine.h"
+#include "Engine/EngineTypes.h"
+#if    ENGINE_MAJOR_VERSION == 5 \
+    && ENGINE_MINOR_VERSION >= 4
+#include "Engine/HitResult.h"
+#endif
 #include "Camera/CameraComponent.h"
 #include "PhysicsEngine/PhysicsSettings.h"
-#include "Runtime/Launch/Resources/Version.h"
 
 #if    ENGINE_MAJOR_VERSION != 5 \
     || ENGINE_MINOR_VERSION <  1

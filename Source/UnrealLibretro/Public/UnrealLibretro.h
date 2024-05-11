@@ -27,7 +27,6 @@ static const struct { FString DistributionPath; FString Extension; FString Build
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
-#include "Windows/PreWindowsApi.h"
 
 typedef HGLRC(WINAPI* PFN_wglCreateContext)(HDC);
 typedef BOOL(WINAPI* PFN_wglDeleteContext)(HGLRC);
@@ -62,7 +61,6 @@ static void* Win32GLGetProcAddress(const char* procname)
     return proc;
 }
 
-#include "Windows/PostWindowsApi.h"
 #include "Windows/HideWindowsPlatformTypes.h"
 #endif
 

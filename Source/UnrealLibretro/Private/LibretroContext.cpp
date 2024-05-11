@@ -1,4 +1,3 @@
-
 #include "LibretroContext.h"
 extern "C"
 {
@@ -16,6 +15,8 @@ extern "C"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "TextureResource.h"
+#include "RenderingThread.h"
+#include "Runtime/Launch/Resources/Version.h"
 
 #if PLATFORM_APPLE
 #include <dispatch/dispatch.h>
@@ -23,9 +24,7 @@ extern "C"
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
-#include "Windows/PreWindowsApi.h"
 #include <d3d12.h>
-#include "Windows/PostWindowsApi.h"
 #include "Windows/HideWindowsPlatformTypes.h"
 #endif
 

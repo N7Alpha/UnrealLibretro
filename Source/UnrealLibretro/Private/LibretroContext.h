@@ -13,20 +13,21 @@ static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
 #include "Engine/TextureRenderTarget2D.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 #include "Containers/CircularQueue.h"
+#include "Containers/Queue.h"
+#include "RHIResources.h"
 
 #include "LibretroInputDefinitions.h"
 #include "RawAudioSoundWave.h"
 
 #if PLATFORM_WINDOWS
-#include "Windows/PreWindowsApi.h"
-#include "Windows/WindowsHWrapper.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 #endif
 
 #include "ThirdParty/OpenGL/GL/glcorearb.h"
 #include "GL/extension_definitions.h"
 
 #if PLATFORM_WINDOWS
-#include "Windows/PostWindowsApi.h"
+#include "Windows/HideWindowsPlatformTypes.h"
 #endif
 
 DECLARE_STATS_GROUP(TEXT("UnrealLibretro"), STATGROUP_UnrealLibretro, STATCAT_Advanced);
