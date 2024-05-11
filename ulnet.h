@@ -37,14 +37,14 @@
 // A value of 2 implies no delay can be accomidated.
 //```
 // Consider the following scenario:
-// logical-time | peer a       | peer b
-// ------------------------------------------
-// 0            | send input 0 | send input 0
-// 1            | recv input 0 | recv input 0
-// 2            | ------------ | tick frame 0
-// 3            | ------------ | send input 1
-// 4            | recv input 1 | ------------
-// 5            | tick frame 0 | ------------
+// logical-time | peer a        | peer b
+// --------------------------------------------
+// 0            | send input 0a | send input 0b
+// 1            | recv input 0b | recv input 0a
+// 2            | ------------- | tick frame 0
+// 3            | ------------- | send input 1b
+// 4            | recv input 1b | -------------
+// 5            | tick frame 0  | -------------
 //```
 // The issue occurs at logical-time 4 when peer a receives input 1 before ticking frame 0.
 // If the input buffer only holds 1 frame, the input packet for frame 0 would be overwritten.
@@ -52,7 +52,7 @@
 // the input buffer needs to hold at least 2 frames.
 //
 // Setting ULNET_DELAY_BUFFER_SIZE to 2 allows for no frame delay while still handling this scenario.
-// However, the constant is set to 8 to provide additional buffering capacity if needed.
+// The following constant is set to 8 which yields 3 frames of delay this corresponds to a max RTT PING of 100 ms to not stutter
 #define ULNET_DELAY_BUFFER_SIZE 8
 
 #define ULNET_DELAY_FRAMES_MAX (ULNET_DELAY_BUFFER_SIZE/2-1)
