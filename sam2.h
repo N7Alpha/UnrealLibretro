@@ -1,4 +1,3 @@
-#define SAM2_IMPLEMENTATION
 // MIT License
 // 
 // Copyright (c) 2024 John Rehbein
@@ -573,7 +572,6 @@ typedef SOCKET sam2_socket_t;
 typedef int sam2_socket_t;
 #endif
 
-#define SAM2_SERVER
 #if defined(SAM2_SERVER)
 #include <uv.h>
 

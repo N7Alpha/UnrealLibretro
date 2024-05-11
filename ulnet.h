@@ -1,4 +1,4 @@
-#include "sam2.c"
+#include "sam2.h"
 
 #include "juice/juice.h"
 #include "zstd.h"

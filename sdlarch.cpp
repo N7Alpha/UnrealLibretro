@@ -8,7 +8,7 @@
 #define SAM2_LOG_WRITE(level, file, line, ...) do { if (level >= g_log_level) { sam2__log_write(level, __FILE__, __LINE__, __VA_ARGS__); } } while (0)
 int g_log_level = 1; // Info
 #include "ulnet.h"
-#include "sam2.c"
+#include "sam2.h"
 
 #include "NetImgui_Api.h"
 #include "imgui.h"
