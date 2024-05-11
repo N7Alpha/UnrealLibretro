@@ -808,6 +808,9 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
             }
 
             if (all_data_decoded) {
+                size_t ret = 0;
+                uint64_t their_savestate_transfer_payload_xxhash = 0;
+                uint64_t   our_savestate_transfer_payload_xxhash = 0;
                 unsigned char *save_state_data = NULL;
                 savestate_transfer_payload_t *savestate_transfer_payload = (savestate_transfer_payload_t *) malloc(sizeof(savestate_transfer_payload_t) /* Fixed size header */ + COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES);
 
@@ -828,16 +831,16 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
                     goto cleanup;
                 }
 
-                uint64_t their_savestate_transfer_payload_xxhash = savestate_transfer_payload->xxhash;
+                their_savestate_transfer_payload_xxhash = savestate_transfer_payload->xxhash;
                 savestate_transfer_payload->xxhash = 0;
-                uint64_t our_savestate_transfer_payload_xxhash = ZSTD_XXH64(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes, 0);
+                our_savestate_transfer_payload_xxhash = ZSTD_XXH64(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes, 0);
 
                 if (their_savestate_transfer_payload_xxhash != our_savestate_transfer_payload_xxhash) {
                     SAM2_LOG_ERROR("Savestate transfer payload hash mismatch: %" PRIx64 " != %" PRIx64 "", their_savestate_transfer_payload_xxhash, our_savestate_transfer_payload_xxhash);
                     goto cleanup;
                 }
 
-                size_t ret = ZSTD_decompress(
+                ret = ZSTD_decompress(
                     session->core_options, sizeof(session->core_options),
                     savestate_transfer_payload->compressed_data + savestate_transfer_payload->compressed_savestate_size,
                     savestate_transfer_payload->compressed_options_size
