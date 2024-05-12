@@ -8,6 +8,7 @@
 #define SAM2_LOG_WRITE_DEFINITION
 #define SAM2_LOG_WRITE(level, file, line, ...) do { if (level >= g_log_level) { sam2__log_write(level, __FILE__, __LINE__, __VA_ARGS__); } } while (0)
 int g_log_level = 1; // Info
+#define ULNET_IMPLEMENTATION
 #include "ulnet.h"
 #include "sam2.h"
 
@@ -1506,7 +1507,7 @@ void draw_imgui() {
                     ulnet_session_init_defaulted(&g_ulnet_session);
                     g_ulnet_session.room_we_are_in = g_sam2_rooms[selected_room_index];
                     g_ulnet_session.frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
-                    startup_ice_for_peer(
+                    ulnet_startup_ice_for_peer(
                         &g_ulnet_session,
                          g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX],
                          NULL
@@ -3131,7 +3132,7 @@ int main(int argc, char *argv[]) {
                         if (new_room_state.peer_ids[p] == session->our_peer_id) continue;
                         if (session->agent[p] == NULL) {
                             SAM2_LOG_INFO("Starting Interactive-Connectivity-Establishment for peer %016" PRIx64, new_room_state.peer_ids[p]);
-                            startup_ice_for_peer(session, new_room_state.peer_ids[p], NULL);
+                            ulnet_startup_ice_for_peer(session, new_room_state.peer_ids[p], NULL);
                         }
                     }
                 } else {
@@ -3150,7 +3151,7 @@ int main(int argc, char *argv[]) {
                                 } else {
                                     SAM2_LOG_INFO("Peer %" PRIx64 " has left the room", session->room_we_are_in.peer_ids[p]);
                                     if (ulnet_is_authority(session)) {
-                                        MovePeer(session, p, SAM2_PORT_MAX+1 + g_ulnet_session.spectator_count++);
+                                        ulnet_move_peer(session, p, SAM2_PORT_MAX+1 + g_ulnet_session.spectator_count++);
                                     } else {
                                         ulnet_disconnect_peer(session, p);
                                     }
@@ -3159,7 +3160,7 @@ int main(int argc, char *argv[]) {
                                 int peer_existing_port = ulnet_locate_peer(session, new_room_state.peer_ids[p]);
                                 if (peer_existing_port != -1) {
                                     SAM2_LOG_INFO("Spectator %016" PRIx64 " was promoted to peer", new_room_state.peer_ids[p]);
-                                    MovePeer(session, peer_existing_port, p); // This only moves spectators to real ports right now
+                                    ulnet_move_peer(session, peer_existing_port, p); // This only moves spectators to real ports right now
                                 }
                             }
                         }
