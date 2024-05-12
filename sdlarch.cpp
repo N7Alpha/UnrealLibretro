@@ -1508,7 +1508,8 @@ void draw_imgui() {
                     g_ulnet_session.frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
                     startup_ice_for_peer(
                         &g_ulnet_session,
-                         g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX]
+                         g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX],
+                         NULL
                     );
                 }
             } else {
@@ -3130,7 +3131,7 @@ int main(int argc, char *argv[]) {
                         if (new_room_state.peer_ids[p] == session->our_peer_id) continue;
                         if (session->agent[p] == NULL) {
                             SAM2_LOG_INFO("Starting Interactive-Connectivity-Establishment for peer %016" PRIx64, new_room_state.peer_ids[p]);
-                            startup_ice_for_peer(session, new_room_state.peer_ids[p]);
+                            startup_ice_for_peer(session, new_room_state.peer_ids[p], NULL);
                         }
                     }
                 } else {

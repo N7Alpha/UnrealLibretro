@@ -2,7 +2,7 @@
 
 #include "juice/juice.h"
 #include "zstd.h"
-#include "zstd/lib/common/xxhash.h"
+#include "common/xxhash.h"
 #include "fec.h"
 
 #include <stdint.h>
@@ -57,13 +57,13 @@
 
 #define ULNET_DELAY_FRAMES_MAX (ULNET_DELAY_BUFFER_SIZE/2-1)
 
-const int PortCount = 4;
+#define PortCount 4
 typedef int16_t FLibretroInputState[64]; // This must be a POD for putting into packets
 
-struct ulnet_core_option_t {
+typedef struct ulnet_core_option {
     char key[128];
     char value[128];
-};
+} ulnet_core_option_t;
 
 // @todo This is really sparse so you should just add routines to read values from it in the serialized format
 typedef struct {
@@ -277,7 +277,7 @@ static void on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr);
 static void on_gathering_done(juice_agent_t *agent, void *user_ptr);
 static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data, size_t size, void *user_ptr); // We get all our packets in this one
 
-int startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, const char *remote_description = NULL) {
+int startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, const char *remote_description) {
     juice_config_t config;
     memset(&config, 0, sizeof(config));
 
@@ -557,9 +557,10 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
                 static sam2_error_message_t error = { 
                     SAM2_FAIL_HEADER,
                     SAM2_RESPONSE_AUTHORITY_ERROR,
-                    "Received unknown signal when we weren't the authority",
-                    room_signal->peer_id
+                    "Received unknown signal when we weren't the authority"
                 };
+
+                error.peer_id = room_signal->peer_id;
 
                 session->sam2_send_callback(session->user_ptr, (char *) &error);
             }
@@ -682,7 +683,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
 
             // Broadcast the input packet to spectators
             if (ulnet_is_authority(session)) {
-                for (int i = 0; i < ULNET_SPECTATOR_MAX; i++) {
+                for (i = 0; i < ULNET_SPECTATOR_MAX; i++) {
                     juice_agent_t *spectator_agent = session->agent[SAM2_PORT_MAX+1 + i];
                     if (spectator_agent) {
                         if (   juice_get_state(spectator_agent) == JUICE_STATE_CONNECTED
@@ -704,7 +705,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
         desync_debug_packet_t their_desync_debug_packet;
         memcpy(&their_desync_debug_packet, data, sizeof(desync_debug_packet_t)); // Strict-aliasing
 
-        desync_debug_packet_t &our_desync_debug_packet = session->desync_debug_packet;
+        desync_debug_packet_t our_desync_debug_packet = session->desync_debug_packet;
 
         int64_t latest_common_frame = SAM2_MIN(our_desync_debug_packet.frame, their_desync_debug_packet.frame);
         int64_t frame_difference = SAM2_ABS(our_desync_debug_packet.frame - their_desync_debug_packet.frame);
@@ -887,8 +888,7 @@ cleanup:
         break;
     }
     default:
-        fprintf(stderr, "Unknown channel: %d\n", channel_and_flags);
-        break;
+        SAM2_LOG_WARN("Unknown channel: %d", channel_and_flags);
     }
 }
 
