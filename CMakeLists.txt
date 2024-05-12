@@ -69,7 +69,7 @@ endif()
 # Source Files
 set(SOURCE_FILES 
     sdlarch.cpp
-    fec.cpp
+    fec.c
     NetImgui_Implementation.cpp
     imgui/imgui.cpp
     imgui/backends/imgui_impl_sdl3.cpp

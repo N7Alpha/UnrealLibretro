@@ -38,11 +38,20 @@
  * but fastest operation is achieved with 8 bit elements
  * This is the only parameter you may want to change.
  */
+
+#ifndef FEC_H
+#define FEC_H
+
 #ifndef GF_BITS
 #define GF_BITS  8	/* code over GF(2**GF_BITS) - change to suit */
 #endif
 
 #define	GF_SIZE ((1 << GF_BITS) - 1)	/* powers of \alpha */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void fec_free(void *p) ;
 void * fec_new(int k, int n) ;//n>=k
 
@@ -53,4 +62,9 @@ int fec_decode(void *code, void *pkt[], int index[], int sz) ;
 int get_k(void *code);
 int get_n(void *code);
 
+#ifdef __cplusplus
+}
+#endif
+
+#endif
 /* end of file */
