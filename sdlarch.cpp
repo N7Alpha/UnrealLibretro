@@ -347,7 +347,7 @@ static constexpr auto to_integral(E e) -> typename std::underlying_type<E>::type
     return static_cast<typename std::underlying_type<E>::type>(e);
 }
 
-static_assert(to_integral(ERetroDeviceID::Size) < sizeof(FLibretroInputState) / sizeof((*(FLibretroInputState *) (0x0))[0]), "FLibretroInputState is too small");
+static_assert(to_integral(ERetroDeviceID::Size) < sizeof(ulnet_input_state_t) / sizeof((*(ulnet_input_state_t *) (0x0))[0]), "ulnet_input_state_t is too small");
 
 
 
@@ -361,7 +361,7 @@ struct FLibretroContext {
     int message_history_length = 0;
     int64_t delay_frames = 0;
 
-    FLibretroInputState InputState[PortCount] = {0};
+    ulnet_input_state_t InputState[PortCount] = {0};
     bool fuzz_input = false;
 
     int SAM2Send(char *message) {
@@ -2185,7 +2185,7 @@ int64_t byte_swap_int64(int64_t val) {
 void FLibretroContext::core_input_poll() {
     memset(InputState, 0, sizeof(InputState));
 
-    FLibretroInputState &g_joy = g_libretro_context.InputState[0];
+    ulnet_input_state_t &g_joy = g_libretro_context.InputState[0];
 
     for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
         if (ulnet_session.room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;

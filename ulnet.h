@@ -64,7 +64,7 @@
 #define ULNET_DELAY_FRAMES_MAX (ULNET_DELAY_BUFFER_SIZE/2-1)
 
 #define PortCount 4
-typedef int16_t FLibretroInputState[64]; // This must be a POD for putting into packets
+typedef int16_t ulnet_input_state_t[64]; // This must be a POD for putting into packets
 
 typedef struct ulnet_core_option {
     char key[128];
@@ -74,7 +74,7 @@ typedef struct ulnet_core_option {
 // @todo This is really sparse so you should just add routines to read values from it in the serialized format
 typedef struct {
     int64_t frame;
-    FLibretroInputState input_state[ULNET_DELAY_BUFFER_SIZE][PortCount];
+    ulnet_input_state_t input_state[ULNET_DELAY_BUFFER_SIZE][PortCount];
     sam2_room_t room_xor_delta[ULNET_DELAY_BUFFER_SIZE];
     ulnet_core_option_t core_option[ULNET_DELAY_BUFFER_SIZE]; // Max 1 option per frame provided by the authority
 } ulnet_state_t;
@@ -124,8 +124,8 @@ typedef struct {
 
     uint8_t sequence_lo;
 
-    uint8_t payload[]; // Variable size; at most ULNET_PACKET_SIZE_BYTES_MAX-3
-} ulnet_save_state_packet_fragment_t;
+    //uint8_t payload[]; // Variable size; at most ULNET_PACKET_SIZE_BYTES_MAX-3
+} ulnet_save_state_packet_header_t;
 
 typedef struct {
     uint8_t channel_and_flags;
@@ -182,7 +182,7 @@ typedef struct ulnet_session {
     desync_debug_packet_t desync_debug_packet;
 
     int zstd_compress_level;
-    unsigned char remote_savestate_transfer_packets[COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES + FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * sizeof(ulnet_save_state_packet_fragment_t)];
+    unsigned char remote_savestate_transfer_packets[COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES + FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * sizeof(ulnet_save_state_packet_header_t)];
     int64_t remote_savestate_transfer_offset;
     uint8_t remote_packet_groups; // This is used to bookkeep how much data we actually need to receive to reform the complete savestate
     void *fec_packet[FEC_PACKET_GROUPS_MAX][GF_SIZE - FEC_REDUNDANT_BLOCKS];
@@ -508,7 +508,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
             break;
         }
 
-        if (size < sizeof(ulnet_save_state_packet_fragment_t)) {
+        if (size < sizeof(ulnet_save_state_packet_header_t)) {
             SAM2_LOG_WARN("Recv savestate transfer packet with size smaller than header");
             break;
         }
@@ -517,8 +517,8 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
             SAM2_LOG_WARN("Recv savestate transfer packet potentially larger than MTU");
         }
 
-        ulnet_save_state_packet_fragment_t savestate_transfer_header;
-        memcpy(&savestate_transfer_header, data, sizeof(ulnet_save_state_packet_fragment_t)); // Strict-aliasing
+        ulnet_save_state_packet_header_t savestate_transfer_header;
+        memcpy(&savestate_transfer_header, data, sizeof(ulnet_save_state_packet_header_t)); // Strict-aliasing
 
         uint8_t sequence_hi = 0;
         int k = 239;
@@ -550,7 +550,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
         uint8_t *copied_packet_ptr = (uint8_t *) memcpy(&session->remote_savestate_transfer_packets[session->remote_savestate_transfer_offset], data, size);
         session->remote_savestate_transfer_offset += size;
 
-        session->fec_packet[sequence_hi][session->fec_index_counter[sequence_hi]] = copied_packet_ptr + sizeof(ulnet_save_state_packet_fragment_t);
+        session->fec_packet[sequence_hi][session->fec_index_counter[sequence_hi]] = copied_packet_ptr + sizeof(ulnet_save_state_packet_header_t);
         session->fec_index [sequence_hi][session->fec_index_counter[sequence_hi]++] = sequence_lo;
 
         if (session->fec_index_counter[sequence_hi] == k) {
@@ -558,7 +558,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
 
             int redudant_blocks_sent = k * FEC_REDUNDANT_BLOCKS / (GF_SIZE - FEC_REDUNDANT_BLOCKS);
             void *rs_code = fec_new(k, k + redudant_blocks_sent);
-            int rs_block_size = (int) (size - sizeof(ulnet_save_state_packet_fragment_t));
+            int rs_block_size = (int) (size - sizeof(ulnet_save_state_packet_header_t));
             int status = fec_decode(rs_code, session->fec_packet[sequence_hi], session->fec_index[sequence_hi], rs_block_size);
             assert(status == 0);
             fec_free(rs_code);
@@ -897,7 +897,7 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
 void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent, void *save_state, size_t save_state_size, int64_t save_state_frame) {
     assert(save_state);
 
-    int packet_payload_size_bytes = ULNET_PACKET_SIZE_BYTES_MAX - sizeof(ulnet_save_state_packet_fragment_t);
+    int packet_payload_size_bytes = ULNET_PACKET_SIZE_BYTES_MAX - sizeof(ulnet_save_state_packet_header_t);
     int n, k, packet_groups;
 
     int64_t save_state_transfer_payload_compressed_bound_size_bytes = ZSTD_COMPRESSBOUND(save_state_size) + ZSTD_COMPRESSBOUND(sizeof(session->core_options));
@@ -985,7 +985,7 @@ void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent, void 
 
             memcpy(packet.payload, (unsigned char *) savestate_transfer_payload + ulnet__logical_partition_offset_bytes(j, i, packet_payload_size_bytes, packet_groups), packet_payload_size_bytes);
 
-            int status = juice_send(agent, (char *) &packet, sizeof(ulnet_save_state_packet_fragment_t) + packet_payload_size_bytes);
+            int status = juice_send(agent, (char *) &packet, sizeof(ulnet_save_state_packet_header_t) + packet_payload_size_bytes);
             assert(status == 0);
         }
     }
