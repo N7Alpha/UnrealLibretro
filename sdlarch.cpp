@@ -923,6 +923,25 @@ static int read_whole_file(const char *filename, void **data, size_t *size) {
     return 0;
 }
 
+// I feel like switching here shouldn't be necessary but I'm on bleeding edge code and this is needed @todo
+namespace ImGuiJank {
+    void NewFrame() {
+        if (g_netimgui_port) {
+            NetImgui::NewFrame();
+        } else {
+            ImGui::NewFrame();
+        }
+    }
+
+    void EndFrame() {
+        if (g_netimgui_port) {
+            NetImgui::EndFrame();
+        } else {
+            ImGui::Render();
+        }
+    }
+}
+
 #include "imgui_internal.h"
 void draw_imgui() {
     static int spinnerIndex = 0;
@@ -1757,11 +1776,7 @@ finished_drawing_sam2_interface:
         }
     }
 
-    if (g_netimgui_port) {
-        NetImgui::EndFrame();
-    } else {
-        ImGui::Render();
-    }
+    ImGuiJank::EndFrame();
 
     if (!g_headless && !NetImgui::IsConnected() && render_imgui_windows_locally) {
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -2788,11 +2803,7 @@ int main(int argc, char *argv[]) {
             ImGui_ImplSDL3_NewFrame();
         }
 
-        if (g_netimgui_port) {
-            NetImgui::NewFrame();
-        } else {
-            ImGui::NewFrame();
-        }
+        ImGuiJank::NewFrame();
 
         g_kbd = SDL_GetKeyboardState(NULL);
 
@@ -2840,9 +2851,17 @@ int main(int argc, char *argv[]) {
         }
 
         if (!g_headless) {
+            // The imgui frame is updated at the monitor refresh cadence
+            // So the core frame needs to be redrawn at the same cadence or you'll get the Windows XP infinite window thing
             draw_core_frame();
         }
-        draw_imgui();
+
+        // Slight performance save if no one is looking at the imgui
+        if (!g_headless || NetImgui::IsConnected()) {
+            draw_imgui();
+        } else {
+            ImGuiJank::EndFrame();
+        }
 
         if (!g_headless) {
             // We hope vsync is disabled or else this will block
