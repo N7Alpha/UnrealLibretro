@@ -37,7 +37,11 @@
 
 #define ULNET_WAITING_FOR_SAVE_STATE_SENTINEL INT64_MAX
 
-#define ULNET_SESSION_FLAG_CORE_OPTIONS_DIRTY     0x2
+#define ULNET_SESSION_FLAG_TICKED                 0b00000001ULL
+#define ULNET_SESSION_FLAG_CORE_OPTIONS_DIRTY     0b00000010ULL
+
+// @todo Remove this define once it becomes possible through normal featureset
+#define ULNET__DEBUG_EVERYONE_ON_PORT_0
 
 // This constant defines the maximum number of frames that can be buffered before blocking.
 // A value of 2 implies no delay can be accomidated.
@@ -63,7 +67,7 @@
 
 #define ULNET_DELAY_FRAMES_MAX (ULNET_DELAY_BUFFER_SIZE/2-1)
 
-#define PortCount 4
+#define ULNET_PORT_COUNT 8
 typedef int16_t ulnet_input_state_t[64]; // This must be a POD for putting into packets
 
 typedef struct ulnet_core_option {
@@ -74,7 +78,7 @@ typedef struct ulnet_core_option {
 // @todo This is really sparse so you should just add routines to read values from it in the serialized format
 typedef struct {
     int64_t frame;
-    ulnet_input_state_t input_state[ULNET_DELAY_BUFFER_SIZE][PortCount];
+    ulnet_input_state_t input_state[ULNET_DELAY_BUFFER_SIZE][ULNET_PORT_COUNT];
     sam2_room_t room_xor_delta[ULNET_DELAY_BUFFER_SIZE];
     ulnet_core_option_t core_option[ULNET_DELAY_BUFFER_SIZE]; // Max 1 option per frame provided by the authority
 } ulnet_state_t;
@@ -161,6 +165,8 @@ typedef struct {
 
 typedef struct ulnet_session {
     int64_t frame_counter;
+    int64_t delay_frames;
+    int64_t core_wants_tick_at_unix_usec;
     int64_t flags;
     uint64_t our_peer_id;
 
@@ -193,11 +199,60 @@ typedef struct ulnet_session {
     int (*sam2_send_callback)(void *user_ptr, char *response);
     int (*populate_core_options_callback)(void *user_ptr, ulnet_core_option_t options[ULNET_CORE_OPTIONS_MAX]);
 
-    size_t (*retro_serialize_size)(void);
     bool (*retro_unserialize)(const void *data, size_t size);
 } ulnet_session_t;
 
+ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent, void *save_state, size_t save_state_size, int64_t save_state_frame);
+ULNET_LINKAGE int ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, const char *remote_description);
+ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port);
+ULNET_LINKAGE void ulnet_move_peer(ulnet_session_t *session, int peer_existing_port, int peer_new_port);
+ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session);
+
+static inline int ulnet_our_port(ulnet_session_t *session) {
+    // @todo There is a bug here where we are sending out packets as the authority when we are not the authority
+    if (session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+        int port = sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id);
+        assert(port != -1);
+
+        return port;
+    } else {
+        return SAM2_AUTHORITY_INDEX;
+    }
+}
+
+static inline int ulnet_locate_peer(ulnet_session_t *session, uint64_t peer_id) {
+    int room_port, spectator_port;
+    SAM2_LOCATE(session->room_we_are_in.peer_ids, peer_id, room_port);
+    SAM2_LOCATE(session->spectator_peer_ids,      peer_id, spectator_port);
+
+    return spectator_port != -1 ? spectator_port + SAM2_PORT_MAX+1 : room_port;
+}
+
+bool ulnet_is_authority(ulnet_session_t *session) {
+    return    session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]
+           || session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] == 0; // @todo I don't think this extra check should be necessary
+}
+
+bool ulnet_is_spectator(ulnet_session_t *session, uint64_t peer_id) {
+    return    session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED
+           && sam2_get_port_of_peer(&session->room_we_are_in, peer_id) == -1;
+}
+
+static inline void ulnet__xor_delta(void *dest, void *src, int size) {
+    for (int i = 0; i < size; i++) {
+        ((uint8_t *) dest)[i] ^= ((uint8_t *) src)[i];
+    }
+}
+
 #if defined(ULNET_IMPLEMENTATION)
+#if defined(ULNET_IMGUI)
+#include "imgui.h"
+#include "implot.h"
+#define IMH(statement) statement
+#else
+#define IMH(statement)
+#endif
+
 static void ulnet__logical_partition(int sz, int redundant, int *n, int *out_k, int *packet_size, int *packet_groups) {
     int k_max = GF_SIZE - redundant;
     *packet_groups = 1;
@@ -216,6 +271,415 @@ static void ulnet__logical_partition(int sz, int redundant, int *n, int *out_k, 
 // This is a little confusing since the lower byte of sequence corresponds to the largest stride
 static int64_t ulnet__logical_partition_offset_bytes(uint8_t sequence_hi, uint8_t sequence_lo, int block_size_bytes, int block_stride) {
     return (int64_t) sequence_hi * block_size_bytes + sequence_lo * block_size_bytes * block_stride;
+}
+
+ULNET_LINKAGE void ulnet_input_poll(ulnet_session_t *session, ulnet_input_state_t (*input_state)[ULNET_PORT_COUNT]) {
+    for (int peer_idx = 0; peer_idx < SAM2_PORT_MAX+1; peer_idx++) {
+        if (   session->room_we_are_in.peer_ids[peer_idx] > SAM2_PORT_SENTINELS_MAX
+            || peer_idx == SAM2_AUTHORITY_INDEX
+            && !(session->room_we_are_in.flags & (SAM2_FLAG_PORT0_PEER_IS_INACTIVE << peer_idx))) {
+
+            if (!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
+                assert(peer_idx == SAM2_AUTHORITY_INDEX);
+            }
+
+            assert(session->state[peer_idx].frame <= session->frame_counter + (ULNET_DELAY_BUFFER_SIZE-1));
+            assert(session->state[peer_idx].frame >= session->frame_counter);
+            for (int i = 0; i < SAM2_ARRAY_LENGTH((*input_state)[0]); i++) {
+                #if defined(ULNET__DEBUG_EVERYONE_ON_PORT_0)
+                int port = 0;
+                #else
+                int port = peer_idx;
+                #endif
+                (*input_state)[port][i] |= session->state[peer_idx].input_state[session->frame_counter % ULNET_DELAY_BUFFER_SIZE][port][i];
+            }
+        }
+    }
+}
+
+// @todo Weird interface
+ULNET_LINKAGE ulnet_input_state_t (*ulnet_query_generate_next_input(ulnet_session_t *session, ulnet_core_option_t *next_frame_option))[ULNET_PORT_COUNT] {
+    // Poll input with buffering for netplay
+    if (!ulnet_is_spectator(session, session->our_peer_id) && session->state[ulnet_our_port(session)].frame < session->frame_counter + session->delay_frames) {
+        // @todo The preincrement does not make sense to me here, but things have been working
+        int64_t next_buffer_index = ++session->state[ulnet_our_port(session)].frame % ULNET_DELAY_BUFFER_SIZE;
+
+        session->state[ulnet_our_port(session)].core_option[next_buffer_index] = *next_frame_option;
+        memset(next_frame_option, 0, sizeof(*next_frame_option));
+
+        //if (ulnet_is_authority(session)) {
+            session->state[ulnet_our_port(session)].room_xor_delta[next_buffer_index] = session->next_room_xor_delta;
+            memset(&session->next_room_xor_delta, 0, sizeof(session->next_room_xor_delta));
+        //}
+
+        return &session->state[ulnet_our_port(session)].input_state[next_buffer_index];
+    }
+
+    return NULL;
+}
+
+#ifdef _WIN32
+int64_t get_unix_time_microseconds() {
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+
+    ULARGE_INTEGER ul;
+    ul.LowPart = ft.dwLowDateTime;
+    ul.HighPart = ft.dwHighDateTime;
+
+    int64_t unix_time = (int64_t)(ul.QuadPart - 116444736000000000LL) / 10;
+
+    return unix_time;
+}
+#else
+int64_t get_unix_time_microseconds() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+}
+#endif
+
+double core_wants_tick_in_seconds(int64_t core_wants_tick_at_unix_usec) {
+    return (double) (core_wants_tick_at_unix_usec - get_unix_time_microseconds()) / 1000000.0;
+}
+
+#define ULNET_POLL_SESSION_SAVED_STATE 0b00000001
+#define ULNET_POLL_SESSION_TICKED      0b00000010
+// This procedure always sends an input packet if the core is ready to tick. This subsumes retransmission logic and generally makes protocol logic less strict
+ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_state_on_tick, uint8_t *save_state, size_t save_state_size, double frame_rate,
+    void (*retro_run)(void), bool (*retro_serialize)(void *, size_t), bool (*retro_unserialize)(const void *, size_t)) {
+    IMH(ImGui::Begin("P2P UDP Netplay", NULL, ImGuiWindowFlags_AlwaysAutoResize);)
+    int status = 0;
+
+    session->retro_unserialize = retro_unserialize; // If used this is invoked through a callback within this function call
+    if (   !ulnet_is_spectator(session, session->our_peer_id) 
+        && session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+        uint8_t _[RLE8_ENCODE_UPPER_BOUND(ULNET_PACKET_SIZE_BYTES_MAX)];
+        ulnet_state_packet_t *input_packet = (ulnet_state_packet_t *) _;
+        input_packet->channel_and_port = ULNET_CHANNEL_INPUT | ulnet_our_port(session);
+        int64_t actual_payload_size = rle8_encode(
+            (uint8_t *)&session->state[ulnet_our_port(session)],
+            sizeof(session->state[0]),
+            input_packet->coded_state
+        );
+
+        void *next_history_packet = &session->state_packet_history[ulnet_our_port(session)][session->state[ulnet_our_port(session)].frame % ULNET_STATE_PACKET_HISTORY_SIZE];
+        memset(next_history_packet, 0, sizeof(session->state_packet_history[0][0]));
+        memcpy(
+            next_history_packet,
+            &input_packet,
+            actual_payload_size
+        );
+
+        if (sizeof(ulnet_state_packet_t) + actual_payload_size > ULNET_PACKET_SIZE_BYTES_MAX) {
+            SAM2_LOG_FATAL("Input packet too large to send");
+        }
+
+        for (int p = 0; p < SAM2_ARRAY_LENGTH(session->agent); p++) {
+            if (!session->agent[p]) continue;
+            juice_state_t state = juice_get_state(session->agent[p]);
+
+            // Wait until we can send netplay messages to everyone without fail
+            if (   state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED
+                && !ulnet_is_spectator(session, session->our_peer_id)) {
+                juice_send(session->agent[p], (const char *) &input_packet, sizeof(ulnet_state_packet_t) + actual_payload_size);
+                SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64,
+                    session->state[SAM2_AUTHORITY_INDEX].frame, p, session->room_we_are_in.peer_ids[p]);
+            }
+        }
+    }
+
+#if defined(ULNET_IMGUI)
+    { // Plot Input Packet Size vs. Frame
+        // @todo The gaps in the graph can be explained by out-of-order arrival of packets I think I don't even record those to history but I should
+        //       There is some other weird behavior that might be related to not checking the frame field in the packet if its too old it shouldn't be in the plot obviously
+        ImPlot::SetNextAxisLimits(ImAxis_X1, session->frame_counter - g_sample_size, session->frame_counter, ImGuiCond_Always);
+        ImPlot::SetNextAxisLimits(ImAxis_Y1, 0.0f, 512, ImGuiCond_Always);
+        if (   session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED
+            && ImPlot::BeginPlot("State-Packet Size vs. Frame")) {
+            ImPlot::SetupAxis(ImAxis_X1, "ulnet_state_t::frame");
+            ImPlot::SetupAxis(ImAxis_Y1, "Size Bytes");
+            for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+                if (session->room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
+                static int input_packet_size[SAM2_PORT_MAX+1][MAX_SAMPLE_SIZE] = {0};
+
+                uint8_t *peer_packet = session->state_packet_history[p][session->frame_counter % ULNET_STATE_PACKET_HISTORY_SIZE];
+                int packet_size_bytes = 0;
+                uint16_t u16_0 = 0;
+                for (; packet_size_bytes < ULNET_PACKET_SIZE_BYTES_MAX; packet_size_bytes++) {
+                    if (memcmp(peer_packet + packet_size_bytes, &u16_0, sizeof(u16_0)) == 0) break;
+                }
+                input_packet_size[p][session->frame_counter % g_sample_size] = packet_size_bytes;
+
+                char label[32] = {0};
+                if (p == SAM2_AUTHORITY_INDEX) {
+                    strcpy(label, "Authority");
+                } else {
+                    sprintf(label, "Port %d", p);
+                }
+
+                int xs[MAX_SAMPLE_SIZE];
+                int ys[MAX_SAMPLE_SIZE];
+                for (int frame = SAM2_MAX(0, session->frame_counter - g_sample_size + 1), j = 0; j < g_sample_size; frame++, j++) {
+                    xs[j] = frame;
+                    ys[j] = input_packet_size[p][frame % g_sample_size];
+                }
+
+                ImPlot::PlotLine(label, xs, ys, g_sample_size);
+            }
+
+            ImPlot::EndPlot();
+        }
+    }
+#endif
+
+    // We need to poll agents to make progress on the ICE connection
+    juice_agent_t *agent[SAM2_ARRAY_LENGTH(session->agent)] = {0};
+    int agent_count = 0;
+    for (int p = 0; p < SAM2_ARRAY_LENGTH(session->agent); p++) {
+        if (session->agent[p]) {
+            agent[agent_count++] = session->agent[p];
+        }
+    }
+
+    int timeout_milliseconds = 1e3 * core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec);
+    timeout_milliseconds = SAM2_MAX(0, timeout_milliseconds);
+
+    int ret;
+    // This will call ulnet_receive_packet_callback in a loop
+    if ((ret = juice_user_poll(agent, agent_count, timeout_milliseconds))) {
+        SAM2_LOG_FATAL("Error polling agent (%d)\n", ret);
+    }
+
+    // Reconstruct input required for next tick if we're spectating... this crashes when without sufficient history to pull from @todo
+    if (ulnet_is_spectator(session, session->our_peer_id)) {
+        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+            if (session->room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
+
+            int i;
+            for (i = ULNET_DELAY_BUFFER_SIZE-1; i >= 0; i--) {
+                int64_t frame = -1;
+                ulnet_state_packet_t *ulnet_state_packet_that_could_contain_input_for_current_frame = (ulnet_state_packet_t *) session->state_packet_history[p][(session->frame_counter + i) % ULNET_STATE_PACKET_HISTORY_SIZE];
+                rle8_decode(ulnet_state_packet_that_could_contain_input_for_current_frame->coded_state, ULNET_PACKET_SIZE_BYTES_MAX, (uint8_t *) &frame, sizeof(frame));
+                if (SAM2_ABS(frame - session->frame_counter) < ULNET_DELAY_BUFFER_SIZE) {
+                    int64_t input_consumed = 0;
+                    int64_t decode_size = rle8_decode_extra(ulnet_state_packet_that_could_contain_input_for_current_frame->coded_state, ULNET_PACKET_SIZE_BYTES_MAX,
+                        &input_consumed, (uint8_t *) &session->state[p], sizeof(session->state[p]));
+
+//                        SAM2_LOG_DEBUG("Reconstructed input for frame %" PRId64 " from peer %" PRIx64 "consumed %" PRId64 " bytes of input to produce %" PRId64,
+//                            session->frame_counter, session->room_we_are_in.peer_ids[p], input_consumed, decode_size);
+
+                    break;
+                }
+            }
+
+            //if (i == ULNET_DELAY_BUFFER_SIZE) {
+            //    SAM2_LOG_FATAL("Failed to reconstruct input for frame %" PRId64 " from peer %" PRIx64 "\n", session->frame_counter, session->room_we_are_in.peer_ids[p]);
+            //}
+        }
+    }
+
+IMH(ImGui::SeparatorText("Things We are Waiting on Before we can Tick");)
+IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) { ImGui::Text("Waiting for savestate"); })
+    bool netplay_ready_to_tick = !(session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL);
+    if (session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
+            if (session->room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
+        IMH(if                      (session->state[p].frame <  session->frame_counter) { ImGui::Text("Input state on port %d is too old", p); })
+            netplay_ready_to_tick &= session->state[p].frame >= session->frame_counter;
+        IMH(if                      (session->state[p].frame >= session->frame_counter + ULNET_DELAY_BUFFER_SIZE) { ImGui::Text("Input state on port %d is too new (ahead by %" PRId64 " frames)", p, session->state[p].frame - (session->frame_counter + ULNET_DELAY_BUFFER_SIZE)); })
+            netplay_ready_to_tick &= session->state[p].frame <  session->frame_counter + ULNET_DELAY_BUFFER_SIZE; // This is needed for spectators only. By protocol it should always true for non-spectators unless we have a bug or someone is misbehaving
+        }
+    }
+
+    bool ignore_frame_pacing_so_we_can_catch_up = false;
+    if (ulnet_is_spectator(session, session->our_peer_id)) {
+        int64_t authority_frame = -1;
+
+        // The number of packets we check here is reasonable, since if we miss ULNET_DELAY_BUFFER_SIZE consecutive packets our connection is irrecoverable anyway
+        for (int i = 0; i < ULNET_DELAY_BUFFER_SIZE; i++) {
+            int64_t frame = -1;
+            ulnet_state_packet_t *input_packet = (ulnet_state_packet_t *) session->state_packet_history[SAM2_AUTHORITY_INDEX][(session->frame_counter + i) % ULNET_STATE_PACKET_HISTORY_SIZE];
+            rle8_decode(input_packet->coded_state, ULNET_PACKET_SIZE_BYTES_MAX, (uint8_t *) &frame, sizeof(frame));
+            authority_frame = SAM2_MAX(authority_frame, frame);
+        }
+
+        int64_t max_frame_tolerance_a_peer_can_be_behind = 2 * session->delay_frames - 1;
+        ignore_frame_pacing_so_we_can_catch_up = authority_frame > session->frame_counter + max_frame_tolerance_a_peer_can_be_behind;
+    }
+
+    if (!(session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) && !ulnet_is_spectator(session, session->our_peer_id)) {
+        int64_t frames_buffered = session->state[ulnet_our_port(session)].frame - session->frame_counter + 1;
+        assert(frames_buffered <= ULNET_DELAY_BUFFER_SIZE);
+        assert(frames_buffered >= 0);
+    IMH(if                      (frames_buffered <  session->delay_frames) { ImGui::Text("We have not buffered enough frames still need %" PRId64, session->delay_frames - frames_buffered); })
+        netplay_ready_to_tick &= frames_buffered >= session->delay_frames;
+    }
+
+    IMH(ImGui::End();)
+
+    if (   netplay_ready_to_tick
+        && (core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec) <= 0.0
+        || ignore_frame_pacing_so_we_can_catch_up)) {
+        status |= ULNET_POLL_SESSION_TICKED;
+        // @todo I don't think this makes sense you should keep reasonable timing yourself if you can't the authority should just kick you
+        //int64_t authority_is_on_frame = session->state[SAM2_AUTHORITY_INDEX].frame;
+
+        int64_t target_frame_time_usec = 1000000 / frame_rate - 1000; // @todo There is a leftover millisecond bias here for some reason
+        int64_t current_time_unix_usec = get_unix_time_microseconds();
+        session->core_wants_tick_at_unix_usec = SAM2_MAX(session->core_wants_tick_at_unix_usec, current_time_unix_usec - target_frame_time_usec);
+        session->core_wants_tick_at_unix_usec = SAM2_MIN(session->core_wants_tick_at_unix_usec, current_time_unix_usec + target_frame_time_usec);
+
+        ulnet_core_option_t maybe_core_option_for_this_frame = session->state[SAM2_AUTHORITY_INDEX].core_option[session->frame_counter % ULNET_DELAY_BUFFER_SIZE];
+        if (maybe_core_option_for_this_frame.key[0] != '\0') {
+            if (strcmp(maybe_core_option_for_this_frame.key, "netplay_delay_frames") == 0) {
+                session->delay_frames = atoi(maybe_core_option_for_this_frame.value);
+            }
+
+            for (int i = 0; i < SAM2_ARRAY_LENGTH(session->core_options); i++) {
+                if (strcmp(session->core_options[i].key, maybe_core_option_for_this_frame.key) == 0) {
+                    session->core_options[i] = maybe_core_option_for_this_frame;
+                    session->flags |= ULNET_SESSION_FLAG_CORE_OPTIONS_DIRTY;
+                    break;
+                }
+            }
+        }
+
+        session->flags &= ~ULNET_SESSION_FLAG_TICKED;
+        int64_t save_state_frame = session->frame_counter;
+        if (force_save_state_on_tick || session->peer_needs_sync_bitfield) {
+            IMH(uint64_t start = rdtsc();)
+            retro_serialize(save_state, save_state_size);
+            IMH(g_save_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;)
+            status |= ULNET_POLL_SESSION_SAVED_STATE;
+
+            if (session->flags & ULNET_SESSION_FLAG_TICKED) {
+                SAM2_LOG_DEBUG("We ticked while saving state on frame %" PRId64, session->frame_counter);
+                save_state_frame++; // @todo I think this is right I really need to write some kind of test though
+            }
+        }
+
+        if (session->peer_needs_sync_bitfield) {
+            for (uint64_t p = 0; p < SAM2_ARRAY_LENGTH(session->agent); p++) {
+                if (session->peer_needs_sync_bitfield & (1ULL << p)) {
+                    ulnet_send_save_state(session, session->agent[p], save_state, save_state_size, save_state_frame);
+                    session->peer_needs_sync_bitfield &= ~(1ULL << p);
+                }
+            }
+        }
+
+        if (!(session->flags & ULNET_SESSION_FLAG_TICKED)) {
+            retro_run();
+        }
+
+        session->core_wants_tick_at_unix_usec += 1000000 / frame_rate;
+
+#if 0
+        if (ulnet_is_authority(session)) {
+            for (int p = 0; p < SAM2_PORT_MAX; p++) {
+                sam2_room_t no_xor_delta = {0};
+                sam2_room_t *suggested_room_xor_delta = &session->state[p].room_xor_delta[session->frame_counter % ULNET_DELAY_BUFFER_SIZE];
+                if (memcmp(suggested_room_xor_delta, &no_xor_delta, sizeof(sam2_room_t)) != 0) {
+                    sam2_room_join_message_t message = { SAM2_JOIN_HEADER };
+                    message.room = session->room_we_are_in;
+                    message.peer_id = session->room_we_are_in.peer_ids[p];
+                    ulnet__xor_delta(&message.room, suggested_room_xor_delta, sizeof(sam2_room_t));
+                    ulnet_process_message(session, &message);
+                }
+            }
+        }
+#endif
+
+        sam2_room_t new_room_state = session->room_we_are_in;
+        ulnet__xor_delta(&new_room_state, &session->state[SAM2_AUTHORITY_INDEX].room_xor_delta[session->frame_counter % ULNET_DELAY_BUFFER_SIZE], sizeof(sam2_room_t));
+
+        if (memcmp(&new_room_state, &session->room_we_are_in, sizeof(sam2_room_t)) != 0) {
+            SAM2_LOG_INFO("Something about the room we're in was changed by the authority");
+
+            int64_t our_new_port = sam2_get_port_of_peer(&new_room_state, session->our_peer_id);
+            if (   sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id) == -1
+                && our_new_port != -1) {
+                // @todo This code can be reworked to remove the above if statement as is this conditional really doesn't make sense anyway, but it shouldn't really be a problem for now
+                SAM2_LOG_INFO("We were let into the server by the authority");
+
+                // @todo This assertion is only true if the peer left on their own and is behaving nicely
+                assert(session->state[our_new_port].frame < session->frame_counter);
+                session->state[our_new_port].frame = session->frame_counter;
+
+                for (int p = 0; p < SAM2_ARRAY_LENGTH(new_room_state.peer_ids); p++) {
+                    if (new_room_state.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
+                    if (new_room_state.peer_ids[p] == session->our_peer_id) continue;
+                    if (session->agent[p] == NULL) {
+                        SAM2_LOG_INFO("Starting Interactive-Connectivity-Establishment for peer %016" PRIx64, new_room_state.peer_ids[p]);
+                        ulnet_startup_ice_for_peer(session, new_room_state.peer_ids[p], NULL);
+                    }
+                }
+            } else {
+                for (int p = 0; p < SAM2_ARRAY_LENGTH(new_room_state.peer_ids); p++) {
+                    // @todo Check something other than just joins and leaves
+                    if (new_room_state.peer_ids[p] != session->room_we_are_in.peer_ids[p]) {
+                        if (   session->room_we_are_in.peer_ids[p] > SAM2_PORT_SENTINELS_MAX
+                            && new_room_state.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) {
+                            if (session->room_we_are_in.peer_ids[p] == session->our_peer_id) {
+                                SAM2_LOG_INFO("We were removed from port %d", p);
+                                for (int peer_port = 0; peer_port < SAM2_PORT_MAX; peer_port++) {
+                                    if (session->agent[peer_port]) {
+                                        ulnet_disconnect_peer(session, peer_port);
+                                    }
+                                }
+                            } else {
+                                SAM2_LOG_INFO("Peer %" PRIx64 " has left the room", session->room_we_are_in.peer_ids[p]);
+                                if (ulnet_is_authority(session)) {
+                                    ulnet_move_peer(session, p, SAM2_PORT_MAX+1 + session->spectator_count++);
+                                } else {
+                                    ulnet_disconnect_peer(session, p);
+                                }
+                            }
+                        } else if (new_room_state.peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
+                            int peer_existing_port = ulnet_locate_peer(session, new_room_state.peer_ids[p]);
+                            if (peer_existing_port != -1) {
+                                SAM2_LOG_INFO("Spectator %016" PRIx64 " was promoted to peer", new_room_state.peer_ids[p]);
+                                ulnet_move_peer(session, peer_existing_port, p); // This only moves spectators to real ports right now
+                            }
+                        }
+                    }
+                }
+            }
+
+            session->room_we_are_in = new_room_state;
+            if (!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
+                SAM2_LOG_INFO("The room %016" PRIx64 ":'%s' was abandoned", session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX], session->room_we_are_in.name);
+                for (int peer_port = 0; peer_port < SAM2_ARRAY_LENGTH(session->agent); peer_port++) {
+                    if (session->agent[peer_port]) {
+                        ulnet_disconnect_peer(session, peer_port);
+                    }
+                    session->room_we_are_in.peer_ids[peer_port] = SAM2_PORT_AVAILABLE;
+                }
+                ulnet_session_init_defaulted(session);
+            }
+        }
+
+        if (session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+            session->desync_debug_packet.channel_and_flags = ULNET_CHANNEL_DESYNC_DEBUG;
+            session->desync_debug_packet.frame          = save_state_frame;
+            session->desync_debug_packet.save_state_hash [save_state_frame % ULNET_DELAY_BUFFER_SIZE] = ZSTD_XXH64(save_state, save_state_size, 0);
+            //session->desync_debug_packet.input_state_hash[save_state_frame % ULNET_DELAY_BUFFER_SIZE] = ZSTD_XXH64(g_libretro_context.InputState, sizeof(g_libretro_context.InputState));
+
+            for (int p = 0; p < SAM2_ARRAY_LENGTH(session->agent); p++) {
+                if (!session->agent[p]) continue;
+                juice_state_t juice_state = juice_get_state(session->agent[p]);
+                if (   (juice_state == JUICE_STATE_CONNECTED || juice_state == JUICE_STATE_COMPLETED)
+                    && !ulnet_is_spectator(session, session->our_peer_id)) {
+                    juice_send(session->agent[p], (char *) &session->desync_debug_packet, sizeof(session->desync_debug_packet));
+                }
+            }
+        }
+
+        // Ideally I'd place this right after ticking the core, but we need to update the room state first
+        session->frame_counter++;
+    }
+
+    return status;
 }
 
 ULNET_LINKAGE void ulnet_move_peer(ulnet_session_t *session, int peer_existing_port, int peer_new_port) {
@@ -279,30 +743,6 @@ ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session) {
     session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
 
     ulnet__reset_save_state_bookkeeping(session);
-}
-
-static inline void ulnet__xor_delta(void *dest, void *src, int size) {
-    for (int i = 0; i < size; i++) {
-        ((uint8_t *) dest)[i] ^= ((uint8_t *) src)[i];
-    }
-}
-
-SAM2_LINKAGE int ulnet_locate_peer(ulnet_session_t *session, uint64_t peer_id) {
-    int room_port, spectator_port;
-    SAM2_LOCATE(session->room_we_are_in.peer_ids, peer_id, room_port);
-    SAM2_LOCATE(session->spectator_peer_ids,      peer_id, spectator_port);
-
-    return spectator_port != -1 ? spectator_port + SAM2_PORT_MAX+1 : room_port;
-}
-
-bool ulnet_is_authority(ulnet_session_t *session) {
-    return    session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]
-           || session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] == 0; // @todo I don't think this extra check should be necessary
-}
-
-bool ulnet_is_spectator(ulnet_session_t *session, uint64_t peer_id) {
-    return    session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED
-           && sam2_get_port_of_peer(&session->room_we_are_in, peer_id) == -1;
 }
 
 // MARK: libjuice callbacks
@@ -699,18 +1139,6 @@ ULNET_LINKAGE int ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t 
     return p;
 }
 
-int ulnet_our_port(ulnet_session_t *session) {
-    // @todo There is a bug here where we are sending out packets as the authority when we are not the authority
-    if (session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
-        int port = sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id);
-        assert(port != -1);
-
-        return port;
-    } else {
-        return SAM2_AUTHORITY_INDEX;
-    }
-}
-
 int ulnet_process_message(ulnet_session_t *session, void *response) {
 
     if (sam2_get_metadata((char *) response) == NULL) {
@@ -894,7 +1322,7 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
 }
 
 // Pass in save state since often retro_serialize can tick the core
-void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent, void *save_state, size_t save_state_size, int64_t save_state_frame) {
+ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent, void *save_state, size_t save_state_size, int64_t save_state_frame) {
     assert(save_state);
 
     int packet_payload_size_bytes = ULNET_PACKET_SIZE_BYTES_MAX - sizeof(ulnet_save_state_packet_header_t);
