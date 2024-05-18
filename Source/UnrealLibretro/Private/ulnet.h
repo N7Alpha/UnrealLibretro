@@ -228,12 +228,12 @@ static inline int ulnet_locate_peer(ulnet_session_t *session, uint64_t peer_id) 
     return spectator_port != -1 ? spectator_port + SAM2_PORT_MAX+1 : room_port;
 }
 
-bool ulnet_is_authority(ulnet_session_t *session) {
+static bool ulnet_is_authority(ulnet_session_t *session) {
     return    session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]
            || session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] == 0; // @todo I don't think this extra check should be necessary
 }
 
-bool ulnet_is_spectator(ulnet_session_t *session, uint64_t peer_id) {
+static bool ulnet_is_spectator(ulnet_session_t *session, uint64_t peer_id) {
     return    session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED
            && sam2_get_port_of_peer(&session->room_we_are_in, peer_id) == -1;
 }
@@ -340,7 +340,8 @@ int64_t get_unix_time_microseconds() {
 #endif
 
 double core_wants_tick_in_seconds(int64_t core_wants_tick_at_unix_usec) {
-    return (double) (core_wants_tick_at_unix_usec - get_unix_time_microseconds()) / 1000000.0;
+    double seconds = (core_wants_tick_at_unix_usec - get_unix_time_microseconds()) / 1000000.0;
+    return seconds;
 }
 
 #define ULNET_POLL_SESSION_SAVED_STATE 0b00000001
@@ -367,7 +368,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
         memset(next_history_packet, 0, sizeof(session->state_packet_history[0][0]));
         memcpy(
             next_history_packet,
-            &input_packet,
+            input_packet,
             actual_payload_size
         );
 
@@ -382,7 +383,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
             // Wait until we can send netplay messages to everyone without fail
             if (   state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED
                 && !ulnet_is_spectator(session, session->our_peer_id)) {
-                juice_send(session->agent[p], (const char *) &input_packet, sizeof(ulnet_state_packet_t) + actual_payload_size);
+                juice_send(session->agent[p], (const char *) input_packet, sizeof(ulnet_state_packet_t) + actual_payload_size);
                 SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%" PRIx64,
                     session->state[SAM2_AUTHORITY_INDEX].frame, p, session->room_we_are_in.peer_ids[p]);
             }
@@ -445,9 +446,9 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
     int timeout_milliseconds = 1e3 * core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec);
     timeout_milliseconds = SAM2_MAX(0, timeout_milliseconds);
 
-    int ret;
+    int ret = juice_user_poll(agent, agent_count, timeout_milliseconds);
     // This will call ulnet_receive_packet_callback in a loop
-    if ((ret = juice_user_poll(agent, agent_count, timeout_milliseconds))) {
+    if (ret < 0) {
         SAM2_LOG_FATAL("Error polling agent (%d)\n", ret);
     }
 
@@ -702,7 +703,7 @@ ULNET_LINKAGE void ulnet_move_peer(ulnet_session_t *session, int peer_existing_p
     }
 
     if (peer_existing_port > SAM2_AUTHORITY_INDEX) {
-        // Remove with replacement (Spectators are stored contigously with no gaps)
+        // Remove with replacement (Spectators are stored contiguously with no gaps)
         // @todo Maybe don't do this if it makes the implementation easier
         assert(session->spectator_count > 0);
         assert(peer_new_port < SAM2_PORT_MAX);
@@ -710,6 +711,7 @@ ULNET_LINKAGE void ulnet_move_peer(ulnet_session_t *session, int peer_existing_p
 
         session->spectator_count--;
         session->agent[peer_existing_port] = session->agent[(SAM2_PORT_MAX+1) + session->spectator_count];
+        session->agent[(SAM2_PORT_MAX+1) + session->spectator_count] = NULL;
         session->room_we_are_in.peer_ids[peer_existing_port] = session->spectator_peer_ids[session->spectator_count];
     }
 }

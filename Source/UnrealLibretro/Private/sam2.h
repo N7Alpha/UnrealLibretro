@@ -536,7 +536,7 @@ static sam2_message_metadata_t sam2__message_metadata[] = {
     {sam2_fail_header, sizeof(sam2_error_message_t)},
 };
 
-sam2_message_metadata_t *sam2_get_metadata(const char *message) {
+static sam2_message_metadata_t *sam2_get_metadata(const char *message) {
     for (int i = 0; i < SAM2_ARRAY_LENGTH(sam2__message_metadata); i++) {
         if (memcmp(message, sam2__message_metadata[i].header, SAM2_HEADER_TAG_SIZE) == 0) {
             return &sam2__message_metadata[i];
@@ -704,6 +704,10 @@ SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *response
 // Connnects to host which is either an IPv4/IPv6 Address or domain name
 // Will bias IPv6 if connecting via domain name and also block
 SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host, int port);
+
+SAM2_LINKAGE int sam2_client_poll_connection(sam2_socket_t sockfd, int timeout_ms);
+
+SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message);
 
 #if defined(SAM2_EXECUTABLE) && !defined(SAM2_IMPLEMENTATION)
     #define SAM2_IMPLEMENTATION
