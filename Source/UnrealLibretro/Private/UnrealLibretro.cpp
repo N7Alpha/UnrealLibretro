@@ -69,6 +69,29 @@ void FUnrealLibretroModule::ShutdownModule()
 #endif
 }
 
+#include "Logging/LogMacros.h"
+extern "C"
+void LibretroSam2LogWrite(int level, const char* file, int line, const char* fmt, ...) {
+    char buffer[1536];
+
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+
+    FString formattedMessage = ANSI_TO_TCHAR(buffer);
+
+    // Log the message
+    switch (level) {
+    default:
+    case 4: UE_LOG(Libretro, Fatal  , TEXT("%s"), *formattedMessage); break;
+    case 0: UE_LOG(Libretro, Verbose, TEXT("%s"), *formattedMessage); break;
+    case 1: UE_LOG(Libretro, Log    , TEXT("%s"), *formattedMessage); break;
+    case 2: UE_LOG(Libretro, Warning, TEXT("%s"), *formattedMessage); break;
+    case 3: UE_LOG(Libretro, Error  , TEXT("%s"), *formattedMessage); break;
+    }
+}
+
 #undef LOCTEXT_NAMESPACE
     
 IMPLEMENT_MODULE(FUnrealLibretroModule, UnrealLibretro)

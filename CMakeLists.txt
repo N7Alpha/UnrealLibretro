@@ -1,3 +1,5 @@
+# This builds netarch as a fully standalone executable and doesn't depend on UBT
+
 cmake_minimum_required(VERSION 3.13)
 project(sdlarch)
 
@@ -67,40 +69,47 @@ endif()
 
 
 # Source Files
-set(SOURCE_FILES 
-    sdlarch.cpp
-    fec.c
-    NetImgui_Implementation.cpp
-    imgui/imgui.cpp
-    imgui/backends/imgui_impl_sdl3.cpp
-    imgui/backends/imgui_impl_opengl3.cpp
-    imgui/imgui_draw.cpp
-    imgui/imgui_demo.cpp
-    imgui/imgui_tables.cpp
-    imgui/imgui_widgets.cpp
-    implot/implot.cpp
-    implot/implot_items.cpp
+set(SOURCE_FILES
+    netarch.cpp
+    Source/UnrealLibretro/Private/fec.c
+    Source/ThirdParty/imgui/imgui.cpp
+    Source/ThirdParty/imgui/backends/imgui_impl_sdl3.cpp
+    Source/ThirdParty/imgui/backends/imgui_impl_opengl3.cpp
+    Source/ThirdParty/imgui/imgui_draw.cpp
+    Source/ThirdParty/imgui/imgui_demo.cpp
+    Source/ThirdParty/imgui/imgui_tables.cpp
+    Source/ThirdParty/imgui/imgui_widgets.cpp
+    Source/ThirdParty/implot/implot.cpp
+    Source/ThirdParty/implot/implot_items.cpp
 )
 
 # Add SDL and libuv subdirectories
-set(SDL_SHARED_ENABLED_BY_DEFAULT OFF CACHE BOOL "") # I feel like this shouldn't have to be so janky
-add_subdirectory(SDL)
-add_subdirectory(libuv)
-add_subdirectory(libjuice)
-add_subdirectory(zstd/build/cmake)
+# The way I set options with set() looks janky. This was the only thing I could figure out that worked after fiddling with cmake for a half hour
+set(SDL_SHARED_ENABLED_BY_DEFAULT OFF CACHE BOOL "")
+add_subdirectory(Source/ThirdParty/SDL)
+add_subdirectory(Source/ThirdParty/libuv)
+set(NO_TESTS ON CACHE BOOL "") # libjuice defaults to building tests (which we don't have checked in)
+add_subdirectory(Source/ThirdParty/libjuice)
+set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "")
+set(ZSTD_BUILD_TESTS OFF CACHE BOOL "")
+set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "")
+set(ZSTD_BUILD_SHARED OFF CACHE BOOL "")
+add_subdirectory(Source/ThirdParty/zstd/build/cmake)
 
 # Target
 add_executable(${PROJECT_NAME} ${SOURCE_FILES})
 
 # This should come after add_executable
 target_include_directories(${PROJECT_NAME} PRIVATE
-    libjuice/include
-    zstd/lib
-    imgui/
-    imgui/backends/
-    implot/
-    SDL/include
-    netImgui/Code/Client
+    Source/UnrealLibretro/Private
+    Source/UnrealLibretro/Public/libretro
+    Source/ThirdParty/libjuice/include
+    Source/ThirdParty/zstd/lib
+    Source/ThirdParty/imgui/
+    Source/ThirdParty/imgui/backends/
+    Source/ThirdParty/implot/
+    Source/ThirdParty/SDL/include
+    Source/ThirdParty/netImgui/Code/Client
 )
 
 # Static link everything so we don't have to deal with dll hell

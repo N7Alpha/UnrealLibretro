@@ -123,17 +123,20 @@ static constexpr auto to_integral(E e) -> typename std::underlying_type<E>::type
     return static_cast<typename std::underlying_type<E>::type>(e);
 }
 
-constexpr int PortCount = 4;
+constexpr int PortCount = 8;
 
 struct FLibretroInputState
 {
-    int16_t Data[to_integral(ERetroDeviceID::Size)]{0};
+    int16_t Data[64]{0}; // @todo I should get the type from ulnet.h so the relationship to that file is clearer instead of having an arbitrary 64 here I want that to be a private include though ideally
 
     FLibretroInputState() {}
 
     int16_t& operator[](unsigned Index)               { return Data[Index]; }
     int16_t& operator[](ERetroDeviceID RetroDeviceID) { return Data[to_integral(RetroDeviceID)]; }
 };
+
+static_assert(static_cast<size_t>(ERetroDeviceID::Size) < sizeof(FLibretroInputState::Data) / sizeof(std::remove_reference_t<decltype(std::declval<FLibretroInputState>().Data[0])>),
+              "ERetroDeviceID::Size must be less than the number of elements in FLibretroInputState::Data");
 
 // const for a reason if you make this non-const make sure you don't cause a data race also make it non static too
 static const struct { FKey Unreal; retro_key libretro; } key_bindings[] = {

@@ -21,6 +21,7 @@ static int g_sample_size = MAX_SAMPLE_SIZE/2;
 #include "ulnet.h"
 #include "sam2.h"
 
+#define NETIMGUI_IMPLEMENTATION
 #include "NetImgui_Api.h"
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -647,7 +648,7 @@ static void create_window(int width, int height) {
         SAM2_LOG_FATAL("Unsupported hw context %i. (only OPENGL, OPENGL_CORE and OPENGLES2 supported)", g_video.hw.context_type);
     }
 
-    g_win = SDL_CreateWindow("sdlarch", width, height, SDL_WINDOW_OPENGL);
+    g_win = SDL_CreateWindow("netarch", width, height, SDL_WINDOW_OPENGL);
 
     if (!g_win)
         SAM2_LOG_FATAL("Failed to create window: %s", SDL_GetError());
