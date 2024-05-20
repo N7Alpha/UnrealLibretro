@@ -928,10 +928,24 @@ static void SAM2_UNUSED sam2__log_write(int level, const char *file, int line, c
 }
 #endif
 
-// Resolve hostname with DNS query and prioritize IPv6
+#ifdef _WIN32
+    #define SAM2_SOCKET_ERROR (SOCKET_ERROR)
+    #define SAM2_SOCKET_INVALID (INVALID_SOCKET)
+    #define SAM2_CLOSESOCKET closesocket
+    #define SAM2_SOCKERRNO ((int)WSAGetLastError())
+    #define SAM2_EINPROGRESS WSAEWOULDBLOCK
+#else
+    #include <unistd.h>
+    #define SAM2_SOCKET_ERROR (-1)
+    #define SAM2_SOCKET_INVALID (-1)
+    #define SAM2_CLOSESOCKET close
+    #define SAM2_SOCKERRNO errno
+    #define SAM2_EINPROGRESS EINPROGRESS
+#endif
+
+// Resolve hostname with DNS query
 static int sam2__resolve_hostname(const char *hostname, char *ip) {
     struct addrinfo hints, *res, *p, desired_address;
-    void *ptr;
 
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
@@ -947,18 +961,12 @@ static int sam2__resolve_hostname(const char *hostname, char *ip) {
         return -1;
     }
 
-    for(p = res; p != NULL; p = p->ai_next) {
-        if (p->ai_family == AF_INET) {
-            ptr = &((struct sockaddr_in *) p->ai_addr)->sin_addr;
-        } else if (p->ai_family == AF_INET6) {
-            ptr = &((struct sockaddr_in6 *) p->ai_addr)->sin6_addr;
-        } else {
-            continue;
-        }
-
+    for (p = res; p != NULL; p = p->ai_next) {
         char ipvx[INET6_ADDRSTRLEN];
-        if (inet_ntop(p->ai_family, ptr, ipvx, INET6_ADDRSTRLEN) == NULL) {
-            SAM2_LOG_ERROR("Couldn't convert IP Address to string");
+        socklen_t addrlen = sizeof(struct sockaddr_storage);
+
+        if (getnameinfo(p->ai_addr, addrlen, ipvx, sizeof(ipvx), NULL, 0, NI_NUMERICHOST) != 0) {
+            SAM2_LOG_ERROR("Couldn't convert IP Address to string: ", SAM2_SOCKERRNO);
             continue;
         }
 
@@ -973,21 +981,6 @@ static int sam2__resolve_hostname(const char *hostname, char *ip) {
 
     return desired_address.ai_family;
 }
-
-#ifdef _WIN32
-    #define SAM2_SOCKET_ERROR (SOCKET_ERROR)
-    #define SAM2_SOCKET_INVALID (INVALID_SOCKET)
-    #define SAM2_CLOSESOCKET closesocket
-    #define SAM2_SOCKERRNO ((int)WSAGetLastError())
-    #define SAM2_EINPROGRESS WSAEWOULDBLOCK
-#else
-    #include <unistd.h>
-    #define SAM2_SOCKET_ERROR (-1)
-    #define SAM2_SOCKET_INVALID (-1)
-    #define SAM2_CLOSESOCKET close
-    #define SAM2_SOCKERRNO errno
-    #define SAM2_EINPROGRESS EINPROGRESS
-#endif
 
 SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host, int port) {
     struct sockaddr_storage server_addr = {0};
