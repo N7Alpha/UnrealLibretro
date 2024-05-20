@@ -2,7 +2,15 @@
 extern "C"
 {
 #include "gfx/scaler/pixconv.h"
+extern void LibretroSam2LogWrite(int level, const char* file, int line, const char* fmt, ...);
 }
+
+#define ULNET_IMPLEMENTATION
+#define SAM2_IMPLEMENTATION
+
+#define SAM2_LOG_WRITE(level, file, line, ...) LibretroSam2LogWrite(level, file, line, "Netplay: " __VA_ARGS__)
+#include "sam2.h"
+#include "ulnet.h"
 
 #include "Misc/FileHelper.h"
 
@@ -972,7 +980,10 @@ void FLibretroContext::load(const char *sofile) {
     libretro_callbacks->audio_write = [this](const int16_t *data, size_t frames) { return core_audio_write(data, frames); };
     libretro_callbacks->audio_sample = [this](int16_t left, int16_t right) { return core_audio_sample(left, right); };
     libretro_callbacks->input_state = [this](unsigned port, unsigned device, unsigned index, unsigned id) { return core_input_state(port, device, index, id); };
-    libretro_callbacks->input_poll = [=]() { };
+    libretro_callbacks->input_poll = [this]() {
+        memset(InputState, 0, sizeof(InputState)); // @todo To query the input for sparse packets rather than this laborious subroutine
+        ulnet_input_poll(netplay_session, (ulnet_input_state_t (*)[ULNET_PORT_COUNT]) &InputState); // @todo this should be done in the next procedure also make
+    };
     libretro_callbacks->environment = [this](unsigned cmd, void* data) { return core_environment(cmd, data); };
      libretro_callbacks->get_current_framebuffer = [this]() { return core.gl.framebuffer; };
 
@@ -1049,6 +1060,8 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                                             *AbsoluteCoreDirectory,
                                              AbsoluteCoreDirectory.Len());
     };
+
+    l->netplay_session = (ulnet_session_t *) calloc(1, sizeof(ulnet_session_t));
 
     auto LibretroSettings = GetDefault<ULibretroSettings>();
 
@@ -1132,6 +1145,8 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                 l->glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
             }
 
+            sam2_client_connect(&l->sam_socket, "::1", SAM2_SERVER_DEFAULT_PORT);
+
             while (l->CoreState.load(std::memory_order_relaxed) != ECoreState::Shutdown)
             {
                 DECLARE_SCOPE_CYCLE_COUNTER(TEXT("Frame"), STAT_LibretroFrame, STATGROUP_UnrealLibretro);
@@ -1140,7 +1155,81 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
                     if (l->CoreState.load(std::memory_order_relaxed) == ECoreState::Running)
                     {
-                        l->libretro_api.run();
+                        ulnet_core_option_t option = { 0 };
+                        auto state = ulnet_query_generate_next_input(l->netplay_session, &option);
+                        if (state) {
+                            memset(state, 0, sizeof(*state));
+                        }
+
+                        l->netplay_save_state_size = l->libretro_api.serialize_size();
+                        l->netplay_save_state_data = (unsigned char*)realloc(l->netplay_save_state_data, l->netplay_save_state_size);
+                        ulnet_poll_session(l->netplay_session, true, l->netplay_save_state_data, l->netplay_save_state_size, l->core.av.timing.fps,
+                            l->libretro_api.run, l->libretro_api.serialize, l->libretro_api.unserialize);
+
+                        if (!l->connected_to_sam2) {
+                            l->connected_to_sam2 = static_cast<bool>(sam2_client_poll_connection(l->sam_socket, 0));
+                            if (l->connected_to_sam2) {
+                                // The list request is only a header
+                                sam2_room_list_message_t request = { SAM2_LIST_HEADER };
+                                sam2_client_send(l->sam_socket, (char*)&request);
+                            }
+                        }
+                        if (l->connected_to_sam2) {
+                            for (int _prevent_infinite_loop_counter = 0; _prevent_infinite_loop_counter < 64; _prevent_infinite_loop_counter++) {
+                                static sam2_message_u latest_sam2_message; // This is gradually buffered so it has to be static
+                                static char buffer[sizeof(sam2_message_u)];
+                                static int buffer_length = 0;
+
+                                int status = sam2_client_poll(
+                                    l->sam_socket,
+                                    &latest_sam2_message,
+                                    buffer,
+                                    &buffer_length
+                                );
+
+                                if (status < 0) {
+                                    checkNoEntry();
+                                    //SAM2_LOG_ERROR("Error polling sam2 server: %d", status);
+                                    break;
+                                }
+                                else if (status == 0) {
+                                    break;
+                                }
+                                else {
+                                    l->netplay_session->user_ptr = (void*)l;
+                                    l->netplay_session->sam2_send_callback = [](void* user_ptr, char* message) {
+                                        FLibretroContext* LibretroContext = (FLibretroContext*)user_ptr;
+                                        return sam2_client_send(LibretroContext->sam_socket, message);
+                                    };
+
+                                    status = ulnet_process_message(
+                                        l->netplay_session,
+                                        &latest_sam2_message
+                                    );
+
+                                    if (memcmp(&latest_sam2_message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
+                                        checkNoEntry();
+                                        //g_last_sam2_error = latest_sam2_message.error_response;
+                                        //SAM2_LOG_ERROR("Received error response from SAM2 (%" PRId64 "): %s", g_last_sam2_error.code, g_last_sam2_error.description);
+                                    }
+                                    else if (memcmp(&latest_sam2_message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
+                                        sam2_room_list_message_t* room_list = (sam2_room_list_message_t*)&latest_sam2_message;
+
+                                        if (!(l->netplay_session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
+                                            // Directly signaling the authority just means spectate
+                                            ulnet_session_init_defaulted(l->netplay_session);
+                                            l->netplay_session->room_we_are_in = room_list->room;
+                                            l->netplay_session->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
+                                            ulnet_startup_ice_for_peer(
+                                                l->netplay_session,
+                                                room_list->room.peer_ids[SAM2_AUTHORITY_INDEX],
+                                                NULL
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     
                     // Execute tasks from command queue  Note: It's semantically significant that this is here. Since I hook in save state
@@ -1149,20 +1238,6 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                     while (l->LibretroAPITasks.Dequeue(Task)) 
                     {
                         Task(l->libretro_api);
-                    }
-                }
-                
-                { // @todo My timing solution is a bit adhoc. I'm sure theres probably a better way.
-                    DECLARE_SCOPE_CYCLE_COUNTER(TEXT("Sleep"), STAT_LibretroSleep, STATGROUP_UnrealLibretro);
-
-                    frames++;
-
-                    double sleep = (frames / l->core.av.timing.fps) - (FDateTime::Now() - start).GetTotalSeconds();
-                    if (sleep > 0.0) {
-                        FPlatformProcess::Sleep(sleep); // This always yields so only call it when we actually need to sleep
-                    } else if (sleep < -(1 / l->core.av.timing.fps)) { // If over a frame behind don't try to catch up to the next frame
-                        start = FDateTime::Now();
-                        frames = 0;
                     }
                 }
             }
@@ -1182,6 +1257,15 @@ cleanup:
             {
                 FPlatformProcess::FreeDllHandle(l->libretro_api.handle);
             }
+
+            for (int i = 0; i < SAM2_ARRAY_LENGTH(l->netplay_session->agent); i++) {
+                if (l->netplay_session->agent[i]) {
+                    juice_destroy(l->netplay_session->agent[i]);
+                }
+            }
+
+            free(l->netplay_session);
+
 
             IPlatformFile::GetPlatformPhysical().DeleteFile(*InstancedCorePath);
 

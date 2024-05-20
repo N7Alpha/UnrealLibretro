@@ -168,6 +168,17 @@ public:
 
     EPixelFormat UnrealPixelFormat{PF_B8G8R8A8};
 
+// @todo I need to fix the sam2.h include so that I can just use the type in there
+#if PLATFORM_WINDOWS
+    unsigned __int64 sam_socket = 0;
+#else
+    int sam_socket = 0;
+#endif
+    bool connected_to_sam2 = false;
+    struct ulnet_session* netplay_session = nullptr;
+    unsigned char* netplay_save_state_data = nullptr;
+    size_t netplay_save_state_size = 0;
+
 protected:
     FLibretroContext() {}
     ~FLibretroContext() {}

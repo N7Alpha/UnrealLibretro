@@ -1,11 +1,14 @@
 ###### PROJECT SPECIFIC FILTERS ######
+# A leading / ignores only in the root directory
 /MyROMs
 /MyGames
 /Saves
-/Source/UnrealLibretro/Private/*/SDL2
 /System
 *.pdb
 UnrealLibretro.uplugin
+/build
+imgui.ini
+.vscode
 
 
 ###### GITHUB PROVIDED FILTERS  ######
