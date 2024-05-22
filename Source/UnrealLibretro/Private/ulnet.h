@@ -200,6 +200,10 @@ typedef struct ulnet_session {
     int (*populate_core_options_callback)(void *user_ptr, ulnet_core_option_t options[ULNET_CORE_OPTIONS_MAX]);
 
     bool (*retro_unserialize)(const void *data, size_t size);
+
+#ifdef ULNET_IMGUI
+    int input_packet_size[SAM2_PORT_MAX + 1][MAX_SAMPLE_SIZE] = { 0 };
+#endif
 } ulnet_session_t;
 
 ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent, void *save_state, size_t save_state_size, int64_t save_state_frame);
@@ -402,7 +406,6 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
             ImPlot::SetupAxis(ImAxis_Y1, "Size Bytes");
             for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
                 if (session->room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
-                static int input_packet_size[SAM2_PORT_MAX+1][MAX_SAMPLE_SIZE] = {0};
 
                 uint8_t *peer_packet = session->state_packet_history[p][session->frame_counter % ULNET_STATE_PACKET_HISTORY_SIZE];
                 int packet_size_bytes = 0;
@@ -410,7 +413,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
                 for (; packet_size_bytes < ULNET_PACKET_SIZE_BYTES_MAX; packet_size_bytes++) {
                     if (memcmp(peer_packet + packet_size_bytes, &u16_0, sizeof(u16_0)) == 0) break;
                 }
-                input_packet_size[p][session->frame_counter % g_sample_size] = packet_size_bytes;
+                session->input_packet_size[p][session->frame_counter % g_sample_size] = packet_size_bytes;
 
                 char label[32] = {0};
                 if (p == SAM2_AUTHORITY_INDEX) {
@@ -423,7 +426,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
                 int ys[MAX_SAMPLE_SIZE];
                 for (int frame = SAM2_MAX(0, session->frame_counter - g_sample_size + 1), j = 0; j < g_sample_size; frame++, j++) {
                     xs[j] = frame;
-                    ys[j] = input_packet_size[p][frame % g_sample_size];
+                    ys[j] = session->input_packet_size[p][frame % g_sample_size];
                 }
 
                 ImPlot::PlotLine(label, xs, ys, g_sample_size);
