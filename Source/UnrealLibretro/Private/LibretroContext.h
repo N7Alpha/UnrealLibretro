@@ -174,6 +174,7 @@ public:
 #else
     int sam_socket = 0;
 #endif
+    int netimgui_port = 0;
     bool connected_to_sam2 = false;
     struct ulnet_session* netplay_session = nullptr;
     unsigned char* netplay_save_state_data = nullptr;

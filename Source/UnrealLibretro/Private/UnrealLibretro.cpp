@@ -17,8 +17,18 @@ PFN_wglMakeCurrent _wglMakeCurrent;
 PFN_wglGetProcAddress _wglGetProcAddress;
 #endif
 
+char UnrealLibretroVersionAnsi[256] = {0}; // IModuleInterface can give you this but it's GameThread only
+
 void FUnrealLibretroModule::StartupModule()
 {
+    check(IsInGameThread()); // For IPluginManager
+    auto UnrealLibretro = IPluginManager::Get().FindPlugin("UnrealLibretro");
+    check(UnrealLibretro.IsValid());
+    const FPluginDescriptor& Descriptor = UnrealLibretro->GetDescriptor();
+    FString VersionName = Descriptor.VersionName;
+
+    FCStringAnsi::Strncpy(UnrealLibretroVersionAnsi, TCHAR_TO_ANSI(*VersionName), sizeof(UnrealLibretroVersionAnsi) - 1);
+
     // This code will execute after your module is loaded into memory; the exact timing is specified in the .uplugin file per-module
 #define LIBRETRO_NOTE " Note: disable UnrealLibretro or delete the UnrealLibretro plugin to make this error go away." \
                         " You can also post an issue to github."

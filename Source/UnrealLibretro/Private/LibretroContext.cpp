@@ -6,16 +6,21 @@ extern void LibretroSam2LogWrite(int level, const char* file, int line, const ch
 }
 
 #define ULNET_IMPLEMENTATION
+#define ULNET_IMGUI
 #define SAM2_IMPLEMENTATION
 
 #define SAM2_LOG_WRITE(level, file, line, ...) LibretroSam2LogWrite(level, file, line, "Netplay: " __VA_ARGS__)
 #include "sam2.h"
 #include "ulnet.h"
 
+#include "UnrealLibretro.h" // For Libretro debug log category
+#if UNREALLIBRETRO_NETIMGUI
+#include "NetImgui_Api.h"
+#endif
+
 #include "Misc/FileHelper.h"
 
 #include "LibretroCoreInstance.h"
-#include "UnrealLibretro.h" // For Libretro debug log category
 #include "LibretroSettings.h"
 #include "LibretroInputDefinitions.h"
 #include "LambdaRunnable.h"
@@ -1062,6 +1067,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
     };
 
     l->netplay_session = (ulnet_session_t *) calloc(1, sizeof(ulnet_session_t));
+    l->netplay_session->sample_size = ULNET_MAX_SAMPLE_SIZE;
 
     auto LibretroSettings = GetDefault<ULibretroSettings>();
 
@@ -1147,6 +1153,38 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
             sam2_client_connect(&l->sam_socket, "::1", SAM2_SERVER_DEFAULT_PORT);
 
+            { // Setup ImGui
+                IMGUI_CHECKVERSION();
+                ImGui::SetCurrentContext(ImGui::CreateContext());
+                ImPlot::CreateContext();
+                ImGuiIO& io = ImGui::GetIO(); (void)io;
+                io.IniFilename = NULL; // Don't write an ini file that caches window positions
+                io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+                ImGui::StyleColorsDark();
+
+                // Doing font initialization manually is a special case for netImgui and using the ImGui "null" backend
+                // Confusingly, you don't manually set the null backend see imgui/examples/example_null/main.cpp for details
+                // You'll hit a variety of asserts if you don't execute the following boilerplate
+                io.Fonts->AddFontDefault();
+                io.Fonts->Build();
+                io.Fonts->SetTexID(0);
+                io.DisplaySize = ImVec2(8, 8);
+
+                if (!NetImgui::Startup()) {
+                    UE_LOG(Libretro, Error, TEXT("Failed to initialize NetImgui. NetImgui will not be available"));
+                } else {
+                    for (l->netimgui_port = 8889; l->netimgui_port < 65535; l->netimgui_port++) {
+                        char TitleAnsi[256];
+                        FCStringAnsi::Snprintf(TitleAnsi, sizeof(TitleAnsi), "UnrealLibretro %s (ImGui " IMGUI_VERSION ")", UnrealLibretroVersionAnsi);
+                        NetImgui::ConnectFromApp(TitleAnsi, l->netimgui_port);
+                        if (NetImgui::IsConnectionPending()) {
+                            UE_LOG(Libretro, Log, TEXT("NetImgui is listening on port %i"), l->netimgui_port);
+                            break;
+                        }
+                    }
+                }
+            }
+
             while (l->CoreState.load(std::memory_order_relaxed) != ECoreState::Shutdown)
             {
                 DECLARE_SCOPE_CYCLE_COUNTER(TEXT("Frame"), STAT_LibretroFrame, STATGROUP_UnrealLibretro);
@@ -1155,6 +1193,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
                     if (l->CoreState.load(std::memory_order_relaxed) == ECoreState::Running)
                     {
+                        NetImgui::NewFrame();
                         ulnet_core_option_t option = { 0 };
                         auto state = ulnet_query_generate_next_input(l->netplay_session, &option);
                         if (state) {
@@ -1230,6 +1269,8 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                                 }
                             }
                         }
+
+                        NetImgui::EndFrame();
                     }
                     
                     // Execute tasks from command queue  Note: It's semantically significant that this is here. Since I hook in save state
