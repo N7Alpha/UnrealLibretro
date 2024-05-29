@@ -43,6 +43,10 @@
 // @todo Remove this define once it becomes possible through normal featureset
 #define ULNET__DEBUG_EVERYONE_ON_PORT_0
 
+#ifdef ULNET_IMGUI
+#define ULNET_MAX_SAMPLE_SIZE 128
+#endif
+
 // This constant defines the maximum number of frames that can be buffered before blocking.
 // A value of 2 implies no delay can be accomidated.
 //```
@@ -202,7 +206,9 @@ typedef struct ulnet_session {
     bool (*retro_unserialize)(const void *data, size_t size);
 
 #ifdef ULNET_IMGUI
-    int input_packet_size[SAM2_PORT_MAX + 1][MAX_SAMPLE_SIZE] = { 0 };
+    int sample_size; // @todo Remove. This shouldn't really be needed and its awkward to initialize
+    int input_packet_size[SAM2_PORT_MAX + 1][ULNET_MAX_SAMPLE_SIZE];
+    int save_state_execution_time_cycles[ULNET_MAX_SAMPLE_SIZE];
 #endif
 } ulnet_session_t;
 
@@ -343,6 +349,24 @@ int64_t get_unix_time_microseconds() {
 }
 #endif
 
+uint64_t ulnet__rdtsc() {
+#if defined(__aarch64__) || defined(__arm__)
+    return 1000 * get_unix_time_microseconds();
+#else
+#if defined(_MSC_VER)   /* MSVC compiler */
+    return __rdtsc();
+#elif defined(__GNUC__) /* GCC compiler */
+    unsigned int lo, hi;
+    __asm__ __volatile__ (
+      "rdtsc" : "=a" (lo), "=d" (hi)  
+    );
+    return ((uint64_t)hi << 32) | lo;
+#else
+#error "Unsupported compiler"
+#endif
+#endif
+}
+
 double core_wants_tick_in_seconds(int64_t core_wants_tick_at_unix_usec) {
     double seconds = (core_wants_tick_at_unix_usec - get_unix_time_microseconds()) / 1000000.0;
     return seconds;
@@ -398,7 +422,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
     { // Plot Input Packet Size vs. Frame
         // @todo The gaps in the graph can be explained by out-of-order arrival of packets I think I don't even record those to history but I should
         //       There is some other weird behavior that might be related to not checking the frame field in the packet if its too old it shouldn't be in the plot obviously
-        ImPlot::SetNextAxisLimits(ImAxis_X1, session->frame_counter - g_sample_size, session->frame_counter, ImGuiCond_Always);
+        ImPlot::SetNextAxisLimits(ImAxis_X1, session->frame_counter - session->sample_size, session->frame_counter, ImGuiCond_Always);
         ImPlot::SetNextAxisLimits(ImAxis_Y1, 0.0f, 512, ImGuiCond_Always);
         if (   session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED
             && ImPlot::BeginPlot("State-Packet Size vs. Frame")) {
@@ -413,7 +437,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
                 for (; packet_size_bytes < ULNET_PACKET_SIZE_BYTES_MAX; packet_size_bytes++) {
                     if (memcmp(peer_packet + packet_size_bytes, &u16_0, sizeof(u16_0)) == 0) break;
                 }
-                session->input_packet_size[p][session->frame_counter % g_sample_size] = packet_size_bytes;
+                session->input_packet_size[p][session->frame_counter % session->sample_size] = packet_size_bytes;
 
                 char label[32] = {0};
                 if (p == SAM2_AUTHORITY_INDEX) {
@@ -422,14 +446,14 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
                     sprintf(label, "Port %d", p);
                 }
 
-                int xs[MAX_SAMPLE_SIZE];
-                int ys[MAX_SAMPLE_SIZE];
-                for (int frame = SAM2_MAX(0, session->frame_counter - g_sample_size + 1), j = 0; j < g_sample_size; frame++, j++) {
+                int xs[ULNET_MAX_SAMPLE_SIZE];
+                int ys[ULNET_MAX_SAMPLE_SIZE];
+                for (int frame = SAM2_MAX(0, session->frame_counter - session->sample_size + 1), j = 0; j < session->sample_size; frame++, j++) {
                     xs[j] = frame;
-                    ys[j] = session->input_packet_size[p][frame % g_sample_size];
+                    ys[j] = session->input_packet_size[p][frame % session->sample_size];
                 }
 
-                ImPlot::PlotLine(label, xs, ys, g_sample_size);
+                ImPlot::PlotLine(label, xs, ys, session->sample_size);
             }
 
             ImPlot::EndPlot();
@@ -552,9 +576,9 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
         session->flags &= ~ULNET_SESSION_FLAG_TICKED;
         int64_t save_state_frame = session->frame_counter;
         if (force_save_state_on_tick || session->peer_needs_sync_bitfield) {
-            IMH(uint64_t start = rdtsc();)
+            IMH(uint64_t start = ulnet__rdtsc();)
             retro_serialize(save_state, save_state_size);
-            IMH(g_save_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;)
+            IMH(session->save_state_execution_time_cycles[session->frame_counter % session->sample_size] = ulnet__rdtsc() - start;)
             status |= ULNET_POLL_SESSION_SAVED_STATE;
 
             if (session->flags & ULNET_SESSION_FLAG_TICKED) {
