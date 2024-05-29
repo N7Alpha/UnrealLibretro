@@ -24,13 +24,16 @@ static int g_sample_size = MAX_SAMPLE_SIZE/2;
 #define NETIMGUI_IMPLEMENTATION
 #include "NetImgui_Api.h"
 #include "imgui.h"
+#if !defined(NETARCH_NO_SDL)
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_opengl3.h"
+#endif
 #include "implot.h"
 
 #define ZDICT_STATIC_LINKING_ONLY
 #include "zdict.h"
 
+#if !defined(NETARCH_NO_SDL)
 #include <SDL3/SDL_stdinc.h>
 #include <SDL3/SDL_assert.h>
 #include <SDL3/SDL_audio.h>
@@ -42,6 +45,7 @@ static int g_sample_size = MAX_SAMPLE_SIZE/2;
 #include <SDL3/SDL_keycode.h>
 #include <SDL3/SDL_loadso.h>
 #include <SDL3/SDL_video.h>
+#endif
 #include "libretro.h"
 
 #include <ctype.h>
@@ -56,23 +60,23 @@ static int g_sample_size = MAX_SAMPLE_SIZE/2;
 #endif
 
 // Hide OpenGL functions SDL declares with external linkage we just load all of them dynamically to support headless operation
-#define glActiveTexture RENAMED_BY_SDLARCH_CPP_glActiveTexture
-#define glBindTexture RENAMED_BY_SDLARCH_CPP_glBindTexture
-#define glClear RENAMED_BY_SDLARCH_CPP_glClear
-#define glClearColor RENAMED_BY_SDLARCH_CPP_glClearColor
-#define glDeleteTextures RENAMED_BY_SDLARCH_CPP_glDeleteTextures
-#define glEnable RENAMED_BY_SDLARCH_CPP_glEnable
-#define glGenTextures RENAMED_BY_SDLARCH_CPP_glGenTextures
-#define glGetIntegerv RENAMED_BY_SDLARCH_CPP_glGetIntegerv
-#define glGetString RENAMED_BY_SDLARCH_CPP_glGetString
-#define glReadPixels RENAMED_BY_SDLARCH_CPP_glReadPixels
-#define glPixelStorei RENAMED_BY_SDLARCH_CPP_glPixelStorei
-#define glTexImage2D RENAMED_BY_SDLARCH_CPP_glTexImage2D
-#define glReadBuffer RENAMED_BY_SDLARCH_CPP_glReadBuffer
-#define glViewport RENAMED_BY_SDLARCH_CPP_glViewport
-#define glDrawArrays RENAMED_BY_SDLARCH_CPP_glDrawArrays
-#define glTexParameteri RENAMED_BY_SDLARCH_CPP_glTexParameteri
-#define glTexSubImage2D RENAMED_BY_SDLARCH_CPP_glTexSubImage2D
+#define glActiveTexture RENAMED_BY_NETARCH_CPP_glActiveTexture
+#define glBindTexture RENAMED_BY_NETARCH_CPP_glBindTexture
+#define glClear RENAMED_BY_NETARCH_CPP_glClear
+#define glClearColor RENAMED_BY_NETARCH_CPP_glClearColor
+#define glDeleteTextures RENAMED_BY_NETARCH_CPP_glDeleteTextures
+#define glEnable RENAMED_BY_NETARCH_CPP_glEnable
+#define glGenTextures RENAMED_BY_NETARCH_CPP_glGenTextures
+#define glGetIntegerv RENAMED_BY_NETARCH_CPP_glGetIntegerv
+#define glGetString RENAMED_BY_NETARCH_CPP_glGetString
+#define glReadPixels RENAMED_BY_NETARCH_CPP_glReadPixels
+#define glPixelStorei RENAMED_BY_NETARCH_CPP_glPixelStorei
+#define glTexImage2D RENAMED_BY_NETARCH_CPP_glTexImage2D
+#define glReadBuffer RENAMED_BY_NETARCH_CPP_glReadBuffer
+#define glViewport RENAMED_BY_NETARCH_CPP_glViewport
+#define glDrawArrays RENAMED_BY_NETARCH_CPP_glDrawArrays
+#define glTexParameteri RENAMED_BY_NETARCH_CPP_glTexParameteri
+#define glTexSubImage2D RENAMED_BY_NETARCH_CPP_glTexSubImage2D
 #include <SDL3/SDL_opengl.h>
 #undef glActiveTexture
 #undef glBindTexture
