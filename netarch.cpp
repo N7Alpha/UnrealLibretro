@@ -10,16 +10,13 @@
 #define SAM2_LOG_WRITE_DEFINITION
 #define SAM2_LOG_WRITE(level, file, line, ...) do { if (level >= g_log_level) { sam2__log_write(level, __FILE__, __LINE__, __VA_ARGS__); } } while (0)
 int g_log_level = 1; // Info
-#define MAX_SAMPLE_SIZE 128
-uint64_t rdtsc();
-static uint64_t g_save_cycle_count[MAX_SAMPLE_SIZE] = {0};
-static uint64_t g_frame_cyclic_offset = 0; // Between 0 and g_sample_size-1 @todo replace with a modulo of frame_counter
-static int g_sample_size = MAX_SAMPLE_SIZE/2;
 
 #define ULNET_IMGUI
 #define ULNET_IMPLEMENTATION
 #include "ulnet.h"
 #include "sam2.h"
+
+#define MAX_SAMPLE_SIZE ULNET_MAX_SAMPLE_SIZE
 
 #define NETIMGUI_IMPLEMENTATION
 #include "NetImgui_Api.h"
@@ -844,10 +841,9 @@ static int g_zstd_compress_level = 0;
 static uint64_t g_zstd_cycle_count[MAX_SAMPLE_SIZE] = {1}; // The 1 is so we don't divide by 0
 static size_t g_zstd_compress_size[MAX_SAMPLE_SIZE] = {0};
 static uint64_t g_reed_solomon_encode_cycle_count[MAX_SAMPLE_SIZE] = {0};
-static uint64_t g_reed_solomon_decode_cycle_count[MAX_SAMPLE_SIZE] = {0};
 static float g_frame_time_milliseconds[MAX_SAMPLE_SIZE] = {0};
 static float g_core_wants_tick_in_milliseconds[MAX_SAMPLE_SIZE] = {0};
-static uint64_t g_main_loop_cyclic_offset = 0;
+static int64_t g_main_loop_cyclic_offset = 0;
 static size_t g_serialize_size = 0;
 static bool g_do_zstd_compress = true;
 static bool g_do_zstd_delta_compress = false;
@@ -1001,22 +997,18 @@ void draw_imgui() {
         double avg_zstd_compress_size = 0;
         double max_compress_size = 0;
         double avg_zstd_cycle_count = 0;
-        double max_reed_solomon_decode_cycle_count = 0;
 
-        for (int i = 0; i < g_sample_size; i++) {
-            avg_cycle_count += g_save_cycle_count[i];
+        for (int i = 0; i < g_ulnet_session.sample_size; i++) {
+            avg_cycle_count += g_ulnet_session.save_state_execution_time_cycles[i];
             avg_zstd_compress_size += g_zstd_compress_size[i];
             avg_zstd_cycle_count += g_zstd_cycle_count[i];
             if (g_zstd_compress_size[i] > max_compress_size) {
                 max_compress_size = g_zstd_compress_size[i];
             }
-            if (g_reed_solomon_decode_cycle_count[i] > max_reed_solomon_decode_cycle_count) {
-                max_reed_solomon_decode_cycle_count = g_reed_solomon_decode_cycle_count[i];
-            }
         }
-        avg_cycle_count        /= g_sample_size;
-        avg_zstd_compress_size /= g_sample_size;
-        avg_zstd_cycle_count   /= g_sample_size;
+        avg_cycle_count        /= g_ulnet_session.sample_size;
+        avg_zstd_compress_size /= g_ulnet_session.sample_size;
+        avg_zstd_cycle_count   /= g_ulnet_session.sample_size;
 
         strcpy(unit, "bits");
         double display_count = format_unit_count(8 * g_retro.retro_serialize_size(), unit);
@@ -1057,7 +1049,7 @@ void draw_imgui() {
             ImGui::Text("Remote Savestate hash: %" PRIx64 "", g_remote_savestate_hash);
         }
 
-        ImGui::SliderInt("Sample size", &g_sample_size, 1, MAX_SAMPLE_SIZE);
+        ImGui::SliderInt("Sample size", &g_ulnet_session.sample_size, 1, MAX_SAMPLE_SIZE);
         if (!g_use_rle) {
             g_dictionary_is_dirty |= ImGui::SliderInt("Compression level", (int*)&g_zstd_compress_level, -22, 22);
             g_parameters.zParams.compressionLevel = g_zstd_compress_level;
@@ -1074,16 +1066,16 @@ void draw_imgui() {
 
             // Based on the selection, copy data to the temp array and draw the graph for the corresponding buffer.
             if (current_item == 0) {
-                for (int i = 0; i < g_sample_size; ++i) {
-                    temp[i] = static_cast<float>(g_save_cycle_count[(i+g_frame_cyclic_offset)%g_sample_size]);
+                for (int i = 0; i < g_ulnet_session.sample_size; ++i) {
+                    temp[i] = static_cast<float>(g_ulnet_session.save_state_execution_time_cycles[(i+g_ulnet_session.frame_counter)%g_ulnet_session.sample_size]);
                 }
             } else if (current_item == 1) {
-                for (int i = 0; i < g_sample_size; ++i) {
-                    temp[i] = static_cast<float>(g_zstd_cycle_count[(i+g_frame_cyclic_offset)%g_sample_size]);
+                for (int i = 0; i < g_ulnet_session.sample_size; ++i) {
+                    temp[i] = static_cast<float>(g_zstd_cycle_count[(i+g_ulnet_session.frame_counter)%g_ulnet_session.sample_size]);
                 }
             } else if (current_item == 2) {
-                for (int i = 0; i < g_sample_size; ++i) {
-                    temp[i] = static_cast<float>(g_zstd_compress_size[(i+g_frame_cyclic_offset)%g_sample_size]);
+                for (int i = 0; i < g_ulnet_session.sample_size; ++i) {
+                    temp[i] = static_cast<float>(g_zstd_compress_size[(i+g_ulnet_session.frame_counter)%g_ulnet_session.sample_size]);
                 }
             }
         }
@@ -1686,8 +1678,8 @@ finished_drawing_sam2_interface:
             float maxVal, minVal, sum, avgVal;
             ImVec2 plotSize = ImVec2(ImGui::GetContentRegionAvail().x, 150);
 
-            uint64_t cyclic_offset[] = {
-                g_frame_cyclic_offset,
+            int64_t cyclic_offset[] = {
+                g_ulnet_session.frame_counter % g_ulnet_session.sample_size,
                 g_main_loop_cyclic_offset,
             };
 
@@ -1695,14 +1687,14 @@ finished_drawing_sam2_interface:
             minVal = FLT_MAX;
             sum = 0.0f;
 
-            for (int i = 0; i < g_sample_size; ++i) {
-                float value = frame_time_dataset[datasetIndex][(i + cyclic_offset[datasetIndex]) % g_sample_size];
+            for (int i = 0; i < g_ulnet_session.sample_size; ++i) {
+                float value = frame_time_dataset[datasetIndex][(i + cyclic_offset[datasetIndex]) % g_ulnet_session.sample_size];
                 temp[i] = value;
                 maxVal = (value > maxVal) ? value : maxVal;
                 minVal = (value < minVal) ? value : minVal;
                 sum += value;
             }
-            avgVal = sum / g_sample_size;
+            avgVal = sum / g_ulnet_session.sample_size;
 
             if (datasetIndex == 0) {
                 ImGui::Text("Max: %.3f ms  Min: %.3f ms", maxVal, minVal);
@@ -1710,14 +1702,14 @@ finished_drawing_sam2_interface:
             }
 
             // Set the axis limits before beginning the plot
-            ImPlot::SetNextAxisLimits(ImAxis_X1, 0, g_sample_size, ImGuiCond_Always);
+            ImPlot::SetNextAxisLimits(ImAxis_X1, 0, g_ulnet_session.sample_size, ImGuiCond_Always);
             ImPlot::SetNextAxisLimits(ImAxis_Y1, 0.0f, SAM2_MAX(50.0f, maxVal), ImGuiCond_Always);
 
             const char* plotTitles[] = {"Frame Time Plot", "Core Wants Tick Plot"};
             if (ImPlot::BeginPlot(plotTitles[datasetIndex], plotSize)) {
                 // Plot the histogram
                 const char* barTitles[] = {"Frame Times", "Time until core wants to tick"};
-                ImPlot::PlotBars(barTitles[datasetIndex], temp, g_sample_size, 0.67f, -0.5f);
+                ImPlot::PlotBars(barTitles[datasetIndex], temp, g_ulnet_session.sample_size, 0.67f, -0.5f);
 
                 // Plot max, min, and average lines without changing their colors
                 ImPlot::PlotInfLines("Max", &maxVal, 1, ImPlotInfLinesFlags_Horizontal); // Red line for max
@@ -1982,7 +1974,7 @@ static uint64_t core_get_cpu_features() {
  * @return retro_perf_tick_t The current value of the high resolution counter.
  */
 static retro_perf_tick_t core_get_perf_counter() {
-    return (retro_perf_tick_t)rdtsc();
+    return (retro_perf_tick_t)ulnet__rdtsc();
 }
 
 /**
@@ -2349,24 +2341,6 @@ void receive_juice_log(juice_log_level_t level, const char *message) {
     assert(level < JUICE_LOG_LEVEL_ERROR);
 }
 
-uint64_t rdtsc() {
-#if defined(__aarch64__) || defined(__arm__)
-    return 1000 * get_unix_time_microseconds();
-#else
-#if defined(_MSC_VER)   /* MSVC compiler */
-    return __rdtsc();
-#elif defined(__GNUC__) /* GCC compiler */
-    unsigned int lo, hi;
-    __asm__ __volatile__ (
-      "rdtsc" : "=a" (lo), "=d" (hi)  
-    );
-    return ((uint64_t)hi << 32) | lo;
-#else
-#error "Unsupported compiler"
-#endif
-#endif
-}
-
 void rle_encode32(void *input_typeless, size_t inputSize, void *output_typeless, size_t *outputSize) {
     size_t writeIndex = 0;
     size_t readIndex = 0;
@@ -2451,7 +2425,7 @@ extern "C" {
 
 // I pulled this out of main because it kind of clutters the logic and to get back some indentation
 void tick_compression_investigation(char *save_state, size_t save_state_size, char *rom_data, size_t rom_size) {
-    uint64_t start = rdtsc();
+    uint64_t start = ulnet__rdtsc();
     unsigned char *buffer = g_savebuffer[g_save_state_index];
     static unsigned char g_savebuffer_delta[sizeof(g_savebuffer[0])];
     if (g_do_zstd_delta_compress) {
@@ -2466,10 +2440,10 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
     if (g_use_rle) {
         // If we're 4 byte aligned use the 4-byte wordsize rle that gives us the highest gains in 32-bit consoles (where we need it the most)
         if (g_serialize_size % 4 == 0) {
-            rle_encode32(buffer, g_serialize_size / 4, savebuffer_compressed, g_zstd_compress_size + g_frame_cyclic_offset);
-            g_zstd_compress_size[g_frame_cyclic_offset] *= 4;
+            rle_encode32(buffer, g_serialize_size / 4, savebuffer_compressed, &g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size]);
+            g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] *= 4;
         } else {
-            g_zstd_compress_size[g_frame_cyclic_offset] = rle8_encode(buffer, g_serialize_size, savebuffer_compressed); // @todo Technically this can overflow I don't really plan to use it though and I find the odds unlikely
+            g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = rle8_encode(buffer, g_serialize_size, savebuffer_compressed); // @todo Technically this can overflow I don't really plan to use it though and I find the odds unlikely
         }
     } else {
         if (g_use_dictionary) {
@@ -2513,25 +2487,25 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
             //ZSTD_CCtx_setParameter(cctx, ZSTD_c_ldmHashLog, 0);
 
             if (cdict) {
-                g_zstd_compress_size[g_frame_cyclic_offset] = ZSTD_compress_usingCDict(cctx, 
+                g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = ZSTD_compress_usingCDict(cctx, 
                                                                                        savebuffer_compressed, COMPRESSED_SAVE_STATE_BOUND_BYTES,
                                                                                        buffer, g_serialize_size, 
                                                                                        cdict);
             }
         } else {
-            g_zstd_compress_size[g_frame_cyclic_offset] = ZSTD_compress(savebuffer_compressed,
+            g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = ZSTD_compress(savebuffer_compressed,
                                                                         COMPRESSED_SAVE_STATE_BOUND_BYTES,
                                                                         buffer, g_serialize_size, g_zstd_compress_level);
         }
 
     }
 
-    if (ZSTD_isError(g_zstd_compress_size[g_frame_cyclic_offset])) {
-        fprintf(stderr, "Error compressing: %s\n", ZSTD_getErrorName(g_zstd_compress_size[g_frame_cyclic_offset]));
-        g_zstd_compress_size[g_frame_cyclic_offset] = 0;
+    if (ZSTD_isError(g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size])) {
+        fprintf(stderr, "Error compressing: %s\n", ZSTD_getErrorName(g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size]));
+        g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = 0;
     }
 
-    g_zstd_cycle_count[g_frame_cyclic_offset] = rdtsc() - start;
+    g_zstd_cycle_count[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = ulnet__rdtsc() - start;
 
     // I'm trying to compress the save state data by finding matching blocks that are in the ROM.
     // This doesn't seem to work. Here are my theories:
@@ -2739,8 +2713,6 @@ int main(int argc, char *argv[]) {
     }
 
     if (!no_netimgui) {
-        // netImgui Wants fonts setup like this or it will assert later on when running in headless mode
-
         if (!NetImgui::Startup()) {
             SAM2_LOG_FATAL("Failed to initialize NetImgui");
         }
@@ -2761,6 +2733,8 @@ int main(int argc, char *argv[]) {
     }
 
     SDL_Event ev;
+
+    g_ulnet_session.sample_size = ULNET_MAX_SAMPLE_SIZE / 2;
 
     for (g_main_loop_cyclic_offset = 0; running; g_main_loop_cyclic_offset = (g_main_loop_cyclic_offset + 1) % MAX_SAMPLE_SIZE) {
 
@@ -2849,10 +2823,8 @@ int main(int argc, char *argv[]) {
             static int64_t last_tick_usec = get_unix_time_microseconds();
             int64_t current_time_usec = get_unix_time_microseconds();
             int64_t elapsed_time_milliseconds = (current_time_usec - last_tick_usec) / 1000;
-            g_frame_time_milliseconds[g_frame_cyclic_offset] = elapsed_time_milliseconds;
+            g_frame_time_milliseconds[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = elapsed_time_milliseconds;
             last_tick_usec = current_time_usec;
-
-            g_frame_cyclic_offset = (g_frame_cyclic_offset + 1) % g_sample_size;
         }
 
         if (!g_headless) {

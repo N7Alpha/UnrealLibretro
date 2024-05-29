@@ -1,3 +1,5 @@
+#include "UnrealLibretro.h"
+
 #include "imgui.cpp"
 #include "imgui_draw.cpp"
 #include "imgui_tables.cpp"
@@ -12,7 +14,7 @@
 #endif
 
 
-#if WITH_EDITOR
+#if UNREALLIBRETRO_NETIMGUI
 #define NETIMGUI_IMPLEMENTATION
 #include "NetImgui_Api.h"
 #endif
