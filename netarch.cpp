@@ -1080,17 +1080,7 @@ void draw_imgui() {
         // Slider to select the current save state index
         ImGui::SliderInt("Save State Index (saved every frame)", &g_save_state_index, 0, MAX_SAVE_STATES-1);
         ImGui::SliderInt("Delta compression frame offset", &g_save_state_used_for_delta_index_offset, 0, MAX_SAVE_STATES-1);
-        // Button to add a new save state
-        //if (ImGui::Button("Add Save State For Training")) {
-        //    if (g_save_state_count < MAX_SAVE_STATES) {
-        //        g_save_state_count++;
-        //        g_save_state_index = g_save_state_count - 1;
-        //    }
-        //}
-        
-        ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
-       // ImGui::Checkbox("Another Window", &show_another_window);
-        
+
         ImGui::End();
     }
 
@@ -1104,7 +1094,7 @@ void draw_imgui() {
             if (ImGui::CollapsingHeader("Server Information")) {
 
                 char label[64];
-                snprintf(label, 64, "Room Count: %" PRId64, g_sam2_server->room_count);
+                snprintf(label, 64, "Rooms: %" PRId64, g_sam2_server->room_count);
                 if (ImGui::CollapsingHeader(label)) {
                     for (int i = 0; i < g_sam2_server->room_count; i++) {
                         show_room(g_sam2_server->rooms[i]);
@@ -1746,10 +1736,11 @@ finished_drawing_sam2_interface:
     if (ImGui::IsKeyDown(ImGuiKey_LeftShift) && ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
         // If only Ctrl+Shift is pressed, show available shortcuts
         ImGui::Begin("Shortcuts Window", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNav
-            | ImGuiWindowFlags_NoDecoration |ImGuiWindowFlags_NoInputs);
+            | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs);
         ImGui::Text("Ctrl+Shift+S: Toggle visibility"); render_imgui_windows_locally ^= ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S);
         ImGui::Text("Ctrl+Shift+A: Toggle collapse/expand");
         ImGui::Text("Ctrl+Shift+D: Toggle input fuzzing"); g_libretro_context.fuzz_input ^= ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_D);
+        ImGui::Text("Ctrl+Shift+P: Demo Window"); show_demo_window ^= ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P);
         ImGui::End();
     }
 
