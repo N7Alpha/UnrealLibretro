@@ -119,8 +119,6 @@ typedef void (APIENTRYP PFNGLTEXSUBIMAGE2DPROC)(GLenum target, GLint level, GLin
         EnumMacro(PFNGLCHECKFRAMEBUFFERSTATUSPROC, glCheckFramebufferStatus) \
         EnumMacro(PFNGLCLEARPROC, glClear) \
         EnumMacro(PFNGLCLEARCOLORPROC, glClearColor) \
-        EnumMacro(PFNGLDEBUGMESSAGECALLBACKPROC, glDebugMessageCallback) \
-        EnumMacro(PFNGLDEBUGMESSAGECONTROLPROC, glDebugMessageControl) \
         EnumMacro(PFNGLDELETEBUFFERSPROC, glDeleteBuffers) \
         EnumMacro(PFNGLDELETETEXTURESPROC, glDeleteTextures) \
         EnumMacro(PFNGLENABLEPROC, glEnable) \
@@ -157,7 +155,6 @@ typedef void (APIENTRYP PFNGLTEXSUBIMAGE2DPROC)(GLenum target, GLint level, GLin
         EnumMacro(PFNGLUSEPROGRAMPROC, glUseProgram) \
         EnumMacro(PFNGLUNIFORM1IPROC, glUniform1i) \
         EnumMacro(PFNGLUNIFORMMATRIX4FVPROC, glUniformMatrix4fv) \
-        EnumMacro(PFNGLBINDVERTEXBUFFERPROC, glBindVertexBuffer) \
         EnumMacro(PFNGLVERTEXATTRIBPOINTERPROC, glVertexAttribPointer) \
         EnumMacro(PFNGLDISABLEVERTEXATTRIBARRAYPROC, glDisableVertexAttribArray) \
         EnumMacro(PFNGLENABLEVERTEXATTRIBARRAYPROC, glEnableVertexAttribArray) \
