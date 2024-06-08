@@ -11,9 +11,9 @@ public class UnrealLibretro : ModuleRules
 
 		PrivateIncludePaths.Add("UnrealLibretro/Public/libretro/include");
 
-		RuntimeDependencies.Add("$(PluginDir)/MyRoms/*"	); // Don't actually distribute roms this is just for the convinience of testing
-		RuntimeDependencies.Add("$(PluginDir)/Saves/*"	);
-		RuntimeDependencies.Add("$(PluginDir)/System/*"	);
+		RuntimeDependencies.Add("$(PluginDir)/MyRoms/*"); // Don't actually distribute roms this is just for the convinience of testing
+		RuntimeDependencies.Add("$(PluginDir)/Saves/*");
+		RuntimeDependencies.Add("$(PluginDir)/System/*");
 
 		if (Target.Platform.Equals(UnrealTargetPlatform.Win64))
 		{

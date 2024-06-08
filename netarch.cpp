@@ -2782,12 +2782,12 @@ int main(int argc, char *argv[]) {
         if (next_input_state) {
 
             for (int i = 0; g_binds[i].k || g_binds[i].rk; ++i) {
-                next_input_state[0][g_binds[i].rk] = g_kbd[g_binds[i].k];
+                next_input_state[0][g_binds[i].rk] |= g_kbd[g_binds[i].k];
             }
 
             if (g_libretro_context.fuzz_input) {
                 for (int i = 0; i < 16; ++i) {
-                    next_input_state[0][i] = rand() & 0x0001;
+                    next_input_state[0][i] |= rand() & 0x0001;
                 }
             }
         }

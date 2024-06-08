@@ -337,7 +337,7 @@ void ULibretroCoreInstance::SetInputDigital(int Port, bool Pressed, ERetroDevice
 
     CoreInstance.GetValue()->EnqueueTask([=, CoreInstance = CoreInstance.GetValue()](auto)
     {
-        CoreInstance->InputState[Port][Input] = Pressed;
+        CoreInstance->NextInputState[Port][Input] = Pressed;
     });
 }
 
@@ -347,7 +347,7 @@ void ULibretroCoreInstance::SetInputAnalog(int Port, int _16BitSignedInteger, ER
 
     CoreInstance.GetValue()->EnqueueTask([=, CoreInstance = CoreInstance.GetValue()](auto)
     {
-        CoreInstance->InputState[Port][Input] = _16BitSignedInteger;
+        CoreInstance->NextInputState[Port][Input] = _16BitSignedInteger;
     });
 }
 
