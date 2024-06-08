@@ -987,7 +987,7 @@ void FLibretroContext::load(const char *sofile) {
     libretro_callbacks->input_state = [this](unsigned port, unsigned device, unsigned index, unsigned id) { return core_input_state(port, device, index, id); };
     libretro_callbacks->input_poll = [this]() {
         memset(InputState, 0, sizeof(InputState)); // @todo To query the input for sparse packets rather than this laborious subroutine
-        ulnet_input_poll(netplay_session, (ulnet_input_state_t (*)[ULNET_PORT_COUNT]) &InputState); // @todo this should be done in the next procedure also make
+        ulnet_input_poll(netplay_session, (ulnet_input_state_t (*)[ULNET_PORT_COUNT]) &InputState); // @todo Cast violates strict-aliasing
     };
     libretro_callbacks->environment = [this](unsigned cmd, void* data) { return core_environment(cmd, data); };
      libretro_callbacks->get_current_framebuffer = [this]() { return core.gl.framebuffer; };
@@ -1197,7 +1197,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                         ulnet_core_option_t option = { 0 };
                         auto state = ulnet_query_generate_next_input(l->netplay_session, &option);
                         if (state) {
-                            memset(state, 0, sizeof(*state));
+                            memcpy(state, l->NextInputState, sizeof(*state));
                         }
 
                         l->netplay_save_state_size = l->libretro_api.serialize_size();

@@ -127,6 +127,7 @@ public:
      * This is what the libretro core reads from when determining input. If you want to use your own input method you can modify this directly.
      */
     FLibretroInputState InputState[PortCount];
+    FLibretroInputState NextInputState[PortCount];
 
     std::atomic<bool> OptionsHaveBeenModified;
     TArray<std::atomic<uint8>> OptionSelectedIndex;
