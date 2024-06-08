@@ -135,6 +135,11 @@ struct FLibretroInputState
     int16_t& operator[](ERetroDeviceID RetroDeviceID) { return Data[to_integral(RetroDeviceID)]; }
 };
 
+static_assert(std::is_trivially_copyable<FLibretroInputState>::value, "FLibretroInputState should be trivially copyable");
+static_assert(std::is_standard_layout<FLibretroInputState>::value, "FLibretroInputState should have a standard layout");
+static_assert(sizeof(FLibretroInputState) == sizeof(int16_t) * std::extent<decltype(FLibretroInputState::Data)>::value, "FLibretroInputState size should match the size of the Data array");
+static_assert(alignof(FLibretroInputState) == alignof(int16_t), "FLibretroInputState alignment should match the alignment of int16_t");
+
 static_assert(static_cast<size_t>(ERetroDeviceID::Size) < sizeof(FLibretroInputState::Data) / sizeof(std::remove_reference_t<decltype(std::declval<FLibretroInputState>().Data[0])>),
               "ERetroDeviceID::Size must be less than the number of elements in FLibretroInputState::Data");
 
