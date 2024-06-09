@@ -186,6 +186,8 @@ public:
     }
 
 private:
+    class FSam2ServerRunnable* Sam2ServerRunnable = nullptr;
+    FRunnableThread* Sam2ServerThread = nullptr;
 
 #ifdef PLATFORM_WINDOWS
     FString RedistDirectory;

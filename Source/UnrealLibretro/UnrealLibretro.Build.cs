@@ -68,8 +68,9 @@ public class UnrealLibretro : ModuleRules
 		{
 			PrivateDependencyModuleNames.Add("AudioExtensions");
 		}
-		
-		PrivateDependencyModuleNames.AddRange(new string[] { "Sockets", "Networking" }); // NetImgui
+
+		// NetImgui
+		PrivateDependencyModuleNames.AddRange(new string[] { "Sockets", "Networking" });
 		//PrivateIncludePaths.Add(PluginDirectory + "/Source/UnrealLibretro/netImgui");
 		//PCHUsage = PCHUsageMode.NoSharedPCHs; // Prevents problem with Dear ImGui/NetImgui sources not including the right first header
 		//PrivatePCHHeaderFile = "Public/UnrealLibretro.h";
@@ -83,11 +84,9 @@ public class UnrealLibretro : ModuleRules
 		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/libjuice/include");
 		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/libjuice/include/juice"); // We #include libjuice implementation files which expect this
 
-		if (Target.Platform == UnrealTargetPlatform.Win64)
-		{
-			// Link against the bcrypt library
-			PublicAdditionalLibraries.Add("bcrypt.lib");
-		}
+		// libuv stuff
+		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/libuv/include");
+		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/libuv/src");
 
 		// imgui stuff
 		PrivateDefinitions.Add("IMGUI_DEFINE_MATH_OPERATORS");  // We get unity build issues/packaging issues if this isn't defined
