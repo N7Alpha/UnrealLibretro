@@ -10,8 +10,10 @@ extern void LibretroSam2LogWrite(int level, const char* file, int line, const ch
 #define SAM2_IMPLEMENTATION
 
 #define SAM2_LOG_WRITE(level, file, line, ...) LibretroSam2LogWrite(level, file, line, "Netplay: " __VA_ARGS__)
+THIRD_PARTY_INCLUDES_START
 #include "sam2.h"
 #include "ulnet.h"
+THIRD_PARTY_INCLUDES_END
 
 #include "UnrealLibretro.h" // For Libretro debug log category
 #if UNREALLIBRETRO_NETIMGUI
@@ -1153,6 +1155,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
             sam2_client_connect(&l->sam_socket, "::1", SAM2_SERVER_DEFAULT_PORT);
 
+#if UNREALLIBRETRO_NETIMGUI
             { // Setup ImGui
                 IMGUI_CHECKVERSION();
                 ImGui::SetCurrentContext(ImGui::CreateContext());
@@ -1184,6 +1187,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                     }
                 }
             }
+#endif
 
             while (l->CoreState.load(std::memory_order_relaxed) != ECoreState::Shutdown)
             {
@@ -1193,7 +1197,9 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
                     if (l->CoreState.load(std::memory_order_relaxed) == ECoreState::Running)
                     {
+#if UNREALLIBRETRO_NETIMGUI
                         NetImgui::NewFrame();
+#endif
                         ulnet_core_option_t option = { 0 };
                         auto state = ulnet_query_generate_next_input(l->netplay_session, &option);
                         if (state) {
@@ -1269,8 +1275,9 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                                 }
                             }
                         }
-
+#if UNREALLIBRETRO_NETIMGUI
                         NetImgui::EndFrame();
+#endif
                     }
                     
                     // Execute tasks from command queue  Note: It's semantically significant that this is here. Since I hook in save state

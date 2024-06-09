@@ -90,6 +90,7 @@ public class UnrealLibretro : ModuleRules
 		}
 
 		// imgui stuff
+		PrivateDefinitions.Add("IMGUI_DEFINE_MATH_OPERATORS");  // We get unity build issues/packaging issues if this isn't defined
 		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/imgui");
 		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/netImgui/Code/Client");
 		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/implot");
