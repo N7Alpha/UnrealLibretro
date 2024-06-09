@@ -1,5 +1,10 @@
 #include "UnrealLibretro.h"
 
+#define SAM2_SERVER
+THIRD_PARTY_INCLUDES_START
+#include "sam2.h"
+THIRD_PARTY_INCLUDES_END
+
 #include "Misc/MessageDialog.h"
 #include "Modules/ModuleManager.h"
 
@@ -19,6 +24,40 @@ PFN_wglGetProcAddress _wglGetProcAddress;
 
 char UnrealLibretroVersionAnsi[256] = {0}; // IModuleInterface can give you this but it's GameThread only
 
+class FSam2ServerRunnable : public FRunnable
+{
+public:
+    FSam2ServerRunnable()
+    {
+        int server_size_bytes = sam2_server_create(NULL, 0);
+
+        Sam2Server = (sam2_server_t*)malloc(server_size_bytes);
+        sam2_server_create(Sam2Server, SAM2_SERVER_DEFAULT_PORT);
+    }
+
+    ~FSam2ServerRunnable()
+    {
+        free(Sam2Server);
+    }
+
+    virtual uint32 Run() override
+    {
+        // Handle TCP requests. This call returns only after calling uv_stop()
+        uv_run(&Sam2Server->loop, UV_RUN_DEFAULT);
+
+        // Start asynchronous destruction
+        sam2_server_begin_destroy(Sam2Server);
+
+        // Do the needful
+        uv_run(&Sam2Server->loop, UV_RUN_DEFAULT);
+        uv_loop_close(&Sam2Server->loop);
+
+        return 0;
+    }
+
+    sam2_server_t* Sam2Server;
+};
+
 void FUnrealLibretroModule::StartupModule()
 {
     check(IsInGameThread()); // For IPluginManager
@@ -28,6 +67,9 @@ void FUnrealLibretroModule::StartupModule()
     FString VersionName = Descriptor.VersionName;
 
     FCStringAnsi::Strncpy(UnrealLibretroVersionAnsi, TCHAR_TO_ANSI(*VersionName), sizeof(UnrealLibretroVersionAnsi) - 1);
+
+    Sam2ServerRunnable = new FSam2ServerRunnable();
+    Sam2ServerThread = FRunnableThread::Create(Sam2ServerRunnable, TEXT("Sam2ServerThread"));
 
     // This code will execute after your module is loaded into memory; the exact timing is specified in the .uplugin file per-module
 #define LIBRETRO_NOTE " Note: disable UnrealLibretro or delete the UnrealLibretro plugin to make this error go away." \
@@ -61,6 +103,16 @@ void FUnrealLibretroModule::StartupModule()
 
 void FUnrealLibretroModule::ShutdownModule()
 {
+    if (Sam2ServerThread)
+    {
+        uv_stop(&Sam2ServerRunnable->Sam2Server->loop);
+        Sam2ServerThread->WaitForCompletion();
+        delete Sam2ServerThread;
+        delete Sam2ServerRunnable;
+        Sam2ServerRunnable = nullptr;
+        Sam2ServerThread = nullptr;
+    }
+
     // @todo For now I skip resource cleanup. It could be added back if I added isReadyForFinishDestroy(bool) to ULibretroCoreInstance
     // in conjunction with waiting for the FLibretroContext to destruct since UE uses the outstanding UObjects from this module visible through
     // the reflection system (UProperty, etc)  to determine when it is safe to shutdown this module.
