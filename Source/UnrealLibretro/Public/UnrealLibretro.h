@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Launch/Resources/Version.h"
 #include "LibretroCoreInstance.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
@@ -8,7 +9,12 @@
 UNREALLIBRETRO_API DECLARE_LOG_CATEGORY_EXTERN(Libretro, Log, All);
 
 extern char UnrealLibretroVersionAnsi[];
-#if PLATFORM_WINDOWS
+
+#if    ENGINE_MAJOR_VERSION < 5 \
+    && ENGINE_MINOR_VERSION < 27
+// The version of netImgui I'm using was tested on 4.27 at the earliest it does not build on 4.24
+#define UNREALLIBRETRO_NETIMGUI 0
+#elif PLATFORM_WINDOWS
 #define UNREALLIBRETRO_NETIMGUI 1
 #elif PLATFORM_MAC
 #define UNREALLIBRETRO_NETIMGUI 1
