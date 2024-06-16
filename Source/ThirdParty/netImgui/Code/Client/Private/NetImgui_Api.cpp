@@ -56,8 +56,8 @@ bool ConnectToApp(const char* clientName, const char* ServerHost, uint32_t serve
 	if (client.mpSocketPending.load() != nullptr)
 	{				
 		client.ContextInitialize();
-		threadFunction = threadFunction == nullptr ? DefaultStartCommunicationThread : threadFunction;
-		threadFunction(Client::CommunicationsConnect, &client);
+		threadFunction		= threadFunction == nullptr ? DefaultStartCommunicationThread : threadFunction;
+		threadFunction(Client::CommunicationsClient, &client);
 	}
 	
 	return client.IsActive();
@@ -81,11 +81,11 @@ bool ConnectFromApp(const char* clientName, uint32_t serverPort, ThreadFunctPtr 
 	StringCopy(client.mName, (clientName == nullptr || clientName[0] == 0 ? "Unnamed" : clientName));
 	client.mpSocketPending			= Network::ListenStart(serverPort);
 	client.mFontCreationFunction	= FontCreateFunction;
-	client.mThreadFunction			= (threadFunction == nullptr) ? DefaultStartCommunicationThread : threadFunction;
 	if (client.mpSocketPending.load() != nullptr)
 	{				
 		client.ContextInitialize();
-		client.mThreadFunction(Client::CommunicationsHost, &client);
+		threadFunction		= threadFunction == nullptr ? DefaultStartCommunicationThread : threadFunction;
+		threadFunction(Client::CommunicationsHost, &client);
 	}
 
 	return client.IsActive();
@@ -149,11 +149,15 @@ bool IsDrawingRemote(void)
 bool NewFrame(bool bSupportFrameSkip)
 //=================================================================================================
 {	
-	if (!gpClientInfo || gpClientInfo->mbIsDrawing) return false;
+	if (!gpClientInfo) return false;
 
 	Client::ClientInfo& client = *gpClientInfo;	
 	ScopedBool scopedInside(client.mbInsideNewEnd, true);
-	
+
+	//assert(!client.mbIsDrawing);
+    if (client.mbIsDrawing)
+        return false;
+
 	// ImGui Newframe handled by remote connection settings
 	if( NetImgui::IsConnected() )
 	{		
@@ -723,11 +727,10 @@ bool ProcessInputData(Client::ClientInfo& client)
 			}
 		}
 #endif
-		uint16_t character;
+		ImWchar character;
 		io.InputQueueCharacters.resize(0);
 		while (client.mPendingKeyIn.ReadData(&character)){
-			ImWchar ConvertedKey = static_cast<ImWchar>(character);
-			io.AddInputCharacter(ConvertedKey);
+			io.AddInputCharacter(character);
 		}
 
 		static_assert(sizeof(client.mPreviousInputState.mInputDownMask) == sizeof(pCmdInput->mInputDownMask), "Array size should match");
