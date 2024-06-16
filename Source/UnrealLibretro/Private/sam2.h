@@ -564,7 +564,6 @@ static int sam2_format_core_version(sam2_room_t *room, const char *name, const c
 #define WIN32_LEAN_AND_MEAN 1
 #endif
 #include <io.h>
-#include <windows.h>
 #include <winsock2.h>
 //#pragma comment(lib, "ws2_32.lib")
 typedef SOCKET sam2_socket_t;
