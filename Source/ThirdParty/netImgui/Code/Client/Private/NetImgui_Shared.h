@@ -94,7 +94,6 @@ public:
 	inline TType*		Release();
 	inline void			Assign(TType*& pNewData);
 	inline void			Free();
-	inline bool 		IsNull()const { return mpData.load() != nullptr; }
 private:						
 	std::atomic<TType*> mpData;
 
