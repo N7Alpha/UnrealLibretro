@@ -129,3 +129,17 @@ namespace ImGui
     void MyFunction(const char* name, MyMatrix44* mtx);
 }
 */
+
+// The ImGui libraries all use global state. However we want one ImGui instance per Libretro Core The hack recommended
+// by imgui.h suggests using thread_local's ocornut has a plan to add this as a first-class feature in v2 eventually
+#if defined(__UNREAL__)
+extern thread_local struct ImGuiContext* LibretroImGuiTLS;
+#define GImGui LibretroImGuiTLS
+
+extern thread_local struct ImPlotContext* LibretroImPlotTLS;
+#define GImPlot LibretroImPlotTLS
+
+namespace NetImgui { namespace Internal { namespace Client { struct ClientInfo; } } }
+extern thread_local struct NetImgui::Internal::Client::ClientInfo* LibretroNetImguiClientInfo;
+#define gpClientInfo LibretroNetImguiClientInfo
+#endif

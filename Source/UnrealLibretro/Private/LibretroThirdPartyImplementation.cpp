@@ -8,6 +8,11 @@
 #include "implot.cpp"
 #include "implot_items.cpp"
 
+thread_local ImGuiContext* LibretroImGuiTLS = nullptr;
+thread_local ImPlotContext* LibretroImPlotTLS = nullptr;
+namespace NetImgui { namespace Internal { namespace Client { struct ClientInfo; } } }
+thread_local NetImgui::Internal::Client::ClientInfo* LibretroNetImguiClientInfo = nullptr;
+
 #if PLATFORM_WINDOWS
 #include "Windows/MinWindows.h"
 #include "Windows/AllowWindowsPlatformTypes.h"

@@ -1,5 +1,9 @@
 #pragma once
 
+#if PLATFORM_WINDOWS
+#include "Windows/WindowsHWrapper.h"
+#endif
+
 #define SAM2_SERVER
 THIRD_PARTY_INCLUDES_START
 #include "sam2.h"
