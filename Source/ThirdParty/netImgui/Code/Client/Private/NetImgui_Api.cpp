@@ -12,7 +12,9 @@ using namespace NetImgui::Internal;
 
 namespace NetImgui { 
 
+#ifndef gpClientInfo
 static Client::ClientInfo* gpClientInfo = nullptr;
+#endif
 
 bool ProcessInputData(Client::ClientInfo& client);
 
