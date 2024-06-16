@@ -708,12 +708,11 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
 SAM2_LINKAGE int sam2_client_poll_connection(sam2_socket_t sockfd, int timeout_ms);
 
 SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message);
-
-#if defined(SAM2_EXECUTABLE) && !defined(SAM2_IMPLEMENTATION)
-    #define SAM2_IMPLEMENTATION
-#endif
+#endif // SAM2_H
 
 #if defined(SAM2_IMPLEMENTATION)
+#ifndef SAM2_CLIENT_C
+#define SAM2_CLIENT_C
 
 #include <errno.h>
 #include <time.h>
@@ -1292,12 +1291,14 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message) {
     SAM2_LOG_INFO("Message with header '%.8s' and size %d bytes sent successfully", message, message_size);
     return 0;
 }
-#endif
+#endif // SAM2_CLIENT_C
+#endif // SAM2_IMPLEMENTATION
 
 
 
 #if defined(SAM2_IMPLEMENTATION) && defined(SAM2_SERVER)
-
+#ifndef SAM2_SERVER_C
+#define SAM2_SERVER_C
 #define FNV_OFFSET_BASIS_64 0xCBF29CE484222325
 #define FNV_PRIME_64 0x100000001B3
 
@@ -2029,9 +2030,12 @@ static void on_signal(uv_signal_t *handle, int signum) {
     sam2_server_begin_destroy((sam2_server_t *) handle->data);
     uv_close((uv_handle_t*) handle->data, NULL);
 }
+#endif // SAM2_SERVER_C
+#endif // SAM2_SERVER && SAM2_IMPLEMENTATION
 
 #if defined(SAM2_EXECUTABLE)
-
+#ifndef SAM2_MAIN_C
+#define SAM2_MAIN_C
 int main() {
     sam2_server_t *server = NULL;
 
@@ -2129,4 +2133,3 @@ SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == 64 + sizeof(uint64_t) + 32 + (SAM2_POR
 SAM2_STATIC_ASSERT(sizeof(sam2_room_make_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_make_message_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_list_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_list_message_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_join_message_t) == 8 + 8 + 64 + sizeof(sam2_room_t), "sam2_room_join_message_t is not packed");
-#endif
