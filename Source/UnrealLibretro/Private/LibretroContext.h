@@ -1,5 +1,10 @@
 #pragma once
 
+#define SAM2_SERVER
+THIRD_PARTY_INCLUDES_START
+#include "sam2.h"
+THIRD_PARTY_INCLUDES_END
+
 // Libretro API
 #include "libretro/libretro.h"
 static_assert(RETRO_API_VERSION == 1, "Retro API version changed");

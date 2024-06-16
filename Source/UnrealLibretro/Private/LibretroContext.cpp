@@ -7,7 +7,6 @@ extern void LibretroSam2LogWrite(int level, const char* file, int line, const ch
 
 #define ULNET_IMPLEMENTATION
 #define ULNET_IMGUI
-#define SAM2_SERVER
 #define SAM2_IMPLEMENTATION
 
 #define SAM2_LOG_WRITE(level, file, line, ...) LibretroSam2LogWrite(level, file, line, "Netplay: " __VA_ARGS__)
