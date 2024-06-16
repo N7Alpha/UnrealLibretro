@@ -1221,15 +1221,12 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                         }
                         if (l->connected_to_sam2) {
                             for (int _prevent_infinite_loop_counter = 0; _prevent_infinite_loop_counter < 64; _prevent_infinite_loop_counter++) {
-                                static sam2_message_u latest_sam2_message; // This is gradually buffered so it has to be static
-                                static char buffer[sizeof(sam2_message_u)];
-                                static int buffer_length = 0;
 
                                 int status = sam2_client_poll(
                                     l->sam_socket,
-                                    &latest_sam2_message,
-                                    buffer,
-                                    &buffer_length
+                                    &l->latest_sam2_message,
+                                    l->temp_buffer,
+                                    &l->temp_buffer_length
                                 );
 
                                 if (status < 0) {
@@ -1249,18 +1246,19 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
                                     status = ulnet_process_message(
                                         l->netplay_session,
-                                        &latest_sam2_message
+                                        &l->latest_sam2_message
                                     );
 
-                                    if (memcmp(&latest_sam2_message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
+                                    if (memcmp(&l->latest_sam2_message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
                                         checkNoEntry();
                                         //g_last_sam2_error = latest_sam2_message.error_response;
                                         //SAM2_LOG_ERROR("Received error response from SAM2 (%" PRId64 "): %s", g_last_sam2_error.code, g_last_sam2_error.description);
                                     }
-                                    else if (memcmp(&latest_sam2_message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
-                                        sam2_room_list_message_t* room_list = (sam2_room_list_message_t*)&latest_sam2_message;
+                                    else if (memcmp(&l->latest_sam2_message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
+                                        sam2_room_list_message_t* room_list = (sam2_room_list_message_t*)&l->latest_sam2_message;
 
-                                        if (!(l->netplay_session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
+                                        if (!(l->netplay_session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)
+                                            && room_list->room.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
                                             // Directly signaling the authority just means spectate
                                             ulnet_session_init_defaulted(l->netplay_session);
                                             l->netplay_session->room_we_are_in = room_list->room;
