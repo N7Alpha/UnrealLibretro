@@ -1068,6 +1068,16 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                                              AbsoluteCoreDirectory.Len());
     };
 
+#ifdef UNREALLIBRETRO_NETIMGUI
+    static ImFontAtlas* GlobalFontAtlas = nullptr;
+    if (GlobalFontAtlas == nullptr) {
+        GlobalFontAtlas = new ImFontAtlas();
+        ImFontConfig fontConfig;
+        GlobalFontAtlas->AddFontDefault(&fontConfig);
+        GlobalFontAtlas->Build();
+    }
+#endif
+
     l->netplay_session = (ulnet_session_t *) calloc(1, sizeof(ulnet_session_t));
     l->netplay_session->sample_size = ULNET_MAX_SAMPLE_SIZE;
 
@@ -1158,27 +1168,20 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 #if UNREALLIBRETRO_NETIMGUI
             { // Setup ImGui
                 IMGUI_CHECKVERSION();
-                ImGui::SetCurrentContext(ImGui::CreateContext());
+                ImGui::CreateContext(GlobalFontAtlas);
                 ImPlot::CreateContext();
                 ImGuiIO& io = ImGui::GetIO(); (void)io;
                 io.IniFilename = NULL; // Don't write an ini file that caches window positions
                 io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
                 ImGui::StyleColorsDark();
 
-                // Doing font initialization manually is a special case for netImgui and using the ImGui "null" backend
-                // Confusingly, you don't manually set the null backend see imgui/examples/example_null/main.cpp for details
-                // You'll hit a variety of asserts if you don't execute the following boilerplate
-                io.Fonts->AddFontDefault();
-                io.Fonts->Build();
-                io.Fonts->SetTexID(0);
-                io.DisplaySize = ImVec2(8, 8);
-
                 if (!NetImgui::Startup()) {
                     UE_LOG(Libretro, Error, TEXT("Failed to initialize NetImgui. NetImgui will not be available"));
                 } else {
                     for (l->netimgui_port = 8889; l->netimgui_port < 65535; l->netimgui_port++) {
                         char TitleAnsi[256];
-                        FCStringAnsi::Snprintf(TitleAnsi, sizeof(TitleAnsi), "UnrealLibretro %s (ImGui " IMGUI_VERSION ")", UnrealLibretroVersionAnsi);
+                        FCStringAnsi::Snprintf(TitleAnsi, sizeof(TitleAnsi), "%s (UnrealLibretro %s)",
+                            TCHAR_TO_ANSI(*FPaths::GetCleanFilename(game.IsEmpty() ? core : game)), UnrealLibretroVersionAnsi);
                         NetImgui::ConnectFromApp(TitleAnsi, l->netimgui_port);
                         if (NetImgui::IsConnectionPending()) {
                             UE_LOG(Libretro, Log, TEXT("NetImgui is listening on port %i"), l->netimgui_port);
@@ -1289,6 +1292,13 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
             }
 
 cleanup:
+            // These ImGui routines all cleanup thread_local objects if they aren't NULL
+#if UNREALLIBRETRO_NETIMGUI
+            NetImgui::Shutdown();
+#endif
+            ImPlot::DestroyContext();
+            ImGui::DestroyContext();
+
             if (l->CoreState.load(std::memory_order_relaxed) == ECoreState::StartFailed)
             {
                 LoadedCallback(l, l->libretro_api);
