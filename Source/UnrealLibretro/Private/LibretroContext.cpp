@@ -1211,7 +1211,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
                         l->netplay_save_state_size = l->libretro_api.serialize_size();
                         l->netplay_save_state_data = (unsigned char*)realloc(l->netplay_save_state_data, l->netplay_save_state_size);
-                        ulnet_poll_session(l->netplay_session, true, l->netplay_save_state_data, l->netplay_save_state_size, l->core.av.timing.fps,
+                        ulnet_poll_session(l->netplay_session, true, l->netplay_save_state_data, l->netplay_save_state_size, l->core.av.timing.fps, 1.0,
                             l->libretro_api.run, l->libretro_api.serialize, l->libretro_api.unserialize);
 
                         if (!l->connected_to_sam2) {
@@ -1233,8 +1233,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                                 );
 
                                 if (status < 0) {
-                                    checkNoEntry();
-                                    //SAM2_LOG_ERROR("Error polling sam2 server: %d", status);
+                                    SAM2_LOG_ERROR("Error polling sam2 server: %d", status);
                                     break;
                                 }
                                 else if (status == 0) {
