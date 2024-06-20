@@ -6,7 +6,6 @@
 #include "fec.h"
 
 #include <stdint.h>
-#include <assert.h>
 
 #ifndef ULNET_LINKAGE
 #ifdef __cplusplus
@@ -266,6 +265,28 @@ static inline void ulnet__xor_delta(void *dest, void *src, int size) {
 #define IMH(statement)
 #endif
 
+#include <assert.h>
+#include <time.h>
+
+static void ulnet__sleep(unsigned int msec) {
+#if defined(_WIN32)
+    // Windows implementation
+    Sleep((DWORD)(msec));
+#else
+    struct timespec timeout;
+    int rc;
+
+    timeout.tv_sec = msec / 1000;
+    timeout.tv_nsec = (msec % 1000) * 1000 * 1000;
+
+    do
+        rc = nanosleep(&timeout, &timeout);
+    while (rc == -1 && errno == EINTR);
+
+    assert(rc == 0);
+#endif
+}
+
 static void ulnet__logical_partition(int sz, int redundant, int *n, int *out_k, int *packet_size, int *packet_groups) {
     int k_max = GF_SIZE - redundant;
     *packet_groups = 1;
@@ -393,7 +414,8 @@ double core_wants_tick_in_seconds(int64_t core_wants_tick_at_unix_usec) {
 #define ULNET_POLL_SESSION_SAVED_STATE 0b00000001
 #define ULNET_POLL_SESSION_TICKED      0b00000010
 // This procedure always sends an input packet if the core is ready to tick. This subsumes retransmission logic and generally makes protocol logic less strict
-ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_state_on_tick, uint8_t *save_state, size_t save_state_size, double frame_rate,
+ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_state_on_tick, uint8_t *save_state, size_t save_state_size,
+    double frame_rate, double max_sleeping_allowed_when_polling_network_seconds,
     void (*retro_run)(void), bool (*retro_serialize)(void *, size_t), bool (*retro_unserialize)(const void *, size_t)) {
     IMH(ImGui::Begin("P2P UDP Netplay", NULL, ImGuiWindowFlags_AlwaysAutoResize);)
     int status = 0;
@@ -511,13 +533,56 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
         }
     }
 
-    int timeout_milliseconds = 1e3 * core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec);
-    timeout_milliseconds = SAM2_MAX(0, timeout_milliseconds);
+    // @todo This timing code is messy I should formally model the problem and then create a solution based on that
+    bool ignore_frame_pacing_so_we_can_catch_up = false;
+    if (agent_count > 0) {
+        int debug_loop_count = 0;
+        double poll_entry_time_seconds = get_unix_time_microseconds() / 1000000.0;
+        do {
+            if (ulnet_is_spectator(session, session->our_peer_id)) {
+                int64_t authority_frame = -1;
 
-    int ret = juice_user_poll(agent, agent_count, timeout_milliseconds);
-    // This will call ulnet_receive_packet_callback in a loop
-    if (ret < 0) {
-        SAM2_LOG_FATAL("Error polling agent (%d)\n", ret);
+                // The number of packets we check here is reasonable, since if we miss ULNET_DELAY_BUFFER_SIZE consecutive packets our connection is irrecoverable anyway
+                for (int i = 0; i < ULNET_DELAY_BUFFER_SIZE; i++) {
+                    int64_t frame = -1;
+                    ulnet_state_packet_t *input_packet = (ulnet_state_packet_t *) session->state_packet_history[SAM2_AUTHORITY_INDEX][(session->frame_counter + i) % ULNET_STATE_PACKET_HISTORY_SIZE];
+                    rle8_decode(input_packet->coded_state, ULNET_PACKET_SIZE_BYTES_MAX, (uint8_t *) &frame, sizeof(frame));
+                    authority_frame = SAM2_MAX(authority_frame, frame);
+                }
+
+                int64_t max_frame_tolerance_a_peer_can_be_behind = 2 * session->delay_frames - 1;
+                ignore_frame_pacing_so_we_can_catch_up = authority_frame - session->frame_counter > max_frame_tolerance_a_peer_can_be_behind;
+            }
+
+            double timeout_milliseconds = 1e3 * core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec);
+
+            if (timeout_milliseconds < 0.0 || ignore_frame_pacing_so_we_can_catch_up) {
+                timeout_milliseconds = 0.0; // No blocking
+            } else if (timeout_milliseconds < 1.0) {
+                timeout_milliseconds = 1.0; // Preempt ourselves otherwise we'll be busy waiting when 0 < timeout < 1 due to truncation
+            }
+
+            int ret = juice_user_poll(agent, agent_count, (int) timeout_milliseconds);
+            // This will call ulnet_receive_packet_callback in a loop
+            if (ret < 0) {
+                SAM2_LOG_FATAL("Error polling agent (%d)", ret);
+            }
+
+            debug_loop_count++;
+        } while (   core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec) > 0.0
+                 && poll_entry_time_seconds - get_unix_time_microseconds() / 1000000.0 > max_sleeping_allowed_when_polling_network_seconds
+                 && !ignore_frame_pacing_so_we_can_catch_up);
+
+        if (debug_loop_count > 20) {
+            SAM2_LOG_WARN("juice_user_poll was called %d times. This is inefficent", debug_loop_count);
+        }
+    } else {
+        double sleep_milliseconds = 1000 * core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec);
+        sleep_milliseconds = SAM2_MIN(sleep_milliseconds, 1000 * max_sleeping_allowed_when_polling_network_seconds);
+        if (sleep_milliseconds > 0.0) {
+            sleep_milliseconds = SAM2_MAX(1, (unsigned int) sleep_milliseconds);
+            ulnet__sleep(sleep_milliseconds);
+        }
     }
 
     // Reconstruct input required for next tick if we're spectating... this crashes when without sufficient history to pull from @todo
@@ -548,6 +613,8 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
         }
     }
 
+IMH(ImGuiIO& io = ImGui::GetIO();)
+IMH(ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);)
 IMH(ImGui::SeparatorText("Things We are Waiting on Before we can Tick");)
 IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) { ImGui::Text("Waiting for savestate"); })
     bool netplay_ready_to_tick = !(session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL);
@@ -559,22 +626,6 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
         IMH(if                      (session->state[p].frame >= session->frame_counter + ULNET_DELAY_BUFFER_SIZE) { ImGui::Text("Input state on port %d is too new (ahead by %" PRId64 " frames)", p, session->state[p].frame - (session->frame_counter + ULNET_DELAY_BUFFER_SIZE)); })
             netplay_ready_to_tick &= session->state[p].frame <  session->frame_counter + ULNET_DELAY_BUFFER_SIZE; // This is needed for spectators only. By protocol it should always true for non-spectators unless we have a bug or someone is misbehaving
         }
-    }
-
-    bool ignore_frame_pacing_so_we_can_catch_up = false;
-    if (ulnet_is_spectator(session, session->our_peer_id)) {
-        int64_t authority_frame = -1;
-
-        // The number of packets we check here is reasonable, since if we miss ULNET_DELAY_BUFFER_SIZE consecutive packets our connection is irrecoverable anyway
-        for (int i = 0; i < ULNET_DELAY_BUFFER_SIZE; i++) {
-            int64_t frame = -1;
-            ulnet_state_packet_t *input_packet = (ulnet_state_packet_t *) session->state_packet_history[SAM2_AUTHORITY_INDEX][(session->frame_counter + i) % ULNET_STATE_PACKET_HISTORY_SIZE];
-            rle8_decode(input_packet->coded_state, ULNET_PACKET_SIZE_BYTES_MAX, (uint8_t *) &frame, sizeof(frame));
-            authority_frame = SAM2_MAX(authority_frame, frame);
-        }
-
-        int64_t max_frame_tolerance_a_peer_can_be_behind = 2 * session->delay_frames - 1;
-        ignore_frame_pacing_so_we_can_catch_up = authority_frame > session->frame_counter + max_frame_tolerance_a_peer_can_be_behind;
     }
 
     if (!(session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) && !ulnet_is_spectator(session, session->our_peer_id)) {

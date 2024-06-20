@@ -2797,7 +2797,10 @@ int main(int argc, char *argv[]) {
         if (g_serialize_size > sizeof(g_savebuffer[g_save_state_index])) {
             SAM2_LOG_FATAL("Save state buffer is too small (%zu > %zu)", g_serialize_size, sizeof(g_savebuffer[g_save_state_index]));
         }
-        int status = ulnet_poll_session(&g_ulnet_session, g_do_zstd_compress, g_savebuffer[g_save_state_index], g_serialize_size, g_av.timing.fps,
+
+        double max_sleeping_allowed_when_polling_network_seconds = g_headless ? 1.0 : 0.0; // We just use vertical sync for frame-pacing when we have a head
+        int status = ulnet_poll_session(&g_ulnet_session, g_do_zstd_compress, g_savebuffer[g_save_state_index], g_serialize_size,
+            g_av.timing.fps, max_sleeping_allowed_when_polling_network_seconds,
             g_retro.retro_run, g_retro.retro_serialize, g_retro.retro_unserialize);
 
         if (g_do_zstd_compress && (status & ULNET_POLL_SESSION_SAVED_STATE)) {
