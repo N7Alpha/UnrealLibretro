@@ -952,7 +952,7 @@ static int sam2__resolve_hostname(const char *hostname, char *ip) {
     memset(&desired_address, 0, sizeof(desired_address));
     desired_address.ai_family = AF_UNSPEC;
 
-    SAM2_LOG_INFO("Getting IP Address for %s...", hostname);
+    SAM2_LOG_INFO("Getting IP Address for %s", hostname);
     // I knew this could block but it just hangs on Windows at least for a very long time before timing out @todo
     if (getaddrinfo(hostname, NULL, &hints, &res)) {
         SAM2_LOG_ERROR("Address resolution failed for %s", hostname);
