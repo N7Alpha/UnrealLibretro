@@ -535,9 +535,9 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
 
     // @todo This timing code is messy I should formally model the problem and then create a solution based on that
     bool ignore_frame_pacing_so_we_can_catch_up = false;
-    if (agent_count > 0) {
+    int64_t poll_entry_time_usec = get_unix_time_microseconds();
+    {
         int debug_loop_count = 0;
-        double poll_entry_time_seconds = get_unix_time_microseconds() / 1000000.0;
         do {
             if (ulnet_is_spectator(session, session->our_peer_id)) {
                 int64_t authority_frame = -1;
@@ -550,8 +550,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
                     authority_frame = SAM2_MAX(authority_frame, frame);
                 }
 
-                int64_t max_frame_tolerance_a_peer_can_be_behind = 2 * session->delay_frames - 1;
-                ignore_frame_pacing_so_we_can_catch_up = authority_frame - session->frame_counter > max_frame_tolerance_a_peer_can_be_behind;
+                ignore_frame_pacing_so_we_can_catch_up = false; // authority_frame - session->frame_counter > 1;
             }
 
             double timeout_milliseconds = 1e3 * core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec);
@@ -562,26 +561,27 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
                 timeout_milliseconds = 1.0; // Preempt ourselves otherwise we'll be busy waiting when 0 < timeout < 1 due to truncation
             }
 
-            int ret = juice_user_poll(agent, agent_count, (int) timeout_milliseconds);
-            // This will call ulnet_receive_packet_callback in a loop
-            if (ret < 0) {
-                SAM2_LOG_FATAL("Error polling agent (%d)", ret);
+            timeout_milliseconds = SAM2_MIN(timeout_milliseconds, 1000.0 * max_sleeping_allowed_when_polling_network_seconds);
+
+            if (agent_count > 0) {
+                int ret = juice_user_poll(agent, agent_count, (int) timeout_milliseconds);
+                // This will call ulnet_receive_packet_callback in a loop
+                if (ret < 0) {
+                    SAM2_LOG_FATAL("Error polling agent (%d)", ret);
+                }
+            } else {
+                if (timeout_milliseconds > 0.0) {
+                    ulnet__sleep((unsigned int) timeout_milliseconds);
+                }
             }
 
             debug_loop_count++;
         } while (   core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec) > 0.0
-                 && poll_entry_time_seconds - get_unix_time_microseconds() / 1000000.0 > max_sleeping_allowed_when_polling_network_seconds
+                 && get_unix_time_microseconds() - poll_entry_time_usec < 1e6 * max_sleeping_allowed_when_polling_network_seconds
                  && !ignore_frame_pacing_so_we_can_catch_up);
 
         if (debug_loop_count > 20) {
             SAM2_LOG_WARN("juice_user_poll was called %d times. This is inefficent", debug_loop_count);
-        }
-    } else {
-        double sleep_milliseconds = 1000 * core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec);
-        sleep_milliseconds = SAM2_MIN(sleep_milliseconds, 1000 * max_sleeping_allowed_when_polling_network_seconds);
-        if (sleep_milliseconds > 0.0) {
-            sleep_milliseconds = SAM2_MAX(1, (unsigned int) sleep_milliseconds);
-            ulnet__sleep(sleep_milliseconds);
         }
     }
 
@@ -637,6 +637,16 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
     }
 
     IMH(ImGui::End();)
+    if (!netplay_ready_to_tick) {
+        // @todo You should pick a time here that is a reasonable guess about when we'll receive the next packet instead of this
+        //       My initial thought was doing a cfar, but making this equal to jitter is probably good enough
+        // This avoids busy waiting
+        int sleep_milliseconds_upper_bound = (get_unix_time_microseconds() - poll_entry_time_usec) / 1000;
+        int sleep_milliseconds = SAM2_MIN(3, sleep_milliseconds_upper_bound);
+        if (sleep_milliseconds > 0) {
+            ulnet__sleep(sleep_milliseconds);
+        }
+    }
 
     if (   netplay_ready_to_tick
         && (core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec) <= 0.0
