@@ -1091,18 +1091,15 @@ void draw_imgui() {
             ImGui::SeparatorText("Server");
             ImGui::TextColored(ImVec4(0, 1, 0, 1), "We're listening on [::]:%d (IPv4 tunneling is OS dependent)", g_sam2_port);
 
-            if (ImGui::CollapsingHeader("Server Information")) {
-
-                char label[64];
-                snprintf(label, 64, "Rooms: %" PRId64, g_sam2_server->room_count);
-                if (ImGui::CollapsingHeader(label)) {
-                    for (int i = 0; i < g_sam2_server->room_count; i++) {
-                        show_room(g_sam2_server->rooms[i]);
-                    }
+            char label[64];
+            snprintf(label, 64, "Rooms: %" PRId64, g_sam2_server->room_count);
+            if (ImGui::CollapsingHeader(label)) {
+                for (int i = 0; i < g_sam2_server->room_count; i++) {
+                    show_room(g_sam2_server->rooms[i]);
                 }
-
-                ImGui::Text("Messages allocated: %" PRId64, g_sam2_server->_debug_allocated_messages);
             }
+
+            ImGui::Text("Messages allocated: %" PRId64, g_sam2_server->_debug_allocated_messages);
 
             ImGui::SeparatorText("Client");
         }

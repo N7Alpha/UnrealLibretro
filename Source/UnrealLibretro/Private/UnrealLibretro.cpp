@@ -120,7 +120,7 @@ void FUnrealLibretroModule::ShutdownModule()
     // I could also fix the shutdown_audio hack as well as remove the numerous weak pointers in FLibretroContext.
     // I'm nervous how much the engine will block the game thread on that condition though so that still might not be a solution.
 #if 0
-    
+
 #if PLATFORM_WINDOWS
     FPlatformProcess::FreeDllHandle(OpenGLDLL);
     OpenGLDLL = nullptr;
@@ -155,5 +155,5 @@ void LibretroSam2LogWrite(int level, const char* file, int line, const char* fmt
 }
 
 #undef LOCTEXT_NAMESPACE
-    
+
 IMPLEMENT_MODULE(FUnrealLibretroModule, UnrealLibretro)
