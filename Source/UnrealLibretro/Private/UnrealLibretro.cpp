@@ -33,10 +33,14 @@ public:
 
         Sam2Server = (sam2_server_t*)malloc(server_size_bytes);
         sam2_server_create(Sam2Server, SAM2_SERVER_DEFAULT_PORT);
+
+        uv_async_init(&Sam2Server->loop, &StopAsync, OnStopAsync);
+        StopAsync.data = this;
     }
 
     ~FSam2ServerRunnable()
     {
+        uv_close((uv_handle_t*)&StopAsync, NULL);
         free(Sam2Server);
     }
 
@@ -55,7 +59,19 @@ public:
         return 0;
     }
 
+    static void OnStopAsync(uv_async_t* handle)
+    {
+        FSam2ServerRunnable* This = (FSam2ServerRunnable*)handle->data;
+        uv_stop(&This->Sam2Server->loop);
+    }
+
+    virtual void Stop() override
+    {
+        uv_async_send(&StopAsync);
+    }
+
     sam2_server_t* Sam2Server;
+    uv_async_t StopAsync;
 };
 
 void FUnrealLibretroModule::StartupModule()
@@ -105,7 +121,7 @@ void FUnrealLibretroModule::ShutdownModule()
 {
     if (Sam2ServerThread)
     {
-        uv_stop(&Sam2ServerRunnable->Sam2Server->loop);
+        Sam2ServerRunnable->Stop();
         Sam2ServerThread->WaitForCompletion();
         delete Sam2ServerThread;
         delete Sam2ServerRunnable;
