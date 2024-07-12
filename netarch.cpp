@@ -1118,7 +1118,7 @@ void draw_imgui() {
 
             ImGui::SameLine();
             if (ImGui::Button("Disconnect")) {
-                if (sam2_client_disconnect(&g_libretro_context.sam2_socket)) {
+                if (sam2_client_disconnect(g_libretro_context.sam2_socket)) {
                     SAM2_LOG_FATAL("Couldn't disconnect socket");
                 }
                 g_libretro_context.sam2_socket = SAM2_SOCKET_INVALID;
@@ -1144,7 +1144,7 @@ void draw_imgui() {
                 ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1), "Connecting to %s:%d %c", g_sam2_address, g_sam2_port, spinnerGlyph);
                 ImGui::SameLine();
                 if (ImGui::Button("Stop")) {
-                    if (sam2_client_disconnect(&g_libretro_context.sam2_socket)) {
+                    if (sam2_client_disconnect(g_libretro_context.sam2_socket)) {
                         SAM2_LOG_FATAL("Couldn't disconnect socket");
                     }
                     g_libretro_context.sam2_socket = SAM2_SOCKET_INVALID;

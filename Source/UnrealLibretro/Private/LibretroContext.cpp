@@ -1215,7 +1215,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                         ulnet_poll_session(l->netplay_session, true, l->netplay_save_state_data, l->netplay_save_state_size, l->core.av.timing.fps, 1.0,
                             l->libretro_api.run, l->libretro_api.serialize, l->libretro_api.unserialize);
 
-                        if (!l->connected_to_sam2) {
+                        if (!l->connected_to_sam2 && l->sam_socket != SAM2_SOCKET_INVALID) {
                             l->connected_to_sam2 = static_cast<bool>(sam2_client_poll_connection(l->sam_socket, 0));
                             if (l->connected_to_sam2) {
                                 // The list request is only a header
@@ -1235,6 +1235,11 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
                                 if (status < 0) {
                                     SAM2_LOG_ERROR("Error polling sam2 server: %d", status);
+                                    if (status == SAM2_RESPONSE_VERSION_MISMATCH) {
+                                        l->connected_to_sam2 = false;
+                                        sam2_client_disconnect(l->sam_socket);
+                                        l->sam_socket = SAM2_SOCKET_INVALID;
+                                    }
                                     break;
                                 }
                                 else if (status == 0) {
