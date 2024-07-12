@@ -1052,7 +1052,7 @@ fail:
     return -1;
 }
 
-SAM2_LINKAGE int sam2_client_disconnect(sam2_socket_t *sockfd_ptr) {
+SAM2_LINKAGE int sam2_client_disconnect(sam2_socket_t sockfd) {
     int status = 0;
 
     #ifdef _WIN32
@@ -1063,13 +1063,11 @@ SAM2_LINKAGE int sam2_client_disconnect(sam2_socket_t *sockfd_ptr) {
     }
     #endif
 
-    if (*sockfd_ptr != SAM2_SOCKET_INVALID) {
-        if (SAM2_CLOSESOCKET(*sockfd_ptr) == SAM2_SOCKET_ERROR) {
+    if (sockfd != SAM2_SOCKET_INVALID) {
+        if (SAM2_CLOSESOCKET(sockfd) == SAM2_SOCKET_ERROR) {
             SAM2_LOG_ERROR("close failed: %s", strerror(errno));
             status = -1;
         }
-
-        *sockfd_ptr = SAM2_SOCKET_INVALID;
     }
 
     return status;
@@ -1243,7 +1241,7 @@ SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *message,
         if (message_frame_status == SAM2_RESPONSE_INVALID_HEADER) {
             SAM2_LOG_WARN("Invalid header received '%.4s'", buffer);
         }
-        return -1;
+        return message_frame_status;
     } else {
         SAM2_LOG_DEBUG("Received complete message with header '%.8s'", (char *) message);
         ((char *) message)[7] = 'R';

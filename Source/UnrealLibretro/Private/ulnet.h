@@ -639,7 +639,7 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
     IMH(ImGui::End();)
     if (!netplay_ready_to_tick) {
         // @todo You should pick a time here that is a reasonable guess about when we'll receive the next packet instead of this
-        //       My initial thought was doing a cfar, but making this equal to jitter is probably good enough
+        //       My initial thought was doing a cfar, but making this equal to median jitter is probably good enough
         // This avoids busy waiting
         int sleep_milliseconds_upper_bound = (get_unix_time_microseconds() - poll_entry_time_usec) / 1000;
         int sleep_milliseconds = SAM2_MIN(3, sleep_milliseconds_upper_bound);
