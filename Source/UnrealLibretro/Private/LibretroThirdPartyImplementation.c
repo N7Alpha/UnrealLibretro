@@ -250,6 +250,15 @@
 #pragma warning(disable: 4459)
 #endif
 
+#include <stdlib.h>
+static char *getenv_hijack(const char *name) {
+    if (strcmp(name, "UV_THREADPOOL_SIZE") == 0) {
+        return "1"; // Only allow libuv to spawn 1 background thread... ideally this would be 0 but they don't allow that
+    } else {
+        return getenv(name);
+    }
+}
+#define getenv getenv_hijack
 // This source file defines static variables with names like mutex and cond which are very
 // likely to conflict with local definitions so I stuck it at the bottom here
 #include "../../ThirdParty/libuv/src/threadpool.c"
