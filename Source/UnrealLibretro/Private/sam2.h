@@ -608,7 +608,8 @@ typedef struct sam2_server {
     sam2_message_u *message_freelist;
     int64_t _debug_allocated_messages;
 
-    sam2_avl_node_t *_debug_allocated_message_set;
+    void* _debug_allocated_message_set[32];
+    int _debug_allocated_message_count;
 
     sam2_avl_node_t *peer_id_map;
     int64_t room_count;
@@ -1333,15 +1334,10 @@ static void sam2__free_message_raw(sam2_server_t *server, void *message) {
 static sam2_message_u *sam2__alloc_message(sam2_server_t *server, const char *header) {
     sam2_message_u *message = sam2__alloc_message_raw(server);
 
-    sam2_avl_node_t *message_node = (sam2_avl_node_t *) SAM2_MALLOC(sizeof(sam2_avl_node_t));
-    message_node->key = (uint64_t) message;
-
-    if (message_node != sam2_avl_insert(&server->_debug_allocated_message_set, message_node)) {
-        SAM2_FREE(message_node);
-        SAM2_LOG_ERROR(
-            "Somehow we allocated the same block of memory for different responses twice in one on_recv call."
-            " Probably this debug bookkeeping logic is broken or the allocator."
-        );
+    if (server->_debug_allocated_message_count < 32) {
+        server->_debug_allocated_message_set[server->_debug_allocated_message_count++] = message;
+    } else {
+        SAM2_LOG_ERROR("Allocated message set is full. Cannot properly track memory leaks");
     }
 
     if (message == NULL) {
@@ -1356,10 +1352,11 @@ static sam2_message_u *sam2__alloc_message(sam2_server_t *server, const char *he
 static void sam2__free_response(sam2_server_t *server, void *message) {
     sam2__free_message_raw(server, message);
 
-    sam2_avl_node_t key_only_node = { (uint64_t) message };
-    sam2_avl_node_t *node = sam2_avl_erase(&server->_debug_allocated_message_set, &key_only_node);
-    if (node) {
-        SAM2_FREE(node);
+    for (int i = 0; i < server->_debug_allocated_message_count; ++i) {
+        if (server->_debug_allocated_message_set[i] == message) {
+            server->_debug_allocated_message_set[i] = server->_debug_allocated_message_set[--server->_debug_allocated_message_count];
+            break;
+        }
     }
 }
 
@@ -1404,14 +1401,18 @@ static void sam2__write_response(uv_stream_t *client_tcp, sam2_message_u *messag
 
     sam2_avl_node_t key_only_node = { (uint64_t) message };
 
-    sam2_avl_node_t *node = sam2_avl_erase(&server->_debug_allocated_message_set, &key_only_node);
-    if (node) {
-        SAM2_FREE(node);
-    } else {
-        SAM2_LOG_ERROR(
-            "The memory for a response sent was reused within the same on_recv call. This is almost certainly an error. If you are"
-            " broadcasting a message you have to individually allocate each response since libuv sends them asynchronously"
-        );
+    for (int i = 0; i < server->_debug_allocated_message_count; ++i) {
+        if (server->_debug_allocated_message_set[i] == message) {
+            server->_debug_allocated_message_set[i] = server->_debug_allocated_message_set[--server->_debug_allocated_message_count];
+            break;
+        }
+
+        if (i == server->_debug_allocated_message_count - 1) {
+            SAM2_LOG_ERROR(
+                "The memory for a response sent was reused within the same on_recv call. This is almost certainly an error. If you are"
+                " broadcasting a message you have to individually allocate each response since libuv sends them asynchronously"
+            );
+        }
     }
 
     sam2_message_metadata_t *metadata = sam2_get_metadata((char *) message);
@@ -1619,10 +1620,9 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
     sam2_client_t *client = (sam2_client_t *) client_tcp;
     sam2_server_t *server = (sam2_server_t *) client->tcp.data;
 
-    if (server->_debug_allocated_message_set != NULL) {
+    if (server->_debug_allocated_message_count > 0) {
         SAM2_LOG_ERROR("We had allocated unsent responses this means we probably leaked memory handling the last response");
-        kavll_free(sam2_avl_node_t, head, server->_debug_allocated_message_set, SAM2_FREE);
-        server->_debug_allocated_message_set = NULL;
+        server->_debug_allocated_message_count = 0;
     }
 
     SAM2_LOG_DEBUG("nread=%lld", (long long int)nread);
