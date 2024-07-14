@@ -20,256 +20,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-// I think using a splay tree would be slightly better, but this implmentation of an AVL tree was really good
-//#include "kavl-lite.h"
-// Copyright (c) 2018 by Attractive Chaos <attractor@live.co.uk> provided under the MIT License
-#ifndef KAVL_LITE_H
-#define KAVL_LITE_H
-
-#ifdef __STRICT_ANSI__
-#define inline __inline__
-#endif
-
-#define KAVLL_MAX_DEPTH 64
-
-#define KAVLL_HEAD(__type) \
-	struct { \
-		__type *p[2]; \
-		signed char balance; /* balance factor */ \
-	}
-
-#define __KAVLL_FIND(pre, __scope, __type, __head,  __cmp) \
-	__scope __type *pre##_find(const __type *root, const __type *x) { \
-		const __type *p = root; \
-		while (p != 0) { \
-			int cmp; \
-			cmp = __cmp(x, p); \
-			if (cmp < 0) p = p->__head.p[0]; \
-			else if (cmp > 0) p = p->__head.p[1]; \
-			else break; \
-		} \
-		return (__type*)p; \
-	}
-
-#define __KAVLL_ROTATE(pre, __type, __head) \
-	/* one rotation: (a,(b,c)q)p => ((a,b)p,c)q */ \
-	static inline __type *pre##_rotate1(__type *p, int dir) { /* dir=0 to left; dir=1 to right */ \
-		int opp = 1 - dir; /* opposite direction */ \
-		__type *q = p->__head.p[opp]; \
-		p->__head.p[opp] = q->__head.p[dir]; \
-		q->__head.p[dir] = p; \
-		return q; \
-	} \
-	/* two consecutive rotations: (a,((b,c)r,d)q)p => ((a,b)p,(c,d)q)r */ \
-	static inline __type *pre##_rotate2(__type *p, int dir) { \
-		int b1, opp = 1 - dir; \
-		__type *q = p->__head.p[opp], *r = q->__head.p[dir]; \
-		p->__head.p[opp] = r->__head.p[dir]; \
-		r->__head.p[dir] = p; \
-		q->__head.p[dir] = r->__head.p[opp]; \
-		r->__head.p[opp] = q; \
-		b1 = dir == 0? +1 : -1; \
-		if (r->__head.balance == b1) q->__head.balance = 0, p->__head.balance = -b1; \
-		else if (r->__head.balance == 0) q->__head.balance = p->__head.balance = 0; \
-		else q->__head.balance = b1, p->__head.balance = 0; \
-		r->__head.balance = 0; \
-		return r; \
-	}
-
-#define __KAVLL_INSERT(pre, __scope, __type, __head, __cmp) \
-	__scope __type *pre##_insert(__type **root_, __type *x) { \
-		unsigned char stack[KAVLL_MAX_DEPTH]; \
-		__type *path[KAVLL_MAX_DEPTH]; \
-		__type *bp, *bq; \
-		__type *p, *q, *r = 0; /* _r_ is potentially the new root */ \
-		int which = 0, top, b1, path_len; \
-		bp = *root_, bq = 0; \
-		/* find the insertion location */ \
-		for (p = bp, q = bq, top = path_len = 0; p; q = p, p = p->__head.p[which]) { \
-			int cmp; \
-			cmp = __cmp(x, p); \
-			if (cmp == 0) return p; \
-			if (p->__head.balance != 0) \
-				bq = q, bp = p, top = 0; \
-			stack[top++] = which = (cmp > 0); \
-			path[path_len++] = p; \
-		} \
-		x->__head.balance = 0, x->__head.p[0] = x->__head.p[1] = 0; \
-		if (q == 0) *root_ = x; \
-		else q->__head.p[which] = x; \
-		if (bp == 0) return x; \
-		for (p = bp, top = 0; p != x; p = p->__head.p[stack[top]], ++top) /* update balance factors */ \
-			if (stack[top] == 0) --p->__head.balance; \
-			else ++p->__head.balance; \
-		if (bp->__head.balance > -2 && bp->__head.balance < 2) return x; /* no re-balance needed */ \
-		/* re-balance */ \
-		which = (bp->__head.balance < 0); \
-		b1 = which == 0? +1 : -1; \
-		q = bp->__head.p[1 - which]; \
-		if (q->__head.balance == b1) { \
-			r = pre##_rotate1(bp, which); \
-			q->__head.balance = bp->__head.balance = 0; \
-		} else r = pre##_rotate2(bp, which); \
-		if (bq == 0) *root_ = r; \
-		else bq->__head.p[bp != bq->__head.p[0]] = r; \
-		return x; \
-	}
-
-#define __KAVLL_ERASE(pre, __scope, __type, __head, __cmp) \
-	__scope __type *pre##_erase(__type **root_, const __type *x) { \
-		__type *p, *path[KAVLL_MAX_DEPTH], fake; \
-		unsigned char dir[KAVLL_MAX_DEPTH]; \
-		int d = 0, cmp; \
-		fake.__head.p[0] = *root_, fake.__head.p[1] = 0; \
-		if (x) { \
-			for (cmp = -1, p = &fake; cmp; cmp = __cmp(x, p)) { \
-				int which = (cmp > 0); \
-				dir[d] = which; \
-				path[d++] = p; \
-				p = p->__head.p[which]; \
-				if (p == 0) return 0; \
-			} \
-		} else { \
-			for (p = &fake; p; p = p->__head.p[0]) \
-				dir[d] = 0, path[d++] = p; \
-			p = path[--d]; \
-		} \
-		if (p->__head.p[1] == 0) { /* ((1,.)2,3)4 => (1,3)4; p=2 */ \
-			path[d-1]->__head.p[dir[d-1]] = p->__head.p[0]; \
-		} else { \
-			__type *q = p->__head.p[1]; \
-			if (q->__head.p[0] == 0) { /* ((1,2)3,4)5 => ((1)2,4)5; p=3 */ \
-				q->__head.p[0] = p->__head.p[0]; \
-				q->__head.balance = p->__head.balance; \
-				path[d-1]->__head.p[dir[d-1]] = q; \
-				path[d] = q, dir[d++] = 1; \
-			} else { /* ((1,((.,2)3,4)5)6,7)8 => ((1,(2,4)5)3,7)8; p=6 */ \
-				__type *r; \
-				int e = d++; /* backup _d_ */\
-				for (;;) { \
-					dir[d] = 0; \
-					path[d++] = q; \
-					r = q->__head.p[0]; \
-					if (r->__head.p[0] == 0) break; \
-					q = r; \
-				} \
-				r->__head.p[0] = p->__head.p[0]; \
-				q->__head.p[0] = r->__head.p[1]; \
-				r->__head.p[1] = p->__head.p[1]; \
-				r->__head.balance = p->__head.balance; \
-				path[e-1]->__head.p[dir[e-1]] = r; \
-				path[e] = r, dir[e] = 1; \
-			} \
-		} \
-		while (--d > 0) { \
-			__type *q = path[d]; \
-			int which, other, b1 = 1, b2 = 2; \
-			which = dir[d], other = 1 - which; \
-			if (which) b1 = -b1, b2 = -b2; \
-			q->__head.balance += b1; \
-			if (q->__head.balance == b1) break; \
-			else if (q->__head.balance == b2) { \
-				__type *r = q->__head.p[other]; \
-				if (r->__head.balance == -b1) { \
-					path[d-1]->__head.p[dir[d-1]] = pre##_rotate2(q, which); \
-				} else { \
-					path[d-1]->__head.p[dir[d-1]] = pre##_rotate1(q, which); \
-					if (r->__head.balance == 0) { \
-						r->__head.balance = -b1; \
-						q->__head.balance = b1; \
-						break; \
-					} else r->__head.balance = q->__head.balance = 0; \
-				} \
-			} \
-		} \
-		*root_ = fake.__head.p[0]; \
-		return p; \
-	}
-
-#define kavll_free(__type, __head, __root, __free) do { \
-		__type *_p, *_q; \
-		for (_p = __root; _p; _p = _q) { \
-			if (_p->__head.p[0] == 0) { \
-				_q = _p->__head.p[1]; \
-				__free(_p); \
-			} else { \
-				_q = _p->__head.p[0]; \
-				_p->__head.p[0] = _q->__head.p[1]; \
-				_q->__head.p[1] = _p; \
-			} \
-		} \
-	} while (0)
-
-#define kavll_size(__type, __head, __root, __cnt) do { \
-		__type *_p, *_q; \
-		*(__cnt) = 0; \
-		for (_p = __root; _p; _p = _q) { \
-			if (_p->__head.p[0] == 0) { \
-				_q = _p->__head.p[1]; \
-				++*(__cnt); \
-			} else { \
-				_q = _p->__head.p[0]; \
-				_p->__head.p[0] = _q->__head.p[1]; \
-				_q->__head.p[1] = _p; \
-			} \
-		} \
-	} while (0)
-
-#define __KAVLL_ITR(pre, __scope, __type, __head, __cmp) \
-	typedef struct pre##_itr_t { \
-		const __type *stack[KAVLL_MAX_DEPTH], **top, *right; /* _right_ points to the right child of *top */ \
-	} pre##_itr_t; \
-	__scope void pre##_itr_first(const __type *root, struct pre##_itr_t *itr) { \
-		const __type *p; \
-		for (itr->top = itr->stack - 1, p = root; p; p = p->__head.p[0]) \
-			*++itr->top = p; \
-		itr->right = (*itr->top)->__head.p[1]; \
-	} \
-	__scope int pre##_itr_find(const __type *root, const __type *x, struct pre##_itr_t *itr) { \
-		const __type *p = root; \
-		itr->top = itr->stack - 1; \
-		while (p != 0) { \
-			int cmp; \
-			cmp = __cmp(x, p); \
-			if (cmp < 0) *++itr->top = p, p = p->__head.p[0]; \
-			else if (cmp > 0) p = p->__head.p[1]; \
-			else break; \
-		} \
-		if (p) { \
-			*++itr->top = p; \
-			itr->right = p->__head.p[1]; \
-			return 1; \
-		} else if (itr->top >= itr->stack) { \
-			itr->right = (*itr->top)->__head.p[1]; \
-			return 0; \
-		} else return 0; \
-	} \
-	__scope int pre##_itr_next(struct pre##_itr_t *itr) { \
-		for (;;) { \
-			const __type *p; \
-			for (p = itr->right, --itr->top; p; p = p->__head.p[0]) \
-				*++itr->top = p; \
-			if (itr->top < itr->stack) return 0; \
-			itr->right = (*itr->top)->__head.p[1]; \
-			return 1; \
-		} \
-	}
-
-#define kavll_at(itr) ((itr)->top < (itr)->stack? 0 : *(itr)->top)
-
-#define KAVLL_INIT2(pre, __scope, __type, __head, __cmp) \
-	__KAVLL_FIND(pre, __scope, __type, __head,  __cmp) \
-	__KAVLL_ROTATE(pre, __type, __head) \
-	__KAVLL_INSERT(pre, __scope, __type, __head, __cmp) \
-	__KAVLL_ERASE(pre, __scope, __type, __head, __cmp) \
-	__KAVLL_ITR(pre, __scope, __type, __head, __cmp)
-
-#define KAVLL_INIT(pre, __type, __head, __cmp) \
-	KAVLL_INIT2(pre,, __type, __head, __cmp)
-
-#endif
-// Manual include of kavl-lite.h ends here
-
 // Signaling Server and a Match Maker
 #ifndef SAM2_H
 #define SAM2_H
@@ -574,21 +324,17 @@ typedef int sam2_socket_t;
 #if defined(SAM2_SERVER)
 #include <uv.h>
 
-typedef struct sam2_node {
-    uint64_t key;
-    uv_tcp_t *client;
-
-    KAVLL_HEAD(struct sam2_node) head;
-} sam2_avl_node_t;
-
-#define SAM2__CLIENT_FLAG_CLIENT_CLOSE_DONE 0b00000001
-#define SAM2__CLIENT_FLAG_TIMER_CLOSE_DONE  0b00000010
-#define SAM2__CLIENT_FLAG_MASK_CLOSE_DONE   0b00000011
+#define SAM2__CLIENT_FLAG_ALLOCATED         0b00000001
+#define SAM2__HOSTING_ROOM                  0b00000010
+#define SAM2__CLIENT_FLAG_CLIENT_CLOSE_DONE 0b00000100
+#define SAM2__CLIENT_FLAG_TIMER_CLOSE_DONE  0b00001000
+#define SAM2__CLIENT_FLAG_MASK_CLOSE_DONE   0b00001100
 
 typedef struct sam2_client {
-    uv_tcp_t tcp;
-
-    uint64_t peer_id;
+    union {
+        uv_tcp_t tcp;
+        struct sam2_client *next;
+    };
 
     int flags;
     uv_timer_t timer;
@@ -610,8 +356,8 @@ typedef struct sam2_server {
 
     void* _debug_allocated_message_set[32];
     int _debug_allocated_message_count;
-
-    sam2_avl_node_t *peer_id_map;
+    sam2_client_t clients[65536];
+    sam2_client_t *free_clients;
     int64_t room_count;
     int64_t room_capacity;
     sam2_room_t rooms[/*room_capacity*/];
@@ -628,9 +374,6 @@ _Pragma("GCC diagnostic ignored \"-Wunused-function\"") \
 _Pragma("GCC diagnostic ignored \"-Wunused-but-set-variable\"")
 #endif
 
-#define sam2__cmp(p, q) (((q)->key < (p)->key) - ((p)->key < (q)->key))
-KAVLL_INIT2(sam2_avl, static, struct sam2_node, head, sam2__cmp)
-
 #if defined(_MSC_VER)
 __pragma(warning(pop))
 #elif defined(__GNUC__) || defined(__clang__)
@@ -638,11 +381,11 @@ _Pragma("GCC diagnostic pop")
 #endif
 
 static sam2_client_t* sam2__find_client(sam2_server_t *server, uint64_t peer_id) {
-    sam2_avl_node_t key_only_node = { peer_id };
-    sam2_avl_node_t *node = sam2_avl_find(server->peer_id_map, &key_only_node);
+    if (peer_id >= SAM2_ARRAY_LENGTH(server->clients)) return NULL;
+    sam2_client_t *client = &server->clients[peer_id];
 
-    if (node) {
-        return (sam2_client_t *) node->client;
+    if (client->flags & SAM2__CLIENT_FLAG_ALLOCATED) {
+        return client;
     } else {
         return NULL;
     }
@@ -1310,6 +1053,30 @@ static uint64_t fnv1a_hash(void* data, size_t len) {
     return hash;
 }
 
+static uint64_t sam2__peer_id(sam2_client_t *client) {
+    sam2_server_t *server = (sam2_server_t *) client->tcp.data;
+    return client - server->clients;
+}
+
+#define SAM2__ALLOC_CLIENT(server) sam2__alloc_client(server)
+#define SAM2__FREE_CLIENT(server, client) sam2__free_client(server, client)
+
+static sam2_client_t *sam2__alloc_client(sam2_server_t *server) {
+    sam2_client_t *client = server->free_clients;
+
+    if (client) {
+        server->free_clients = client->next;
+    }
+
+    return client;
+}
+
+static sam2_client_t *sam2__free_client(sam2_server_t *server, sam2_client_t *client) {
+    client->next = server->free_clients;
+    server->free_clients = client;
+    return client;
+}
+
 static sam2_message_u *sam2__alloc_message_raw(sam2_server_t *server) {
     // @todo
     //sam2_message_u *response = NULL;
@@ -1399,8 +1166,6 @@ static void on_write(uv_write_t *req, int status) {
 static void sam2__write_response(uv_stream_t *client_tcp, sam2_message_u *message) {
     sam2_server_t *server = (sam2_server_t *) client_tcp->data;
 
-    sam2_avl_node_t key_only_node = { (uint64_t) message };
-
     for (int i = 0; i < server->_debug_allocated_message_count; ++i) {
         if (server->_debug_allocated_message_set[i] == message) {
             server->_debug_allocated_message_set[i] = server->_debug_allocated_message_set[--server->_debug_allocated_message_count];
@@ -1462,7 +1227,7 @@ static void on_write_error(uv_write_t *req, int status) {
         SAM2_LOG_WARN("Failed to send error message to client: %s", uv_strerror(status));
         // @todo Probably just close the connection here
     } else {
-        SAM2_LOG_INFO("Sent error response to client %016" PRIx64 "", client->peer_id);
+        SAM2_LOG_INFO("Sent error response to client %016" PRIx64 "", sam2__peer_id(client));
     }
 
     free(req);
@@ -1533,44 +1298,39 @@ static void sam2__remove_room(sam2_server_t *server, sam2_room_t *room) {
 static void sam2__on_client_destroy(uv_handle_t *handle) {
     sam2_client_t *client = (sam2_client_t *) handle;
     sam2_server_t *server = (sam2_server_t *) handle->data;
-    SAM2_LOG_INFO("Socket for client %016" PRIx64 " closed", client->peer_id);
+    SAM2_LOG_INFO("Socket for client %016" PRIx64 " closed", sam2__peer_id(client));
 
     if (client->hosted_room) {
-        SAM2_LOG_INFO("Removing room %016" PRIx64 ":'%s' its owner disconnected", client->peer_id, client->hosted_room->name);
+        SAM2_LOG_INFO("Removing room %016" PRIx64 ":'%s' its owner disconnected", sam2__peer_id(client), client->hosted_room->name);
         sam2__remove_room(server, client->hosted_room);
     }
 
-    // In theory this should be performed in a async callback before this one
-    struct sam2_node key_only_node = { client->peer_id };
-    struct sam2_node *node = sam2_avl_erase(&server->peer_id_map, &key_only_node);
-
-    if (node) {
-        SAM2_FREE(node);
-    }
 
     client->flags |= SAM2__CLIENT_FLAG_CLIENT_CLOSE_DONE;
 
     if ((client->flags & SAM2__CLIENT_FLAG_MASK_CLOSE_DONE) == SAM2__CLIENT_FLAG_MASK_CLOSE_DONE) {
-        SAM2_FREE(client);
+        SAM2__FREE_CLIENT(server, client);
     }
 }
 
 static void sam2__on_client_timer_close(uv_handle_t *handle) {
     sam2_client_t *client = (sam2_client_t *) handle->data;
+    sam2_server_t *server = (sam2_server_t *) client->tcp.data;
     client->flags |= SAM2__CLIENT_FLAG_TIMER_CLOSE_DONE;
 
     if ((client->flags & SAM2__CLIENT_FLAG_MASK_CLOSE_DONE) == SAM2__CLIENT_FLAG_MASK_CLOSE_DONE) {
-        SAM2_FREE(client);
+        SAM2__FREE_CLIENT(server, client);
     }
 }
 
 static void sam2__client_destroy(sam2_client_t *client) {
-    // These aren't closed in order... ask me how I know
+    // The callbacks here aren't called in order so you have to be pretty careful not to do a double-free or use after free
     if (client->timer.data != NULL) {
         uv_close((uv_handle_t *) &client->timer, sam2__on_client_timer_close);
     }
 
     uv_close((uv_handle_t *) &client->tcp, sam2__on_client_destroy);
+    client->flags &= ~SAM2__CLIENT_FLAG_ALLOCATED;
 }
 
 static void sam2__write_fatal_error(uv_stream_t *client, sam2_error_message_t *response) {
@@ -1585,10 +1345,10 @@ static void on_timeout(uv_timer_t *handle) {
 
     // Check if client connection is still open
     if (uv_is_closing((uv_handle_t*) client_tcp)) {
-        SAM2_LOG_INFO("Client %" PRIx64 " connection is already closing or closed", client->peer_id);
+        SAM2_LOG_INFO("Client %" PRIx64 " connection is already closing or closed", sam2__peer_id(client));
     } else {
         SAM2_LOG_WARN("Client %" PRIx64 " sent incomplete message with header '%.*s' and size %d",
-            client->peer_id, (int)SAM2_MIN(client->length, SAM2_HEADER_SIZE), client->buffer, client->length);
+            sam2__peer_id(client), (int)SAM2_MIN(client->length, SAM2_HEADER_SIZE), client->buffer, client->length);
 
         static sam2_error_message_t response = {
             SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_HEADER,
@@ -1667,7 +1427,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
             sam2__write_fatal_error(client_tcp, &response);
             goto cleanup;
         } else if (frame_message_status == SAM2_RESPONSE_INVALID_HEADER) {
-            SAM2_LOG_INFO("Client %" PRIx64 " sent invalid header tag '%.4s'", client->peer_id, client->buffer);
+            SAM2_LOG_INFO("Client %" PRIx64 " sent invalid header tag '%.4s'", sam2__peer_id(client), client->buffer);
             static sam2_error_message_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_HEADER, "Invalid header" };
 
             sam2__write_fatal_error(client_tcp, &response);
@@ -1685,7 +1445,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
 
         SAM2_LOG_DEBUG("client->length=%d", client->length);
 
-        SAM2_LOG_INFO("Client %" PRIx64 " sent message with header '%.8s'", client->peer_id, (char *) &message);
+        SAM2_LOG_INFO("Client %" PRIx64 " sent message with header '%.8s'", sam2__peer_id(client), (char *) &message);
 
         // Send the appropriate response
         if (memcmp(&message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
@@ -1715,17 +1475,17 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
 
             if (client->hosted_room) {
                 if (request->room.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
-                    SAM2_LOG_INFO("Client %" PRIx64 " updated the state of room '%s'", client->peer_id, client->hosted_room->name);
+                    SAM2_LOG_INFO("Client %" PRIx64 " updated the state of room '%s'", sam2__peer_id(client), client->hosted_room->name);
                     *client->hosted_room = request->room;
                 } else {
-                    SAM2_LOG_INFO("Client %" PRIx64 " abandoned the room '%s'", client->peer_id, client->hosted_room->name);
+                    SAM2_LOG_INFO("Client %" PRIx64 " abandoned the room '%s'", sam2__peer_id(client), client->hosted_room->name);
                     sam2__remove_room(server, client->hosted_room);
                 }
             } else {
                 sam2_room_t *new_room = &server->rooms[server->room_count++];
                 client->hosted_room = new_room;
 
-                request->room.peer_ids[SAM2_AUTHORITY_INDEX] = client->peer_id;
+                request->room.peer_ids[SAM2_AUTHORITY_INDEX] = sam2__peer_id(client);
 
                 SAM2_LOG_DEBUG("Copying &request->room:%p into room+server->room_count:%p room_count+1:%lld", &request->room, new_room, (long long int)server->room_count);
                 memcpy(new_room, &request->room, sizeof(*new_room));
@@ -1754,17 +1514,17 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
                 goto finished_processing_last_message;
             }
 
-            if (   request->room.peer_ids[SAM2_AUTHORITY_INDEX] == client->peer_id
+            if (   request->room.peer_ids[SAM2_AUTHORITY_INDEX] == sam2__peer_id(client)
                 && !(request->room.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
-                SAM2_LOG_INFO("Authority %" PRIx64 " abandoned the room '%s'", client->peer_id, associated_room->name);
+                SAM2_LOG_INFO("Authority %" PRIx64 " abandoned the room '%s'", sam2__peer_id(client), associated_room->name);
                 sam2__remove_room(server, associated_room);
                 goto finished_processing_last_message;
             }
 
             // Client requests state change by authority
-            int p_join = sam2_get_port_of_peer(&request->room, client->peer_id);
+            int p_join = sam2_get_port_of_peer(&request->room, sam2__peer_id(client));
             {
-                int p_in = sam2_get_port_of_peer(associated_room, client->peer_id);
+                int p_in = sam2_get_port_of_peer(associated_room, sam2__peer_id(client));
                 if (p_join == -1) {
                     if (p_in == -1) {
                         SAM2_LOG_WARN("Client sent state change request for a room they are not in"); // @todo Add generic check and change this to an assert
@@ -1802,7 +1562,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
                 // Check that the client didn't change any ports other than the one they joined on or left on
                 for (int p = 0; p < SAM2_PORT_MAX; p++) {
                     if (p != p_join && p != p_in && request->room.peer_ids[p] != associated_room->peer_ids[p]) {
-                        SAM2_LOG_WARN("Client %" PRIx64 " attempted to change ports other than the one they joined on or left on", client->peer_id);
+                        SAM2_LOG_WARN("Client %" PRIx64 " attempted to change ports other than the one they joined on or left on", sam2__peer_id(client));
                         static sam2_error_message_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_ARGS, "Invalid state change request"};
                         write_error((uv_stream_t *) client, &response);
                         goto finished_processing_last_message;
@@ -1821,14 +1581,14 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
 
             sam2_room_join_message_t *response = (sam2_room_join_message_t *) sam2__alloc_message(server, sam2_join_header);
             memcpy(response, request, sizeof(sam2_room_join_message_t));
-            response->peer_id = client->peer_id;
+            response->peer_id = sam2__peer_id(client);
             sam2__write_response((uv_stream_t*) authority, (sam2_message_u *) response);
         } else if (   memcmp(&message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0
                    || memcmp(&message, sam2_sigx_header, SAM2_HEADER_TAG_SIZE) == 0) {
             // Clients forwarding sdp's between eachother
             sam2_signal_message_t *request = (sam2_signal_message_t *) &message;
 
-            if (request->peer_id == client->peer_id) {
+            if (request->peer_id == sam2__peer_id(client)) {
                 SAM2_LOG_INFO("Client attempted to send sdp information to themselves");
                 static sam2_error_message_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_CANNOT_SIGNAL_SELF, "Cannot signal self"};
                 write_error((uv_stream_t *) client, &response);
@@ -1837,7 +1597,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
 
             uv_tcp_t *peer_tcp = (uv_tcp_t *) sam2__find_client(server, request->peer_id);
 
-            SAM2_LOG_INFO("Forwarding sdp information from peer %" PRIx64 " to peer %" PRIx64 " it contains '%s'", client->peer_id, request->peer_id, request->ice_sdp);
+            SAM2_LOG_INFO("Forwarding sdp information from peer %" PRIx64 " to peer %" PRIx64 " it contains '%s'", sam2__peer_id(client), request->peer_id, request->ice_sdp);
             if (!peer_tcp) {
                 SAM2_LOG_WARN("Forwarding failed Client attempted to send sdp information to non-existent peer");
                 static sam2_error_message_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_PEER_DOES_NOT_EXIST, "Peer not found"};
@@ -1848,7 +1608,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
             sam2_signal_message_t *response = (sam2_signal_message_t *) sam2__alloc_message(server, sam2_sign_header);
 
             memcpy(response, request, sizeof(*response));
-            response->peer_id = client->peer_id;
+            response->peer_id = sam2__peer_id(client);
 
             sam2__write_response((uv_stream_t *) peer_tcp, (sam2_message_u *) response);
         } else if (memcmp(&message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
@@ -1856,12 +1616,12 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
             uv_tcp_t *target_peer = (uv_tcp_t *) sam2__find_client(server, error_message->peer_id);
 
             if (target_peer) {
-                SAM2_LOG_INFO("Peer %" PRIx64 " sent error message to Peer %" PRIx64 "", client->peer_id, error_message->peer_id);
+                SAM2_LOG_INFO("Peer %" PRIx64 " sent error message to Peer %" PRIx64 "", sam2__peer_id(client), error_message->peer_id);
                 sam2_error_message_t *response = (sam2_error_message_t *) sam2__alloc_message(server, sam2_fail_header);
                 memcpy(response, error_message, sizeof(*response));
                 sam2__write_response((uv_stream_t *) target_peer, (sam2_message_u *) response);
             } else {
-                SAM2_LOG_WARN("Peer %" PRIx64 " tried to send error message to peer %" PRIx64 " but they were not found", client->peer_id, error_message->peer_id);
+                SAM2_LOG_WARN("Peer %" PRIx64 " tried to send error message to peer %" PRIx64 " but they were not found", sam2__peer_id(client), error_message->peer_id);
             }
         } else {
             SAM2_LOG_FATAL("A dumb programming logic error was made or something got corrupted if you ever get here");
@@ -1885,61 +1645,49 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
         return;
     }
 
-    sam2_client_t *client = (sam2_client_t *) calloc(1, sizeof(sam2_client_t));
-    uv_tcp_t *client_tcp = &client->tcp;
-    uv_tcp_init(server_tcp->loop, client_tcp);
+    sam2_server_t *server = (sam2_server_t *) server_tcp;
+    sam2_client_t *client = SAM2__ALLOC_CLIENT(server);
 
-    if (uv_accept(server_tcp, (uv_stream_t*) client_tcp) == 0) {
-        sam2_client_t *client = (sam2_client_t *) client_tcp;
-        sam2_server_t *server = (sam2_server_t *) server_tcp;
-
-        { // Create a peer id based on hashed IP address mixed with a counter
-            struct sockaddr_storage name;
-            int len = sizeof(name);
-            uv_tcp_getpeername(client_tcp, (struct sockaddr*) &name, &len);
-
-            if (name.ss_family == AF_INET) { // IPv4
-                struct sockaddr_in* s = (struct sockaddr_in*)&name;
-                client->peer_id = fnv1a_hash(&s->sin_addr, sizeof(s->sin_addr));
-            } else if (name.ss_family == AF_INET6) { // IPv6
-                struct sockaddr_in6* s = (struct sockaddr_in6*)&name;
-                client->peer_id = fnv1a_hash(&s->sin6_addr, sizeof(s->sin6_addr));
-            }
-
-            static uint64_t counter = 0;
-            client->peer_id ^= counter++;
-        }
-
-        client->timer.data = client;
-        client_tcp->data = server;
-
-        sam2_avl_node_t *node = (sam2_avl_node_t *) calloc(1, sizeof(sam2_avl_node_t));
-        node->key = client->peer_id;
-        node->client = client_tcp;
-        sam2_avl_insert(&server->peer_id_map, node);
-
-        uv_timer_init(&server->loop, &client->timer);
-        // Reading the request sent by the client
-        int status = uv_read_start((uv_stream_t*) client_tcp, alloc_buffer, on_read);
-        if (status < 0) {
-            SAM2_LOG_WARN("Failed to connnect to client %" PRIx64 " uv_read_start error: %s", client->peer_id, uv_strerror(status));
-        } else {
-            SAM2_LOG_INFO("Successfully connected to client %" PRIx64 "", client->peer_id);
-
-            sam2_connect_message_t *connect_message = (sam2_connect_message_t *) sam2__alloc_message(server, sam2_conn_header);
-            connect_message->peer_id = client->peer_id;
-
-            sam2__write_response((uv_stream_t*) client_tcp, (sam2_message_u *) connect_message);
-        }
-    } else {
-        sam2__client_destroy((sam2_client_t *) client_tcp);
+    if (!client) {
+        SAM2_LOG_WARN("No more client slots available");
+        return;
     }
-}
 
-static void sam2__kavll_free_node_and_data(sam2_avl_node_t *node) {
-    // This next call doesn't free the hosted room, but that's okay since it's not malloced
-    sam2__client_destroy((sam2_client_t *) node->client);
-    SAM2_FREE(node);
+    memset(client, 0, sizeof(sam2_client_t));
+    client->flags = SAM2__CLIENT_FLAG_ALLOCATED;
+    uv_timer_init(&server->loop, &client->timer);
+    client->timer.data = client;
+    client->tcp.data = server;
+
+    status = uv_tcp_init(server_tcp->loop, &client->tcp);
+    if (status < 0) {
+        SAM2_LOG_WARN("Failed to connect to client uv_tcp_init error: %s", uv_strerror(status));
+        goto _10;
+    }
+
+    status = uv_accept(server_tcp, (uv_stream_t*) &client->tcp);
+    if (status < 0) {
+        SAM2_LOG_WARN("Failed to accept client uv_accept error: %s", uv_strerror(status));
+        goto _10;
+    }
+
+    status = uv_read_start((uv_stream_t*) &client->tcp, alloc_buffer, on_read);
+    if (status < 0) {
+        SAM2_LOG_WARN("Failed to connect to client %" PRIx64 " uv_read_start error: %s", sam2__peer_id(client), uv_strerror(status));
+        goto _10;
+    }
+
+    SAM2_LOG_INFO("Successfully connected to client %" PRIx64 "", sam2__peer_id(client));
+    sam2_connect_message_t *connect_message = (sam2_connect_message_t *) sam2__alloc_message(server, sam2_conn_header);
+    connect_message->peer_id = sam2__peer_id(client);
+
+    sam2__write_response((uv_stream_t*) &client->tcp, (sam2_message_u *) connect_message);
+
+_10:if (status < 0) {
+        if (client) {
+            sam2__client_destroy(client);
+        }
+    }
 }
 
 // Secret knowledge hidden within libuv's test folder
@@ -1982,6 +1730,12 @@ SAM2_LINKAGE int sam2_server_create(sam2_server_t *server, int port) {
 
     server->room_capacity = room_capacity;
 
+    int i = SAM2_PORT_SENTINELS_MAX+1;
+    server->free_clients = &server->clients[i];
+    for (; i < SAM2_ARRAY_LENGTH(server->clients)-1; i++) {
+        server->clients[i].next = &server->clients[i+1];
+    }
+
     err = uv_tcp_init(&server->loop, &server->tcp);
     if (err) {
         SAM2_LOG_ERROR("TCP initialization failed: %s", uv_strerror(err));
@@ -2016,8 +1770,11 @@ _30: return err;
 
 SAM2_LINKAGE int sam2_server_begin_destroy(sam2_server_t *server) {
     // Kill all clients first since they might be reading from the server
-    kavll_free(sam2_avl_node_t, head, server->peer_id_map, sam2__kavll_free_node_and_data);
-    server->peer_id_map = NULL;
+    for (int i = 0; i < SAM2_ARRAY_LENGTH(server->clients); i++) {
+        if (server->clients[i].flags & SAM2__CLIENT_FLAG_ALLOCATED) {
+            sam2__client_destroy(&server->clients[i]);
+        }
+    }
 
     uv_stop(&server->loop); // This will cause the event loop to exit uv_run once all events are processed
     return 0;
