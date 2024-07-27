@@ -21,7 +21,7 @@
 // load-balancers/routers might add I keep this conservative
 #define ULNET_PACKET_SIZE_BYTES_MAX 1408
 
-#define ULNET_SPECTATOR_MAX 55
+#define ULNET_SPECTATOR_MAX (SAM2_TOTAL_PEERS - SAM2_PORT_MAX - 1)
 #define ULNET_CORE_OPTIONS_MAX 128
 #define ULNET_STATE_PACKET_HISTORY_SIZE 256
 
@@ -174,20 +174,17 @@ typedef struct ulnet_session {
     uint64_t our_peer_id;
 
     sam2_room_t room_we_are_in;
-    uint64_t spectator_peer_ids[ULNET_SPECTATOR_MAX];
     sam2_room_t next_room_xor_delta;
 
     ulnet_core_option_t core_options[ULNET_CORE_OPTIONS_MAX]; // @todo I don't like this here
 
-    // @todo Change these so they're all peer_*
-    juice_agent_t *agent               [SAM2_PORT_MAX + 1 /* Plus Authority */ + ULNET_SPECTATOR_MAX];
-    int64_t        peer_desynced_frame [SAM2_PORT_MAX + 1 /* Plus Authority */ + ULNET_SPECTATOR_MAX];
-    ulnet_state_t  state               [SAM2_PORT_MAX + 1 /* Plus Authority */];
-    ulnet_input_state_t spectator_suggested_input_state[SAM2_PORT_MAX + 1 /* Plus Authority */ + ULNET_SPECTATOR_MAX][ULNET_PORT_COUNT];
-    unsigned char  state_packet_history[SAM2_PORT_MAX + 1 /* Plus Authority */][ULNET_STATE_PACKET_HISTORY_SIZE][ULNET_PACKET_SIZE_BYTES_MAX];
+    juice_agent_t *agent               [SAM2_TOTAL_PEERS];
+    uint64_t       agent_peer_ids      [SAM2_TOTAL_PEERS];
+    int64_t        peer_desynced_frame [SAM2_TOTAL_PEERS];
+    ulnet_state_t  state               [SAM2_TOTAL_PEERS];
+    ulnet_input_state_t spectator_suggested_input_state[SAM2_TOTAL_PEERS][ULNET_PORT_COUNT];
+    unsigned char  state_packet_history[SAM2_TOTAL_PEERS][ULNET_STATE_PACKET_HISTORY_SIZE][ULNET_PACKET_SIZE_BYTES_MAX];
     uint64_t       peer_needs_sync_bitfield;
-
-    int64_t spectator_count;
 
     desync_debug_packet_t desync_debug_packet;
 
@@ -213,9 +210,9 @@ typedef struct ulnet_session {
 } ulnet_session_t;
 
 ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t *agent, void *save_state, size_t save_state_size, int64_t save_state_frame);
-ULNET_LINKAGE int ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, const char *remote_description);
+ULNET_LINKAGE void ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, int p, const char *remote_description);
 ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port);
-ULNET_LINKAGE void ulnet_move_peer(ulnet_session_t *session, int peer_existing_port, int peer_new_port);
+ULNET_LINKAGE void ulnet__swap_agent(ulnet_session_t *session, int peer_existing_port, int peer_new_port);
 ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session);
 
 static inline int ulnet_our_port(ulnet_session_t *session) {
@@ -232,12 +229,14 @@ static inline int ulnet_our_port(ulnet_session_t *session) {
     }
 }
 
-static inline int ulnet_locate_peer(ulnet_session_t *session, uint64_t peer_id) {
-    int room_port, spectator_port;
-    SAM2_LOCATE(session->room_we_are_in.peer_ids, peer_id, room_port);
-    SAM2_LOCATE(session->spectator_peer_ids,      peer_id, spectator_port);
+static inline int ulnet_locate_spectator(sam2_room_t *room, uint64_t peer_id) {
+    for (int i = SAM2_SPECTATOR_START; i < SAM2_TOTAL_PEERS; i++) {
+        if (room->peer_ids[i] == peer_id) {
+            return i;
+        }
+    }
 
-    return spectator_port != -1 ? spectator_port + SAM2_PORT_MAX+1 : room_port;
+    return -1;
 }
 
 static bool ulnet_is_authority(ulnet_session_t *session) {
@@ -246,8 +245,10 @@ static bool ulnet_is_authority(ulnet_session_t *session) {
 }
 
 static bool ulnet_is_spectator(ulnet_session_t *session, uint64_t peer_id) {
+    int port = sam2_get_port_of_peer(&session->room_we_are_in, peer_id);
+
     return    session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED
-           && sam2_get_port_of_peer(&session->room_we_are_in, peer_id) == -1;
+           && (port >= SAM2_SPECTATOR_START || port == -1);
 }
 
 static inline void ulnet__xor_delta(void *dest, void *src, int size) {
@@ -726,53 +727,38 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
         if (memcmp(&new_room_state, &session->room_we_are_in, sizeof(sam2_room_t)) != 0) {
             SAM2_LOG_INFO("Something about the room we're in was changed by the authority");
 
-            int64_t our_new_port = sam2_get_port_of_peer(&new_room_state, session->our_peer_id);
-            if (   sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id) == -1
-                && our_new_port != -1) {
-                // @todo This code can be reworked to remove the above if statement as is this conditional really doesn't make sense anyway, but it shouldn't really be a problem for now
-                SAM2_LOG_INFO("We were let into the server by the authority");
-
-                // @todo This assertion is only true if the peer left on their own and is behaving nicely
-                assert(session->state[our_new_port].frame < session->frame_counter);
-                session->state[our_new_port].frame = session->frame_counter;
-
-                for (int p = 0; p < SAM2_ARRAY_LENGTH(new_room_state.peer_ids); p++) {
-                    if (new_room_state.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
-                    if (new_room_state.peer_ids[p] == session->our_peer_id) continue;
-                    if (session->agent[p] == NULL) {
-                        SAM2_LOG_INFO("Starting Interactive-Connectivity-Establishment for peer %016" PRIx64, new_room_state.peer_ids[p]);
-                        ulnet_startup_ice_for_peer(session, new_room_state.peer_ids[p], NULL);
+            for (int j = 0; j < SAM2_TOTAL_PEERS; j++) {
+                for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
+                    if (new_room_state.peer_ids[j] == session->agent_peer_ids[i]) {
+                        if (new_room_state.peer_ids[j] <= SAM2_PORT_SENTINELS_MAX) continue;
+                        ulnet__swap_agent(session, j, i);
+                        break;
                     }
                 }
-            } else {
-                for (int p = 0; p < SAM2_ARRAY_LENGTH(new_room_state.peer_ids); p++) {
-                    // @todo Check something other than just joins and leaves
-                    if (new_room_state.peer_ids[p] != session->room_we_are_in.peer_ids[p]) {
-                        if (   session->room_we_are_in.peer_ids[p] > SAM2_PORT_SENTINELS_MAX
-                            && new_room_state.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) {
-                            if (session->room_we_are_in.peer_ids[p] == session->our_peer_id) {
-                                SAM2_LOG_INFO("We were removed from port %d", p);
-                                for (int peer_port = 0; peer_port < SAM2_PORT_MAX; peer_port++) {
-                                    if (session->agent[peer_port]) {
-                                        ulnet_disconnect_peer(session, peer_port);
-                                    }
-                                }
-                            } else {
-                                SAM2_LOG_INFO("Peer %" PRIx64 " has left the room", session->room_we_are_in.peer_ids[p]);
-                                if (ulnet_is_authority(session)) {
-                                    ulnet_move_peer(session, p, SAM2_PORT_MAX+1 + session->spectator_count++);
-                                } else {
-                                    ulnet_disconnect_peer(session, p);
-                                }
-                            }
-                        } else if (new_room_state.peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
-                            int peer_existing_port = ulnet_locate_peer(session, new_room_state.peer_ids[p]);
-                            if (peer_existing_port != -1) {
-                                SAM2_LOG_INFO("Spectator %016" PRIx64 " was promoted to peer", new_room_state.peer_ids[p]);
-                                ulnet_move_peer(session, peer_existing_port, p); // This only moves spectators to real ports right now
-                            }
+            }
+
+            if (sam2_get_port_of_peer(&new_room_state, session->our_peer_id) < SAM2_SPECTATOR_START) {
+                for (int p = 0; p < SAM2_PORT_MAX; p++) {
+                    if (   new_room_state.peer_ids[p] > SAM2_PORT_SENTINELS_MAX
+                        && new_room_state.peer_ids[p] != session->our_peer_id
+                        && new_room_state.peer_ids[p] != session->agent_peer_ids[p]) {
+
+                        juice_destroy(session->agent[p]);
+                        session->agent[p] = NULL;
+
+                        // Convention: The peer with the lesser ID initiates ICE
+                        if (session->our_peer_id < new_room_state.peer_ids[p]) {
+                            ulnet_startup_ice_for_peer(session, new_room_state.peer_ids[p], p, NULL);
                         }
                     }
+                }
+            }
+
+            for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
+                if (new_room_state.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
+
+                if (new_room_state.peer_ids[p] != session->room_we_are_in.peer_ids[p]) {
+                    session->state[p].frame = SAM2_MAX(session->state[p].frame, session->frame_counter);
                 }
             }
 
@@ -812,37 +798,15 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
     return status;
 }
 
-ULNET_LINKAGE void ulnet_move_peer(ulnet_session_t *session, int peer_existing_port, int peer_new_port) {
-    assert(peer_new_port == -1 || peer_existing_port != peer_new_port);
-    assert(peer_new_port == -1 || session->agent[peer_new_port] == NULL);
-    assert(peer_new_port == -1 || session->room_we_are_in.peer_ids[peer_new_port] <= SAM2_PORT_SENTINELS_MAX);
-    assert(session->agent[peer_existing_port] != NULL);
+ULNET_LINKAGE void ulnet__swap_agent(ulnet_session_t *session, int peer_existing_port, int peer_new_port) {
+    if (peer_existing_port == peer_new_port) return;
+    juice_agent_t *temp_agent = session->agent[peer_existing_port];
+    int64_t temp_agent_peer_ids = session->agent_peer_ids[peer_existing_port];
 
-    juice_agent_t *agent = session->agent[peer_existing_port];
-    int64_t peer_id = session->room_we_are_in.peer_ids[peer_existing_port];
-
-    session->agent[peer_existing_port] = NULL;
-    session->room_we_are_in.peer_ids[peer_existing_port] = 0;
-
-    if (peer_new_port == -1) {
-        juice_destroy(agent);
-    } else {
-        session->agent[peer_new_port] = agent;
-        session->room_we_are_in.peer_ids[peer_new_port] = peer_id;
-    }
-
-    if (peer_existing_port > SAM2_AUTHORITY_INDEX) {
-        // Remove with replacement (Spectators are stored contiguously with no gaps)
-        // @todo Maybe don't do this if it makes the implementation easier
-        assert(session->spectator_count > 0);
-        assert(peer_new_port < SAM2_PORT_MAX);
-        assert(peer_new_port - (SAM2_PORT_MAX + 1) < session->spectator_count);
-
-        session->spectator_count--;
-        session->agent[peer_existing_port] = session->agent[(SAM2_PORT_MAX+1) + session->spectator_count];
-        session->agent[(SAM2_PORT_MAX+1) + session->spectator_count] = NULL;
-        session->room_we_are_in.peer_ids[peer_existing_port] = session->spectator_peer_ids[session->spectator_count];
-    }
+    session->agent[peer_existing_port] = session->agent[peer_new_port];
+    session->agent_peer_ids[peer_existing_port] = session->agent_peer_ids[peer_new_port];
+    session->agent[peer_new_port] = temp_agent;
+    session->agent_peer_ids[peer_new_port] = temp_agent_peer_ids;
 }
 
 ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port) {
@@ -852,7 +816,10 @@ ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port
         SAM2_LOG_INFO("Disconnecting Peer %016" PRIx64, session->room_we_are_in.peer_ids[peer_port]);
     }
 
-    ulnet_move_peer(session, peer_port, -1);
+    assert(session->agent[peer_port] != NULL);
+    juice_destroy(session->agent[peer_port]);
+    session->agent[peer_port] = NULL;
+    session->agent_peer_ids[peer_port] = SAM2_PORT_AVAILABLE;
 }
 
 static inline void ulnet__reset_save_state_bookkeeping(ulnet_session_t *session) {
@@ -862,11 +829,11 @@ static inline void ulnet__reset_save_state_bookkeeping(ulnet_session_t *session)
 }
 
 ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session) {
-    assert(session->spectator_count == 0);
-    for (int i = 0; i < SAM2_PORT_MAX+1; i++) {
+    for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
         assert(session->agent[i] == NULL);
     }
 
+    memset(&session->agent_peer_ids, 0, sizeof(session->agent_peer_ids));
     memset(&session->state, 0, sizeof(session->state));
     memset(&session->state_packet_history, 0, sizeof(session->state_packet_history));
 
@@ -905,7 +872,7 @@ static void ulnet__on_candidate(juice_agent_t *agent, const char *sdp, void *use
 
     sam2_signal_message_t response = { SAM2_SIGN_HEADER };
 
-    response.peer_id = session->room_we_are_in.peer_ids[p];
+    response.peer_id = session->agent_peer_ids[p];
     if (strlen(sdp) < sizeof(response.ice_sdp)) {
         strcpy(response.ice_sdp, sdp);
         session->sam2_send_callback(session->user_ptr, (char *) &response);
@@ -928,7 +895,7 @@ static void ulnet__on_gathering_done(juice_agent_t *agent, void *user_ptr) {
 
     sam2_signal_message_t response = { SAM2_SIGN_HEADER };
 
-    response.peer_id = session->room_we_are_in.peer_ids[p];
+    response.peer_id = session->agent_peer_ids[p];
     session->sam2_send_callback(session->user_ptr, (char *) &response);
 }
 
@@ -1009,8 +976,8 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
 
             // Broadcast the input packet to spectators
             if (ulnet_is_authority(session)) {
-                for (i = 0; i < ULNET_SPECTATOR_MAX; i++) {
-                    juice_agent_t *spectator_agent = session->agent[SAM2_PORT_MAX+1 + i];
+                for (int s = SAM2_SPECTATOR_START; s < SAM2_TOTAL_PEERS; s++) {
+                    juice_agent_t *spectator_agent = session->agent[s];
                     if (spectator_agent) {
                         if (   juice_get_state(spectator_agent) == JUICE_STATE_CONNECTED
                             || juice_get_state(spectator_agent) == JUICE_STATE_COMPLETED) {
@@ -1226,7 +1193,9 @@ cleanup:
     }
 }
 
-ULNET_LINKAGE int ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, const char *remote_description) {
+ULNET_LINKAGE void ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, int p, const char *remote_description) {
+    SAM2_LOG_INFO("Starting Interactive-Connectivity-Establishment for peer %04" PRIx64, peer_id);
+
     juice_config_t config;
     memset(&config, 0, sizeof(config));
 
@@ -1243,12 +1212,7 @@ ULNET_LINKAGE int ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t 
 
     config.user_ptr = (void *) session;
 
-    int p = sam2_get_port_of_peer(&session->room_we_are_in, peer_id);
-    if (p == -1) {
-        assert(session->spectator_count < SAM2_ARRAY_LENGTH(session->spectator_peer_ids));
-        session->spectator_peer_ids[p = session->spectator_count++] = peer_id;
-        p += SAM2_PORT_MAX + 1;
-    }
+    session->agent_peer_ids[p] = peer_id;
 
     assert(session->agent[p] == NULL);
     session->agent[p] = juice_create(&config);
@@ -1269,8 +1233,23 @@ ULNET_LINKAGE int ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t 
     // This call starts an asynchronous task that requires periodic polling via juice_user_poll to complete
     // it will call the ulnet__on_gathering_done callback once it's finished
     juice_gather_candidates(session->agent[p]);
+}
 
-    return p;
+sam2_room_t ulnet__infer_future_room_we_are_in(ulnet_session_t *session) {
+    // This looks weird but really we're just figuring out what the current state of the room
+    // looks like so we can generate deltas against it
+    sam2_room_t future_room_we_are_in = session->room_we_are_in;
+    if (session->frame_counter != ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) {
+        for (int64_t frame = session->frame_counter+1LL; frame < session->state[SAM2_AUTHORITY_INDEX].frame; frame++) {
+            ulnet__xor_delta(
+                &future_room_we_are_in,
+                &session->state[SAM2_AUTHORITY_INDEX].room_xor_delta[frame % ULNET_DELAY_BUFFER_SIZE],
+                sizeof(session->room_we_are_in)
+            );
+        }
+    }
+
+    return future_room_we_are_in;
 }
 
 int ulnet_process_message(ulnet_session_t *session, void *response) {
@@ -1296,17 +1275,9 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
         }
         sam2_room_join_message_t *room_join = (sam2_room_join_message_t *) response;
 
-        // This looks weird but really we're just figuring out what the current state of the room
-        // looks like so we can generate deltas against it
-        sam2_room_t future_room_we_are_in = session->room_we_are_in;
-        for (int64_t frame = session->frame_counter+1LL; frame < session->state[SAM2_AUTHORITY_INDEX].frame; frame++) {
-            ulnet__xor_delta(
-                &future_room_we_are_in,
-                &session->state[SAM2_AUTHORITY_INDEX].room_xor_delta[frame % ULNET_DELAY_BUFFER_SIZE],
-                sizeof(session->room_we_are_in)
-            );
-        }
-        ulnet__xor_delta(&future_room_we_are_in, &session->next_room_xor_delta, sizeof(session->room_we_are_in));
+        sam2_room_t future_room_we_are_in = ulnet__infer_future_room_we_are_in(session);
+        sam2_room_t futureer_room_we_are_in = future_room_we_are_in;
+        ulnet__xor_delta(&futureer_room_we_are_in, &session->next_room_xor_delta, sizeof(session->room_we_are_in));
 
         SAM2_LOG_INFO("Peer %" PRIx64 " has asked to change something about the room in some way e.g. leaving, joining, etc.", room_join->peer_id);
         assert(sam2_same_room(&future_room_we_are_in, &room_join->room));
@@ -1318,7 +1289,8 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
             if (current_port != -1) {
                 SAM2_LOG_INFO("Peer %" PRIx64 " left", room_join->peer_id);
 
-                session->next_room_xor_delta.peer_ids[current_port] = future_room_we_are_in.peer_ids[current_port] ^ SAM2_PORT_AVAILABLE;
+                futureer_room_we_are_in.peer_ids[current_port] = SAM2_PORT_AVAILABLE;
+                futureer_room_we_are_in.peer_ids[ulnet_locate_spectator(&futureer_room_we_are_in, SAM2_PORT_AVAILABLE)] = room_join->peer_id;
             } else {
                 SAM2_LOG_WARN("Peer %" PRIx64 " did something that doesn't look like joining or leaving", room_join->peer_id);
 
@@ -1344,10 +1316,10 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
 
                     session->sam2_send_callback(session->user_ptr, (char *) &error);
                 } else {
-                    session->next_room_xor_delta.peer_ids[desired_port] = future_room_we_are_in.peer_ids[desired_port] ^ room_join->peer_id;
+                    futureer_room_we_are_in.peer_ids[desired_port] = room_join->peer_id;
 
                     if (current_port != -1) {
-                        future_room_we_are_in.peer_ids[current_port] = SAM2_PORT_AVAILABLE;
+                        futureer_room_we_are_in.peer_ids[current_port] = SAM2_PORT_AVAILABLE;
                     }
                 }
             }
@@ -1355,23 +1327,24 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
 
         // @todo We should mask for values peers are allowed to change
         if (room_join->peer_id == session->our_peer_id) {
-            session->next_room_xor_delta.flags = future_room_we_are_in.flags ^ room_join->room.flags;
+            futureer_room_we_are_in.flags = room_join->room.flags;
         }
+
+        session->next_room_xor_delta = futureer_room_we_are_in;
+        ulnet__xor_delta(&session->next_room_xor_delta, &future_room_we_are_in, sizeof(session->room_we_are_in));
 
         sam2_room_t no_xor_delta = {0};
         if (memcmp(&session->next_room_xor_delta, &no_xor_delta, sizeof(sam2_room_t)) == 0) {
             SAM2_LOG_WARN("Peer %" PRIx64 " didn't change anything after making join request", room_join->peer_id);
         } else {
-            ulnet__xor_delta(&future_room_we_are_in, &session->next_room_xor_delta, sizeof(session->room_we_are_in));
             sam2_room_make_message_t make_message = {
                 SAM2_MAKE_HEADER,
-                future_room_we_are_in
+                futureer_room_we_are_in
             };
 
             session->sam2_send_callback(session->user_ptr, (char *) &make_message);
         }
-    } else if (   memcmp(response, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0
-               || memcmp(response, sam2_sigx_header, SAM2_HEADER_TAG_SIZE) == 0) {
+    } else if (memcmp(response, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_signal_message_t *room_signal = (sam2_signal_message_t *) response;
         SAM2_LOG_INFO("Received signal from peer %" PRIx64 "", room_signal->peer_id);
 
@@ -1380,16 +1353,19 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
             return 0;
         }
 
-        int p = ulnet_locate_peer(session, room_signal->peer_id);
+        int p = 0;
+        if (ulnet_is_authority(session)) {
+            SAM2_LOCATE(session->agent_peer_ids, room_signal->peer_id, p);
 
-        if (p == -1) {
-            SAM2_LOG_INFO("Received signal from unknown peer");
+            if (p == -1) {
+                SAM2_LOG_INFO("Received signal from unknown peer");
+                sam2_room_t future_room_we_are_in = ulnet__infer_future_room_we_are_in(session);
+                p = ulnet_locate_spectator(&future_room_we_are_in, SAM2_PORT_AVAILABLE);
 
-            if (session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
-                if (session->spectator_count == ULNET_SPECTATOR_MAX) {
+                if (p == -1) {
                     SAM2_LOG_WARN("We can't let them in as a spectator there are too many spectators");
 
-                    static sam2_error_message_t error = { 
+                    static sam2_error_message_t error = {
                         SAM2_FAIL_HEADER,
                         SAM2_RESPONSE_AUTHORITY_ERROR,
                         "Authority has reached the maximum number of spectators"
@@ -1398,11 +1374,16 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
                     session->sam2_send_callback(session->user_ptr, (char *) &error);
                 } else {
                     SAM2_LOG_INFO("We are letting them in as a spectator");
+                    session->next_room_xor_delta.peer_ids[p] = future_room_we_are_in.peer_ids[p] ^ room_signal->peer_id;
                 }
-            } else {
+            }
+        } else {
+            SAM2_LOCATE(session->room_we_are_in.peer_ids, room_signal->peer_id, p);
+
+            if (p == -1) {
                 SAM2_LOG_WARN("Received unknown signal when we weren't the authority");
 
-                static sam2_error_message_t error = { 
+                static sam2_error_message_t error = {
                     SAM2_FAIL_HEADER,
                     SAM2_RESPONSE_AUTHORITY_ERROR,
                     "Received unknown signal when we weren't the authority"
@@ -1414,32 +1395,12 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
             }
         }
 
-        if (session->agent[p] == NULL) {
-            // Have to get move the peer once we know which port it belongs to
-            p = ulnet_startup_ice_for_peer(
-                session,
-                room_signal->peer_id,
-                /* remote_desciption = */ room_signal->ice_sdp
-            );
+        if (p != -1 && session->agent[p] == NULL) {
+            ulnet_startup_ice_for_peer(session, room_signal->peer_id, p, /* remote_desciption = */ room_signal->ice_sdp);
         }
 
-        if (p != -1) {
-            if (room_signal->header[3] == 'X') {
-                if (p > SAM2_AUTHORITY_INDEX) {
-                    ulnet_disconnect_peer(session, p);
-                } else {
-                    SAM2_LOG_WARN("Protocol violation: room.peer_ids[%d]=%016" PRIx64 " signaled disconnect before exiting room", p, room_signal->peer_id);
-                    sam2_error_message_t error = {
-                        SAM2_FAIL_HEADER,
-                        SAM2_RESPONSE_AUTHORITY_ERROR,
-                        "Protocol violation: Signaled disconnect before detatching port",
-                        room_signal->peer_id
-                    };
-
-                    session->sam2_send_callback(session->user_ptr, (char *) &error);
-                    // @todo Resync broadcast
-                }
-            } else if (room_signal->ice_sdp[0] == '\0') {
+        if (p != -1) { // Can fail if we run out of spots for spectators
+            if (room_signal->ice_sdp[0] == '\0') {
                 SAM2_LOG_INFO("Received remote gathering done from peer %" PRIx64 "", room_signal->peer_id);
                 juice_set_remote_gathering_done(session->agent[p]);
             } else if (strncmp(room_signal->ice_sdp, "a=ice", strlen("a=ice")) == 0) {
@@ -1449,6 +1410,31 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
             } else {
                 SAM2_LOG_ERROR("Unable to parse signal message '%s'", room_signal->ice_sdp);
             }
+        }
+    } else if (memcmp(response, sam2_sigx_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        sam2_signal_message_t *room_signal = (sam2_signal_message_t *) response;
+
+        int p = 0;
+        SAM2_LOCATE(session->agent_peer_ids, room_signal->peer_id, p);
+
+        if (p > SAM2_AUTHORITY_INDEX) {
+            ulnet_disconnect_peer(session, p);
+
+            if (ulnet_is_authority(session)) {
+                sam2_room_t future_room_we_are_in = ulnet__infer_future_room_we_are_in(session);
+                session->next_room_xor_delta.peer_ids[p] = future_room_we_are_in.peer_ids[p] ^ SAM2_PORT_AVAILABLE;
+            }
+        } else {
+            SAM2_LOG_WARN("Protocol violation: room.peer_ids[%d]=%016" PRIx64 " signaled disconnect before exiting room", p, room_signal->peer_id);
+            sam2_error_message_t error = {
+                SAM2_FAIL_HEADER,
+                SAM2_RESPONSE_AUTHORITY_ERROR,
+                "Protocol violation: Signaled disconnect before detatching port",
+                room_signal->peer_id
+            };
+
+            session->sam2_send_callback(session->user_ptr, (char *) &error);
+            // @todo Resync broadcast
         }
     }
 

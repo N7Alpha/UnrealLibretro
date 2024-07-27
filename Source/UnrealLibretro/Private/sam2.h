@@ -179,6 +179,8 @@
 
 #define SAM2_PORT_MAX 8
 #define SAM2_AUTHORITY_INDEX SAM2_PORT_MAX
+#define SAM2_TOTAL_PEERS 64
+#define SAM2_SPECTATOR_START (SAM2_PORT_MAX + 1)
 
 // All data is sent in little-endian format
 // All strings are utf-8 encoded unless stated otherwise... @todo Actually I should just add _utf8 if the field isn't ascii
@@ -189,7 +191,7 @@ typedef struct sam2_room {
     uint64_t flags;
     char core_and_version[32];
     uint64_t rom_hash_xxh64;
-    uint64_t peer_ids[SAM2_PORT_MAX+1]; // Must be unique per port (including authority)
+    uint64_t peer_ids[64]; // Must be unique per port (including authority and spectators)
 } sam2_room_t;
 
 // This is a test for identity not equality
@@ -199,7 +201,7 @@ static int sam2_same_room(sam2_room_t *a, sam2_room_t *b) {
 }
 
 static int sam2_get_port_of_peer(sam2_room_t *room, uint64_t peer_id) {
-    for (int i = 0; i < SAM2_PORT_MAX+1; i++) {
+    for (int i = 0; i < SAM2_ARRAY_LENGTH(room->peer_ids); i++) {
         if (room->peer_ids[i] == peer_id) {
             return i;
         }
@@ -1549,13 +1551,6 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
                             write_error((uv_stream_t *) client, &response);
                             goto finished_processing_last_message;
                         }
-                    } else {
-                        if (p_in != p_join) {
-                            SAM2_LOG_WARN("Client changed port, which is not allowed");
-                            static sam2_error_message_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_ARGS, "Peer cannot change ports; Instead leave and rejoin"};
-                            write_error((uv_stream_t *) client, &response);
-                            goto finished_processing_last_message;
-                        }
                     }
                 }
 
@@ -1883,7 +1878,7 @@ int main() {
 // If these fail then this server won't be binary compatible with the protocol and would fail horrendously
 // Resort to packing pragmas until these succeed if you run into this issue yourself
 SAM2_STATIC_ASSERT(SAM2_BYTEORDER_ENDIAN == SAM2_BYTEORDER_LITTLE_ENDIAN, "Platform is big-endian which is unsupported");
-SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == 64 + sizeof(uint64_t) + 32 + (SAM2_PORT_MAX+1)*sizeof(uint64_t) + sizeof(uint64_t), "sam2_room_t is not packed");
+SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == 64 + sizeof(uint64_t) + 32 + 64*sizeof(uint64_t) + sizeof(uint64_t), "sam2_room_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_make_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_make_message_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_list_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_list_message_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_join_message_t) == 8 + 8 + 64 + sizeof(sam2_room_t), "sam2_room_join_message_t is not packed");

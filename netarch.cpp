@@ -1348,12 +1348,11 @@ void draw_imgui() {
                 }
 
                 ImGui::SameLine();
-                ImGui::TextColored(color, "Queue: %s", buffer_depth);
+                ImGui::TextColored(color, "Queue: %s Frame: %" PRId64, buffer_depth, g_ulnet_session.state[p].frame);
             }
         }
 
-        if (g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] == g_ulnet_session.our_peer_id) {
-
+        {
             ImGui::BeginChild("SpectatorsTableWindow", 
                 ImVec2(
                     ImGui::GetContentRegionAvail().x,
@@ -1366,17 +1365,18 @@ void draw_imgui() {
                 ImGui::TableSetupColumn("ICE Connection");
                 ImGui::TableHeadersRow();
 
-                for (int s = 0; s < g_ulnet_session.spectator_count; s++) {
+                for (int s = SAM2_SPECTATOR_START; s < SAM2_TOTAL_PEERS; s++) {
+                    if (g_ulnet_session.room_we_are_in.peer_ids[s] <= SAM2_PORT_SENTINELS_MAX) continue;
                     ImGui::TableNextRow();
                     ImGui::TableSetColumnIndex(0);
 
                     // Display peer ID
-                    ImGui::Text("%" PRIx64, g_ulnet_session.spectator_peer_ids[s]);
+                    ImGui::Text("%" PRIx64, g_ulnet_session.room_we_are_in.peer_ids[s]);
 
                     ImGui::TableSetColumnIndex(1);
                     // Display ICE connection status
                     // Assuming g_ulnet_session.agent[] is an array of juice_agent_t* representing the ICE agents
-                    juice_agent_t *spectator_agent = g_ulnet_session.agent[SAM2_PORT_MAX+1 + s];
+                    juice_agent_t *spectator_agent = g_ulnet_session.agent[s];
                     if (spectator_agent) {
                         juice_state_t connection_state = juice_get_state(spectator_agent);
 
@@ -1387,7 +1387,7 @@ void draw_imgui() {
                         }
 
                     } else {
-                        ImGui::Text("ICE agent not created %c", spinnerGlyph);
+                        ImGui::Text("ICE agent not created");
                     }
                 }
 
@@ -1408,7 +1408,7 @@ void draw_imgui() {
                 }
             } else if (ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
                 if (   ImGui::Button("Exit")
-                    && sam2_get_port_of_peer(&g_ulnet_session.room_we_are_in, g_ulnet_session.our_peer_id) == -1 /* Can't disconnect before leaving the room */) {
+                    && ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id) /* Can't disconnect before leaving the room */) {
                     sam2_signal_message_t response = { SAM2_SIGX_HEADER };
                     response.peer_id = g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX];
                     g_libretro_context.SAM2Send((char *) &response);
@@ -1512,6 +1512,7 @@ void draw_imgui() {
                     ulnet_startup_ice_for_peer(
                         &g_ulnet_session,
                          g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX],
+                         SAM2_AUTHORITY_INDEX,
                          NULL
                     );
                 }
