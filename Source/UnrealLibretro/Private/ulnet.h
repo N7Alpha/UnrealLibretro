@@ -828,6 +828,23 @@ static inline void ulnet__reset_save_state_bookkeeping(ulnet_session_t *session)
     memset(session->fec_index_counter, 0, sizeof(session->fec_index_counter));
 }
 
+ULNET_LINKAGE void ulnet_session_tear_down(ulnet_session_t *session) {
+    for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
+        if (session->agent[i]) {
+            ulnet_disconnect_peer(session, i);
+        }
+    }
+
+    sam2_signal_message_t response = { SAM2_SIGX_HEADER };
+    response.peer_id = session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX];
+    session->sam2_send_callback(session->user_ptr, (char *) &response);
+
+    session->room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+    session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
+    session->frame_counter = 0;
+    session->state[SAM2_AUTHORITY_INDEX].frame = 0;
+}
+
 ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session) {
     for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
         assert(session->agent[i] == NULL);
@@ -1258,12 +1275,7 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
         return -1;
     }
 
-    if (memcmp(response, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
-        sam2_room_make_message_t *room_make = (sam2_room_make_message_t *) response;
-        assert(session->our_peer_id == room_make->room.peer_ids[SAM2_AUTHORITY_INDEX]);
-        assert(!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED));
-        session->room_we_are_in = room_make->room;
-    } else if (memcmp(response, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
+    if (memcmp(response, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_connect_message_t *connect_message = (sam2_connect_message_t *) response;
         SAM2_LOG_INFO("We were assigned the peer id %" PRIx64, connect_message->peer_id);
 

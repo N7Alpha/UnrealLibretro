@@ -1091,14 +1091,16 @@ void draw_imgui() {
             ImGui::SeparatorText("Server");
             ImGui::TextColored(ImVec4(0, 1, 0, 1), "We're listening on [::]:%d (IPv4 tunneling is OS dependent)", g_sam2_port);
 
-            char label[64];
-            snprintf(label, 64, "Rooms: %" PRId64, g_sam2_server->room_count);
-            if (ImGui::CollapsingHeader(label)) {
-                for (int i = 0; i < g_sam2_server->room_count; i++) {
-                    show_room(g_sam2_server->rooms[i]);
+            int room_count = 0;
+            bool room_header_is_open = ImGui::CollapsingHeader("Rooms");
+            for (sam2_client_t *client = g_sam2_server->used_client_list; client; client = client->next) {
+                if (g_sam2_server->rooms[sam2__peer_id(client)].flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+                    if (room_header_is_open) show_room(g_sam2_server->rooms[sam2__peer_id(client)]);
+                    room_count++;
                 }
             }
 
+            ImGui::Text("Rooms Hosted: %d",room_count);
             ImGui::Text("Messages allocated: %" PRId64, g_sam2_server->_debug_allocated_messages);
 
             ImGui::SeparatorText("Client");
@@ -1192,7 +1194,9 @@ void draw_imgui() {
         if (ImGui::CollapsingHeader("Tests")) {
             if (ImGui::Button("Stress test message framing")) {
                 for (int i = 0; i < 1000; ++i) {
-                    sam2_room_make_message_t message = {SAM2_MAKE_HEADER};
+                    sam2_room_make_message_t message = { SAM2_MAKE_HEADER };
+                    message.room.peer_ids[SAM2_AUTHORITY_INDEX] = g_ulnet_session.our_peer_id;
+                    message.room.flags |= SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
                     snprintf((char *) &message.room.name, sizeof(message.room.name), "Test message %d", i);
                     sam2_client_send(g_libretro_context.sam2_socket, (char *) &message);
                 }
@@ -1409,14 +1413,8 @@ void draw_imgui() {
             } else if (ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
                 if (   ImGui::Button("Exit")
                     && ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id) /* Can't disconnect before leaving the room */) {
-                    sam2_signal_message_t response = { SAM2_SIGX_HEADER };
-                    response.peer_id = g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX];
-                    g_libretro_context.SAM2Send((char *) &response);
-                    ulnet_disconnect_peer(&g_ulnet_session, SAM2_AUTHORITY_INDEX);
-                    memcpy(&g_ulnet_session.room_we_are_in, &g_new_room_set_through_gui, sizeof(sam2_room_t));
-                    g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = g_ulnet_session.our_peer_id;
-                    g_ulnet_session.frame_counter = 0;
-                    g_ulnet_session.state[SAM2_AUTHORITY_INDEX].frame = 0;
+                    ulnet_session_tear_down(&g_ulnet_session);
+                    g_ulnet_session.room_we_are_in = g_new_room_set_through_gui;
                 }
             } else {
                 if (ImGui::Button("Detach Port")) {
@@ -1437,6 +1435,8 @@ void draw_imgui() {
         if (ImGui::Button("Make")) {
             sam2_room_make_message_t request = { SAM2_MAKE_HEADER };
             request.room = g_new_room_set_through_gui;
+            request.room.flags |= SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+            g_ulnet_session.room_we_are_in = request.room;
             g_libretro_context.SAM2Send((char *) &request);
         }
         if (ImGui::Button(g_is_refreshing_rooms ? "Stop" : "Refresh")) {
@@ -2892,6 +2892,8 @@ int main(int argc, char *argv[]) {
                                 g_sam2_rooms[g_sam2_room_count++] = room_list->room;
                             }
                         }
+                    } else if (memcmp(&latest_sam2_message, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
+                        g_new_room_set_through_gui.peer_ids[SAM2_AUTHORITY_INDEX] = latest_sam2_message.connect_message.peer_id;
                     }
                 }
             }

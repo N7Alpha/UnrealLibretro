@@ -191,7 +191,7 @@ typedef struct sam2_room {
     uint64_t flags;
     char core_and_version[32];
     uint64_t rom_hash_xxh64;
-    uint64_t peer_ids[64]; // Must be unique per port (including authority and spectators)
+    uint64_t peer_ids[SAM2_TOTAL_PEERS]; // Must be unique per port (including authority and spectators)
 } sam2_room_t;
 
 // This is a test for identity not equality
@@ -326,23 +326,20 @@ typedef int sam2_socket_t;
 #if defined(SAM2_SERVER)
 #include <uv.h>
 
-#define SAM2__CLIENT_FLAG_ALLOCATED         0b00000001
+#define SAM2__CLIENT_FLAG_VALID             0b00000001
 #define SAM2__HOSTING_ROOM                  0b00000010
 #define SAM2__CLIENT_FLAG_CLIENT_CLOSE_DONE 0b00000100
 #define SAM2__CLIENT_FLAG_TIMER_CLOSE_DONE  0b00001000
 #define SAM2__CLIENT_FLAG_MASK_CLOSE_DONE   0b00001100
 
 typedef struct sam2_client {
-    union {
-        uv_tcp_t tcp;
-        struct sam2_client *next;
-    };
+    uv_tcp_t tcp;
+    struct sam2_client *next;
+    struct sam2_client *prev;
 
     int flags;
     uv_timer_t timer;
     int64_t rooms_sent;
-
-    sam2_room_t *hosted_room;
 
     char buffer[sizeof(sam2_message_u)];
     int length;
@@ -359,10 +356,9 @@ typedef struct sam2_server {
     void* _debug_allocated_message_set[32];
     int _debug_allocated_message_count;
     sam2_client_t clients[65536];
-    sam2_client_t *free_clients;
-    int64_t room_count;
-    int64_t room_capacity;
-    sam2_room_t rooms[/*room_capacity*/];
+    sam2_room_t rooms[65536];
+    sam2_client_t *free_client_list; // Singly-linked list
+    sam2_client_t *used_client_list; // Doubly-linked list
 } sam2_server_t;
 SAM2_STATIC_ASSERT(offsetof(sam2_server_t, tcp) == 0, "We need this so we can cast between sam2_server_t and uv_tcp_t");
 
@@ -386,7 +382,7 @@ static sam2_client_t* sam2__find_client(sam2_server_t *server, uint64_t peer_id)
     if (peer_id >= SAM2_ARRAY_LENGTH(server->clients)) return NULL;
     sam2_client_t *client = &server->clients[peer_id];
 
-    if (client->flags & SAM2__CLIENT_FLAG_ALLOCATED) {
+    if (client->flags & SAM2__CLIENT_FLAG_VALID) {
         return client;
     } else {
         return NULL;
@@ -394,14 +390,10 @@ static sam2_client_t* sam2__find_client(sam2_server_t *server, uint64_t peer_id)
 }
 
 static sam2_room_t* sam2__find_hosted_room(sam2_server_t *server, sam2_room_t *room) {
-    sam2_client_t *client = sam2__find_client(server, room->peer_ids[SAM2_AUTHORITY_INDEX]);
+    sam2_room_t *hosted_room = &server->rooms[room->peer_ids[SAM2_AUTHORITY_INDEX]];
 
-    if (client) {
-        if (sam2_same_room(room, client->hosted_room)) {
-            return client->hosted_room;
-        } else {
-            return NULL;
-        }
+    if (hosted_room->flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+        return hosted_room;
     } else {
         return NULL;
     }
@@ -1057,25 +1049,34 @@ static uint64_t fnv1a_hash(void* data, size_t len) {
 
 static uint64_t sam2__peer_id(sam2_client_t *client) {
     sam2_server_t *server = (sam2_server_t *) client->tcp.data;
-    return client - server->clients;
+    size_t peer_id = client - server->clients;
+
+    if (peer_id >= SAM2_ARRAY_LENGTH(server->clients)) {
+        SAM2_LOG_ERROR("Calculated peer id out of bounds %zu", peer_id);
+        peer_id = 0;
+    }
+
+    return peer_id;
 }
 
 #define SAM2__ALLOC_CLIENT(server) sam2__alloc_client(server)
 #define SAM2__FREE_CLIENT(server, client) sam2__free_client(server, client)
 
 static sam2_client_t *sam2__alloc_client(sam2_server_t *server) {
-    sam2_client_t *client = server->free_clients;
+    sam2_client_t *client = server->free_client_list;
 
     if (client) {
-        server->free_clients = client->next;
+        // Pop client from the front of the free list
+        server->free_client_list = client->next;
     }
 
     return client;
 }
 
 static sam2_client_t *sam2__free_client(sam2_server_t *server, sam2_client_t *client) {
-    client->next = server->free_clients;
-    server->free_clients = client;
+    // Add client to the front of the free list
+    client->next = server->free_client_list;
+    server->free_client_list = client;
     return client;
 }
 
@@ -1272,41 +1273,10 @@ static void sam2__dump_data_to_file(const char *prefix, void* data, size_t len) 
     SAM2_LOG_INFO("Data dumped to file: %s", filename);
 }
 
-static void sam2__remove_room(sam2_server_t *server, sam2_room_t *room) {
-    room = sam2__find_hosted_room(server, room);
-    if (room) {
-        sam2_client_t *client = sam2__find_client(server, room->peer_ids[SAM2_AUTHORITY_INDEX]);
-
-        if (client) {
-            client->hosted_room = NULL;
-        } else {
-            SAM2_LOG_WARN("Failed to find client data for room %016" PRIx64 ":'%s'",
-                room->peer_ids[SAM2_AUTHORITY_INDEX], room->name);
-        }
-
-        int64_t i = room - server->rooms;
-
-        // This check avoids aliasing issues with memcpy which clang swaps in here
-        if (i != server->room_count - 1) {
-            server->rooms[i] = server->rooms[server->room_count - 1];
-        }
-
-        --server->room_count;
-    } else {
-        SAM2_LOG_WARN("Tried to delist non-existent room");
-    }
-}
-
 static void sam2__on_client_destroy(uv_handle_t *handle) {
     sam2_client_t *client = (sam2_client_t *) handle;
     sam2_server_t *server = (sam2_server_t *) handle->data;
     SAM2_LOG_INFO("Socket for client %016" PRIx64 " closed", sam2__peer_id(client));
-
-    if (client->hosted_room) {
-        SAM2_LOG_INFO("Removing room %016" PRIx64 ":'%s' its owner disconnected", sam2__peer_id(client), client->hosted_room->name);
-        sam2__remove_room(server, client->hosted_room);
-    }
-
 
     client->flags |= SAM2__CLIENT_FLAG_CLIENT_CLOSE_DONE;
 
@@ -1326,13 +1296,25 @@ static void sam2__on_client_timer_close(uv_handle_t *handle) {
 }
 
 static void sam2__client_destroy(sam2_client_t *client) {
+    sam2_server_t *server = (sam2_server_t *) client->tcp.data;
     // The callbacks here aren't called in order so you have to be pretty careful not to do a double-free or use after free
     if (client->timer.data != NULL) {
         uv_close((uv_handle_t *) &client->timer, sam2__on_client_timer_close);
     }
 
     uv_close((uv_handle_t *) &client->tcp, sam2__on_client_destroy);
-    client->flags &= ~SAM2__CLIENT_FLAG_ALLOCATED;
+    client->flags &= ~SAM2__CLIENT_FLAG_VALID;
+    server->rooms[sam2__peer_id(client)].flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+
+    // Remove client from the active list
+    if (client->prev) {
+        client->prev->next = client->next;
+    } else {
+        server->used_client_list = client->next;
+    }
+    if (client->next) {
+        client->next->prev = client->prev;
+    }
 }
 
 static void sam2__write_fatal_error(uv_stream_t *client, sam2_error_message_t *response) {
@@ -1451,54 +1433,28 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
 
         // Send the appropriate response
         if (memcmp(&message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
-            for (const int64_t stop_at = SAM2_MIN(client->rooms_sent + 128, server->room_count); client->rooms_sent < stop_at;) {
-                sam2_room_list_message_t *response = &sam2__alloc_message(server, sam2_list_header)->room_list_response;
-                response->room = server->rooms[client->rooms_sent++];
-                sam2__write_response(client_tcp, (sam2_message_u *) response);
+            for (int i = 0; i < SAM2_ARRAY_LENGTH(server->clients); i++) {
+                if (server->rooms[i].flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+                    sam2_room_list_message_t *response = &sam2__alloc_message(server, sam2_list_header)->room_list_response;
+                    response->room = server->rooms[i];
+                    sam2__write_response(client_tcp, (sam2_message_u *) response);
+                }
             }
 
-            if (client->rooms_sent >= server->room_count) {
-                client->rooms_sent = 0;
-                sam2_room_list_message_t *response = &sam2__alloc_message(server, sam2_list_header)->room_list_response;
-                memset(&response->room, 0, sizeof(response->room));
-                sam2__write_response(client_tcp, (sam2_message_u *) response);
-            }
+            sam2_room_list_message_t *response = &sam2__alloc_message(server, sam2_list_header)->room_list_response;
+            memset(&response->room, 0, sizeof(response->room));
+            sam2__write_response(client_tcp, (sam2_message_u *) response);
 
-            // @todo Send remaining rooms if there are more than 128
+            // @todo Stagger responses; Make more efficient
         } else if (memcmp(&message, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
             sam2_room_make_message_t *request = (sam2_room_make_message_t *) &message;
 
-            if (server->room_count + 1 > server->room_capacity) {
-                SAM2_LOG_WARN("Out of rooms");
-                static sam2_error_message_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_SERVER_ERROR, "Out of rooms"};
-                write_error((uv_stream_t *) client, &response);
-                goto finished_processing_last_message;
-            }
+            sam2_room_t *room = &server->rooms[sam2__peer_id(client)];
+            request->room.peer_ids[SAM2_AUTHORITY_INDEX] = sam2__peer_id(client);
 
-            if (client->hosted_room) {
-                if (request->room.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
-                    SAM2_LOG_INFO("Client %" PRIx64 " updated the state of room '%s'", sam2__peer_id(client), client->hosted_room->name);
-                    *client->hosted_room = request->room;
-                } else {
-                    SAM2_LOG_INFO("Client %" PRIx64 " abandoned the room '%s'", sam2__peer_id(client), client->hosted_room->name);
-                    sam2__remove_room(server, client->hosted_room);
-                }
-            } else {
-                sam2_room_t *new_room = &server->rooms[server->room_count++];
-                client->hosted_room = new_room;
+            SAM2_LOG_INFO("Client %05" PRId64 " updated the state of room '%s'", sam2__peer_id(client), room->name);
 
-                request->room.peer_ids[SAM2_AUTHORITY_INDEX] = sam2__peer_id(client);
-
-                SAM2_LOG_DEBUG("Copying &request->room:%p into room+server->room_count:%p room_count+1:%lld", &request->room, new_room, (long long int)server->room_count);
-                memcpy(new_room, &request->room, sizeof(*new_room));
-                new_room->name[sizeof(new_room->name) - 1] = '\0';
-                new_room->flags |= SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
-
-                sam2_room_make_message_t *response = (sam2_room_make_message_t *) sam2__alloc_message(server, sam2_make_header);
-                memcpy(&response->room, new_room, sizeof(*new_room));
-
-                sam2__write_response(client_tcp, (sam2_message_u *) response);
-            }
+            server->rooms[sam2__peer_id(client)] = request->room;
         } else if (memcmp(&message, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
             // The logic in here is complicated because this message aliases many different operations...
             // keeping the message structure uniform simplifies the client perspective in my opinion
@@ -1513,13 +1469,6 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
                 SAM2_LOG_INFO("Client attempted to join non-existent room with authority %" PRIx64 "", request->room.peer_ids[SAM2_AUTHORITY_INDEX]);
                 static sam2_error_message_t response = { SAM2_FAIL_HEADER, SAM2_RESPONSE_ROOM_DOES_NOT_EXIST, "Room not found"};
                 write_error((uv_stream_t *) client, &response);
-                goto finished_processing_last_message;
-            }
-
-            if (   request->room.peer_ids[SAM2_AUTHORITY_INDEX] == sam2__peer_id(client)
-                && !(request->room.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
-                SAM2_LOG_INFO("Authority %" PRIx64 " abandoned the room '%s'", sam2__peer_id(client), associated_room->name);
-                sam2__remove_room(server, associated_room);
                 goto finished_processing_last_message;
             }
 
@@ -1649,10 +1598,18 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
     }
 
     memset(client, 0, sizeof(sam2_client_t));
-    client->flags = SAM2__CLIENT_FLAG_ALLOCATED;
+    client->flags = SAM2__CLIENT_FLAG_VALID;
     uv_timer_init(&server->loop, &client->timer);
     client->timer.data = client;
     client->tcp.data = server;
+
+    // Add client to the front of the active list
+    client->next = server->used_client_list;
+    client->prev = NULL;
+    if (server->used_client_list) {
+        server->used_client_list->prev = client;
+    }
+    server->used_client_list = client;
 
     status = uv_tcp_init(server_tcp->loop, &client->tcp);
     if (status < 0) {
@@ -1709,8 +1666,7 @@ static void close_loop(uv_loop_t* loop) {
   } while (0)
 
 SAM2_LINKAGE int sam2_server_create(sam2_server_t *server, int port) {
-    int64_t room_capacity = 65536;
-    int server_size_bytes = sizeof(sam2_server_t) + sizeof(sam2_room_t) * room_capacity;
+    int server_size_bytes = sizeof(sam2_server_t);
     if (server == NULL) {
         return server_size_bytes;
     }
@@ -1723,13 +1679,13 @@ SAM2_LINKAGE int sam2_server_create(sam2_server_t *server, int port) {
         goto _30;
     }
 
-    server->room_capacity = room_capacity;
-
     int i = SAM2_PORT_SENTINELS_MAX+1;
-    server->free_clients = &server->clients[i];
+    server->free_client_list = &server->clients[i];
     for (; i < SAM2_ARRAY_LENGTH(server->clients)-1; i++) {
         server->clients[i].next = &server->clients[i+1];
     }
+
+    server->used_client_list = NULL;
 
     err = uv_tcp_init(&server->loop, &server->tcp);
     if (err) {
@@ -1766,7 +1722,7 @@ _30: return err;
 SAM2_LINKAGE int sam2_server_begin_destroy(sam2_server_t *server) {
     // Kill all clients first since they might be reading from the server
     for (int i = 0; i < SAM2_ARRAY_LENGTH(server->clients); i++) {
-        if (server->clients[i].flags & SAM2__CLIENT_FLAG_ALLOCATED) {
+        if (server->clients[i].flags & SAM2__CLIENT_FLAG_VALID) {
             sam2__client_destroy(&server->clients[i]);
         }
     }
