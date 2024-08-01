@@ -1093,13 +1093,14 @@ void draw_imgui() {
 
             int room_count = 0;
             bool room_header_is_open = ImGui::CollapsingHeader("Rooms");
-            for (sam2_client_t *client = g_sam2_server->used_client_list; client; client = client->next) {
-                if (g_sam2_server->rooms[sam2__peer_id(client)].flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
-                    if (room_header_is_open) show_room(g_sam2_server->rooms[sam2__peer_id(client)]);
+            for (uint16_t c = g_sam2_server->client_used_list; c != 0; c = g_sam2_server->client_next[c]) {
+                if (g_sam2_server->rooms[c].flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+                    if (room_header_is_open) show_room(g_sam2_server->rooms[c]);
                     room_count++;
                 }
             }
 
+            ImGui::Text("Clients connected: %d", g_sam2_server->client_count);
             ImGui::Text("Rooms Hosted: %d",room_count);
             ImGui::Text("Messages allocated: %" PRId64, g_sam2_server->_debug_allocated_messages);
 
