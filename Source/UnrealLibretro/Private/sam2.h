@@ -324,6 +324,60 @@ typedef int sam2_socket_t;
 #endif
 
 #if defined(SAM2_SERVER)
+#define SAM2__DEFINE_ARRAYLIST_FIELDS(VAR, T, N, IDX_T) \
+T VAR##s[N]; \
+IDX_T VAR##_next[N]; \
+IDX_T VAR##_prev[N]; \
+IDX_T VAR##_free_list; /* Singly-linked list */ \
+IDX_T VAR##_used_list; /* Doubly-linked list */ \
+IDX_T VAR##_count;
+
+#define SAM2__DEFINE_ARRAYLIST_FUNCTIONS(NS_PREFIX, VAR, T, N, IDX_T, PARENT_TYPE, OFFSET) \
+void NS_PREFIX##_##VAR##_init(PARENT_TYPE *parent) { \
+    for (IDX_T i = OFFSET; i < N - 1; i++) { \
+        parent->VAR##_next[i] = i + 1; \
+        parent->VAR##_prev[i] = i; /* For checking double-frees */ \
+    } \
+    parent->VAR##_next[N - 1] = 0; \
+    parent->VAR##_prev[N - 1] = N - 1; \
+    parent->VAR##_free_list = OFFSET; \
+    parent->VAR##_used_list = 0; \
+    parent->VAR##_count = 0; \
+} \
+\
+static T* NS_PREFIX##_##VAR##_alloc(PARENT_TYPE *parent) { \
+    if (!parent->VAR##_free_list) return NULL; \
+    IDX_T new_idx = parent->VAR##_free_list; \
+    parent->VAR##_free_list = parent->VAR##_next[new_idx]; \
+    parent->VAR##_next[new_idx] = parent->VAR##_used_list; \
+    parent->VAR##_prev[new_idx] = 0; \
+    if (parent->VAR##_used_list != 0) { \
+        parent->VAR##_prev[parent->VAR##_used_list] = new_idx; \
+    } \
+    parent->VAR##_used_list = new_idx; \
+    parent->VAR##_count++; \
+    return &parent->VAR##s[new_idx]; \
+} \
+\
+static const char *NS_PREFIX##_##VAR##_free(PARENT_TYPE *parent, T *VAR) { \
+    IDX_T idx = VAR - parent->VAR##s; \
+    if (VAR - parent->VAR##s >= N) return "invalid index"; \
+    if (parent->VAR##_prev[idx] == idx) return "double-free"; \
+    if (idx == parent->VAR##_used_list) { \
+        parent->VAR##_used_list = parent->VAR##_next[idx]; \
+    } else { \
+        parent->VAR##_next[parent->VAR##_prev[idx]] = parent->VAR##_next[idx]; \
+    } \
+    if (parent->VAR##_next[idx] != 0) { \
+        parent->VAR##_prev[parent->VAR##_next[idx]] = parent->VAR##_prev[idx]; \
+    } \
+    parent->VAR##_next[idx] = parent->VAR##_free_list; \
+    parent->VAR##_prev[idx] = idx; /* For checking double-frees */ \
+    parent->VAR##_free_list = idx; \
+    parent->VAR##_count--; \
+    return NULL; \
+}
+
 #include <uv.h>
 
 #define SAM2__CLIENT_FLAG_VALID             0b00000001
@@ -334,12 +388,10 @@ typedef int sam2_socket_t;
 
 typedef struct sam2_client {
     uv_tcp_t tcp;
-    struct sam2_client *next;
-    struct sam2_client *prev;
 
     int flags;
     uv_timer_t timer;
-    int64_t rooms_sent;
+    uint16_t rooms_sent;
 
     char buffer[sizeof(sam2_message_u)];
     int length;
@@ -355,12 +407,13 @@ typedef struct sam2_server {
 
     void* _debug_allocated_message_set[32];
     int _debug_allocated_message_count;
-    sam2_client_t clients[65536];
+
+    SAM2__DEFINE_ARRAYLIST_FIELDS(client, sam2_client_t, 65536, uint16_t)
     sam2_room_t rooms[65536];
-    sam2_client_t *free_client_list; // Singly-linked list
-    sam2_client_t *used_client_list; // Doubly-linked list
 } sam2_server_t;
 SAM2_STATIC_ASSERT(offsetof(sam2_server_t, tcp) == 0, "We need this so we can cast between sam2_server_t and uv_tcp_t");
+
+SAM2__DEFINE_ARRAYLIST_FUNCTIONS(sam2_, client, sam2_client_t, 65536, uint16_t, sam2_server_t, SAM2_PORT_SENTINELS_MAX+1)
 
 #if defined(_MSC_VER)
 __pragma(warning(push))
@@ -1059,27 +1112,6 @@ static uint64_t sam2__peer_id(sam2_client_t *client) {
     return peer_id;
 }
 
-#define SAM2__ALLOC_CLIENT(server) sam2__alloc_client(server)
-#define SAM2__FREE_CLIENT(server, client) sam2__free_client(server, client)
-
-static sam2_client_t *sam2__alloc_client(sam2_server_t *server) {
-    sam2_client_t *client = server->free_client_list;
-
-    if (client) {
-        // Pop client from the front of the free list
-        server->free_client_list = client->next;
-    }
-
-    return client;
-}
-
-static sam2_client_t *sam2__free_client(sam2_server_t *server, sam2_client_t *client) {
-    // Add client to the front of the free list
-    client->next = server->free_client_list;
-    server->free_client_list = client;
-    return client;
-}
-
 static sam2_message_u *sam2__alloc_message_raw(sam2_server_t *server) {
     // @todo
     //sam2_message_u *response = NULL;
@@ -1281,7 +1313,10 @@ static void sam2__on_client_destroy(uv_handle_t *handle) {
     client->flags |= SAM2__CLIENT_FLAG_CLIENT_CLOSE_DONE;
 
     if ((client->flags & SAM2__CLIENT_FLAG_MASK_CLOSE_DONE) == SAM2__CLIENT_FLAG_MASK_CLOSE_DONE) {
-        SAM2__FREE_CLIENT(server, client);
+        const char *error = sam2__client_free(server, client);
+        if (error) {
+            SAM2_LOG_ERROR("Failed to free client: %s", error);
+        }
     }
 }
 
@@ -1291,7 +1326,10 @@ static void sam2__on_client_timer_close(uv_handle_t *handle) {
     client->flags |= SAM2__CLIENT_FLAG_TIMER_CLOSE_DONE;
 
     if ((client->flags & SAM2__CLIENT_FLAG_MASK_CLOSE_DONE) == SAM2__CLIENT_FLAG_MASK_CLOSE_DONE) {
-        SAM2__FREE_CLIENT(server, client);
+        const char *error = sam2__client_free(server, client);
+        if (error) {
+            SAM2_LOG_ERROR("Failed to free client: %s", error);
+        }
     }
 }
 
@@ -1305,16 +1343,6 @@ static void sam2__client_destroy(sam2_client_t *client) {
     uv_close((uv_handle_t *) &client->tcp, sam2__on_client_destroy);
     client->flags &= ~SAM2__CLIENT_FLAG_VALID;
     server->rooms[sam2__peer_id(client)].flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
-
-    // Remove client from the active list
-    if (client->prev) {
-        client->prev->next = client->next;
-    } else {
-        server->used_client_list = client->next;
-    }
-    if (client->next) {
-        client->next->prev = client->prev;
-    }
 }
 
 static void sam2__write_fatal_error(uv_stream_t *client, sam2_error_message_t *response) {
@@ -1590,7 +1618,7 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
     }
 
     sam2_server_t *server = (sam2_server_t *) server_tcp;
-    sam2_client_t *client = SAM2__ALLOC_CLIENT(server);
+    sam2_client_t *client = sam2__client_alloc(server);
 
     if (!client) {
         SAM2_LOG_WARN("No more client slots available");
@@ -1602,14 +1630,6 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
     uv_timer_init(&server->loop, &client->timer);
     client->timer.data = client;
     client->tcp.data = server;
-
-    // Add client to the front of the active list
-    client->next = server->used_client_list;
-    client->prev = NULL;
-    if (server->used_client_list) {
-        server->used_client_list->prev = client;
-    }
-    server->used_client_list = client;
 
     status = uv_tcp_init(server_tcp->loop, &client->tcp);
     if (status < 0) {
@@ -1672,20 +1692,13 @@ SAM2_LINKAGE int sam2_server_create(sam2_server_t *server, int port) {
     }
 
     memset(server, 0, server_size_bytes);
+    sam2__client_init(server);
 
     int err = uv_loop_init(&server->loop);
     if (err) {
         SAM2_LOG_ERROR("Loop initialization failed: %s", uv_strerror(err));
         goto _30;
     }
-
-    int i = SAM2_PORT_SENTINELS_MAX+1;
-    server->free_client_list = &server->clients[i];
-    for (; i < SAM2_ARRAY_LENGTH(server->clients)-1; i++) {
-        server->clients[i].next = &server->clients[i+1];
-    }
-
-    server->used_client_list = NULL;
 
     err = uv_tcp_init(&server->loop, &server->tcp);
     if (err) {
