@@ -332,26 +332,26 @@ IDX_T VAR##_free_list; /* Singly-linked list */ \
 IDX_T VAR##_used_list; /* Doubly-linked list */ \
 IDX_T VAR##_count;
 
-#define SAM2__DEFINE_ARRAYLIST_FUNCTIONS(NS_PREFIX, VAR, T, N, IDX_T, PARENT_TYPE, OFFSET) \
+#define SAM2__DEFINE_ARRAYLIST_FUNCTIONS(NS_PREFIX, VAR, T, N, IDX_T, PARENT_TYPE, LIST_NULL) \
 void NS_PREFIX##_##VAR##_init(PARENT_TYPE *parent) { \
-    for (IDX_T i = OFFSET; i < N - 1; i++) { \
+    for (IDX_T i = 0; i < N - 1; i++) { \
         parent->VAR##_next[i] = i + 1; \
         parent->VAR##_prev[i] = i; /* For checking double-frees */ \
     } \
-    parent->VAR##_next[N - 1] = 0; \
+    parent->VAR##_next[N - 1] = LIST_NULL; \
     parent->VAR##_prev[N - 1] = N - 1; \
-    parent->VAR##_free_list = OFFSET; \
-    parent->VAR##_used_list = 0; \
+    parent->VAR##_free_list = 0; \
+    parent->VAR##_used_list = LIST_NULL; \
     parent->VAR##_count = 0; \
 } \
 \
 static T* NS_PREFIX##_##VAR##_alloc(PARENT_TYPE *parent) { \
-    if (!parent->VAR##_free_list) return NULL; \
+    if (parent->VAR##_free_list == LIST_NULL) return NULL; \
     IDX_T new_idx = parent->VAR##_free_list; \
     parent->VAR##_free_list = parent->VAR##_next[new_idx]; \
     parent->VAR##_next[new_idx] = parent->VAR##_used_list; \
-    parent->VAR##_prev[new_idx] = 0; \
-    if (parent->VAR##_used_list != 0) { \
+    parent->VAR##_prev[new_idx] = LIST_NULL; \
+    if (parent->VAR##_used_list != LIST_NULL) { \
         parent->VAR##_prev[parent->VAR##_used_list] = new_idx; \
     } \
     parent->VAR##_used_list = new_idx; \
@@ -368,7 +368,7 @@ static const char *NS_PREFIX##_##VAR##_free(PARENT_TYPE *parent, T *VAR) { \
     } else { \
         parent->VAR##_next[parent->VAR##_prev[idx]] = parent->VAR##_next[idx]; \
     } \
-    if (parent->VAR##_next[idx] != 0) { \
+    if (parent->VAR##_next[idx] != LIST_NULL) { \
         parent->VAR##_prev[parent->VAR##_next[idx]] = parent->VAR##_prev[idx]; \
     } \
     parent->VAR##_next[idx] = parent->VAR##_free_list; \
@@ -413,7 +413,7 @@ typedef struct sam2_server {
 } sam2_server_t;
 SAM2_STATIC_ASSERT(offsetof(sam2_server_t, tcp) == 0, "We need this so we can cast between sam2_server_t and uv_tcp_t");
 
-SAM2__DEFINE_ARRAYLIST_FUNCTIONS(sam2_, client, sam2_client_t, 65536, uint16_t, sam2_server_t, SAM2_PORT_SENTINELS_MAX+1)
+SAM2__DEFINE_ARRAYLIST_FUNCTIONS(sam2_, client, sam2_client_t, 65536, uint16_t, sam2_server_t, 0)
 
 #if defined(_MSC_VER)
 __pragma(warning(push))
@@ -1685,6 +1685,7 @@ static void close_loop(uv_loop_t* loop) {
 SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     memset(server, 0, sizeof(sam2_server_t));
     sam2__client_init(server);
+    server->client_free_list = SAM2_PORT_SENTINELS_MAX+1; // Don't allow allocation of sentinel indices
 
     int err = uv_loop_init(&server->loop);
     if (err) {
