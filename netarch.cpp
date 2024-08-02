@@ -2610,13 +2610,12 @@ int main(int argc, char *argv[]) {
         || strcmp(g_sam2_address, "127.0.0.1")
         || strcmp(g_sam2_address, "::1")) {
         SAM2_LOG_INFO("g_sam2_address=%s attempting to host signaling and match-making server ourselves", g_sam2_address);
-        int server_size_bytes = sam2_server_create(NULL, 0);
 
-        // Create server
-        g_sam2_server = (sam2_server_t *) malloc(server_size_bytes);
-        int err = sam2_server_create(g_sam2_server, g_sam2_port);
+        g_sam2_server = (sam2_server_t *) malloc(sizeof(sam2_server_t));
+        int err = sam2_server_init(g_sam2_server, g_sam2_port);
+
         if (err) {
-            SAM2_LOG_INFO("Couldn't create server ourselves probably we're already hosting one in another instance");
+            SAM2_LOG_INFO("Couldn't initialize server ourselves probably we're already hosting one in another instance");
             free(g_sam2_server);
             g_sam2_server = NULL;
         }

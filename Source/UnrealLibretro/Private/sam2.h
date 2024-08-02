@@ -458,26 +458,23 @@ static sam2_room_t* sam2__find_hosted_room(sam2_server_t *server, sam2_room_t *r
 
 // Note: You must allocate the memory for `server`
 // ```c
-// int server_size_bytes = sam2_server_create(NULL, 0);
-//
-// // Create server
-// sam2_server_t *server = malloc(server_size_bytes);
-// sam2_server_create(server, 1234);
+// // Init server
+// sam2_server_t server;
+// sam2_server_create(&server, SAM2_SERVER_DEFAULT_PORT);
 //
 // // Wait for some events
 // for (int i = 0; i < 10; i++) {
-//     uv_run(&server->loop, UV_RUN_NOWAIT);
+//     uv_run(&server.loop, UV_RUN_NOWAIT);
 // }
 //
 // // Start asynchronous destruction
 // sam2_server_begin_destroy(server);
 //
 // // Do the needful
-// uv_run(&server->loop, UV_RUN_DEFAULT);
-// uv_loop_close(&server->loop);
-// free(server);
+// uv_run(&server.loop, UV_RUN_DEFAULT);
+// uv_loop_close(&server.loop);
 // ```
-SAM2_LINKAGE int sam2_server_create(sam2_server_t *server, int port);
+SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port);
 
 SAM2_LINKAGE int sam2_server_begin_destroy(sam2_server_t *server);
 #endif
@@ -1685,13 +1682,8 @@ static void close_loop(uv_loop_t* loop) {
     uv_library_shutdown();                          \
   } while (0)
 
-SAM2_LINKAGE int sam2_server_create(sam2_server_t *server, int port) {
-    int server_size_bytes = sizeof(sam2_server_t);
-    if (server == NULL) {
-        return server_size_bytes;
-    }
-
-    memset(server, 0, server_size_bytes);
+SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
+    memset(server, 0, sizeof(sam2_server_t));
     sam2__client_init(server);
 
     int err = uv_loop_init(&server->loop);
@@ -1743,34 +1735,21 @@ SAM2_LINKAGE int sam2_server_begin_destroy(sam2_server_t *server) {
     uv_stop(&server->loop); // This will cause the event loop to exit uv_run once all events are processed
     return 0;
 }
-
-static void on_signal(uv_signal_t *handle, int signum) {
-    sam2_server_begin_destroy((sam2_server_t *) handle->data);
-    uv_close((uv_handle_t*) handle->data, NULL);
-}
 #endif // SAM2_SERVER_C
 #endif // SAM2_SERVER && SAM2_IMPLEMENTATION
 
 #if defined(SAM2_EXECUTABLE)
 #ifndef SAM2_MAIN_C
 #define SAM2_MAIN_C
+static void on_signal(uv_signal_t *handle, int signum) {
+    sam2_server_begin_destroy((sam2_server_t *) handle->data);
+    uv_close((uv_handle_t*) handle->data, NULL);
+}
+
 int main() {
-    sam2_server_t *server = NULL;
+    sam2_server_t server;
 
-    int ret = sam2_server_create(server, SAM2_SERVER_DEFAULT_PORT);
-
-    if (ret < 0) {
-        SAM2_LOG_FATAL("Error while getting server memory size");
-        return ret;
-    }
-
-    server = malloc(ret);
-    if (server == NULL) {
-        SAM2_LOG_FATAL("Error while allocating %d bytes of server memory", ret);
-        return 1;
-    }
-
-    ret = sam2_server_create(server, SAM2_SERVER_DEFAULT_PORT);
+    int ret = sam2_server_init(&server, SAM2_SERVER_DEFAULT_PORT);
 
     if (ret < 0) {
         SAM2_LOG_FATAL("Error while initializing server");
@@ -1778,15 +1757,15 @@ int main() {
         return ret;
     }
 
+    // Setup signal handler
     uv_signal_t sig;
     uv_signal_init(&server->loop, &sig);
-    sig.data = server;
+    sig.data = &server;
     uv_signal_start(&sig, on_signal, SIGINT);
 
-    uv_run(&server->loop, UV_RUN_DEFAULT);
+    uv_run(&server.loop, UV_RUN_DEFAULT);
 
-    MAKE_VALGRIND_HAPPY(&server->loop);
-    free(server);
+    MAKE_VALGRIND_HAPPY(&server.loop);
 
     return 0;
 }
