@@ -29,10 +29,8 @@ class FSam2ServerRunnable : public FRunnable
 public:
     FSam2ServerRunnable()
     {
-        int server_size_bytes = sam2_server_create(NULL, 0);
-
-        Sam2Server = (sam2_server_t*)malloc(server_size_bytes);
-        sam2_server_create(Sam2Server, SAM2_SERVER_DEFAULT_PORT);
+        Sam2Server = (sam2_server_t*)malloc(sizeof(sam2_server_t));
+        sam2_server_init(Sam2Server, SAM2_SERVER_DEFAULT_PORT);
 
         uv_async_init(&Sam2Server->loop, &StopAsync, OnStopAsync);
         StopAsync.data = this;
