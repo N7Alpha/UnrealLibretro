@@ -1118,6 +1118,8 @@ void draw_imgui() {
 
             if (is_ipv6) ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to [" "%s" "]:%d", g_sam2_address, g_sam2_port);
             else         ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to "  "%s"  ":%d", g_sam2_address, g_sam2_port);
+            ImGui::SameLine();
+            ImGui::TextColored(GOLD, "(Peer ID %" PRIx64 ")", g_ulnet_session.our_peer_id);
 
             ImGui::SameLine();
             if (ImGui::Button("Disconnect")) {
@@ -1283,10 +1285,6 @@ void draw_imgui() {
     }
 
     if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
-        ImGui::Text("Our Peer ID:");
-        ImGui::SameLine();
-        ImGui::TextColored(GOLD, "%" PRIx64, g_ulnet_session.our_peer_id);
-
         ImGui::SeparatorText("Connection Status");
         for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
             if (g_ulnet_session.room_we_are_in.peer_ids[p] == SAM2_PORT_UNAVAILABLE) {
@@ -1376,7 +1374,9 @@ void draw_imgui() {
                     ImGui::TableSetColumnIndex(0);
 
                     // Display peer ID
-                    ImGui::Text("%" PRIx64, g_ulnet_session.room_we_are_in.peer_ids[s]);
+                    uint64_t peer_id = g_ulnet_session.room_we_are_in.peer_ids[s];
+                    if (peer_id == g_ulnet_session.our_peer_id) ImGui::TextColored(GOLD, "%" PRIx64, peer_id);
+                    else                                        ImGui::Text(             "%" PRIx64, peer_id);
 
                     ImGui::TableSetColumnIndex(1);
                     // Display ICE connection status
