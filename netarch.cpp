@@ -978,6 +978,44 @@ void draw_imgui() {
         }
     };
 
+    auto show_message = [=](char *message) {
+        ImGui::Text("Header: %.8s", (char *) message);
+
+        if (memcmp(message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
+            sam2_signal_message_t *signal_message = (sam2_signal_message_t *) message;
+            ImGui::Text("Peer ID: %016" PRIx64, signal_message->peer_id);
+            ImGui::InputTextMultiline("ICE SDP", signal_message->ice_sdp, sizeof(signal_message->ice_sdp), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 16), ImGuiInputTextFlags_ReadOnly);
+        } else if (memcmp(message, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
+            sam2_room_make_message_t *make_message = (sam2_room_make_message_t *) message;
+            ImGui::Separator();
+            show_room(make_message->room);
+        } else if (memcmp(message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
+            if (message[7] == 'r') {
+                // Request
+                ImGui::Text("Room List Request");
+            } else {
+                // Response
+                sam2_room_list_message_t *list_response = (sam2_room_list_message_t *) message;
+                ImGui::Separator();
+                show_room(list_response->room);
+            }
+        } else if (memcmp(message, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
+            sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
+            ImGui::Text("Peer ID: %016" PRIx64, join_message->peer_id);
+            ImGui::Separator();
+            show_room(join_message->room);
+        } else if (memcmp(message, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
+            sam2_connect_message_t *connect_message = (sam2_connect_message_t *) message;
+            ImGui::Text("Peer ID: %016" PRIx64, connect_message->peer_id);
+            ImGui::Text("Flags: %016" PRIx64, connect_message->flags);
+        } else if (memcmp(message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
+            sam2_error_message_t *error_response = (sam2_error_message_t *) message;
+            ImGui::Text("Code: %" PRId64, error_response->code);
+            ImGui::Text("Description: %s", error_response->description);
+            ImGui::Text("Peer ID: %016" PRIx64, error_response->peer_id);
+        }
+    };
+
     // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
     if (show_demo_window)
         ImGui::ShowDemoWindow(&show_demo_window);
@@ -1102,7 +1140,17 @@ void draw_imgui() {
 
             ImGui::Text("Clients connected: %d", g_sam2_server->client_count);
             ImGui::Text("Rooms Hosted: %d",room_count);
-            ImGui::Text("Messages allocated: %" PRId64, g_sam2_server->_debug_allocated_messages);
+
+            if (g_sam2_server->response_count) {
+                char label[64];
+                snprintf(label, sizeof(label), "Unsent responses buffered: %d", (int) g_sam2_server->response_count);
+                if (ImGui::CollapsingHeader(label)) {
+                    for (uint16_t r = g_sam2_server->response_used_list; r != 0; r = g_sam2_server->response_next[r]) {
+                        show_message((char *) &g_sam2_server->responses[r]);
+                    }
+                }
+            }
+
 
             ImGui::SeparatorText("Client");
         }
@@ -1213,42 +1261,7 @@ void draw_imgui() {
             ImGui::Begin("Messages", &isWindowOpen); // Use isWindowOpen to allow closing the window
 
             char *message = (char *) &g_libretro_context.message_history[selected_message_index];
-
-            ImGui::Text("Header: %.8s", (char *) message);
-
-            if (memcmp(message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
-                sam2_signal_message_t *signal_message = (sam2_signal_message_t *) message;
-                ImGui::Text("Peer ID: %016" PRIx64, signal_message->peer_id);
-                ImGui::InputTextMultiline("ICE SDP", signal_message->ice_sdp, sizeof(signal_message->ice_sdp), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 16), ImGuiInputTextFlags_ReadOnly);
-            } else if (memcmp(message, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
-                sam2_room_make_message_t *make_message = (sam2_room_make_message_t *) message;
-                ImGui::Separator();
-                show_room(make_message->room);
-            } else if (memcmp(message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
-                if (message[7] == 'r') {
-                    // Request
-                    ImGui::Text("Room List Request");
-                } else {
-                    // Response
-                    sam2_room_list_message_t *list_response = (sam2_room_list_message_t *) message;
-                    ImGui::Separator();
-                    show_room(list_response->room);
-                }
-            } else if (memcmp(message, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
-                sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
-                ImGui::Text("Peer ID: %016" PRIx64, join_message->peer_id);
-                ImGui::Separator();
-                show_room(join_message->room);
-            } else if (memcmp(message, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
-                sam2_connect_message_t *connect_message = (sam2_connect_message_t *) message;
-                ImGui::Text("Peer ID: %016" PRIx64, connect_message->peer_id);
-                ImGui::Text("Flags: %016" PRIx64, connect_message->flags);
-            } else if (memcmp(message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
-                sam2_error_message_t *error_response = (sam2_error_message_t *) message;
-                ImGui::Text("Code: %" PRId64, error_response->code);
-                ImGui::Text("Description: %s", error_response->description);
-                ImGui::Text("Peer ID: %016" PRIx64, error_response->peer_id);
-            }
+            show_message(message);
 
             // Optionally, provide a way to close the window manually
             if (ImGui::Button("Close")) {

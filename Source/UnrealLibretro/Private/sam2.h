@@ -61,9 +61,6 @@
 #endif
 #endif
 
-#define SAM2_MALLOC malloc
-#define SAM2_FREE free
-
 #if defined(__cplusplus) && (__cplusplus >= 201103L)
 #define SAM2_STATIC_ASSERT(cond, message) static_assert(cond, message)
 #elif defined(_MSVC_LANG) && (_MSVC_LANG >= 201103L)
@@ -324,6 +321,7 @@ typedef int sam2_socket_t;
 #endif
 
 #if defined(SAM2_SERVER)
+// @todo This doesn't need to be a macro really
 #define SAM2__DEFINE_ARRAYLIST_FIELDS(VAR, T, N, IDX_T) \
 T VAR##s[N]; \
 IDX_T VAR##_next[N]; \
@@ -402,7 +400,7 @@ typedef struct sam2_server {
     uv_tcp_t tcp;
     uv_loop_t loop;
 
-    sam2_message_u *message_freelist;
+    SAM2__DEFINE_ARRAYLIST_FIELDS(response, sam2_message_u, 2048, uint16_t)
     int64_t _debug_allocated_messages;
 
     void* _debug_allocated_message_set[32];
@@ -412,8 +410,6 @@ typedef struct sam2_server {
     sam2_room_t rooms[65536];
 } sam2_server_t;
 SAM2_STATIC_ASSERT(offsetof(sam2_server_t, tcp) == 0, "We need this so we can cast between sam2_server_t and uv_tcp_t");
-
-SAM2__DEFINE_ARRAYLIST_FUNCTIONS(sam2_, client, sam2_client_t, 65536, uint16_t, sam2_server_t, 0)
 
 #if defined(_MSC_VER)
 __pragma(warning(push))
@@ -515,6 +511,9 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message);
 #include <netdb.h>
 #include <fcntl.h>
 #endif
+
+SAM2__DEFINE_ARRAYLIST_FUNCTIONS(sam2_, client, sam2_client_t, 65536, uint16_t, sam2_server_t, 0)
+SAM2__DEFINE_ARRAYLIST_FUNCTIONS(sam2_, response, sam2_message_u, 2048, uint16_t, sam2_server_t, 65535)
 
 #define RLE8_ENCODE_UPPER_BOUND(N) (3 * ((N+1) / 2) + (N) / 2)
 
@@ -1084,18 +1083,6 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message) {
 #if defined(SAM2_IMPLEMENTATION) && defined(SAM2_SERVER)
 #ifndef SAM2_SERVER_C
 #define SAM2_SERVER_C
-#define FNV_OFFSET_BASIS_64 0xCBF29CE484222325
-#define FNV_PRIME_64 0x100000001B3
-
-static uint64_t fnv1a_hash(void* data, size_t len) {
-    uint64_t hash = FNV_OFFSET_BASIS_64;
-    unsigned char* byte = (unsigned char*)data;
-    for (size_t i = 0; i < len; i++) {
-        hash ^= byte[i];
-        hash *= FNV_PRIME_64;
-    }
-    return hash;
-}
 
 static uint64_t sam2__peer_id(sam2_client_t *client) {
     sam2_server_t *server = (sam2_server_t *) client->tcp.data;
@@ -1110,24 +1097,13 @@ static uint64_t sam2__peer_id(sam2_client_t *client) {
 }
 
 static sam2_message_u *sam2__alloc_message_raw(sam2_server_t *server) {
-    // @todo
-    //sam2_message_u *response = NULL;
-    //if (response_freelist) {
-    //    response = response_freelist;
-    //    response_freelist = response_freelist->next;
-    //} else {
-    //    assert(0); // Just check we have ample responses to send out >~32 in case of broadcast. This beats checking for NULL from an allocator every single time we make an allocation
-    //}
     server->_debug_allocated_messages++;
-
-    return (sam2_message_u *) calloc(1, sizeof(sam2_message_u));
+    return sam2__response_alloc(server);
 }
 
 static void sam2__free_message_raw(sam2_server_t *server, void *message) {
-    //response->next = response_freelist;
-    //response_freelist = response;
     server->_debug_allocated_messages--;
-    free(message);
+    sam2__response_free(server, (sam2_message_u *) message);
 }
 
 static sam2_message_u *sam2__alloc_message(sam2_server_t *server, const char *header) {
@@ -1148,6 +1124,7 @@ static sam2_message_u *sam2__alloc_message(sam2_server_t *server, const char *he
     return message;
 }
 
+#define SAM2__FREE_RESPONSE(response)
 static void sam2__free_response(sam2_server_t *server, void *message) {
     sam2__free_message_raw(server, message);
 
@@ -1284,10 +1261,8 @@ static void write_error(uv_stream_t *client, sam2_error_message_t *response) {
 }
 
 static void sam2__dump_data_to_file(const char *prefix, void* data, size_t len) {
-    uint64_t hash = fnv1a_hash(data, len);
-
     char filename[64];
-    snprintf(filename, sizeof(filename), "%s_%016" PRIx64 ".txt", prefix, hash);
+    snprintf(filename, sizeof(filename), "%s_%d.txt", prefix, rand());
 
     FILE* file = fopen(filename, "w");
     if (!file) {
@@ -1349,11 +1324,10 @@ static void sam2__write_fatal_error(uv_stream_t *client, sam2_error_message_t *r
 
 static void on_timeout(uv_timer_t *handle) {
     // Dereferencing client should be fine here since before we free the client we close the timer which prevents this callback from triggering
-    uv_stream_t *client_tcp = (uv_stream_t *) handle->data;
-    sam2_client_t *client = (sam2_client_t *) client_tcp;
+    sam2_client_t *client = (sam2_client_t *) handle->data;
 
     // Check if client connection is still open
-    if (uv_is_closing((uv_handle_t*) client_tcp)) {
+    if (uv_is_closing((uv_handle_t*) &client->tcp)) {
         SAM2_LOG_INFO("Client %" PRIx64 " connection is already closing or closed", sam2__peer_id(client));
     } else {
         SAM2_LOG_WARN("Client %" PRIx64 " sent incomplete message with header '%.*s' and size %d",
@@ -1366,7 +1340,7 @@ static void on_timeout(uv_timer_t *handle) {
 
         sam2__dump_data_to_file("IncompleteMessage", client->buffer, client->length);
 
-        write_error(client_tcp, &response);
+        write_error((uv_stream_t *) &client->tcp, &response);
     }
 }
 
@@ -1631,19 +1605,22 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
     status = uv_tcp_init(server_tcp->loop, &client->tcp);
     if (status < 0) {
         SAM2_LOG_WARN("Failed to connect to client uv_tcp_init error: %s", uv_strerror(status));
-        goto _10;
+        sam2__client_destroy(client);
+        return;
     }
 
     status = uv_accept(server_tcp, (uv_stream_t*) &client->tcp);
     if (status < 0) {
         SAM2_LOG_WARN("Failed to accept client uv_accept error: %s", uv_strerror(status));
-        goto _10;
+        sam2__client_destroy(client);
+        return;
     }
 
     status = uv_read_start((uv_stream_t*) &client->tcp, alloc_buffer, on_read);
     if (status < 0) {
         SAM2_LOG_WARN("Failed to connect to client %" PRIx64 " uv_read_start error: %s", sam2__peer_id(client), uv_strerror(status));
-        goto _10;
+        sam2__client_destroy(client);
+        return;
     }
 
     SAM2_LOG_INFO("Successfully connected to client %" PRIx64 "", sam2__peer_id(client));
@@ -1651,12 +1628,6 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
     connect_message->peer_id = sam2__peer_id(client);
 
     sam2__write_response((uv_stream_t*) &client->tcp, (sam2_message_u *) connect_message);
-
-_10:if (status < 0) {
-        if (client) {
-            sam2__client_destroy(client);
-        }
-    }
 }
 
 // Secret knowledge hidden within libuv's test folder
@@ -1686,6 +1657,7 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     memset(server, 0, sizeof(sam2_server_t));
     sam2__client_init(server);
     server->client_free_list = SAM2_PORT_SENTINELS_MAX+1; // Don't allow allocation of sentinel indices
+    sam2__response_init(server);
 
     int err = uv_loop_init(&server->loop);
     if (err) {
@@ -1754,7 +1726,6 @@ int main() {
 
     if (ret < 0) {
         SAM2_LOG_FATAL("Error while initializing server");
-        free(server);
         return ret;
     }
 

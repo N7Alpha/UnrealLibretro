@@ -1274,6 +1274,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                                             ulnet_startup_ice_for_peer(
                                                 l->netplay_session,
                                                 room_list->room.peer_ids[SAM2_AUTHORITY_INDEX],
+                                                SAM2_AUTHORITY_INDEX,
                                                 NULL
                                             );
                                         }
