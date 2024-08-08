@@ -408,16 +408,11 @@ static IDX_T NS_PREFIX##_##VAR##_alloc_at_index(PARENT_TYPE *parent, IDX_T idx) 
 #include <uv.h>
 
 #define SAM2__CLIENT_FLAG_VALID             0b00000001
-#define SAM2__HOSTING_ROOM                  0b00000010
-#define SAM2__CLIENT_FLAG_CLIENT_CLOSE_DONE 0b00000100
-#define SAM2__CLIENT_FLAG_TIMER_CLOSE_DONE  0b00001000
-#define SAM2__CLIENT_FLAG_MASK_CLOSE_DONE   0b00001100
 
 typedef struct sam2_client {
     uv_tcp_t tcp;
 
     int flags;
-    uv_timer_t timer;
     uint16_t rooms_sent;
 
     char buffer[sizeof(sam2_message_u)];
@@ -1320,9 +1315,7 @@ static void sam2__on_client_destroy(uv_handle_t *handle) {
 static void sam2__client_destroy(sam2_client_t *client) {
     sam2_server_t *server = (sam2_server_t *) client->tcp.data;
     // The callbacks here aren't called in order so you have to be pretty careful not to do a double-free or use after free
-    if (client->timer.data != NULL) {
-        uv_close((uv_handle_t *) &client->timer, sam2__on_client_timer_close);
-    }
+    // in the case you're freeing multiple libuv handles
 
     uv_close((uv_handle_t *) &client->tcp, sam2__on_client_destroy);
     client->flags &= ~SAM2__CLIENT_FLAG_VALID;
@@ -1332,28 +1325,6 @@ static void sam2__client_destroy(sam2_client_t *client) {
 static void sam2__write_fatal_error(uv_stream_t *client, sam2_error_message_t *response) {
     write_error(client, response);
     sam2__client_destroy((sam2_client_t *) client);
-}
-
-static void on_timeout(uv_timer_t *handle) {
-    // Dereferencing client should be fine here since before we free the client we close the timer which prevents this callback from triggering
-    sam2_client_t *client = (sam2_client_t *) handle->data;
-
-    // Check if client connection is still open
-    if (uv_is_closing((uv_handle_t*) &client->tcp)) {
-        SAM2_LOG_INFO("Client %" PRIx64 " connection is already closing or closed", sam2__peer_id(client));
-    } else {
-        SAM2_LOG_WARN("Client %" PRIx64 " sent incomplete message with header '%.*s' and size %d",
-            sam2__peer_id(client), (int)SAM2_MIN(client->length, SAM2_HEADER_SIZE), client->buffer, client->length);
-
-        static sam2_error_message_t response = {
-            SAM2_FAIL_HEADER, SAM2_RESPONSE_INVALID_HEADER,
-             "An incomplete TCP message was received before timing out"
-        };
-
-        sam2__dump_data_to_file("IncompleteMessage", client->buffer, client->length);
-
-        write_error((uv_stream_t *) &client->tcp, &response);
-    }
 }
 
 // Sanus is latin for healthy
@@ -1388,7 +1359,6 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
         }
 
         SAM2_LOG_DEBUG("Got EOF");
-        uv_timer_stop(&client->timer);
 
         sam2__client_destroy(client);
 
@@ -1406,8 +1376,9 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
 
         if (frame_message_status == 0) {
             if (client->length > 0) {
+                // @todo(timer-1) Do something else here
                 // This is basically a courtesy for clients to warn them they only sent a partial message
-                uv_timer_start(&client->timer, on_timeout, 500, 0);  // 0.5 seconds
+                //uv_timer_start(&client->timer, on_timeout, 500, 0);  // 0.5 seconds
             }
 
             goto cleanup; // We've processed the last message
@@ -1582,8 +1553,9 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
             SAM2_LOG_FATAL("A dumb programming logic error was made or something got corrupted if you ever get here");
         }
 
-finished_processing_last_message:
-        uv_timer_stop(&client->timer);
+finished_processing_last_message:;
+        // @todo(timer-2)
+        //uv_timer_stop(&client->timer);
     }
 
 cleanup:
@@ -1610,8 +1582,6 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
 
     memset(client, 0, sizeof(sam2_client_t));
     client->flags = SAM2__CLIENT_FLAG_VALID;
-    uv_timer_init(&server->loop, &client->timer);
-    client->timer.data = client;
     client->tcp.data = server;
 
     status = uv_tcp_init(server_tcp->loop, &client->tcp);
