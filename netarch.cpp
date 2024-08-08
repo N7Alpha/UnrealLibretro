@@ -874,7 +874,7 @@ static ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 static bool g_connected_to_sam2 = false;
 static sam2_error_message_t g_last_sam2_error = { SAM2_RESPONSE_SUCCESS };
 
-static void peer_ids_to_string(uint64_t peer_ids[], char *output) {
+static void peer_ids_to_string(uint16_t peer_ids[], char *output) {
     for (int i = 0; i < SAM2_PORT_MAX; i++) {
         switch(peer_ids[i]) {
             case SAM2_PORT_UNAVAILABLE:
@@ -955,9 +955,9 @@ void draw_imgui() {
 
     auto show_room = [=](const sam2_room_t& room) {
         ImGui::Text("Room: %s", room.name);
-        ImGui::Text("Flags: %016" PRIx64, room.flags);
+        ImGui::Text("Flags: %05" PRId16, room.flags);
         ImGui::Text("Core: %s", room.core_and_version);
-        ImGui::Text("ROM Hash: %016" PRIx64, room.rom_hash_xxh64);
+        ImGui::Text("ROM Hash: %05" PRId16, room.rom_hash_xxh64);
         
         for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
             ImVec4 color = g_ulnet_session.our_peer_id == room.peer_ids[p] ? GOLD : WHITE;
@@ -973,7 +973,7 @@ void draw_imgui() {
             } else if (room.peer_ids[p] == SAM2_PORT_UNAVAILABLE) {
                 ImGui::Text("Unavailable");
             } else {
-                ImGui::TextColored(color, "%016" PRIx64, room.peer_ids[p]);
+                ImGui::TextColored(color, "%05" PRId16, room.peer_ids[p]);
             }
         }
     };
@@ -983,7 +983,7 @@ void draw_imgui() {
 
         if (memcmp(message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
             sam2_signal_message_t *signal_message = (sam2_signal_message_t *) message;
-            ImGui::Text("Peer ID: %016" PRIx64, signal_message->peer_id);
+            ImGui::Text("Peer ID: %05" PRId16, signal_message->peer_id);
             ImGui::InputTextMultiline("ICE SDP", signal_message->ice_sdp, sizeof(signal_message->ice_sdp), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 16), ImGuiInputTextFlags_ReadOnly);
         } else if (memcmp(message, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
             sam2_room_make_message_t *make_message = (sam2_room_make_message_t *) message;
@@ -1001,18 +1001,18 @@ void draw_imgui() {
             }
         } else if (memcmp(message, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
             sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
-            ImGui::Text("Peer ID: %016" PRIx64, join_message->peer_id);
+            ImGui::Text("Peer ID: %05" PRId16, join_message->peer_id);
             ImGui::Separator();
             show_room(join_message->room);
         } else if (memcmp(message, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
             sam2_connect_message_t *connect_message = (sam2_connect_message_t *) message;
-            ImGui::Text("Peer ID: %016" PRIx64, connect_message->peer_id);
-            ImGui::Text("Flags: %016" PRIx64, connect_message->flags);
+            ImGui::Text("Peer ID: %05" PRId16, connect_message->peer_id);
+            ImGui::Text("Flags: %05" PRId16, connect_message->flags);
         } else if (memcmp(message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
             sam2_error_message_t *error_response = (sam2_error_message_t *) message;
             ImGui::Text("Code: %" PRId64, error_response->code);
             ImGui::Text("Description: %s", error_response->description);
-            ImGui::Text("Peer ID: %016" PRIx64, error_response->peer_id);
+            ImGui::Text("Peer ID: %05" PRId16, error_response->peer_id);
         }
     };
 
@@ -1081,7 +1081,7 @@ void draw_imgui() {
             display_count = format_unit_count(g_serialize_size / avg_zstd_cycle_count, unit);
             ImGui::Text("%s compression average speed: %.2f %s", algorithm_name, display_count, unit);
 
-            ImGui::Text("Remote Savestate hash: %" PRIx64 "", g_remote_savestate_hash);
+            ImGui::Text("Remote Savestate hash: %05" PRId16 "", g_remote_savestate_hash);
         }
 
         ImGui::SliderInt("Sample size", &g_ulnet_session.sample_size, 1, MAX_SAMPLE_SIZE);
@@ -1167,7 +1167,7 @@ void draw_imgui() {
             if (is_ipv6) ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to [" "%s" "]:%d", g_sam2_address, g_sam2_port);
             else         ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to "  "%s"  ":%d", g_sam2_address, g_sam2_port);
             ImGui::SameLine();
-            ImGui::TextColored(GOLD, "(Peer ID %" PRIx64 ")", g_ulnet_session.our_peer_id);
+            ImGui::TextColored(GOLD, "(Peer ID %" PRId16 ")", g_ulnet_session.our_peer_id);
 
             ImGui::SameLine();
             if (ImGui::Button("Disconnect")) {
@@ -1336,7 +1336,7 @@ void draw_imgui() {
                     color = GOLD;
                 }
 
-                ImGui::TextColored(color, "%" PRIx64, g_ulnet_session.room_we_are_in.peer_ids[p]);
+                ImGui::TextColored(color, "%05" PRId16, g_ulnet_session.room_we_are_in.peer_ids[p]);
                 if (g_ulnet_session.agent[p]) {
                     juice_state_t connection_state = juice_get_state(g_ulnet_session.agent[p]);
 
@@ -1388,8 +1388,8 @@ void draw_imgui() {
 
                     // Display peer ID
                     uint64_t peer_id = g_ulnet_session.room_we_are_in.peer_ids[s];
-                    if (peer_id == g_ulnet_session.our_peer_id) ImGui::TextColored(GOLD, "%" PRIx64, peer_id);
-                    else                                        ImGui::Text(             "%" PRIx64, peer_id);
+                    if (peer_id == g_ulnet_session.our_peer_id) ImGui::TextColored(GOLD, "%05" PRId16, peer_id);
+                    else                                        ImGui::Text(             "%05" PRId16, peer_id);
 
                     ImGui::TableSetColumnIndex(1);
                     // Display ICE connection status
@@ -1491,7 +1491,7 @@ void draw_imgui() {
 
                 // Make the row selectable and keep track of the selected room
                 char label[128];
-                sprintf(label, "%s##%016" PRIx64, g_sam2_rooms[room_index].name, g_sam2_rooms[room_index].peer_ids[SAM2_AUTHORITY_INDEX]);
+                sprintf(label, "%s##%05" PRId16, g_sam2_rooms[room_index].name, g_sam2_rooms[room_index].peer_ids[SAM2_AUTHORITY_INDEX]);
                 if (ImGui::Selectable(label, selected_room_index == room_index, ImGuiSelectableFlags_SpanAllColumns)) {
                     selected_room_index = room_index;
                 }
@@ -1505,7 +1505,7 @@ void draw_imgui() {
                 ImGui::TextUnformatted(g_sam2_rooms[room_index].core_and_version);
 
                 ImGui::TableNextColumn();
-                ImGui::Text("%" PRIx64, g_sam2_rooms[room_index].rom_hash_xxh64);
+                ImGui::Text("%05" PRId16, g_sam2_rooms[room_index].rom_hash_xxh64);
             }
 
             ImGui::EndTable();
@@ -1537,8 +1537,8 @@ void draw_imgui() {
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip(
                         "Core or ROM hash mismatch\n"
-                        "server ROM hash: %016" PRIx64 " core: %s\n"
-                        "client ROM hash: %016" PRIx64 " core: %s",
+                        "server ROM hash: %05" PRId16 " core: %s\n"
+                        "client ROM hash: %05" PRId16 " core: %s",
                         g_sam2_rooms[selected_room_index].rom_hash_xxh64, g_sam2_rooms[selected_room_index].core_and_version,
                         g_new_room_set_through_gui.rom_hash_xxh64, g_new_room_set_through_gui.core_and_version
                     );
