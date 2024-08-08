@@ -326,27 +326,30 @@ typedef int sam2_socket_t;
 T VAR##s[N]; \
 IDX_T VAR##_next[N]; \
 IDX_T VAR##_prev[N]; \
-IDX_T VAR##_free_list; /* Singly-linked list */ \
+IDX_T VAR##_free_list; /* Doubly-linked list */ \
 IDX_T VAR##_used_list; /* Doubly-linked list */ \
 IDX_T VAR##_count;
 
 #define SAM2__DEFINE_ARRAYLIST_FUNCTIONS(NS_PREFIX, VAR, T, N, IDX_T, PARENT_TYPE, LIST_NULL) \
 void NS_PREFIX##_##VAR##_init(PARENT_TYPE *parent) { \
-    for (IDX_T i = 0; i < N - 1; i++) { \
+    for (int i = 0; i < N; i++) { \
         parent->VAR##_next[i] = i + 1; \
-        parent->VAR##_prev[i] = i; /* For checking double-frees */ \
+        parent->VAR##_prev[i] = i - 1; \
     } \
     parent->VAR##_next[N - 1] = LIST_NULL; \
-    parent->VAR##_prev[N - 1] = N - 1; \
+    parent->VAR##_prev[0] = LIST_NULL; \
     parent->VAR##_free_list = 0; \
     parent->VAR##_used_list = LIST_NULL; \
     parent->VAR##_count = 0; \
 } \
 \
-static T* NS_PREFIX##_##VAR##_alloc(PARENT_TYPE *parent) { \
-    if (parent->VAR##_free_list == LIST_NULL) return NULL; \
+static IDX_T NS_PREFIX##_##VAR##_alloc(PARENT_TYPE *parent) { \
+    if (parent->VAR##_free_list == LIST_NULL) return LIST_NULL; \
     IDX_T new_idx = parent->VAR##_free_list; \
     parent->VAR##_free_list = parent->VAR##_next[new_idx]; \
+    if (parent->VAR##_free_list != LIST_NULL) { \
+        parent->VAR##_prev[parent->VAR##_free_list] = LIST_NULL; \
+    } \
     parent->VAR##_next[new_idx] = parent->VAR##_used_list; \
     parent->VAR##_prev[new_idx] = LIST_NULL; \
     if (parent->VAR##_used_list != LIST_NULL) { \
@@ -354,13 +357,12 @@ static T* NS_PREFIX##_##VAR##_alloc(PARENT_TYPE *parent) { \
     } \
     parent->VAR##_used_list = new_idx; \
     parent->VAR##_count++; \
-    return &parent->VAR##s[new_idx]; \
+    return new_idx; \
 } \
 \
-static const char *NS_PREFIX##_##VAR##_free(PARENT_TYPE *parent, T *VAR) { \
-    IDX_T idx = VAR - parent->VAR##s; \
-    if (VAR - parent->VAR##s >= N) return "invalid index"; \
-    if (parent->VAR##_prev[idx] == idx) return "double-free"; \
+static const char *NS_PREFIX##_##VAR##_free(PARENT_TYPE *parent, IDX_T idx) { \
+    if (idx >= N) return "invalid index"; \
+    /* Remove from used list */ \
     if (idx == parent->VAR##_used_list) { \
         parent->VAR##_used_list = parent->VAR##_next[idx]; \
     } else { \
@@ -369,11 +371,38 @@ static const char *NS_PREFIX##_##VAR##_free(PARENT_TYPE *parent, T *VAR) { \
     if (parent->VAR##_next[idx] != LIST_NULL) { \
         parent->VAR##_prev[parent->VAR##_next[idx]] = parent->VAR##_prev[idx]; \
     } \
+    /* Add to free list */ \
     parent->VAR##_next[idx] = parent->VAR##_free_list; \
-    parent->VAR##_prev[idx] = idx; /* For checking double-frees */ \
+    parent->VAR##_prev[idx] = LIST_NULL; \
+    if (parent->VAR##_free_list != LIST_NULL) { \
+        parent->VAR##_prev[parent->VAR##_free_list] = idx; \
+    } \
     parent->VAR##_free_list = idx; \
     parent->VAR##_count--; \
     return NULL; \
+} \
+static IDX_T NS_PREFIX##_##VAR##_alloc_at_index(PARENT_TYPE *parent, IDX_T idx) { \
+    /* Remove from free list */ \
+    if (idx == parent->VAR##_free_list) { \
+        parent->VAR##_free_list = parent->VAR##_next[idx]; \
+        if (parent->VAR##_free_list != LIST_NULL) { \
+            parent->VAR##_prev[parent->VAR##_free_list] = LIST_NULL; \
+        } \
+    } else { \
+        parent->VAR##_next[parent->VAR##_prev[idx]] = parent->VAR##_next[idx]; \
+        if (parent->VAR##_next[idx] != LIST_NULL) { \
+            parent->VAR##_prev[parent->VAR##_next[idx]] = parent->VAR##_prev[idx]; \
+        } \
+    } \
+    /* Add to used list */ \
+    parent->VAR##_next[idx] = parent->VAR##_used_list; \
+    parent->VAR##_prev[idx] = LIST_NULL; \
+    if (parent->VAR##_used_list != LIST_NULL) { \
+        parent->VAR##_prev[parent->VAR##_used_list] = idx; \
+    } \
+    parent->VAR##_used_list = idx; \
+    parent->VAR##_count++; \
+    return idx; \
 }
 
 #include <uv.h>
@@ -1098,12 +1127,12 @@ static uint64_t sam2__peer_id(sam2_client_t *client) {
 
 static sam2_message_u *sam2__alloc_message_raw(sam2_server_t *server) {
     server->_debug_allocated_messages++;
-    return sam2__response_alloc(server);
+    return &server->responses[sam2__response_alloc(server)];
 }
 
 static void sam2__free_message_raw(sam2_server_t *server, void *message) {
     server->_debug_allocated_messages--;
-    sam2__response_free(server, (sam2_message_u *) message);
+    sam2__response_free(server, (sam2_message_u *) message - server->responses);
 }
 
 static sam2_message_u *sam2__alloc_message(sam2_server_t *server, const char *header) {
@@ -1282,26 +1311,9 @@ static void sam2__on_client_destroy(uv_handle_t *handle) {
     sam2_server_t *server = (sam2_server_t *) handle->data;
     SAM2_LOG_INFO("Socket for client %016" PRIx64 " closed", sam2__peer_id(client));
 
-    client->flags |= SAM2__CLIENT_FLAG_CLIENT_CLOSE_DONE;
-
-    if ((client->flags & SAM2__CLIENT_FLAG_MASK_CLOSE_DONE) == SAM2__CLIENT_FLAG_MASK_CLOSE_DONE) {
-        const char *error = sam2__client_free(server, client);
-        if (error) {
-            SAM2_LOG_ERROR("Failed to free client: %s", error);
-        }
-    }
-}
-
-static void sam2__on_client_timer_close(uv_handle_t *handle) {
-    sam2_client_t *client = (sam2_client_t *) handle->data;
-    sam2_server_t *server = (sam2_server_t *) client->tcp.data;
-    client->flags |= SAM2__CLIENT_FLAG_TIMER_CLOSE_DONE;
-
-    if ((client->flags & SAM2__CLIENT_FLAG_MASK_CLOSE_DONE) == SAM2__CLIENT_FLAG_MASK_CLOSE_DONE) {
-        const char *error = sam2__client_free(server, client);
-        if (error) {
-            SAM2_LOG_ERROR("Failed to free client: %s", error);
-        }
+    const char *error = sam2__client_free(server, client - server->clients);
+    if (error) {
+        SAM2_LOG_ERROR("Failed to free client: %s", error);
     }
 }
 
@@ -1589,7 +1601,7 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
     }
 
     sam2_server_t *server = (sam2_server_t *) server_tcp;
-    sam2_client_t *client = sam2__client_alloc(server);
+    sam2_client_t *client = &server->clients[sam2__client_alloc(server)];
 
     if (!client) {
         SAM2_LOG_WARN("No more client slots available");
