@@ -392,18 +392,17 @@ int64_t get_unix_time_microseconds() {
 uint64_t ulnet__rdtsc() {
 #if defined(__aarch64__) || defined(__arm__)
     return 1000 * get_unix_time_microseconds();
-#else
-#if defined(_MSC_VER)   /* MSVC compiler */
+#elif defined(_MSC_VER)   /* MSVC compiler */
     return __rdtsc();
-#elif defined(__GNUC__) /* GCC compiler */
+#elif defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))   /* GCC compiler on x86 platforms */
     unsigned int lo, hi;
     __asm__ __volatile__ (
       "rdtsc" : "=a" (lo), "=d" (hi)  
     );
     return ((uint64_t)hi << 32) | lo;
 #else
-#error "Unsupported compiler"
-#endif
+    /* Fallback for other platforms/compilers */
+    return 1000 * get_unix_time_microseconds();
 #endif
 }
 
