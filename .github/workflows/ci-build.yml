@@ -15,10 +15,14 @@ jobs:
       run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
     - name: Build (GCC)
       run: cmake --build build --config Release
-#    - name: Configure CMake (Linux TCC)
-#      run: cmake -S . -B build-tcc -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=tcc
-#    - name: Build (TCC)
-#      run: cmake --build build-tcc --config Release
+    # Check that our C code is reasonably portable
+    - name: Build with TCC
+      run: |
+        tcc -c Source/ThirdParty/netarch/sam2.c \
+        -ISource/UnrealLibretro/Private \
+        -ISource/ThirdParty/zstd/lib \
+        -ISource/ThirdParty/libjuice/include \
+        -ISource/ThirdParty/libuv/include
 
   build-macos:
     runs-on: macos-latest
