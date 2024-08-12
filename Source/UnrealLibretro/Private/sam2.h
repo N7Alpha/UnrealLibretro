@@ -1746,7 +1746,7 @@ int main() {
 
     // Setup signal handler
     uv_signal_t sig;
-    uv_signal_init(&server->loop, &sig);
+    uv_signal_init(&server.loop, &sig);
     sig.data = &server;
     uv_signal_start(&sig, on_signal, SIGINT);
 

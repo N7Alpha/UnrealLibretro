@@ -1,11 +1,15 @@
+#ifndef ULNET_H
+#define ULNET_H
+
 #include "sam2.h"
 
-#include "juice/juice.h"
+typedef struct juice_agent juice_agent_t;
 #include "zstd.h"
 #include "common/xxhash.h"
 #include "fec.h"
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifndef ULNET_LINKAGE
 #ifdef __cplusplus
@@ -256,8 +260,11 @@ static inline void ulnet__xor_delta(void *dest, void *src, int size) {
         ((uint8_t *) dest)[i] ^= ((uint8_t *) src)[i];
     }
 }
+#endif
 
 #if defined(ULNET_IMPLEMENTATION)
+#ifndef ULNET_C
+#define ULNET_C
 #if defined(ULNET_IMGUI)
 #include "imgui.h"
 #include "implot.h"
@@ -266,6 +273,7 @@ static inline void ulnet__xor_delta(void *dest, void *src, int size) {
 #define IMH(statement)
 #endif
 
+#include "juice/juice.h"
 #include <assert.h>
 #include <time.h>
 
@@ -1551,4 +1559,5 @@ ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t
 
     free(savestate_transfer_payload);
 }
+#endif
 #endif
