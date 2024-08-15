@@ -1246,15 +1246,17 @@ void draw_imgui() {
         static bool isWindowOpen = false;
         static int selected_message_index = 0;
         if (ImGui::CollapsingHeader("Messages")) {
-            if (ImGui::BeginTable("MessagesTable", 1, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+            if (ImGui::BeginTable("MessagesTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
                 ImGui::TableSetupColumn("Header", ImGuiTableColumnFlags_WidthFixed, 150.0f);
+                ImGui::TableSetupColumn("Origin", ImGuiTableColumnFlags_WidthFixed, 100.0f);
                 ImGui::TableHeadersRow();
 
                 for (int i = 0; i < g_libretro_context.message_history_length; ++i) {
                     sam2_message_u *message = &g_libretro_context.message_history[i];
                     ImGui::TableNextRow();
-                    ImGui::TableSetColumnIndex(0);
 
+                    // Header column
+                    ImGui::TableSetColumnIndex(0);
                     ImGui::Text("%.8s", (char *) message);
                     ImGui::SameLine();
                     char button_label[64] = {0};
@@ -1263,6 +1265,39 @@ void draw_imgui() {
                     if (ImGui::Button(button_label)) {
                         selected_message_index = i;
                         isWindowOpen = true;
+                    }
+
+                    // Origin column
+                    ImGui::TableSetColumnIndex(1);
+                    const char* origin = "Unknown";
+                    char header[9] = {0};
+                    strncpy(header, (char*)message, 8);
+
+                    if (header[7] == 'r') {
+                        ImGui::TextColored(GOLD, "Peer %05" PRIu16, g_ulnet_session.our_peer_id);
+                    } else {
+                        uint16_t peer_id = 0;
+                        if (strncmp(header, sam2_make_header, 4) == 0 ||
+                            strncmp(header, sam2_list_header, 4) == 0 ||
+                            strncmp(header, sam2_fail_header, 4) == 0 ||
+                            strncmp(header, sam2_conn_header, 4) == 0) {
+                            origin = g_sam2_address;
+                        } else if (strncmp(header, sam2_join_header, 4) == 0) {
+                            peer_id = ((sam2_room_join_message_t*)message)->peer_id;
+                        } else if (strncmp(header, sam2_sign_header, 4) == 0 ||
+                                   strncmp(header, sam2_sigx_header, 4) == 0) {
+                            peer_id = ((sam2_signal_message_t*)message)->peer_id;
+                        }
+
+                        if (peer_id == 0) {
+                            origin = g_sam2_address;
+                        } else {
+                            static char peer_id_str[16];
+                            snprintf(peer_id_str, sizeof(peer_id_str), "Peer %05" PRIu16, peer_id);
+                            origin = peer_id_str;
+                        }
+
+                        ImGui::Text("%s", origin);
                     }
                 }
 
