@@ -860,6 +860,7 @@ ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session) {
     memset(&session->agent_peer_ids, 0, sizeof(session->agent_peer_ids));
     memset(&session->state, 0, sizeof(session->state));
     memset(&session->state_packet_history, 0, sizeof(session->state_packet_history));
+    memset(&session->desync_debug_packet, 0, sizeof(session->desync_debug_packet));
 
     session->frame_counter = 0;
     session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;

@@ -237,9 +237,9 @@ typedef struct sam2_room_join_message {
 
 typedef struct sam2_connect_message {
     char header[8];
-    uint64_t peer_id;
+    uint16_t peer_id;
 
-    uint64_t flags;
+    uint16_t flags[3];
 } sam2_connect_message_t;
 
 typedef struct sam2_signal_message {
@@ -258,7 +258,7 @@ typedef struct sam2_error_message {
 } sam2_error_message_t;
 
 typedef union sam2_message {
-    union sam2_message *next; // Points to next element in freelist
+    union sam2_message *next; // Points to next element in freelist @todo I should refactor the freelist code so I actually use this
 
     sam2_room_make_message_t room_make_response;
     sam2_room_list_message_t room_list_response;
@@ -1100,17 +1100,12 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message) {
 #endif // SAM2_CLIENT_C
 #endif // SAM2_IMPLEMENTATION
 
-
-
 #if defined(SAM2_IMPLEMENTATION) && defined(SAM2_SERVER)
 #ifndef SAM2_SERVER_C
 #define SAM2_SERVER_C
 
 static sam2_server_t *sam2__client_get_server(sam2_client_t *client) {
-    uint16_t client_index = *((uint16_t *) client->tcp.data);
-
-    sam2_client_t *server_clients = &client[-(int)client_index];
-    sam2_server_t *server = (sam2_server_t *) ((char *) server_clients - offsetof(sam2_server_t, clients));
+    sam2_server_t *server = (sam2_server_t *)(((char *) client->tcp.loop) - offsetof(sam2_server_t, loop));
 
     return server;
 }
@@ -1431,17 +1426,31 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
         // Send the appropriate response
         if (memcmp(&message, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
             sam2_connect_message_t *request = &message.connect_message;
-            if (server->peer_id_map[request->peer_id]) {
+            if (server->peer_id_map[request->peer_id] && request->peer_id != sam2__peer_id(client)) {
                 static sam2_error_message_t response = { SAM2_FAIL_HEADER, 0, "Peer id is already in use", SAM2_RESPONSE_INVALID_ARGS };
                 sam2__write_response(client_tcp, (sam2_message_u *) &response);
                 goto finished_processing_last_message;
+            } else if (server->rooms[sam2__peer_id(client)].flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+                static sam2_error_message_t response = { SAM2_FAIL_HEADER, 0, "Can't change peer id while hosting a room", SAM2_RESPONSE_ALREADY_IN_ROOM };
+                sam2__write_response(client_tcp, (sam2_message_u *) &response);
+                goto finished_processing_last_message;
+            } else if (request->peer_id <= SAM2_PORT_SENTINELS_MAX) {
+                static sam2_error_message_t response = { SAM2_FAIL_HEADER, 0, "Can't change peer id to port sentinels", SAM2_RESPONSE_INVALID_ARGS };
+                sam2__write_response(client_tcp, (sam2_message_u *) &response);
+                goto finished_processing_last_message;
             } else {
-                // Change the peer id of the client
                 uint16_t old_client_peer_id = sam2__peer_id(client);
+                sam2__peer_id_free(server, old_client_peer_id);
                 uint16_t new_client_peer_id = sam2__peer_id_alloc_at_index(server, request->peer_id);
+
+                SAM2_LOG_INFO("Changing peer id from %05" PRIu16 " to %05" PRIu16, old_client_peer_id, new_client_peer_id);
                 server->peer_id_map[new_client_peer_id] = server->peer_id_map[old_client_peer_id];
                 server->peer_id_map[old_client_peer_id] = NULL;
-                sam2__peer_id_free(server, old_client_peer_id);
+                client->tcp.data = &server->peer_id_map[new_client_peer_id];
+
+                sam2_connect_message_t *response = &sam2__alloc_message(server, sam2_conn_header)->connect_message;
+                response->peer_id = new_client_peer_id;
+                sam2__write_response(client_tcp, (sam2_message_u *) response);
             }
         } else if (memcmp(&message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
             for (int i = 0; i < SAM2_ARRAY_LENGTH(server->clients); i++) {

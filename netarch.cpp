@@ -1164,10 +1164,38 @@ void draw_imgui() {
                 }
             }
 
+            ImGui::AlignTextToFramePadding();
             if (is_ipv6) ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to [" "%s" "]:%d", g_sam2_address, g_sam2_port);
             else         ImGui::TextColored(ImVec4(0, 1, 0, 1), "Connected to "  "%s"  ":%d", g_sam2_address, g_sam2_port);
+
             ImGui::SameLine();
-            ImGui::TextColored(GOLD, "(Peer ID %" PRId16 ")", g_ulnet_session.our_peer_id);
+            ImGui::TextColored(GOLD, "Our Peer ID");
+
+            static uint16_t editablePeerId = 0;
+            // First time initialization
+            if (editablePeerId == 0 && g_ulnet_session.our_peer_id != 0) {
+                editablePeerId = g_ulnet_session.our_peer_id;
+            }
+
+            // Check that our peer id is in sync with the server
+            if (editablePeerId != g_ulnet_session.our_peer_id) {
+                ImGui::SameLine();
+                ImGui::TextColored(GREY, "%c", spinnerGlyph);
+            }
+
+            ImGui::SameLine();
+            ImGui::PushItemWidth(40);
+            ImGui::PushStyleColor(ImGuiCol_Text, GOLD);
+            if (ImGui::InputScalar("##PeerIdInput", ImGuiDataType_U16, &editablePeerId, NULL, NULL, "%u", ImGuiInputTextFlags_EnterReturnsTrue)) {
+                if (editablePeerId != g_ulnet_session.our_peer_id) {
+                    sam2_connect_message_t message = { SAM2_CONN_HEADER };
+                    message.peer_id = editablePeerId;
+
+                    g_libretro_context.SAM2Send((char *) &message);
+                }
+            }
+            ImGui::PopItemWidth();
+            ImGui::PopStyleColor();
 
             ImGui::SameLine();
             if (ImGui::Button("Disconnect")) {
@@ -1251,6 +1279,13 @@ void draw_imgui() {
                     snprintf((char *) &message.room.name, sizeof(message.room.name), "Test message %d", i);
                     sam2_client_send(g_libretro_context.sam2_socket, (char *) &message);
                 }
+            }
+
+            if (ImGui::Button("Ask for equivalent peer id")) {
+                sam2_connect_message_t message = { SAM2_CONN_HEADER };
+                message.peer_id = g_ulnet_session.our_peer_id;
+
+                g_libretro_context.SAM2Send((char *) &message);
             }
         }
 
