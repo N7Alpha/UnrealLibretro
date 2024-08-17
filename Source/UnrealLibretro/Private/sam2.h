@@ -1647,6 +1647,7 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
     SAM2_LOG_INFO("Successfully connected to client %05" PRId16 "", client_peer_id);
     sam2_connect_message_t *connect_message = (sam2_connect_message_t *) sam2__alloc_message(server, sam2_conn_header);
     connect_message->peer_id = client_peer_id;
+    memset(connect_message->flags, 0, sizeof(connect_message->flags));
 
     sam2__write_response((uv_stream_t*) &client->tcp, (sam2_message_u *) connect_message);
 }
