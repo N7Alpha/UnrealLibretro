@@ -955,7 +955,7 @@ void draw_imgui() {
 
     auto show_room = [=](const sam2_room_t& room) {
         ImGui::Text("Room: %s", room.name);
-        ImGui::Text("Flags: %05" PRId16, room.flags);
+        ImGui::Text("Flags: %016" PRIx64, room.flags);
         ImGui::Text("Core: %s", room.core_and_version);
         ImGui::Text("ROM Hash: %05" PRId16, room.rom_hash_xxh64);
         
@@ -1007,7 +1007,6 @@ void draw_imgui() {
         } else if (memcmp(message, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
             sam2_connect_message_t *connect_message = (sam2_connect_message_t *) message;
             ImGui::Text("Peer ID: %05" PRId16, connect_message->peer_id);
-            ImGui::Text("Flags: %05" PRId16, connect_message->flags);
         } else if (memcmp(message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
             sam2_error_message_t *error_response = (sam2_error_message_t *) message;
             ImGui::Text("Code: %" PRId64, error_response->code);
