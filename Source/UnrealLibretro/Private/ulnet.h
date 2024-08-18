@@ -36,7 +36,6 @@ typedef struct juice_agent juice_agent_t;
 #define ULNET_CHANNEL_INPUT                   0x10
 #define ULNET_CHANNEL_SPECTATOR_INPUT         0x20
 #define ULNET_CHANNEL_SAVESTATE_TRANSFER      0x30
-#define ULNET_CHANNEL_DESYNC_DEBUG            0xF0
 
 #define ULNET_WAITING_FOR_SAVE_STATE_SENTINEL INT64_MAX
 
@@ -88,13 +87,20 @@ typedef struct {
     ulnet_input_state_t input_state[ULNET_DELAY_BUFFER_SIZE][ULNET_PORT_COUNT];
     sam2_room_t room_xor_delta[ULNET_DELAY_BUFFER_SIZE];
     ulnet_core_option_t core_option[ULNET_DELAY_BUFFER_SIZE]; // Max 1 option per frame provided by the authority
+
+    int64_t save_state_frame;
+    int64_t save_state_hash[ULNET_DELAY_BUFFER_SIZE];
+    int64_t input_state_hash[ULNET_DELAY_BUFFER_SIZE];
 } ulnet_state_t;
 SAM2_STATIC_ASSERT(
     sizeof(ulnet_state_t) ==
     (sizeof(((ulnet_state_t *)0)->frame)
     + sizeof(((ulnet_state_t *)0)->input_state)
     + sizeof(((ulnet_state_t *)0)->room_xor_delta)
-    + sizeof(((ulnet_state_t *)0)->core_option)),
+    + sizeof(((ulnet_state_t *)0)->core_option))
+    + sizeof(((ulnet_state_t *)0)->save_state_frame)
+    + sizeof(((ulnet_state_t *)0)->save_state_hash)
+    + sizeof(((ulnet_state_t *)0)->input_state_hash),
     "ulnet_state_t is not packed"
 );
 
@@ -103,19 +109,8 @@ typedef struct {
     uint8_t coded_state[];
 } ulnet_state_packet_t;
 
-// @todo Just roll this all into ulnet_state_t
-typedef struct {
-    uint8_t channel_and_flags;
-    uint8_t spacing[7];
-
-    int64_t frame;
-    int64_t save_state_hash[ULNET_DELAY_BUFFER_SIZE];
-    int64_t input_state_hash[ULNET_DELAY_BUFFER_SIZE];
-    //int64_t options_state_hash[ULNET_DELAY_BUFFER_SIZE]; // @todo
-} desync_debug_packet_t;
-
 #define FEC_PACKET_GROUPS_MAX 16
-#define FEC_REDUNDANT_BLOCKS 16 // ULNET is hardcoded based on this value so it can't really be changed
+#define FEC_REDUNDANT_BLOCKS 16 // ULNET is hardcoded based on this value so it can't really be changed without breaking the protocol
 
 #define ULNET_SAVESTATE_TRANSFER_FLAG_K_IS_239         0b0001
 #define ULNET_SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0 0b0010
@@ -189,8 +184,6 @@ typedef struct ulnet_session {
     ulnet_input_state_t spectator_suggested_input_state[SAM2_TOTAL_PEERS][ULNET_PORT_COUNT];
     unsigned char  state_packet_history[SAM2_TOTAL_PEERS][ULNET_STATE_PACKET_HISTORY_SIZE][ULNET_PACKET_SIZE_BYTES_MAX];
     uint64_t       peer_needs_sync_bitfield;
-
-    desync_debug_packet_t desync_debug_packet;
 
     int zstd_compress_level;
     unsigned char remote_savestate_transfer_packets[COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES + FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * sizeof(ulnet_save_state_packet_header_t)];
@@ -783,19 +776,9 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
         }
 
         if (session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
-            session->desync_debug_packet.channel_and_flags = ULNET_CHANNEL_DESYNC_DEBUG;
-            session->desync_debug_packet.frame          = save_state_frame;
-            session->desync_debug_packet.save_state_hash [save_state_frame % ULNET_DELAY_BUFFER_SIZE] = ZSTD_XXH64(save_state, save_state_size, 0);
+            session->state[ulnet_our_port(session)].save_state_frame = save_state_frame;
+            session->state[ulnet_our_port(session)].save_state_hash[save_state_frame % ULNET_DELAY_BUFFER_SIZE] = ZSTD_XXH64(save_state, save_state_size, 0);
             //session->desync_debug_packet.input_state_hash[save_state_frame % ULNET_DELAY_BUFFER_SIZE] = ZSTD_XXH64(g_libretro_context.InputState, sizeof(g_libretro_context.InputState));
-
-            for (int p = 0; p < SAM2_ARRAY_LENGTH(session->agent); p++) {
-                if (!session->agent[p]) continue;
-                juice_state_t juice_state = juice_get_state(session->agent[p]);
-                if (   (juice_state == JUICE_STATE_CONNECTED || juice_state == JUICE_STATE_COMPLETED)
-                    && !ulnet_is_spectator(session, session->our_peer_id)) {
-                    juice_send(session->agent[p], (char *) &session->desync_debug_packet, sizeof(session->desync_debug_packet));
-                }
-            }
         }
 
         // Ideally I'd place this right after ticking the core, but we need to update the room state first
@@ -860,7 +843,6 @@ ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session) {
     memset(&session->agent_peer_ids, 0, sizeof(session->agent_peer_ids));
     memset(&session->state, 0, sizeof(session->state));
     memset(&session->state_packet_history, 0, sizeof(session->state_packet_history));
-    memset(&session->desync_debug_packet, 0, sizeof(session->desync_debug_packet));
 
     session->frame_counter = 0;
     session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
@@ -1014,26 +996,12 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
             }
         }
 
-        break;
-    }
-    case ULNET_CHANNEL_SPECTATOR_INPUT: {
-        rle8_decode(
-            (const uint8_t *) &data[1], size - 1,
-            (uint8_t *) &session->spectator_suggested_input_state[p], sizeof(session->spectator_suggested_input_state[p])
-        );
+        // Check for desync
+        if (sam2_get_port_of_peer(&session->room_we_are_in, original_sender_port) == -1) break;
+        ulnet_state_t &their_desync_debug_packet = session->state[original_sender_port];
+        ulnet_state_t &our_desync_debug_packet = session->state[ulnet_our_port(session)];
 
-        break;
-    }
-    case ULNET_CHANNEL_DESYNC_DEBUG: {
-        // @todo This channel doesn't receive messages reliably, but I think it should be changed to in the same manner as the input channel
-        assert(size == sizeof(desync_debug_packet_t));
-
-        desync_debug_packet_t their_desync_debug_packet;
-        memcpy(&their_desync_debug_packet, data, sizeof(desync_debug_packet_t)); // Strict-aliasing
-
-        desync_debug_packet_t our_desync_debug_packet = session->desync_debug_packet;
-
-        int64_t latest_common_frame = SAM2_MIN(our_desync_debug_packet.frame, their_desync_debug_packet.frame);
+        int64_t latest_common_frame = SAM2_MIN(our_desync_debug_packet.save_state_frame, their_desync_debug_packet.save_state_frame);
         int64_t frame_difference = SAM2_ABS(our_desync_debug_packet.frame - their_desync_debug_packet.frame);
         int64_t total_frames_to_compare = ULNET_DELAY_BUFFER_SIZE - frame_difference;
         for (int f = total_frames_to_compare-1; f >= 0 ; f--) {
@@ -1059,6 +1027,14 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
                 }
             }
         }
+
+        break;
+    }
+    case ULNET_CHANNEL_SPECTATOR_INPUT: {
+        rle8_decode(
+            (const uint8_t *) &data[1], size - 1,
+            (uint8_t *) &session->spectator_suggested_input_state[p], sizeof(session->spectator_suggested_input_state[p])
+        );
 
         break;
     }
