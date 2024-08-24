@@ -18,7 +18,7 @@ extern char UnrealLibretroVersionAnsi[];
 #define UNREALLIBRETRO_NETIMGUI 1
 #elif PLATFORM_MAC
 #define UNREALLIBRETRO_NETIMGUI 1
-#elif
+#else
 #define UNREALLIBRETRO_NETIMGUI 0
 #endif
 

@@ -5,8 +5,11 @@ extern "C"
 extern void LibretroSam2LogWrite(int level, const char* file, int line, const char* fmt, ...);
 }
 
+#include "UnrealLibretro.h" // For Libretro debug log category
 #define ULNET_IMPLEMENTATION
+#if UNREALLIBRETRO_NETIMGUI
 #define ULNET_IMGUI
+#endif
 #define SAM2_IMPLEMENTATION
 
 #define SAM2_LOG_WRITE(level, file, line, ...) LibretroSam2LogWrite(level, file, line, "Netplay: " __VA_ARGS__)
@@ -15,7 +18,6 @@ THIRD_PARTY_INCLUDES_START
 #include "ulnet.h"
 THIRD_PARTY_INCLUDES_END
 
-#include "UnrealLibretro.h" // For Libretro debug log category
 #if UNREALLIBRETRO_NETIMGUI
 #include "NetImgui_Api.h"
 #endif
@@ -1068,7 +1070,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                                              AbsoluteCoreDirectory.Len());
     };
 
-#ifdef UNREALLIBRETRO_NETIMGUI
+#if UNREALLIBRETRO_NETIMGUI
     static ImFontAtlas* GlobalFontAtlas = nullptr;
     if (GlobalFontAtlas == nullptr) {
         GlobalFontAtlas = new ImFontAtlas();
@@ -1079,7 +1081,9 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 #endif
 
     l->netplay_session = (ulnet_session_t *) calloc(1, sizeof(ulnet_session_t));
+#if UNREALLIBRETRO_NETIMGUI
     l->netplay_session->sample_size = ULNET_MAX_SAMPLE_SIZE;
+#endif
     l->netplay_session->delay_frames = 2; // @todo Make configurable
 
     auto LibretroSettings = GetDefault<ULibretroSettings>();
@@ -1111,9 +1115,6 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                 *FString::Printf(TEXT("%s.%s"), *FGuid::NewGuid().ToString(), *FPaths::GetExtension(*core))
 #endif
             );
-
-            uint64 frames = 0;
-            auto   start = FDateTime::Now();
 
             verify(IPlatformFile::GetPlatformPhysical().CopyFile(*InstancedCorePath, *core));
 
@@ -1301,9 +1302,9 @@ cleanup:
             // These ImGui routines all cleanup thread_local objects if they aren't NULL
 #if UNREALLIBRETRO_NETIMGUI
             NetImgui::Shutdown();
-#endif
             ImPlot::DestroyContext();
             ImGui::DestroyContext();
+#endif
 
             if (l->CoreState.load(std::memory_order_relaxed) == ECoreState::StartFailed)
             {
