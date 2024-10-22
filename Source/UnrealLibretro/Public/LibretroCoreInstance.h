@@ -151,6 +151,9 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
     void SetInputAnalog(int Port, int _16BitSignedInteger, ERetroDeviceID Input);
 
+    UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
+    void SetInputMouseAxisValue(int Port, int Value, bool bIsMouseX);
+
     /** 
      * @brief Where the Libretro Core's frame is drawn
      * 

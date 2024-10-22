@@ -351,6 +351,18 @@ void ULibretroCoreInstance::SetInputAnalog(int Port, int _16BitSignedInteger, ER
     });
 }
 
+void ULibretroCoreInstance::SetInputMouseAxisValue(int Port, int Value, bool bIsMouseX)
+{
+    NOT_LAUNCHED_GUARD
+    CoreInstance.GetValue()->EnqueueTask([=, CoreInstance = CoreInstance.GetValue()](auto)
+    {
+        if (bIsMouseX)
+            CoreInstance->MouseX[Port] = Value;
+        else
+            CoreInstance->MouseY[Port] = Value;
+    });
+}
+
 void ULibretroCoreInstance::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
     if (   CoreInstance.IsSet()

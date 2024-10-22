@@ -127,6 +127,8 @@ public:
      * This is what the libretro core reads from when determining input. If you want to use your own input method you can modify this directly.
      */
     FLibretroInputState InputState[PortCount];
+    int16_t MouseX[PortCount] = {0};
+    int16_t MouseY[PortCount] = {0};
 
     std::atomic<bool> OptionsHaveBeenModified;
     TArray<std::atomic<uint8>> OptionSelectedIndex;
@@ -264,5 +266,5 @@ protected:
     void video_configure(const struct retro_game_geometry* geom);
 
     void load(const char* sofile);
-    void load_game(const char* filename);
+    bool load_game(const char* filename);
 };

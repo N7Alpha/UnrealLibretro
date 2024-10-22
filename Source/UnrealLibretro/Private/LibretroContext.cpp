@@ -921,6 +921,14 @@ int16_t FLibretroContext::core_input_state(unsigned port, unsigned device, unsig
     case RETRO_DEVICE_ANALOG:   return InputState[port][to_integral(ERetroDeviceID::AnalogLeftX) + 2 * index + (id % RETRO_DEVICE_ID_JOYPAD_L2)]; // The indexing logic is broken and might OOBs if we're queried for something that isn't an analog trigger or stick
     case RETRO_DEVICE_POINTER:  return InputState[port][to_integral(ERetroDeviceID::PointerX)    + 4 * index + id];
     case RETRO_DEVICE_MOUSE:
+        switch(id) {
+            case 0:
+                return MouseX[port];
+            case 1:
+                return MouseY[port];
+            default:
+                return 0;
+        }
     case RETRO_DEVICE_KEYBOARD:
     default:                    return 0;
     }
@@ -974,7 +982,7 @@ void FLibretroContext::load(const char *sofile) {
     libretro_callbacks->input_state = [this](unsigned port, unsigned device, unsigned index, unsigned id) { return core_input_state(port, device, index, id); };
     libretro_callbacks->input_poll = [=]() { };
     libretro_callbacks->environment = [this](unsigned cmd, void* data) { return core_environment(cmd, data); };
-     libretro_callbacks->get_current_framebuffer = [this]() { return core.gl.framebuffer; };
+    libretro_callbacks->get_current_framebuffer = [this]() { return core.gl.framebuffer; };
 
     set_environment(libretro_callbacks->c_environment);
     set_video_refresh(libretro_callbacks->c_video_refresh);
@@ -988,7 +996,7 @@ void FLibretroContext::load(const char *sofile) {
 }
 
 
-void FLibretroContext::load_game(const char* filename) {
+bool FLibretroContext::load_game(const char* filename) {
     struct retro_game_info info = { filename , nullptr, (size_t)0, "" };
     TArray<uint8> gameBinary;
     
@@ -999,8 +1007,10 @@ void FLibretroContext::load_game(const char* filename) {
         info.size = gameBinary.Num();
     }
 
-    if (!libretro_api.load_game(&info))
-        UE_LOG(Libretro, Fatal, TEXT("The core failed to load the content."));
+    if (!libretro_api.load_game(&info)) {
+        UE_LOG(Libretro, Warning, TEXT("The core failed to load the content."));
+        return false;
+    }
 
     libretro_api.get_system_av_info(&core.av);
      
@@ -1020,6 +1030,7 @@ void FLibretroContext::load_game(const char* filename) {
     }
 
     video_configure(&core.av.geometry);
+    return true;
 }
 
 FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInstance, FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TUniqueFunction<void(FLibretroContext*, libretro_api_t&)> LoadedCallback)
@@ -1115,7 +1126,11 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
             }
 
             // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
-            l->load_game(game.IsEmpty() ? nullptr : TCHAR_TO_UTF8(*game));
+            if (!l->load_game(game.IsEmpty() ? nullptr : TCHAR_TO_UTF8(*game))) {
+                UE_LOG(Libretro, Warning, TEXT("load_game failure."));
+                l->CoreState.store(ECoreState::StartFailed, std::memory_order_release);
+                goto cleanup;
+            }
         
             l->CoreState.store(ECoreState::Running, std::memory_order_release);
             LoadedCallback(l, l->libretro_api);
