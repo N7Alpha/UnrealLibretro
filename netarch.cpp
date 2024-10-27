@@ -2802,7 +2802,7 @@ int main(int argc, char *argv[]) {
 
     SDL_Event ev;
 
-    g_ulnet_session.sample_size = ULNET_MAX_SAMPLE_SIZE / 2;
+    g_ulnet_session.sample_size = SAM2_MIN(100, ULNET_MAX_SAMPLE_SIZE);
 
     for (g_main_loop_cyclic_offset = 0; running; g_main_loop_cyclic_offset = (g_main_loop_cyclic_offset + 1) % MAX_SAMPLE_SIZE) {
 
