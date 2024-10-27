@@ -178,12 +178,7 @@ public:
 
     EPixelFormat UnrealPixelFormat{PF_B8G8R8A8};
 
-// @todo I need to fix the sam2.h include so that I can just use the type in there
-#if PLATFORM_WINDOWS
-    unsigned __int64 sam_socket = 0;
-#else
-    int sam_socket = 0;
-#endif
+    sam2_socket_t sam_socket = 0;
     int netimgui_port = 0;
     bool connected_to_sam2 = false;
     sam2_message_u latest_sam2_message;
