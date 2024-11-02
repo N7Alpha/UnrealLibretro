@@ -1519,7 +1519,6 @@ void draw_imgui() {
             sam2_room_make_message_t request = { SAM2_MAKE_HEADER };
             request.room = g_new_room_set_through_gui;
             request.room.flags |= SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
-            g_ulnet_session.room_we_are_in = request.room;
             g_libretro_context.SAM2Send((char *) &request);
         }
         if (ImGui::Button(g_is_refreshing_rooms ? "Stop" : "Refresh")) {
