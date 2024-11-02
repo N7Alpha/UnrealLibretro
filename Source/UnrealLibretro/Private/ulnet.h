@@ -1265,6 +1265,12 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
 
         session->our_peer_id = connect_message->peer_id;
         session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
+    } else if (memcmp(response, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        sam2_room_make_message_t *room_make = (sam2_room_make_message_t *) response;
+
+        if (!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
+            session->room_we_are_in = room_make->room;
+        }
     } else if (memcmp(response, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
         if (!ulnet_is_authority(session)) {
             SAM2_LOG_FATAL("We shouldn't get here anymore"); // @todo Make error instead
