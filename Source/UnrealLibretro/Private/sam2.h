@@ -1469,12 +1469,15 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
         } else if (memcmp(&message, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
             sam2_room_make_message_t *request = (sam2_room_make_message_t *) &message;
 
-            sam2_room_t *room = &server->rooms[sam2__peer_id(client)];
             request->room.peer_ids[SAM2_AUTHORITY_INDEX] = sam2__peer_id(client);
 
-            SAM2_LOG_INFO("Client %05" PRId16 " updated the state of room '%s'", sam2__peer_id(client), room->name);
+            SAM2_LOG_INFO("Client %05" PRId16 " updated the state of room '%s'", sam2__peer_id(client), server->rooms[sam2__peer_id(client)].name);
 
             server->rooms[sam2__peer_id(client)] = request->room;
+
+            sam2_room_make_message_t *response = &sam2__alloc_message(server, sam2_make_header)->room_make_response;
+            response->room = request->room;
+            sam2__write_response(client_tcp, (sam2_message_u *) response);
         } else if (memcmp(&message, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
             // The logic in here is complicated because this message aliases many different operations...
             // keeping the message structure uniform simplifies the client perspective in my opinion
