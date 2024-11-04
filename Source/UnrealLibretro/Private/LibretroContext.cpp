@@ -1042,6 +1042,16 @@ void FLibretroContext::load_game(const char* filename) {
     video_configure(&core.av.geometry);
 }
 
+void memor(void *dst, const void *src, size_t n) {
+    int16_t *d = (int16_t *)dst;
+    const int16_t *s = (const int16_t *)src;
+    size_t words = n / sizeof(int16_t);
+
+    for (size_t i = 0; i < words; i++) {
+        d[i] |= s[i];
+    }
+}
+
 FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInstance, FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TUniqueFunction<void(FLibretroContext*, libretro_api_t&)> LoadedCallback)
 {
 
@@ -1208,7 +1218,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                         ulnet_core_option_t option = { 0 };
                         auto state = ulnet_query_generate_next_input(l->netplay_session, &option);
                         if (state) {
-                            memcpy(state, l->NextInputState, sizeof(*state));
+                            memor(state, l->NextInputState, sizeof(*state));
                         }
 
                         l->netplay_save_state_size = l->libretro_api.serialize_size();
