@@ -323,8 +323,9 @@ typedef int sam2_socket_t;
 #define SAM2__DEFINE_ARRAYLIST_FIELDS(VAR, T, N, IDX_T) \
 IDX_T VAR##_next[N]; \
 IDX_T VAR##_prev[N]; \
-IDX_T VAR##_free_list; /* Doubly-linked list */ \
-IDX_T VAR##_used_list; /* Doubly-linked list */ \
+IDX_T VAR##_free_list;      /* Head of freelist */ \
+IDX_T VAR##_free_list_tail; /* Tail of freelist */ \
+IDX_T VAR##_used_list;      /* Doubly-linked list of used elements */ \
 IDX_T VAR##_count;
 
 #define SAM2__DEFINE_ARRAYLIST_FUNCTIONS(NS_PREFIX, VAR, T, N, IDX_T, PARENT_TYPE, LIST_NULL) \
@@ -336,6 +337,7 @@ void NS_PREFIX##_##VAR##_init(PARENT_TYPE *parent) { \
     parent->VAR##_next[N - 1] = LIST_NULL; \
     parent->VAR##_prev[0] = LIST_NULL; \
     parent->VAR##_free_list = 0; \
+    parent->VAR##_free_list_tail = N - 1; /* Initialize freelist tail */ \
     parent->VAR##_used_list = LIST_NULL; \
     parent->VAR##_count = 0; \
 } \
@@ -346,7 +348,10 @@ static IDX_T NS_PREFIX##_##VAR##_alloc(PARENT_TYPE *parent) { \
     parent->VAR##_free_list = parent->VAR##_next[new_idx]; \
     if (parent->VAR##_free_list != LIST_NULL) { \
         parent->VAR##_prev[parent->VAR##_free_list] = LIST_NULL; \
+    } else { \
+        parent->VAR##_free_list_tail = LIST_NULL; /* Freelists becomes empty */ \
     } \
+    /* Add to used list */ \
     parent->VAR##_next[new_idx] = parent->VAR##_used_list; \
     parent->VAR##_prev[new_idx] = LIST_NULL; \
     if (parent->VAR##_used_list != LIST_NULL) { \
@@ -368,28 +373,34 @@ static const char *NS_PREFIX##_##VAR##_free(PARENT_TYPE *parent, IDX_T idx) { \
     if (parent->VAR##_next[idx] != LIST_NULL) { \
         parent->VAR##_prev[parent->VAR##_next[idx]] = parent->VAR##_prev[idx]; \
     } \
-    /* Add to free list */ \
-    parent->VAR##_next[idx] = parent->VAR##_free_list; \
-    parent->VAR##_prev[idx] = LIST_NULL; \
-    if (parent->VAR##_free_list != LIST_NULL) { \
-        parent->VAR##_prev[parent->VAR##_free_list] = idx; \
+    /* Add to free list at tail */ \
+    parent->VAR##_next[idx] = LIST_NULL; \
+    parent->VAR##_prev[idx] = parent->VAR##_free_list_tail; \
+    if (parent->VAR##_free_list_tail != LIST_NULL) { \
+        parent->VAR##_next[parent->VAR##_free_list_tail] = idx; \
+    } else { \
+        parent->VAR##_free_list = idx; /* List was empty, set head */ \
     } \
-    parent->VAR##_free_list = idx; \
+    parent->VAR##_free_list_tail = idx; \
     parent->VAR##_count--; \
     return NULL; \
 } \
+\
 static IDX_T NS_PREFIX##_##VAR##_alloc_at_index(PARENT_TYPE *parent, IDX_T idx) { \
     /* Remove from free list */ \
     if (idx == parent->VAR##_free_list) { \
         parent->VAR##_free_list = parent->VAR##_next[idx]; \
         if (parent->VAR##_free_list != LIST_NULL) { \
             parent->VAR##_prev[parent->VAR##_free_list] = LIST_NULL; \
+        } else { \
+            parent->VAR##_free_list_tail = LIST_NULL; /* Freelists becomes empty */ \
         } \
+    } else if (idx == parent->VAR##_free_list_tail) { \
+        parent->VAR##_free_list_tail = parent->VAR##_prev[idx]; \
+        parent->VAR##_next[parent->VAR##_prev[idx]] = LIST_NULL; \
     } else { \
         parent->VAR##_next[parent->VAR##_prev[idx]] = parent->VAR##_next[idx]; \
-        if (parent->VAR##_next[idx] != LIST_NULL) { \
-            parent->VAR##_prev[parent->VAR##_next[idx]] = parent->VAR##_prev[idx]; \
-        } \
+        parent->VAR##_prev[parent->VAR##_next[idx]] = parent->VAR##_prev[idx]; \
     } \
     /* Add to used list */ \
     parent->VAR##_next[idx] = parent->VAR##_used_list; \
