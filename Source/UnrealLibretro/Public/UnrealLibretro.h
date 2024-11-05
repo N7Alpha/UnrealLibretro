@@ -10,17 +10,7 @@ UNREALLIBRETRO_API DECLARE_LOG_CATEGORY_EXTERN(Libretro, Log, All);
 
 extern char UnrealLibretroVersionAnsi[];
 
-#if    ENGINE_MAJOR_VERSION < 5 \
-    && ENGINE_MINOR_VERSION < 27
-// The version of netImgui I'm using was tested on 4.27 at the earliest it does not build on 4.24
-#define UNREALLIBRETRO_NETIMGUI 0
-#elif PLATFORM_WINDOWS
-#define UNREALLIBRETRO_NETIMGUI 1
-#elif PLATFORM_MAC
-#define UNREALLIBRETRO_NETIMGUI 1
-#else
-#define UNREALLIBRETRO_NETIMGUI 0
-#endif
+#define UNREALLIBRETRO_NETIMGUI (PLATFORM_WINDOWS || PLATFORM_MAC)
 
 #if PLATFORM_WINDOWS && PLATFORM_64BITS
 #   define PLATFORM_INDEX 0

@@ -48,7 +48,12 @@ SocketInfo* Connect(const char* ServerHost, uint32_t ServerPort)
 	ISocketSubsystem* SocketSubSystem		= ISocketSubsystem::Get();
 	auto ResolveInfo						= SocketSubSystem->GetHostByName(ServerHost);	
 	while( !ResolveInfo->IsComplete() ){
+#if    ENGINE_MAJOR_VERSION < 5 \
+    && ENGINE_MINOR_VERSION < 27
+		FPlatformProcess::Sleep(0); // @nocheckout This is a patch to work with UE 4.24
+#else
 		FPlatformProcess::YieldThread();
+#endif
 	}
 
 	if (ResolveInfo->GetErrorCode() == 0)
