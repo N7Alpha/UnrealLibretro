@@ -1547,9 +1547,9 @@ void draw_imgui() {
 
         static int selected_room_index = -1;  // Initialize as -1 to indicate no selection
         // Table
-        if (ImGui::BeginTable("Rooms", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY)) {
+        if (ImGui::BeginTable("Rooms", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY)) {
             ImGui::TableSetupColumn("Room Name");
-            ImGui::TableSetupColumn("Core Hash");
+            ImGui::TableSetupColumn("Core");
             ImGui::TableSetupColumn("ROM Hash");
             ImGui::TableHeadersRow();
 
@@ -1565,15 +1565,13 @@ void draw_imgui() {
                 }
 
                 ImGui::TableNextColumn();
-                char ports_str[65];
-                peer_ids_to_string(g_sam2_rooms[room_index].peer_ids, ports_str);
-                ImGui::Text("%s", ports_str);
-
-                ImGui::TableNextColumn();
                 ImGui::TextUnformatted(g_sam2_rooms[room_index].core_and_version);
+                //char ports_str[65];
+                //peer_ids_to_string(g_sam2_rooms[room_index].peer_ids, ports_str);
+                //ImGui::Text("%s", ports_str);
 
                 ImGui::TableNextColumn();
-                ImGui::Text("%05" PRId16, g_sam2_rooms[room_index].rom_hash_xxh64);
+                ImGui::Text("%016" PRIx64, g_sam2_rooms[room_index].rom_hash_xxh64);
             }
 
             ImGui::EndTable();
