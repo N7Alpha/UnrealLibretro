@@ -4,12 +4,12 @@
 //! @Name		: NetImgui
 //=================================================================================================
 //! @author		: Sammy Fatnassi
-//! @date		: 2023/12/30
-//!	@version	: v1.10.0
+//! @date		: 2024/05/26
+//!	@version	: v1.11.0
 //! @Details	: For integration info : https://github.com/sammyfreg/netImgui/wiki
 //=================================================================================================
-#define NETIMGUI_VERSION		"1.10.0"	// Version 1.10 Release
-#define NETIMGUI_VERSION_NUM	11000
+#define NETIMGUI_VERSION		"1.11"	// Version 1.1 Release
+#define NETIMGUI_VERSION_NUM	11100
 
 
 
@@ -62,7 +62,7 @@
 // (either always included in NetImgui_config.h or have it included after Imgui.h in your cpp)
 #if !defined(IMGUI_VERSION)
 	#undef	NETIMGUI_ENABLED
-	#define	NETIMGUI_ENABLED 0
+	#define NETIMGUI_ENABLED 0
 #endif
 
 #if NETIMGUI_ENABLED
@@ -255,18 +255,7 @@ NETIMGUI_API	eCompressionMode	GetCompressionMode();
 NETIMGUI_API	uint8_t				GetTexture_BitsPerPixel	(eTexFormat eFormat);
 NETIMGUI_API	uint32_t			GetTexture_BytePerLine	(eTexFormat eFormat, uint32_t pixelWidth);
 NETIMGUI_API	uint32_t			GetTexture_BytePerImage	(eTexFormat eFormat, uint32_t pixelWidth, uint32_t pixelHeight);
-
-} // namespace NetImgui
-
-//=================================================================================================
-// Texture Cast Helper functions (not part of the API per se, but useful for user code)
-// Note: ImTextureID could be anything (void *, uint64_t, uint_16t, GLuint, etc.)
-//       so that using reinterpret_cast / static_cast can generate warnings or errors in some compilers,
-//       so we resort to a C style double cast.
-//=================================================================================================
-inline ImTextureID ToImTextureID(void* pTexture) { return (ImTextureID)(intptr_t)pTexture; }
-inline ImTextureID ToImTextureID(uint64_t texture) { return (ImTextureID)(intptr_t)texture; }
-
+} 
 
 //=================================================================================================
 // Optional single include compiling option
