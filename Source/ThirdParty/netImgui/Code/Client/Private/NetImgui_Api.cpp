@@ -12,6 +12,7 @@ using namespace NetImgui::Internal;
 
 namespace NetImgui { 
 
+// @nocheckout The following line is a patch so we can host multiple servers in one process
 #ifndef gpClientInfo
 static Client::ClientInfo* gpClientInfo = nullptr;
 #endif
