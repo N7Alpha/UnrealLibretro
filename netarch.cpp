@@ -2785,7 +2785,7 @@ int main(int argc, char *argv[]) {
         for (g_netimgui_port = 8889; g_netimgui_port < 65535; g_netimgui_port++) {
             NetImgui::ConnectFromApp("netarch (ImGui " IMGUI_VERSION ")", g_netimgui_port);
             if (NetImgui::IsConnectionPending()) {
-                SAM2_LOG_INFO("NetImgui is listening on port %i", g_netimgui_port);
+                SAM2_LOG_INFO("NetImgui " NETIMGUI_VERSION " is listening on port %i", g_netimgui_port);
                 break;
             }
         }
