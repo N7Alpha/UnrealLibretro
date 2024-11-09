@@ -1196,7 +1196,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                             TCHAR_TO_ANSI(*FPaths::GetCleanFilename(game.IsEmpty() ? core : game)), UnrealLibretroVersionAnsi);
                         NetImgui::ConnectFromApp(TitleAnsi, l->netimgui_port);
                         if (NetImgui::IsConnectionPending()) {
-                            UE_LOG(Libretro, Log, TEXT("NetImgui is listening on port %i"), l->netimgui_port);
+                            UE_LOG(Libretro, Log, TEXT("NetImgui " NETIMGUI_VERSION " is listening on port %i"), l->netimgui_port);
                             break;
                         }
                     }
