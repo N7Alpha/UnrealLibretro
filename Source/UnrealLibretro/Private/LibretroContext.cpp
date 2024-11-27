@@ -1190,6 +1190,7 @@ cleanup:
 
             if (l->libretro_api.initialized)
             {
+                l->libretro_api.unload_game();
                 l->libretro_api.deinit();
             }
             
