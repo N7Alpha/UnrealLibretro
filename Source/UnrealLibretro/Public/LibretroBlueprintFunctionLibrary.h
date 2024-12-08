@@ -36,4 +36,7 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Libretro|Util")
     static FTransform GetPlayAreaTransform();
+
+    UFUNCTION(BlueprintCallable, Category = "Libretro|Util")
+    static FString BuildRoomStatusString(class ULibretroCoreInstance* CoreInstance);
 };

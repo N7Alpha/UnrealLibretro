@@ -1587,7 +1587,12 @@ void draw_imgui() {
                 if (ImGui::Button("Spectate")) {
                     // Directly signaling the authority just means spectate
                     ulnet_session_init_defaulted(&g_ulnet_session);
+                    // Both of these methods should work
+#if 0
                     g_ulnet_session.room_we_are_in = g_sam2_rooms[selected_room_index];
+#else
+                    g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX];
+#endif
                     g_ulnet_session.frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
                     ulnet_startup_ice_for_peer(
                         &g_ulnet_session,
