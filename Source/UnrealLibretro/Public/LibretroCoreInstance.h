@@ -1,5 +1,6 @@
 #pragma once
 
+
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
 #include "Components/AudioComponent.h"
@@ -21,6 +22,9 @@ struct FLibretroControllerDescriptions
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnLaunchComplete, const class UTextureRenderTarget2D*, LibretroFramebuffer, const class USoundWave*, AudioBuffer, const bool, bSuccess);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCoreFramebufferResize);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnNetplayRoomModified, FString, RoomName, TArray<int32>, RoomPeers);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNetplayDesync, int64, FrameWeDesynced);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnNetplayError, FString, ErrorMessage, int64, ErrorCode);
 
 
 UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent) )
@@ -44,6 +48,15 @@ public:
      * @param bSuccess - If true the procedures marked IneffectiveBeforeLaunchComplete will now function
      */
     UPROPERTY(BlueprintAssignable)
+    FOnNetplayRoomModified OnNetplayRoomModified;
+
+    UPROPERTY(BlueprintAssignable)
+    FOnNetplayDesync OnNetplayDesync;
+
+    UPROPERTY(BlueprintAssignable)
+    FOnNetplayError OnNetplayError;
+
+    UPROPERTY(BlueprintAssignable)
     FOnLaunchComplete OnLaunchComplete;
 
     /**
@@ -52,7 +65,7 @@ public:
     UPROPERTY(BlueprintAssignable)
     FOnCoreFramebufferResize OnCoreFrameBufferResize;
 
-                                  
+
     /** Blueprint Callable Functions */
     /**
      * @brief Starts the launch process on a background thread
@@ -67,6 +80,25 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
     void Shutdown();
+
+    UFUNCTION(BlueprintCallable, Category = "Libretro|Utility")
+    FString GetAuthorityIP();
+
+    UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
+    void NetplayHost(int PeerId);
+
+    UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
+    void NetplaySync(int PeerId);
+
+    /** Cosmetic */
+    UPROPERTY(BlueprintReadOnly, Category = Libretro)
+    FString NetplayRoomName;
+
+    /** Always 64 elements the host is at index 8, peer-to-peer connections (if any) are in index 0-7
+     * People only connected to the host are at index 9-63. 0 is a sentinel for empty 1 is a sentinel for unavailable
+     */
+    UPROPERTY(BlueprintReadOnly, Category = Libretro)
+    TArray<int32> NetplayRoomPeerIds;
 
     /**
      * @brief Basically the same as loading a state in an emulator
@@ -224,6 +256,9 @@ public:
     /** Forward keyboard input from this APlayerController to the libretro core if the core can receive it */
     UPROPERTY(BlueprintReadWrite, Category = Libretro)
     APlayerController* KeyboardInputSourcePlayerController{nullptr};
+
+    UPROPERTY(BlueprintReadOnly, Category = Libretro)
+    FString Sam2ServerAddress;
 
 protected:
 

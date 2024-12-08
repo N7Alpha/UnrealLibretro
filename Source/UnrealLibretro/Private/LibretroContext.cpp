@@ -490,7 +490,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
             {
                 check(this->Unreal.TextureRHI.GetReference());
 
-                RHICmdList.EnqueueLambda([=, this](FRHICommandList& RHICmdList)
+                RHICmdList.EnqueueLambda([=](FRHICommandList& RHICmdList)
                     {
                         // Potentially this should be a TryLock() so you don't preempt the render thread although it's unlikely that would happen
                         FScopeLock UploadTextureToRenderHardware(&this->Unreal.FrameUpload.CriticalSection);
@@ -1011,10 +1011,11 @@ void FLibretroContext::load(const char *sofile) {
 void FLibretroContext::load_game(const char* filename) {
     struct retro_game_info info = { filename , nullptr, (size_t)0, "" };
     TArray<uint8> gameBinary;
-    
-    if (filename && !system.need_fullpath) {
-        verify(FFileHelper::LoadFileToArray(gameBinary, UTF8_TO_TCHAR(filename)));
+    verify(FFileHelper::LoadFileToArray(gameBinary, UTF8_TO_TCHAR(filename)));
 
+    rom_hash_xxh64 = ZSTD_XXH64(gameBinary.GetData(), gameBinary.Num(), 0);
+
+    if (filename && !system.need_fullpath) {
         info.data = gameBinary.GetData();
         info.size = gameBinary.Num();
     }
@@ -1110,7 +1111,9 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
     // Kick the initialization process off to another thread. It shouldn't be added to the Unreal task pool because those are too slow and my code relies on OpenGL state being thread local.
     // The Runnable system is the standard way for spawning and managing threads in Unreal. FThread looks enticing, but they removed any way to detach threads since "it doesn't work as expected"
     l->LambdaRunnable = FLambdaRunnable::RunLambdaOnBackGroundThread(FPaths::GetCleanFilename(core) + FPaths::GetCleanFilename(game),
-        [=, LoadedCallback = MoveTemp(LoadedCallback), EditorPresetControllers = LibretroCoreInstance->EditorPresetControllers]() {
+        [=, LoadedCallback = MoveTemp(LoadedCallback), EditorPresetControllers = LibretroCoreInstance->EditorPresetControllers, WeakLibretroCoreInstance = MakeWeakObjectPtr(LibretroCoreInstance),
+        Sam2ServerAddress = LibretroCoreInstance->Sam2ServerAddress]() {
+            sam2_room_t NetplayRoomOld = {0};
 
             // Here I load a copy of the dll instead of the original. If you load the same dll multiple times you won't obtain a new instance of the dll loaded into memory,
             // instead all variables and function pointers will point to the original loaded dll
@@ -1174,8 +1177,14 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                 l->core.gl.fence = l->glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
                 l->glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
             }
+            
+            sam2_client_connect(&l->sam_socket, TCHAR_TO_ANSI(*Sam2ServerAddress), SAM2_SERVER_DEFAULT_PORT);
 
-            sam2_client_connect(&l->sam_socket, "::1", SAM2_SERVER_DEFAULT_PORT);
+            l->netplay_session->user_ptr = (void*)l;
+            l->netplay_session->sam2_send_callback = [](void* user_ptr, char* message) {
+                FLibretroContext* LibretroContext = (FLibretroContext*)user_ptr;
+                return sam2_client_send(LibretroContext->sam_socket, message);
+            };
 
 #if UNREALLIBRETRO_NETIMGUI
             { // Setup ImGui
@@ -1228,13 +1237,37 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
                         if (!l->connected_to_sam2 && l->sam_socket != SAM2_SOCKET_INVALID) {
                             l->connected_to_sam2 = static_cast<bool>(sam2_client_poll_connection(l->sam_socket, 0));
-                            if (l->connected_to_sam2) {
-                                // The list request is only a header
-                                sam2_room_list_message_t request = { SAM2_LIST_HEADER };
-                                sam2_client_send(l->sam_socket, (char*)&request);
-                            }
                         }
+
+                        if (memcmp(&NetplayRoomOld, &l->netplay_session->room_we_are_in, sizeof(sam2_room_t)) != 0)
+                        {
+                            NetplayRoomOld = l->netplay_session->room_we_are_in;
+                            FFunctionGraphTask::CreateAndDispatchWhenReady([NetplayRoomNew = l->netplay_session->room_we_are_in, WeakLibretroCoreInstance]
+                            {
+                                if (WeakLibretroCoreInstance.IsValid())
+                                {
+                                    ULibretroCoreInstance* LibretroCoreInstance = WeakLibretroCoreInstance.Get();
+
+                                    LibretroCoreInstance->NetplayRoomName = FString{ UTF8_TO_TCHAR(NetplayRoomNew.name) };
+
+                                    LibretroCoreInstance->NetplayRoomPeerIds.SetNumUninitialized(SAM2_TOTAL_PEERS);
+                                    for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
+                                        LibretroCoreInstance->NetplayRoomPeerIds[i] = NetplayRoomNew.peer_ids[i];
+                                    }
+
+                                    LibretroCoreInstance->OnNetplayRoomModified.Broadcast(LibretroCoreInstance->NetplayRoomName, LibretroCoreInstance->NetplayRoomPeerIds);
+                                }
+
+                            }, TStatId(), nullptr, ENamedThreads::GameThread);
+                        }
+
                         if (l->connected_to_sam2) {
+                            TUniqueFunction<void(libretro_api_t&)> NetplayTask;
+                            while (l->NetplayTasks.Dequeue(NetplayTask))
+                            {
+                                NetplayTask(l->libretro_api);
+                            }
+
                             for (int _prevent_infinite_loop_counter = 0; _prevent_infinite_loop_counter < 64; _prevent_infinite_loop_counter++) {
 
                                 int status = sam2_client_poll(
@@ -1257,38 +1290,21 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                                     break;
                                 }
                                 else {
-                                    l->netplay_session->user_ptr = (void*)l;
-                                    l->netplay_session->sam2_send_callback = [](void* user_ptr, char* message) {
-                                        FLibretroContext* LibretroContext = (FLibretroContext*)user_ptr;
-                                        return sam2_client_send(LibretroContext->sam_socket, message);
-                                    };
-
                                     status = ulnet_process_message(
                                         l->netplay_session,
                                         &l->latest_sam2_message
                                     );
 
                                     if (memcmp(&l->latest_sam2_message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
-                                        checkNoEntry();
+                                        FFunctionGraphTask::CreateAndDispatchWhenReady([WeakLibretroCoreInstance, ErrorMessage = l->latest_sam2_message.error_response]
+                                            {
+                                                if (WeakLibretroCoreInstance.IsValid())
+                                                {
+                                                    WeakLibretroCoreInstance->OnNetplayError.Broadcast(FString(ErrorMessage.description), ErrorMessage.code);
+                                                }
+                                            }, TStatId(), nullptr, ENamedThreads::GameThread);
                                         //g_last_sam2_error = latest_sam2_message.error_response;
                                         //SAM2_LOG_ERROR("Received error response from SAM2 (%" PRId64 "): %s", g_last_sam2_error.code, g_last_sam2_error.description);
-                                    }
-                                    else if (memcmp(&l->latest_sam2_message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
-                                        sam2_room_list_message_t* room_list = (sam2_room_list_message_t*)&l->latest_sam2_message;
-
-                                        if (!(l->netplay_session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)
-                                            && room_list->room.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
-                                            // Directly signaling the authority just means spectate
-                                            ulnet_session_init_defaulted(l->netplay_session);
-                                            l->netplay_session->room_we_are_in = room_list->room;
-                                            l->netplay_session->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
-                                            ulnet_startup_ice_for_peer(
-                                                l->netplay_session,
-                                                room_list->room.peer_ids[SAM2_AUTHORITY_INDEX],
-                                                SAM2_AUTHORITY_INDEX,
-                                                NULL
-                                            );
-                                        }
                                     }
                                 }
                             }
@@ -1309,6 +1325,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
             }
 
 cleanup:
+            sam2_client_disconnect(l->sam_socket);
             // These ImGui routines all cleanup thread_local objects if they aren't NULL
 #if UNREALLIBRETRO_NETIMGUI
             NetImgui::Shutdown();

@@ -1,11 +1,15 @@
 
 #include "LibretroCoreInstance.h"
 
+#include "ulnet.h"
 #include "libretro/libretro.h"
 
 #include "Misc/FileHelper.h"
 #include "Components/AudioComponent.h"
 #include "GameFramework/PlayerInput.h"
+#include "SocketSubsystem.h"
+#include "Engine/NetDriver.h"
+#include "Engine/NetConnection.h"
 
 #include "UnrealLibretro.h"
 #include "LibretroInputDefinitions.h"
@@ -20,6 +24,132 @@ ULibretroCoreInstance::ULibretroCoreInstance()
 }
 
 //bool ULibretroCoreInstance::IsReadyForFinishDestroy() { return true; };
+FString ULibretroCoreInstance::GetAuthorityIP()
+{
+    check(IsInGameThread());
+
+    if (UWorld* World = GetWorld())
+    {
+        // If we're a client
+        if (World->GetNetMode() == NM_Client)
+        {
+            if (UNetDriver* NetDriver = World->GetNetDriver())
+            {
+                if (NetDriver->ServerConnection)
+                {
+                    auto RemoteAddr = NetDriver->ServerConnection->GetRemoteAddr();
+                    return RemoteAddr->ToString(/* bAppendPort = */ false);
+                }
+            }
+        }
+        // If we're the defacto server/host
+        else
+        {
+            return TEXT("127.0.0.1");
+        }
+    }
+
+    return TEXT("0.0.0.0"); // Return invalid IP if something went wrong
+}
+
+void ULibretroCoreInstance::NetplaySync(int PeerId)
+{
+    NOT_LAUNCHED_GUARD
+
+    if (PeerId <= SAM2_PORT_SENTINELS_MAX || PeerId > 65535)
+    {
+        SAM2_LOG_ERROR("Invalid peer id %05d. It should be between %05d and 65535 inclusive", PeerId, SAM2_PORT_SENTINELS_MAX + 1);
+        return;
+    }
+
+    CoreInstance.GetValue()->NetplayTasks.Enqueue([CoreInstance = this->CoreInstance.GetValue(), PeerId](libretro_api_t& libretro_api)
+        {
+            if (CoreInstance->netplay_session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)
+            {
+                SAM2_LOG_INFO("Disconnecting from peer %05d room and connecting to peer %05d room", PeerId);
+                ulnet_session_tear_down(CoreInstance->netplay_session);
+            }
+
+            // Directly signaling the authority just means spectate
+            ulnet_session_init_defaulted(CoreInstance->netplay_session);
+            CoreInstance->netplay_session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = PeerId;
+            CoreInstance->netplay_session->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
+            ulnet_startup_ice_for_peer(
+                CoreInstance->netplay_session,
+                PeerId,
+                SAM2_AUTHORITY_INDEX,
+                NULL
+            );
+        });
+}
+
+void ULibretroCoreInstance::NetplayHost(int PeerId)
+{
+    NOT_LAUNCHED_GUARD
+
+    if (PeerId) {
+        // We want to change our peer id
+        if (PeerId <= SAM2_PORT_SENTINELS_MAX || PeerId > 65535) {
+            SAM2_LOG_ERROR("Invalid peer id %05d. It should be between %05d and 65535 inclusive", PeerId, SAM2_PORT_SENTINELS_MAX + 1);
+            return;
+        }
+    }
+
+    sam2_room_make_message_t HostRoomRequest = { SAM2_MAKE_HEADER };
+
+    FString RoomName = GetOwner() ? GetOwner()->GetName() : GetName();
+    FTCHARToUTF8 RoomNameUTF8{ *RoomName };
+
+    int EndOfRoomNameIndex = SAM2_MIN(RoomNameUTF8.Length(), SAM2_ARRAY_LENGTH(HostRoomRequest.room.name)-1);
+    FMemory::Memcpy(HostRoomRequest.room.name, RoomNameUTF8.Get(), EndOfRoomNameIndex);
+    HostRoomRequest.room.name[EndOfRoomNameIndex] = '\0';
+    HostRoomRequest.room.flags |= SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+    CoreInstance.GetValue()->NetplayTasks.Enqueue([CoreInstance = this->CoreInstance.GetValue(), HostRoomRequest, PeerId](libretro_api_t& libretro_api)
+        mutable {
+            HostRoomRequest.room.rom_hash_xxh64 = CoreInstance->rom_hash_xxh64;
+
+            sam2_format_core_version(
+                &HostRoomRequest.room,
+                CoreInstance->system.library_name,
+                CoreInstance->system.library_version
+            );
+
+            if (CoreInstance->netplay_session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)
+            {
+                if (ulnet_is_spectator(CoreInstance->netplay_session, CoreInstance->netplay_session->our_peer_id))
+                {
+                    ulnet_session_tear_down(CoreInstance->netplay_session);
+                }
+                else if (ulnet_is_authority(CoreInstance->netplay_session))
+                {
+                    SAM2_LOG_WARN("We're already hosting a room, we can't host a new room");
+                    return;
+                }
+                else
+                {
+                    SAM2_LOG_ERROR("We're connected peer to peer we have to exit gracefully before we can host a new room");
+                    // @todo Disconnect gracefully
+                    return;
+                }
+            }
+
+            if (PeerId)
+            {
+                sam2_connect_message_t ChangePeerIdRequest = { SAM2_CONN_HEADER };
+                ChangePeerIdRequest.peer_id = PeerId;
+
+                if (int ErrorCode = sam2_client_send(CoreInstance->sam_socket, (char*)&ChangePeerIdRequest))
+                {
+                    SAM2_LOG_ERROR("Failed to send message with header '%.8s' (error=%d)", (char*)&ChangePeerIdRequest, ErrorCode);
+                }
+            }
+
+            if (int ErrorCode = sam2_client_send(CoreInstance->sam_socket, (char*)&HostRoomRequest))
+            {
+                SAM2_LOG_ERROR("Failed to send message with header '%.8s' (error=%d)", (char*)&HostRoomRequest, ErrorCode);
+            }
+        });
+}
 
 void ULibretroCoreInstance::SetController(int Port, int64 ID)
 {
@@ -140,10 +270,11 @@ void ULibretroCoreInstance::Launch()
     //RenderTarget->AddressX = TA_Clamp;
     //RenderTarget->AddressY = TA_Clamp;
 
+    Sam2ServerAddress = ULibretroCoreInstance::GetAuthorityIP();
     this->CoreInstance = FLibretroContext::Launch(this, _CorePath, _RomPath, RenderTarget, static_cast<URawAudioSoundWave*>(AudioBuffer),
         [weakThis = MakeWeakObjectPtr(this), SRAMPath = FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath)]
         (FLibretroContext *_CoreInstance, libretro_api_t &libretro_api) 
-        {   
+        {
             bool bCoreLaunchSucceeded = _CoreInstance->CoreState.load(std::memory_order_relaxed) != FLibretroContext::ECoreState::StartFailed;
 
             FFunctionGraphTask::CreateAndDispatchWhenReady(
