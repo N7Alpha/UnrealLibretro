@@ -182,14 +182,13 @@
 // All data is sent in little-endian format
 // All strings are utf-8 encoded unless stated otherwise... @todo Actually I should just add _utf8 if the field isn't ascii
 // Packing of structs is asserted at compile time since packing directives are compiler specific
-struct sam2_room {
+typedef struct sam2_room {
     char name[64]; // Unique name that identifies the room
     uint64_t flags;
     char core_and_version[32];
     uint64_t rom_hash_xxh64;
-    uint16_t peer_ids[SAM2_TOTAL_PEERS]; // Must be unique per port (including authority and spectators)
-};
-typedef struct sam2_room sam2_room_t;
+    uint16_t peer_ids[SAM2_TOTAL_PEERS]; // 0-7 p2p, 8 authority, 9-63 spectator; Must be unique per port (including authority and spectators)
+} sam2_room_t;
 
 // This is a test for identity not equality
 static int sam2_same_room(sam2_room_t *a, sam2_room_t *b) {
