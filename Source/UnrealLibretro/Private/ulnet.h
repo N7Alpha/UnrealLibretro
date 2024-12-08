@@ -1350,10 +1350,10 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
         sam2_signal_message_t *room_signal = (sam2_signal_message_t *) response;
         SAM2_LOG_INFO("Received signal from peer %05" PRId16 "", room_signal->peer_id);
 
-        if (!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
-            SAM2_LOG_WARN("Ignoring signal from %05" PRId16 ". We aren't in a netplay session presently", room_signal->peer_id);
-            return 0;
-        }
+//        if (!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
+//            SAM2_LOG_WARN("Ignoring signal from %05" PRId16 ". We aren't in a netplay session presently", room_signal->peer_id);
+//            return 0;
+//        }
 
         int p = 0;
         if (ulnet_is_authority(session)) {

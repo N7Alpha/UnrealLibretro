@@ -1,5 +1,7 @@
 #include "LibretroBlueprintFunctionLibrary.h"
 
+#include "LibretroCoreInstance.h"
+
 #include "Runtime/Launch/Resources/Version.h"
 #include "GameFramework/Actor.h"
 
@@ -61,4 +63,25 @@ FTransform ULibretroBlueprintFunctionLibrary::GetPlayAreaTransform()
 #endif
 
     return Transform;
+}
+
+FString ULibretroBlueprintFunctionLibrary::BuildRoomStatusString(class ULibretroCoreInstance* CoreInstance)
+{
+    auto& RoomPeerIds = CoreInstance->NetplayRoomPeerIds;
+    auto& RoomName = CoreInstance->NetplayRoomName;
+
+    FString RoomStatus;
+    RoomStatus.Reserve(256);
+    RoomStatus.Appendf(TEXT("Room: %s\n Authority: %05d\n Peers: "), *RoomName, RoomPeerIds[8]);
+
+    for (int i = 0; i < RoomPeerIds.Num(); i++)
+    {
+        if (i == 8) continue;
+        if (RoomPeerIds[i] > 1)
+        {
+            RoomStatus.Appendf(TEXT("%05d, "), RoomPeerIds[i]);
+        }
+    }
+
+    return RoomStatus;
 }

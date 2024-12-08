@@ -188,6 +188,8 @@ public:
     struct ulnet_session* netplay_session = nullptr;
     unsigned char* netplay_save_state_data = nullptr;
     size_t netplay_save_state_size = 0;
+    uint64 rom_hash_xxh64 = 0;
+    TQueue<TUniqueFunction<void(libretro_api_t&)>, EQueueMode::Spsc> NetplayTasks;
 
 protected:
     FLibretroContext() {}
