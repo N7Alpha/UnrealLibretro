@@ -74,9 +74,11 @@ SocketInfo* ListenStart(uint32_t ListenPort)
 	hints.ai_family		= AF_UNSPEC;
 	hints.ai_socktype	= SOCK_STREAM;
 	hints.ai_flags		= AI_PASSIVE;
-
+	// @nocheckout This is to remove dependence on c++17
+	char zPortName[32];
+	sprintf(zPortName, "%i", ListenPort);
 	addrinfo* addrInfo;
-	getaddrinfo(nullptr, std::to_string(ListenPort).c_str(), &hints, &addrInfo);
+	getaddrinfo(nullptr, zPortName, &hints, &addrInfo);
 
 	int ListenSocket = socket(addrInfo->ai_family, addrInfo->ai_socktype, addrInfo->ai_protocol);
 	if( ListenSocket != -1 )
