@@ -1335,7 +1335,7 @@ static void sam2__client_destroy(sam2_client_t *client) {
     }
 
     uv_close((uv_handle_t *) &client->tcp, sam2__on_client_destroy);
-    server->peer_id_map[client_peer_id] = NULL;
+    server->peer_id_map[client_peer_id] = 0; // NULL
     const char *error = sam2__peer_id_free(server, client_peer_id);
     if (error) {
         SAM2_LOG_ERROR("Failed to free peer id: %s", error);
@@ -1455,7 +1455,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
 
                 SAM2_LOG_INFO("Changing peer id from %05" PRIu16 " to %05" PRIu16, old_client_peer_id, new_client_peer_id);
                 server->peer_id_map[new_client_peer_id] = server->peer_id_map[old_client_peer_id];
-                server->peer_id_map[old_client_peer_id] = NULL;
+                server->peer_id_map[old_client_peer_id] = 0; // NULL
                 client->tcp.data = &server->peer_id_map[new_client_peer_id];
 
                 sam2_connect_message_t *response = &sam2__alloc_message(server, sam2_conn_header)->connect_message;
