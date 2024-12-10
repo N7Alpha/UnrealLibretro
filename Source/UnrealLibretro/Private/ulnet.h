@@ -998,29 +998,29 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
 
         // Check for desync
         if (sam2_get_port_of_peer(&session->room_we_are_in, original_sender_port) == -1) break;
-        ulnet_state_t &their_desync_debug_packet = session->state[original_sender_port];
-        ulnet_state_t &our_desync_debug_packet = session->state[ulnet_our_port(session)];
+        ulnet_state_t *their_desync_debug_packet = &session->state[original_sender_port];
+        ulnet_state_t *our_desync_debug_packet = &session->state[ulnet_our_port(session)];
 
-        int64_t latest_common_frame = SAM2_MIN(our_desync_debug_packet.save_state_frame, their_desync_debug_packet.save_state_frame);
-        int64_t frame_difference = SAM2_ABS(our_desync_debug_packet.frame - their_desync_debug_packet.frame);
+        int64_t latest_common_frame = SAM2_MIN(our_desync_debug_packet->save_state_frame, their_desync_debug_packet->save_state_frame);
+        int64_t frame_difference = SAM2_ABS(our_desync_debug_packet->frame - their_desync_debug_packet->frame);
         int64_t total_frames_to_compare = ULNET_DELAY_BUFFER_SIZE - frame_difference;
         for (int f = total_frames_to_compare-1; f >= 0 ; f--) {
             int64_t frame_to_compare = latest_common_frame - f;
             int64_t frame_index = frame_to_compare % ULNET_DELAY_BUFFER_SIZE;
 
-            if (our_desync_debug_packet.input_state_hash[frame_index] != their_desync_debug_packet.input_state_hash[frame_index]) {
+            if (our_desync_debug_packet->input_state_hash[frame_index] != their_desync_debug_packet->input_state_hash[frame_index]) {
                 SAM2_LOG_ERROR("Input state hash mismatch for frame %" PRId64 " Our hash: %" PRIx64 " Their hash: %" PRIx64 "", 
-                    frame_to_compare, our_desync_debug_packet.input_state_hash[frame_index], their_desync_debug_packet.input_state_hash[frame_index]);
-            } else if (   our_desync_debug_packet.save_state_hash[frame_index]
-                       && their_desync_debug_packet.save_state_hash[frame_index]) {
+                    frame_to_compare, our_desync_debug_packet->input_state_hash[frame_index], their_desync_debug_packet->input_state_hash[frame_index]);
+            } else if (   our_desync_debug_packet->save_state_hash[frame_index]
+                       && their_desync_debug_packet->save_state_hash[frame_index]) {
 
-                if (our_desync_debug_packet.save_state_hash[frame_index] != their_desync_debug_packet.save_state_hash[frame_index]) {
+                if (our_desync_debug_packet->save_state_hash[frame_index] != their_desync_debug_packet->save_state_hash[frame_index]) {
                     if (!session->peer_desynced_frame[p]) {
                         session->peer_desynced_frame[p] = frame_to_compare;
                     }
 
                     SAM2_LOG_ERROR("Save state hash mismatch for frame %" PRId64 " Our hash: %016" PRIx64 " Their hash: %016" PRIx64 "",
-                        frame_to_compare, our_desync_debug_packet.save_state_hash[frame_index], their_desync_debug_packet.save_state_hash[frame_index]);
+                        frame_to_compare, our_desync_debug_packet->save_state_hash[frame_index], their_desync_debug_packet->save_state_hash[frame_index]);
                 } else if (session->peer_desynced_frame[p]) {
                     session->peer_desynced_frame[p] = 0;
                     SAM2_LOG_INFO("Peer resynced frame on frame %" PRId64 "", frame_to_compare);
