@@ -141,7 +141,7 @@ namespace ImGui
 }
 */
 
-// The ImGui libraries all use global state. However we want one ImGui instance per Libretro Core The hack recommended
+// @nocheckout The ImGui libraries all use global state. However we want one ImGui instance per Libretro Core The hack recommended
 // by imgui.h suggests using thread_local's ocornut has a plan to add this as a first-class feature in v2 eventually
 #if defined(__UNREAL__)
 extern thread_local struct ImGuiContext* LibretroImGuiTLS;
