@@ -181,7 +181,7 @@ static SDL_GLContext g_ctx = NULL;
 static SDL_AudioStream *g_pcm = NULL;
 static struct retro_frame_time_callback runloop_frame_time;
 static retro_usec_t runloop_frame_time_last = 0;
-static const uint8_t *g_kbd = NULL;
+static const bool *g_kbd = NULL;
 struct retro_system_av_info g_av = {0};
 static struct retro_audio_callback audio_callback;
 
@@ -247,7 +247,7 @@ static const char *g_fshader_src =
 
 
 static struct {
-    void *handle;
+    SDL_SharedObject *handle;
     bool initialized;
     bool supports_no_game;
     uint64_t quirks;
@@ -456,7 +456,7 @@ static struct keymap g_binds[] = {
 
 
 #define load_sym(V, S) do {\
-    if (!((*(SDL_FunctionPointer*)&V) = SDL_LoadFunction(g_retro.handle, #S))) \
+    if (!((*(SDL_FunctionPointer*)&V) = SDL_LoadFunction((SDL_SharedObject*)g_retro.handle, #S))) \
         SAM2_LOG_FATAL("Failed to load symbol '" #S "'': %s", SDL_GetError()); \
     } while (0)
 #define load_retro_sym(S) load_sym(g_retro.S, S)
@@ -1185,7 +1185,8 @@ void draw_imgui() {
             ImGui::SameLine();
             ImGui::PushItemWidth(40);
             ImGui::PushStyleColor(ImGuiCol_Text, GOLD);
-            if (ImGui::InputScalar("##PeerIdInput", ImGuiDataType_U16, &editablePeerId, NULL, NULL, "%u", ImGuiInputTextFlags_EnterReturnsTrue)) {
+            ImGui::InputScalar("##PeerIdInput", ImGuiDataType_U16, &editablePeerId, NULL, NULL, "%u", 0);
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
                 if (editablePeerId != g_ulnet_session.our_peer_id) {
                     sam2_connect_message_t message = { SAM2_CONN_HEADER };
                     message.peer_id = editablePeerId;
@@ -1709,7 +1710,7 @@ finished_drawing_sam2_interface:
 
         if (g_vsync_enabled != old_vsync_enabled) {
             printf("Toggled vsync\n");
-            if (SDL_GL_SetSwapInterval((int) g_vsync_enabled) < 0) {
+            if (!SDL_GL_SetSwapInterval((int) g_vsync_enabled)) {
                 SAM2_LOG_ERROR("Unable to set VSync off: %s", SDL_GetError());
                 g_vsync_enabled = true;
             }
@@ -1917,7 +1918,7 @@ static void video_deinit() {
     g_shader.program = 0;
 
     SDL_GL_MakeCurrent(g_win, g_ctx);
-    SDL_GL_DeleteContext(g_ctx);
+    SDL_GL_DestroyContext(g_ctx);
 
     g_ctx = NULL;
 
@@ -1931,7 +1932,7 @@ static void audio_init(int frequency) {
     spec.channels = 2;
     spec.freq = frequency;
 
-    g_pcm = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_OUTPUT, &spec, NULL, NULL);
+    g_pcm = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
     if (!g_pcm)
         SAM2_LOG_FATAL("Failed to open playback device: %s", SDL_GetError());
 
@@ -2724,8 +2725,9 @@ int main(int argc, char *argv[]) {
         read_whole_file(g_argv[2], &rom_data, &rom_size);
     }
 
-    if (SDL_Init(g_headless ? 0 : SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS) < 0)
+    if (!SDL_Init(g_headless ? 0 : SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS)) {
         SAM2_LOG_FATAL("Failed to initialize SDL");
+    }
 
     // Setup Platform/Renderer backends
     // GL 3.0 + GLSL 130
@@ -2864,7 +2866,7 @@ int main(int argc, char *argv[]) {
         if (next_input_state) {
 
             for (int i = 0; g_binds[i].k || g_binds[i].rk; ++i) {
-                next_input_state[0][g_binds[i].rk] |= g_kbd[g_binds[i].k];
+                next_input_state[0][g_binds[i].rk] |= (int16_t) g_kbd[g_binds[i].k];
             }
 
             if (g_libretro_context.fuzz_input) {
