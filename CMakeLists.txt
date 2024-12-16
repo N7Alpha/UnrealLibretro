@@ -86,6 +86,7 @@ set(SOURCE_FILES
 # Add SDL and libuv subdirectories
 # The way I set options with set() looks janky. This was the only thing I could figure out that worked after fiddling with cmake for a half hour
 set(SDL_SHARED_ENABLED_BY_DEFAULT OFF CACHE BOOL "")
+set(SDL_UNIX_CONSOLE_BUILD ON CACHE BOOL "")
 add_subdirectory(Source/ThirdParty/SDL)
 add_subdirectory(Source/ThirdParty/libuv)
 set(NO_TESTS ON CACHE BOOL "") # libjuice defaults to building tests (which we don't have checked in)
