@@ -1850,19 +1850,20 @@ SAM2_STATIC_ASSERT(sizeof(sam2_room_join_message_t) == 8 + 8 + sizeof(sam2_room_
 #if defined(SAM2_TEST)
 #ifndef SAM2_TEST_C
 #define SAM2_TEST_C
-#define TEST_LIST_SIZE 3
-#define TEST_LIST_NULL (TEST_LIST_SIZE + 1)
+
+#define SAM2__TEST_LIST_SIZE 3
+#define SAM2__TEST_LIST_NULL (SAM2__TEST_LIST_SIZE + 1)
 
 /* Define a simple parent/container struct that holds our array-list fields. */
 typedef struct sam2__test_container_s {
     // We'll store the fields for our arraylist of "int"s, with 3 capacity.
-    SAM2__DEFINE_ARRAYLIST_FIELDS(my_list, int, TEST_LIST_SIZE, uint16_t)
+    SAM2__DEFINE_ARRAYLIST_FIELDS(my_list, int, SAM2__TEST_LIST_SIZE, uint16_t)
 } sam2__test_container_t;
 
 // And define the functions with our chosen namespace prefix "sam2__test". 
 // We'll store "int" in the array. The array itself is just for the next/prev indices
 // but conceptually it could be storing real data. For test purposes, only indices matter.
-SAM2__DEFINE_ARRAYLIST_FUNCTIONS(sam2__test, my_list, int, TEST_LIST_SIZE, uint16_t, sam2__test_container_t, TEST_LIST_NULL)
+SAM2__DEFINE_ARRAYLIST_FUNCTIONS(sam2__test, my_list, int, SAM2__TEST_LIST_SIZE, uint16_t, sam2__test_container_t, SAM2__TEST_LIST_NULL)
 
 // Helper macro to check a condition and print an error if it fails.
 #define TEST_ASSERT(cond, message)       \
@@ -1883,7 +1884,7 @@ int sam2__test_one_allocation_and_free(void) {
 
     // Allocate 1 element
     uint16_t idx = sam2__test_my_list_alloc(&container);
-    TEST_ASSERT(idx != TEST_LIST_NULL, "Expected allocation to succeed, got LIST_NULL instead.");
+    TEST_ASSERT(idx != SAM2__TEST_LIST_NULL, "Expected allocation to succeed, got LIST_NULL instead.");
     TEST_ASSERT(container.my_list_count == 1, "Used count should be 1 after first allocation.");
 
     // Free it
@@ -1907,13 +1908,13 @@ int sam2__test_out_of_memory(void) {
     uint16_t idx2 = sam2__test_my_list_alloc(&container);
     uint16_t idx3 = sam2__test_my_list_alloc(&container);
 
-    TEST_ASSERT(idx1 != TEST_LIST_NULL && idx2 != TEST_LIST_NULL && idx3 != TEST_LIST_NULL,
+    TEST_ASSERT(idx1 != SAM2__TEST_LIST_NULL && idx2 != SAM2__TEST_LIST_NULL && idx3 != SAM2__TEST_LIST_NULL,
         "Allocations should succeed (3 total).");
     TEST_ASSERT(container.my_list_count == 3, "Used count should be 3 after allocating 3 elements.");
 
-    // Now the next allocation should return TEST_LIST_NULL.
+    // Now the next allocation should return SAM2__TEST_LIST_NULL.
     uint16_t idx4 = sam2__test_my_list_alloc(&container);
-    TEST_ASSERT(idx4 == TEST_LIST_NULL, "Expected out-of-memory (LIST_NULL) for the 4th allocation.");
+    TEST_ASSERT(idx4 == SAM2__TEST_LIST_NULL, "Expected out-of-memory (LIST_NULL) for the 4th allocation.");
 
     // Cleanup: free them all so we don't leave them allocated.
     sam2__test_my_list_free(&container, idx1);
@@ -1936,15 +1937,15 @@ int sam2__test_full_allocation_and_deallocation(void) {
 
     // Allocate all (3)
     uint16_t idx[3];
-    for (int i = 0; i < TEST_LIST_SIZE; i++) {
+    for (int i = 0; i < SAM2__TEST_LIST_SIZE; i++) {
         idx[i] = sam2__test_my_list_alloc(&container);
-        TEST_ASSERT(idx[i] != TEST_LIST_NULL, "Allocation failed unexpectedly.");
+        TEST_ASSERT(idx[i] != SAM2__TEST_LIST_NULL, "Allocation failed unexpectedly.");
     }
     TEST_ASSERT(container.my_list_count == 3,
         "Used count should be 3 after allocating all resources.");
 
     // Free all
-    for (int i = 0; i < TEST_LIST_SIZE; i++) {
+    for (int i = 0; i < SAM2__TEST_LIST_SIZE; i++) {
         const char* err = sam2__test_my_list_free(&container, idx[i]);
         TEST_ASSERT(err == NULL, "Free returned an error unexpectedly.");
     }
@@ -1953,7 +1954,7 @@ int sam2__test_full_allocation_and_deallocation(void) {
 
     // Check that we can allocate again (meaning the state was restored).
     uint16_t idx_new = sam2__test_my_list_alloc(&container);
-    TEST_ASSERT(idx_new != TEST_LIST_NULL, "Allocation after full free should succeed.");
+    TEST_ASSERT(idx_new != SAM2__TEST_LIST_NULL, "Allocation after full free should succeed.");
     TEST_ASSERT(container.my_list_count == 1, "Used count should be 1 after new allocation.");
 
     // Cleanup
@@ -1974,7 +1975,7 @@ int sam2__test_alloc_at_index(void) {
 
     // Grab one normally.
     uint16_t idx_normal = sam2__test_my_list_alloc(&container);
-    TEST_ASSERT(idx_normal != TEST_LIST_NULL, "Normal allocation should succeed.");
+    TEST_ASSERT(idx_normal != SAM2__TEST_LIST_NULL, "Normal allocation should succeed.");
 
     // Now free it.
     const char *err = sam2__test_my_list_free(&container, idx_normal);
@@ -1989,7 +1990,7 @@ int sam2__test_alloc_at_index(void) {
 
     // Negative test: try to allocate at an out-of-range index (e.g. 999), expect LIST_NULL.
     uint16_t out_of_range_idx = sam2__test_my_list_alloc_at_index(&container, 0xFFFF /* large number */);
-    TEST_ASSERT(out_of_range_idx == TEST_LIST_NULL, "Out-of-range alloc_at_index should return LIST_NULL.");
+    TEST_ASSERT(out_of_range_idx == SAM2__TEST_LIST_NULL, "Out-of-range alloc_at_index should return LIST_NULL.");
 
     // Cleanup
     err = sam2__test_my_list_free(&container, idx_allocated_at);
@@ -2011,7 +2012,7 @@ int sam2__test_free_and_realloc(void) {
     uint16_t idx1 = sam2__test_my_list_alloc(&container);
     uint16_t idx2 = sam2__test_my_list_alloc(&container);
 
-    TEST_ASSERT(idx1 != TEST_LIST_NULL && idx2 != TEST_LIST_NULL, "Expected first 2 allocations to succeed.");
+    TEST_ASSERT(idx1 != SAM2__TEST_LIST_NULL && idx2 != SAM2__TEST_LIST_NULL, "Expected first 2 allocations to succeed.");
     TEST_ASSERT(container.my_list_count == 2, "Used count should be 2 after 2 allocs.");
 
     // Free the first one.
@@ -2022,7 +2023,7 @@ int sam2__test_free_and_realloc(void) {
     // Now allocate a third one. It's possible that the newly freed index1 is reused or
     // we get the last slot. We do not rely on the order. Only that it succeeds.
     uint16_t idx3 = sam2__test_my_list_alloc(&container);
-    TEST_ASSERT(idx3 != TEST_LIST_NULL, "Expected the 3rd allocation to succeed since we freed idx1.");
+    TEST_ASSERT(idx3 != SAM2__TEST_LIST_NULL, "Expected the 3rd allocation to succeed since we freed idx1.");
     TEST_ASSERT(container.my_list_count == 2, "Used count should be 2 again after the 3rd allocation.");
 
     // Cleanup: free the remaining.
