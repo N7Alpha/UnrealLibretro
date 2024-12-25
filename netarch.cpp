@@ -6,6 +6,7 @@
 
 #define SAM2_IMPLEMENTATION
 #define SAM2_SERVER
+#define SAM2_TEST
 //#define SAM2_LOG_WRITE(level, file, line, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0); // Ex. Use print
 #define SAM2_LOG_WRITE_DEFINITION
 #define SAM2_LOG_WRITE(level, file, line, ...) do { if (level >= g_log_level) { sam2__log_write(level, __FILE__, __LINE__, __VA_ARGS__); } } while (0)
@@ -2676,6 +2677,8 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
 int main(int argc, char *argv[]) {
     g_argc = argc;
     g_argv = argv;
+
+    sam2_test_all();
 
     bool no_netimgui = false;
     for (int i = 2; i < argc; i++) {
