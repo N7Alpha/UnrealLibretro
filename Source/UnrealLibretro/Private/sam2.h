@@ -1394,6 +1394,16 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
     }
 
     for (int64_t remaining = nread;;) {
+        { // This is to avoid overallocating which I just make a fatal error for convinience
+            int minimum_allocations_required = 128;
+            if (SAM2_ARRAY_LENGTH(server->responses) - server->response_count < minimum_allocations_required) {
+                SAM2_LOG_WARN("Out of free responses to allocate sending error to client %05" PRId16 "", sam2__peer_id(client));
+                static sam2_error_message_t response = { SAM2_FAIL_HEADER, 0, "Server overloaded with requests", SAM2_RESPONSE_SERVER_ERROR };
+                sam2__write_response(client_tcp, (sam2_message_u *) &response);
+                goto cleanup;
+            }
+        }
+
         int64_t num_bytes_to_move_into_buffer = SAM2_MIN(((int) sizeof(client->buffer)) - client->length, remaining);
         memcpy(client->buffer + client->length, buf->base + (nread - remaining), num_bytes_to_move_into_buffer);
         remaining -= num_bytes_to_move_into_buffer;
