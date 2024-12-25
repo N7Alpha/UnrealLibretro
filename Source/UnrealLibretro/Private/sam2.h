@@ -1487,9 +1487,8 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
 
             request->room.peer_ids[SAM2_AUTHORITY_INDEX] = sam2__peer_id(client);
 
-            SAM2_LOG_INFO("Client %05" PRId16 " updated the state of room '%s'", sam2__peer_id(client), server->rooms[sam2__peer_id(client)].name);
-
             server->rooms[sam2__peer_id(client)] = request->room;
+            SAM2_LOG_INFO("Client %05" PRId16 " updated the state of room '%s'", sam2__peer_id(client), server->rooms[sam2__peer_id(client)].name);
 
             sam2_room_make_message_t *response = &sam2__alloc_message(server, sam2_make_header)->room_make_response;
             response->room = request->room;
