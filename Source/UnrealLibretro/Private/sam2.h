@@ -1629,12 +1629,12 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
     }
 
     sam2_server_t *server = (sam2_server_t *) server_tcp;
-    sam2_client_t *client = &server->clients[sam2__client_alloc(server)];
-
-    if (!client) {
-        SAM2_LOG_WARN("No more client slots available");
+    uint16_t client_index = sam2__client_alloc(server);
+    if (client_index == 0) {
+        SAM2_LOG_WARN("Ignoring connection request, No more client slots available");
         return;
     }
+    sam2_client_t *client = &server->clients[client_index];
 
     memset(client, 0, sizeof(sam2_client_t));
     uint16_t client_peer_id = sam2__peer_id_alloc(server);
