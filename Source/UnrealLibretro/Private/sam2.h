@@ -1135,7 +1135,13 @@ static uint16_t sam2__peer_id(sam2_client_t *client) {
 
 static sam2_message_u *sam2__alloc_message_raw(sam2_server_t *server) {
     server->_debug_allocated_messages++;
-    return &server->responses[sam2__response_alloc(server)];
+    int response_index = sam2__response_alloc(server);
+
+    if (response_index == 0) {
+        return NULL;
+    } else {
+        return &server->responses[response_index];
+    }
 }
 
 static void sam2__free_message_raw(sam2_server_t *server, void *message) {
