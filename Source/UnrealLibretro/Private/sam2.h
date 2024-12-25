@@ -547,7 +547,7 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message);
 
 SAM2__DEFINE_ARRAYLIST_FUNCTIONS(sam2_, client, sam2_client_t, SAM2_ARRAY_LENGTH(((sam2_server_t *)0)->clients), uint16_t, sam2_server_t, 0)
 SAM2__DEFINE_ARRAYLIST_FUNCTIONS(sam2_, peer_id, uint16_t, 65536, uint16_t, sam2_server_t, 0)
-SAM2__DEFINE_ARRAYLIST_FUNCTIONS(sam2_, response, sam2_message_u, SAM2_ARRAY_LENGTH(((sam2_server_t *)0)->responses), uint16_t, sam2_server_t, 65535)
+SAM2__DEFINE_ARRAYLIST_FUNCTIONS(sam2_, response, sam2_message_u, SAM2_ARRAY_LENGTH(((sam2_server_t *)0)->responses), uint16_t, sam2_server_t, 0)
 
 #define RLE8_ENCODE_UPPER_BOUND(N) (3 * ((N+1) / 2) + (N) / 2)
 
@@ -1700,6 +1700,7 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     sam2__peer_id_init(server);
     server->peer_id_free_list = SAM2_PORT_SENTINELS_MAX+1; // Don't allow allocation of sentinel indices
     sam2__response_init(server);
+    server->response_free_list = 1;
 
     int err = uv_loop_init(&server->loop);
     if (err) {
