@@ -386,6 +386,7 @@ static const char *NS_PREFIX##_##VAR##_free(PARENT_TYPE *parent, IDX_T idx) { \
 } \
 \
 static IDX_T NS_PREFIX##_##VAR##_alloc_at_index(PARENT_TYPE *parent, IDX_T idx) { \
+    if (idx >= N) return LIST_NULL; \
     /* Remove from free list */ \
     if (idx == parent->VAR##_free_list) { \
         parent->VAR##_free_list = parent->VAR##_next[idx]; \
@@ -1452,6 +1453,11 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
                 uint16_t old_client_peer_id = sam2__peer_id(client);
                 sam2__peer_id_free(server, old_client_peer_id);
                 uint16_t new_client_peer_id = sam2__peer_id_alloc_at_index(server, request->peer_id);
+                if (new_client_peer_id == 0) {
+                    static sam2_error_message_t response = { SAM2_FAIL_HEADER, 0, "Requested invalid peer id", SAM2_RESPONSE_INVALID_ARGS };
+                    sam2__write_response(client_tcp, (sam2_message_u *) &response);
+                    goto finished_processing_last_message;
+                }
 
                 SAM2_LOG_INFO("Changing peer id from %05" PRIu16 " to %05" PRIu16, old_client_peer_id, new_client_peer_id);
                 server->peer_id_map[new_client_peer_id] = server->peer_id_map[old_client_peer_id];
