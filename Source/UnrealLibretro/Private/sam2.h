@@ -92,6 +92,20 @@
 #endif
 
 #if defined(_MSC_VER)
+    // Microsoft Visual C++ (MSVC)
+    #define SAM2_FORCEINLINE __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+    // GCC or Clang
+    #define SAM2_FORCEINLINE __attribute__((always_inline)) inline
+#elif defined(__INTEL_COMPILER)
+    // Intel C++ Compiler (ICC)
+    #define SAM2_FORCEINLINE __forceinline
+#else
+    // fallback to regular inline
+    #define SAM2_FORCEINLINE inline
+#endif
+
+#if defined(_MSC_VER)
 #define SAM2_UNUSED __pragma(warning(suppress: 4505))
 #elif defined(__GNUC__) || defined(__clang__)
 #define SAM2_UNUSED __attribute__((unused))
