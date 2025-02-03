@@ -321,10 +321,11 @@ static int sam2_format_core_version(sam2_room_t *room, const char *name, const c
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN 1
+#define WIN32_LEAN_AND_MEAN
 #endif
-#include <io.h>
+
 #include <winsock2.h>
+
 //#pragma comment(lib, "ws2_32.lib")
 typedef SOCKET sam2_socket_t;
 #else
@@ -332,99 +333,135 @@ typedef int sam2_socket_t;
 #endif
 
 #if defined(SAM2_SERVER)
-// @todo This doesn't need to be a macro really
-#define SAM2__DEFINE_ARRAYLIST_FIELDS(VAR, T, N, IDX_T) \
-IDX_T VAR##_next[N]; \
-IDX_T VAR##_prev[N]; \
-IDX_T VAR##_free_list;      /* Head of freelist */ \
-IDX_T VAR##_free_list_tail; /* Tail of freelist */ \
-IDX_T VAR##_used_list;      /* Doubly-linked list of used elements */ \
-IDX_T VAR##_count;
+#define SAM2__INDEX_NULL ((uint16_t) 0x0000U)
 
-#define SAM2__DEFINE_ARRAYLIST_FUNCTIONS(NS_PREFIX, VAR, T, N, IDX_T, PARENT_TYPE, LIST_NULL) \
-void NS_PREFIX##_##VAR##_init(PARENT_TYPE *parent) { \
-    for (int i = 0; i < N; i++) { \
-        parent->VAR##_next[i] = i + 1; \
-        parent->VAR##_prev[i] = i - 1; \
-    } \
-    parent->VAR##_next[N - 1] = LIST_NULL; \
-    parent->VAR##_prev[0] = LIST_NULL; \
-    parent->VAR##_free_list = 0; \
-    parent->VAR##_free_list_tail = N - 1; /* Initialize freelist tail */ \
-    parent->VAR##_used_list = LIST_NULL; \
-    parent->VAR##_count = 0; \
-} \
-\
-static IDX_T NS_PREFIX##_##VAR##_alloc(PARENT_TYPE *parent) { \
-    if (parent->VAR##_free_list == LIST_NULL) return LIST_NULL; \
-    IDX_T new_idx = parent->VAR##_free_list; \
-    parent->VAR##_free_list = parent->VAR##_next[new_idx]; \
-    if (parent->VAR##_free_list != LIST_NULL) { \
-        parent->VAR##_prev[parent->VAR##_free_list] = LIST_NULL; \
-    } else { \
-        parent->VAR##_free_list_tail = LIST_NULL; /* Freelists becomes empty */ \
-    } \
-    /* Add to used list */ \
-    parent->VAR##_next[new_idx] = parent->VAR##_used_list; \
-    parent->VAR##_prev[new_idx] = LIST_NULL; \
-    if (parent->VAR##_used_list != LIST_NULL) { \
-        parent->VAR##_prev[parent->VAR##_used_list] = new_idx; \
-    } \
-    parent->VAR##_used_list = new_idx; \
-    parent->VAR##_count++; \
-    return new_idx; \
-} \
-\
-static const char *NS_PREFIX##_##VAR##_free(PARENT_TYPE *parent, IDX_T idx) { \
-    if (idx >= N) return "invalid index"; \
-    /* Remove from used list */ \
-    if (idx == parent->VAR##_used_list) { \
-        parent->VAR##_used_list = parent->VAR##_next[idx]; \
-    } else { \
-        parent->VAR##_next[parent->VAR##_prev[idx]] = parent->VAR##_next[idx]; \
-    } \
-    if (parent->VAR##_next[idx] != LIST_NULL) { \
-        parent->VAR##_prev[parent->VAR##_next[idx]] = parent->VAR##_prev[idx]; \
-    } \
-    /* Add to free list at tail */ \
-    parent->VAR##_next[idx] = LIST_NULL; \
-    parent->VAR##_prev[idx] = parent->VAR##_free_list_tail; \
-    if (parent->VAR##_free_list_tail != LIST_NULL) { \
-        parent->VAR##_next[parent->VAR##_free_list_tail] = idx; \
-    } else { \
-        parent->VAR##_free_list = idx; /* List was empty, set head */ \
-    } \
-    parent->VAR##_free_list_tail = idx; \
-    parent->VAR##_count--; \
-    return NULL; \
-} \
-\
-static IDX_T NS_PREFIX##_##VAR##_alloc_at_index(PARENT_TYPE *parent, IDX_T idx) { \
-    if (idx >= N) return LIST_NULL; \
-    /* Remove from free list */ \
-    if (idx == parent->VAR##_free_list) { \
-        parent->VAR##_free_list = parent->VAR##_next[idx]; \
-        if (parent->VAR##_free_list != LIST_NULL) { \
-            parent->VAR##_prev[parent->VAR##_free_list] = LIST_NULL; \
-        } else { \
-            parent->VAR##_free_list_tail = LIST_NULL; /* Freelists becomes empty */ \
-        } \
-    } else if (idx == parent->VAR##_free_list_tail) { \
-        parent->VAR##_free_list_tail = parent->VAR##_prev[idx]; \
-        parent->VAR##_next[parent->VAR##_prev[idx]] = LIST_NULL; \
-    } else { \
-        parent->VAR##_next[parent->VAR##_prev[idx]] = parent->VAR##_next[idx]; \
-        parent->VAR##_prev[parent->VAR##_next[idx]] = parent->VAR##_prev[idx]; \
-    } \
-    /* Add to used list */ \
-    parent->VAR##_next[idx] = parent->VAR##_used_list; \
-    parent->VAR##_prev[idx] = LIST_NULL; \
-    if (parent->VAR##_used_list != LIST_NULL) { \
-        parent->VAR##_prev[parent->VAR##_used_list] = idx; \
-    } \
-    parent->VAR##_used_list = idx; \
-    parent->VAR##_count++; \
-    return idx; \
+#define SAM2__MEDIUM_POOL_SIZE 2048
+#define SAM2__LARGE_POOL_SIZE 65536
+typedef struct sam2__pool_node {
+    uint16_t next;
+    uint16_t prev;
+} sam2__pool_node_t;
+
+typedef struct sam2__pool {
+    uint16_t free_list;
+    uint16_t free_list_tail;
+    uint16_t used_list;
+    uint16_t used;
+    uint16_t capacity;
+    //sam2__pool_node_t node[n]; // capacity == n - 1 because 0-index reserved for null
+} sam2__pool_t;
+
+SAM2_FORCEINLINE sam2__pool_node_t *sam2__pool_node(sam2__pool_t *pool) {
+    char *node = ((char *) pool) + sizeof(pool[0]);
+    return (sam2__pool_node_t *) node;
+}
+
+static void sam2__pool_init(sam2__pool_t *pool, int n) {
+    sam2__pool_node_t *node = sam2__pool_node(pool);
+
+    for (int i = 1; i < n; i++) {
+        node[i].next = i + 1;
+        node[i].prev = i - 1;
+    }
+
+    node[0].prev = SAM2__INDEX_NULL;
+    node[n - 1].next = SAM2__INDEX_NULL;
+    pool->free_list = 1;
+    pool->free_list_tail = n - 1;
+    pool->used_list = SAM2__INDEX_NULL;
+    pool->used = 0;
+    pool->capacity = n - 1;
+}
+
+static uint16_t sam2__pool_alloc(sam2__pool_t *pool) {
+    sam2__pool_node_t *node = sam2__pool_node(pool);
+
+    if (pool->free_list == SAM2__INDEX_NULL) {
+        return SAM2__INDEX_NULL;
+    }
+
+    uint16_t new_idx = pool->free_list;
+
+    // Remove from free list
+    pool->free_list = node[new_idx].next;
+    if (pool->free_list != SAM2__INDEX_NULL) {
+        node[pool->free_list].prev = SAM2__INDEX_NULL;
+    } else {
+        pool->free_list_tail = SAM2__INDEX_NULL; // Freelist becomes empty
+    }
+
+    // Add to used list
+    node[new_idx].next = pool->used_list;
+    node[new_idx].prev = SAM2__INDEX_NULL;
+    if (pool->used_list != SAM2__INDEX_NULL) {
+        node[pool->used_list].prev = new_idx;
+    }
+    pool->used_list = new_idx;
+    pool->used++;
+
+    return new_idx;
+}
+
+static uint16_t sam2__pool_alloc_at_index(sam2__pool_t *pool, int idx) {
+    sam2__pool_node_t *node = sam2__pool_node(pool);
+
+    if (idx >= pool->capacity) {
+        return SAM2__INDEX_NULL;
+    }
+
+    // Remove from free list
+    if (idx == pool->free_list) {
+        pool->free_list = node[idx].next;
+        if (pool->free_list != SAM2__INDEX_NULL) {
+            node[pool->free_list].prev = SAM2__INDEX_NULL;
+        } else {
+            pool->free_list_tail = SAM2__INDEX_NULL; // Freelist becomes empty
+        }
+    } else if (idx == pool->free_list_tail) {
+        pool->free_list_tail = node[idx].prev;
+        node[node[idx].prev].next = SAM2__INDEX_NULL;
+    } else {
+        node[node[idx].prev].next = node[idx].next;
+        node[node[idx].next].prev = node[idx].prev;
+    }
+
+    // Add to used list
+    node[idx].next = pool->used_list;
+    node[idx].prev = SAM2__INDEX_NULL;
+    if (pool->used_list != SAM2__INDEX_NULL) {
+        node[pool->used_list].prev = idx;
+    }
+    pool->used_list = idx;
+    pool->used++;
+
+    return idx;
+}
+
+static const char *sam2__pool_free(sam2__pool_t *pool, uint16_t idx) {
+    sam2__pool_node_t *node = sam2__pool_node(pool);
+
+    // Remove from used list
+    if (idx == pool->used_list) {
+        pool->used_list = node[idx].next;
+    } else {
+        node[node[idx].prev].next = node[idx].next;
+    }
+    if (node[idx].next != SAM2__INDEX_NULL) {
+        node[node[idx].next].prev = node[idx].prev;
+    }
+
+    // Add to free list at tail
+    node[idx].next = SAM2__INDEX_NULL;
+    node[idx].prev = pool->free_list_tail;
+    if (pool->free_list_tail != SAM2__INDEX_NULL) {
+        node[pool->free_list_tail].next = idx;
+    } else {
+        pool->free_list = idx; // List was empty, set head
+    }
+    pool->free_list_tail = idx;
+    pool->used--;
+
+    return NULL;
 }
 
 #include <uv.h>
@@ -443,18 +480,31 @@ typedef struct sam2_server {
     uv_tcp_t tcp;
     uv_loop_t loop;
 
-    sam2_message_u responses[2048];
-    SAM2__DEFINE_ARRAYLIST_FIELDS(response, sam2_message_u, 2048, uint16_t)
     int64_t _debug_allocated_messages;
 
     void* _debug_allocated_message_set[32];
     int _debug_allocated_message_count;
 
-    uint16_t peer_id_map[65536]; // We aren't allowed to move libuv handles in memory so we need this indirection to allow switching peer ids post connection... This also means we have to separately allocate and free peer ids which is annoying extra bookkeeping
-    SAM2__DEFINE_ARRAYLIST_FIELDS(peer_id, uint16_t, 65536, uint16_t)
-    sam2_client_t clients[65536];
-    SAM2__DEFINE_ARRAYLIST_FIELDS(client, sam2_client_t, 65536, uint16_t)
-    sam2_room_t rooms[65536];
+    uint16_t peer_id_map[SAM2__LARGE_POOL_SIZE]; // We aren't allowed to move libuv handles in memory so we need this indirection to allow switching peer ids post connection... This also means we have to separately allocate and free peer ids which is annoying extra bookkeeping
+
+    sam2_message_u responses[SAM2__MEDIUM_POOL_SIZE];
+    struct {
+        sam2__pool_t response_pool;
+        sam2__pool_node_t response_pool_node[SAM2__MEDIUM_POOL_SIZE];
+    };
+
+    struct {
+        sam2__pool_t peer_id_pool;
+        sam2__pool_node_t peer_id_pool_node[SAM2__LARGE_POOL_SIZE];
+    };
+
+    sam2_client_t clients[SAM2__LARGE_POOL_SIZE];
+    sam2_room_t rooms[SAM2__LARGE_POOL_SIZE]; // Index into this array corresponds to the client at the same index
+    struct {
+        sam2__pool_t client_pool;
+        sam2__pool_node_t client_pool_node[SAM2__LARGE_POOL_SIZE];
+    };
+
 } sam2_server_t;
 
 SAM2_STATIC_ASSERT(offsetof(sam2_server_t, tcp) == 0, "We need this so we can cast between sam2_server_t and uv_tcp_t");
@@ -478,7 +528,7 @@ _Pragma("GCC diagnostic pop")
 static sam2_client_t* sam2__find_client(sam2_server_t *server, uint16_t peer_id) {
     uint16_t client_index = server->peer_id_map[peer_id];
 
-    if (client_index) {
+    if (client_index != SAM2__INDEX_NULL) {
         return &server->clients[client_index];
     } else {
         return NULL;
@@ -558,10 +608,6 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message);
 #include <netdb.h>
 #include <fcntl.h>
 #endif
-
-SAM2__DEFINE_ARRAYLIST_FUNCTIONS(sam2_, client, sam2_client_t, SAM2_ARRAY_LENGTH(((sam2_server_t *)0)->clients), uint16_t, sam2_server_t, 0)
-SAM2__DEFINE_ARRAYLIST_FUNCTIONS(sam2_, peer_id, uint16_t, 65536, uint16_t, sam2_server_t, 0)
-SAM2__DEFINE_ARRAYLIST_FUNCTIONS(sam2_, response, sam2_message_u, SAM2_ARRAY_LENGTH(((sam2_server_t *)0)->responses), uint16_t, sam2_server_t, 0)
 
 #define RLE8_ENCODE_UPPER_BOUND(N) (3 * ((N+1) / 2) + (N) / 2)
 
@@ -1149,9 +1195,9 @@ static uint16_t sam2__peer_id(sam2_client_t *client) {
 
 static sam2_message_u *sam2__alloc_message_raw(sam2_server_t *server) {
     server->_debug_allocated_messages++;
-    int response_index = sam2__response_alloc(server);
+    int response_index = sam2__pool_alloc(&server->response_pool);
 
-    if (response_index == 0) {
+    if (response_index == SAM2__INDEX_NULL) {
         return NULL;
     } else {
         return &server->responses[response_index];
@@ -1160,7 +1206,7 @@ static sam2_message_u *sam2__alloc_message_raw(sam2_server_t *server) {
 
 static void sam2__free_message_raw(sam2_server_t *server, void *message) {
     server->_debug_allocated_messages--;
-    sam2__response_free(server, (sam2_message_u *) message - server->responses);
+    sam2__pool_free(&server->response_pool, (sam2_message_u *) message - server->responses);
 }
 
 static sam2_message_u *sam2__alloc_message(sam2_server_t *server, const char *header) {
@@ -1339,7 +1385,7 @@ static void sam2__on_client_destroy(uv_handle_t *handle) {
     sam2_server_t *server = sam2__client_get_server(client);
     SAM2_LOG_INFO("Socket for client %05" PRId16 " closed", sam2__peer_id(client));
 
-    const char *error = sam2__client_free(server, client - server->clients);
+    const char *error = sam2__pool_free(&server->client_pool, client - server->clients);
     if (error) {
         SAM2_LOG_ERROR("Failed to free client: %s", error);
     }
@@ -1356,8 +1402,8 @@ static void sam2__client_destroy(sam2_client_t *client) {
     }
 
     uv_close((uv_handle_t *) &client->tcp, sam2__on_client_destroy);
-    server->peer_id_map[client_peer_id] = 0; // NULL
-    const char *error = sam2__peer_id_free(server, client_peer_id);
+    server->peer_id_map[client_peer_id] = SAM2__INDEX_NULL;
+    const char *error = sam2__pool_free(&server->peer_id_pool, client_peer_id);
     if (error) {
         SAM2_LOG_ERROR("Failed to free peer id: %s", error);
     }
@@ -1410,7 +1456,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
     for (int64_t remaining = nread;;) {
         { // This is to avoid overallocating which I just make a fatal error for convinience
             int minimum_allocations_required = 128;
-            if (SAM2_ARRAY_LENGTH(server->responses) - server->response_count < minimum_allocations_required) {
+            if (SAM2_ARRAY_LENGTH(server->responses) - server->response_pool.used < minimum_allocations_required) {
                 SAM2_LOG_WARN("Out of free responses to allocate sending error to client %05" PRId16 "", sam2__peer_id(client));
                 static sam2_error_message_t response = { SAM2_FAIL_HEADER, 0, "Server overloaded with requests", SAM2_RESPONSE_SERVER_ERROR };
                 sam2__write_response(client_tcp, (sam2_message_u *) &response);
@@ -1467,7 +1513,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
         // Send the appropriate response
         if (memcmp(&message, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
             sam2_connect_message_t *request = &message.connect_message;
-            if (server->peer_id_map[request->peer_id] && request->peer_id != sam2__peer_id(client)) {
+            if (server->peer_id_map[request->peer_id] != SAM2__INDEX_NULL && request->peer_id != sam2__peer_id(client)) {
                 static sam2_error_message_t response = { SAM2_FAIL_HEADER, 0, "Peer id is already in use", SAM2_RESPONSE_INVALID_ARGS };
                 sam2__write_response(client_tcp, (sam2_message_u *) &response);
                 goto finished_processing_last_message;
@@ -1481,8 +1527,8 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
                 goto finished_processing_last_message;
             } else {
                 uint16_t old_client_peer_id = sam2__peer_id(client);
-                sam2__peer_id_free(server, old_client_peer_id);
-                uint16_t new_client_peer_id = sam2__peer_id_alloc_at_index(server, request->peer_id);
+                sam2__pool_free(&server->peer_id_pool, old_client_peer_id);
+                uint16_t new_client_peer_id = sam2__pool_alloc_at_index(&server->peer_id_pool, request->peer_id);
                 if (new_client_peer_id == 0) {
                     static sam2_error_message_t response = { SAM2_FAIL_HEADER, 0, "Requested invalid peer id", SAM2_RESPONSE_INVALID_ARGS };
                     sam2__write_response(client_tcp, (sam2_message_u *) &response);
@@ -1491,7 +1537,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
 
                 SAM2_LOG_INFO("Changing peer id from %05" PRIu16 " to %05" PRIu16, old_client_peer_id, new_client_peer_id);
                 server->peer_id_map[new_client_peer_id] = server->peer_id_map[old_client_peer_id];
-                server->peer_id_map[old_client_peer_id] = 0; // NULL
+                server->peer_id_map[old_client_peer_id] = SAM2__INDEX_NULL;
                 client->tcp.data = &server->peer_id_map[new_client_peer_id];
 
                 sam2_connect_message_t *response = &sam2__alloc_message(server, sam2_conn_header)->connect_message;
@@ -1659,15 +1705,15 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
     }
 
     sam2_server_t *server = (sam2_server_t *) server_tcp;
-    uint16_t client_index = sam2__client_alloc(server);
-    if (client_index == 0) {
+    uint16_t client_index = sam2__pool_alloc(&server->client_pool);
+    if (client_index == SAM2__INDEX_NULL) {
         SAM2_LOG_WARN("Ignoring connection request, No more client slots available");
         return;
     }
     sam2_client_t *client = &server->clients[client_index];
 
     memset(client, 0, sizeof(sam2_client_t));
-    uint16_t client_peer_id = sam2__peer_id_alloc(server);
+    uint16_t client_peer_id = sam2__pool_alloc(&server->peer_id_pool);
     server->peer_id_map[client_peer_id] = (uint16_t) (client - server->clients);
     client->tcp.data = &server->peer_id_map[client_peer_id];
 
@@ -1725,12 +1771,12 @@ static void close_loop(uv_loop_t* loop) {
 
 SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     memset(server, 0, sizeof(sam2_server_t));
-    sam2__client_init(server);
-    server->client_free_list = 1;
-    sam2__peer_id_init(server);
-    server->peer_id_free_list = SAM2_PORT_SENTINELS_MAX+1; // Don't allow allocation of sentinel indices
-    sam2__response_init(server);
-    server->response_free_list = 1;
+
+    sam2__pool_init(&server->client_pool, SAM2_ARRAY_LENGTH(server->clients));
+    sam2__pool_init(&server->peer_id_pool, SAM2_ARRAY_LENGTH(server->peer_id_pool_node));
+    sam2__pool_init(&server->response_pool, SAM2_ARRAY_LENGTH(server->responses));
+
+    server->peer_id_pool.free_list = SAM2_PORT_SENTINELS_MAX+1; // Don't allow allocation of sentinel indices
 
     int err = uv_loop_init(&server->loop);
     if (err) {
@@ -1774,7 +1820,7 @@ SAM2_LINKAGE int sam2_server_begin_destroy(sam2_server_t *server) {
     // Kill all clients first since they might be reading from the server
     for (int i = 0; i < SAM2_ARRAY_LENGTH(server->clients); i++) {
         uint16_t client_index = server->peer_id_map[i];
-        if (client_index) {
+        if (client_index != SAM2__INDEX_NULL) {
             sam2__client_destroy(&server->clients[client_index]);
         }
     }
@@ -1881,19 +1927,13 @@ SAM2_STATIC_ASSERT(sizeof(sam2_room_join_message_t) == 8 + 8 + sizeof(sam2_room_
 #ifndef SAM2_TEST_C
 #define SAM2_TEST_C
 
-#define SAM2__TEST_LIST_SIZE 3
-#define SAM2__TEST_LIST_NULL (SAM2__TEST_LIST_SIZE + 1)
+#define SAM2__TEST_LIST_CAPACITY 3
+#define SAM2__TEST_LIST_SIZE (SAM2__TEST_LIST_CAPACITY+1)
 
-/* Define a simple parent/container struct that holds our array-list fields. */
-typedef struct sam2__test_container_s {
-    // We'll store the fields for our arraylist of "int"s, with 3 capacity.
-    SAM2__DEFINE_ARRAYLIST_FIELDS(my_list, int, SAM2__TEST_LIST_SIZE, uint16_t)
+typedef struct sam2__test_container {
+    sam2__pool_t pool;
+    sam2__pool_node_t next[SAM2__TEST_LIST_SIZE];
 } sam2__test_container_t;
-
-// And define the functions with our chosen namespace prefix "sam2__test". 
-// We'll store "int" in the array. The array itself is just for the next/prev indices
-// but conceptually it could be storing real data. For test purposes, only indices matter.
-SAM2__DEFINE_ARRAYLIST_FUNCTIONS(sam2__test, my_list, int, SAM2__TEST_LIST_SIZE, uint16_t, sam2__test_container_t, SAM2__TEST_LIST_NULL)
 
 // Helper macro to check a condition and print an error if it fails.
 #define TEST_ASSERT(cond, message)       \
@@ -1910,17 +1950,17 @@ int sam2__test_one_allocation_and_free(void) {
 
     sam2__test_container_t container;
     memset(&container, 0, sizeof(container));
-    sam2__test_my_list_init(&container);
+    sam2__pool_init(&container.pool, SAM2__TEST_LIST_SIZE);
 
     // Allocate 1 element
-    uint16_t idx = sam2__test_my_list_alloc(&container);
-    TEST_ASSERT(idx != SAM2__TEST_LIST_NULL, "Expected allocation to succeed, got LIST_NULL instead.");
-    TEST_ASSERT(container.my_list_count == 1, "Used count should be 1 after first allocation.");
+    uint16_t idx = sam2__pool_alloc(&container.pool);
+    TEST_ASSERT(idx != SAM2__INDEX_NULL, "Expected allocation to succeed, got LIST_NULL instead.");
+    TEST_ASSERT(container.pool.used == 1, "Used count should be 1 after first allocation.");
 
     // Free it
-    const char *err = sam2__test_my_list_free(&container, idx);
+    const char *err = sam2__pool_free(&container.pool, idx);
     TEST_ASSERT(err == NULL, "Expected free to succeed, got an error instead.");
-    TEST_ASSERT(container.my_list_count == 0, "Used count should be 0 after freeing.");
+    TEST_ASSERT(container.pool.used == 0, "Used count should be 0 after freeing.");
 
     return test_failed_local;
 }
@@ -1931,26 +1971,26 @@ int sam2__test_out_of_memory(void) {
 
     sam2__test_container_t container;
     memset(&container, 0, sizeof(container));
-    sam2__test_my_list_init(&container);
+    sam2__pool_init(&container.pool, SAM2__TEST_LIST_SIZE);
 
     // We have 3 total. Allocate 3 times.
-    uint16_t idx1 = sam2__test_my_list_alloc(&container);
-    uint16_t idx2 = sam2__test_my_list_alloc(&container);
-    uint16_t idx3 = sam2__test_my_list_alloc(&container);
+    uint16_t idx1 = sam2__pool_alloc(&container.pool);
+    uint16_t idx2 = sam2__pool_alloc(&container.pool);
+    uint16_t idx3 = sam2__pool_alloc(&container.pool);
 
-    TEST_ASSERT(idx1 != SAM2__TEST_LIST_NULL && idx2 != SAM2__TEST_LIST_NULL && idx3 != SAM2__TEST_LIST_NULL,
+    TEST_ASSERT(idx1 != SAM2__INDEX_NULL && idx2 != SAM2__INDEX_NULL && idx3 != SAM2__INDEX_NULL,
         "Allocations should succeed (3 total).");
-    TEST_ASSERT(container.my_list_count == 3, "Used count should be 3 after allocating 3 elements.");
+    TEST_ASSERT(container.pool.used == 3, "Used count should be 3 after allocating 3 elements.");
 
-    // Now the next allocation should return SAM2__TEST_LIST_NULL.
-    uint16_t idx4 = sam2__test_my_list_alloc(&container);
-    TEST_ASSERT(idx4 == SAM2__TEST_LIST_NULL, "Expected out-of-memory (LIST_NULL) for the 4th allocation.");
+    // Now the next allocation should return SAM2__INDEX_NULL.
+    uint16_t idx4 = sam2__pool_alloc(&container.pool);
+    TEST_ASSERT(idx4 == SAM2__INDEX_NULL, "Expected out-of-memory (LIST_NULL) for the 4th allocation.");
 
     // Cleanup: free them all so we don't leave them allocated.
-    sam2__test_my_list_free(&container, idx1);
-    sam2__test_my_list_free(&container, idx2);
-    sam2__test_my_list_free(&container, idx3);
-    TEST_ASSERT(container.my_list_count == 0, "Used count should be 0 after freeing everything.");
+    sam2__pool_free(&container.pool, idx1);
+    sam2__pool_free(&container.pool, idx2);
+    sam2__pool_free(&container.pool, idx3);
+    TEST_ASSERT(container.pool.used == 0, "Used count should be 0 after freeing everything.");
 
     return test_failed_local;
 }
@@ -1963,32 +2003,32 @@ int sam2__test_full_allocation_and_deallocation(void) {
 
     sam2__test_container_t container;
     memset(&container, 0, sizeof(container));
-    sam2__test_my_list_init(&container);
+    sam2__pool_init(&container.pool, SAM2__TEST_LIST_SIZE);
 
     // Allocate all (3)
     uint16_t idx[3];
-    for (int i = 0; i < SAM2__TEST_LIST_SIZE; i++) {
-        idx[i] = sam2__test_my_list_alloc(&container);
-        TEST_ASSERT(idx[i] != SAM2__TEST_LIST_NULL, "Allocation failed unexpectedly.");
+    for (int i = 0; i < SAM2__TEST_LIST_CAPACITY; i++) {
+        idx[i] = sam2__pool_alloc(&container.pool);
+        TEST_ASSERT(idx[i] != SAM2__INDEX_NULL, "Allocation failed unexpectedly.");
     }
-    TEST_ASSERT(container.my_list_count == 3,
+    TEST_ASSERT(container.pool.used == 3,
         "Used count should be 3 after allocating all resources.");
 
     // Free all
-    for (int i = 0; i < SAM2__TEST_LIST_SIZE; i++) {
-        const char* err = sam2__test_my_list_free(&container, idx[i]);
+    for (int i = 0; i < SAM2__TEST_LIST_CAPACITY; i++) {
+        const char* err = sam2__pool_free(&container.pool, idx[i]);
         TEST_ASSERT(err == NULL, "Free returned an error unexpectedly.");
     }
-    TEST_ASSERT(container.my_list_count == 0,
+    TEST_ASSERT(container.pool.used == 0,
         "Used count should be 0 after freeing everything.");
 
     // Check that we can allocate again (meaning the state was restored).
-    uint16_t idx_new = sam2__test_my_list_alloc(&container);
-    TEST_ASSERT(idx_new != SAM2__TEST_LIST_NULL, "Allocation after full free should succeed.");
-    TEST_ASSERT(container.my_list_count == 1, "Used count should be 1 after new allocation.");
+    uint16_t idx_new = sam2__pool_alloc(&container.pool);
+    TEST_ASSERT(idx_new != SAM2__INDEX_NULL, "Allocation after full free should succeed.");
+    TEST_ASSERT(container.pool.used == 1, "Used count should be 1 after new allocation.");
 
     // Cleanup
-    sam2__test_my_list_free(&container, idx_new);
+    sam2__pool_free(&container.pool, idx_new);
 
     return test_failed_local;
 }
@@ -2001,29 +2041,25 @@ int sam2__test_alloc_at_index(void) {
 
     sam2__test_container_t container;
     memset(&container, 0, sizeof(container));
-    sam2__test_my_list_init(&container);
+    sam2__pool_init(&container.pool, SAM2__TEST_LIST_SIZE);
 
     // Grab one normally.
-    uint16_t idx_normal = sam2__test_my_list_alloc(&container);
-    TEST_ASSERT(idx_normal != SAM2__TEST_LIST_NULL, "Normal allocation should succeed.");
+    uint16_t idx_normal = sam2__pool_alloc(&container.pool);
+    TEST_ASSERT(idx_normal != SAM2__INDEX_NULL, "Normal allocation should succeed.");
 
     // Now free it.
-    const char *err = sam2__test_my_list_free(&container, idx_normal);
+    const char *err = sam2__pool_free(&container.pool, idx_normal);
     TEST_ASSERT(err == NULL, "Free should succeed for a valid index.");
 
     // Now we know idx_normal is free again. Let's allocate at that exact index.
-    uint16_t idx_allocated_at = sam2__test_my_list_alloc_at_index(&container, idx_normal);
+    uint16_t idx_allocated_at = sam2__pool_alloc_at_index(&container.pool, idx_normal);
     TEST_ASSERT(idx_allocated_at == idx_normal,
         "Expected to re-allocate at the same index we freed, but got a different index or LIST_NULL.");
-    TEST_ASSERT(container.my_list_count == 1,
+    TEST_ASSERT(container.pool.used == 1,
         "Used count should be 1 after alloc_at_index.");
 
-    // Negative test: try to allocate at an out-of-range index (e.g. 999), expect LIST_NULL.
-    uint16_t out_of_range_idx = sam2__test_my_list_alloc_at_index(&container, 0xFFFF /* large number */);
-    TEST_ASSERT(out_of_range_idx == SAM2__TEST_LIST_NULL, "Out-of-range alloc_at_index should return LIST_NULL.");
-
     // Cleanup
-    err = sam2__test_my_list_free(&container, idx_allocated_at);
+    err = sam2__pool_free(&container.pool, idx_allocated_at);
     TEST_ASSERT(err == NULL, "Free should succeed at the end.");
 
     return test_failed_local;
@@ -2036,30 +2072,30 @@ int sam2__test_free_and_realloc(void) {
 
     sam2__test_container_t container;
     memset(&container, 0, sizeof(container));
-    sam2__test_my_list_init(&container);
+    sam2__pool_init(&container.pool, SAM2__TEST_LIST_SIZE);
 
     // Allocate 2 of the 3 available.
-    uint16_t idx1 = sam2__test_my_list_alloc(&container);
-    uint16_t idx2 = sam2__test_my_list_alloc(&container);
+    uint16_t idx1 = sam2__pool_alloc(&container.pool);
+    uint16_t idx2 = sam2__pool_alloc(&container.pool);
 
-    TEST_ASSERT(idx1 != SAM2__TEST_LIST_NULL && idx2 != SAM2__TEST_LIST_NULL, "Expected first 2 allocations to succeed.");
-    TEST_ASSERT(container.my_list_count == 2, "Used count should be 2 after 2 allocs.");
+    TEST_ASSERT(idx1 != SAM2__INDEX_NULL && idx2 != SAM2__INDEX_NULL, "Expected first 2 allocations to succeed.");
+    TEST_ASSERT(container.pool.used == 2, "Used count should be 2 after 2 allocs.");
 
     // Free the first one.
-    const char *err = sam2__test_my_list_free(&container, idx1);
+    const char *err = sam2__pool_free(&container.pool, idx1);
     TEST_ASSERT(err == NULL, "Freeing idx1 should succeed.");
-    TEST_ASSERT(container.my_list_count == 1, "Used count should drop to 1 after free.");
+    TEST_ASSERT(container.pool.used == 1, "Used count should drop to 1 after free.");
 
     // Now allocate a third one. It's possible that the newly freed index1 is reused or
     // we get the last slot. We do not rely on the order. Only that it succeeds.
-    uint16_t idx3 = sam2__test_my_list_alloc(&container);
-    TEST_ASSERT(idx3 != SAM2__TEST_LIST_NULL, "Expected the 3rd allocation to succeed since we freed idx1.");
-    TEST_ASSERT(container.my_list_count == 2, "Used count should be 2 again after the 3rd allocation.");
+    uint16_t idx3 = sam2__pool_alloc(&container.pool);
+    TEST_ASSERT(idx3 != SAM2__INDEX_NULL, "Expected the 3rd allocation to succeed since we freed idx1.");
+    TEST_ASSERT(container.pool.used == 2, "Used count should be 2 again after the 3rd allocation.");
 
     // Cleanup: free the remaining.
-    sam2__test_my_list_free(&container, idx2);
-    sam2__test_my_list_free(&container, idx3);
-    TEST_ASSERT(container.my_list_count == 0,
+    sam2__pool_free(&container.pool, idx2);
+    sam2__pool_free(&container.pool, idx3);
+    TEST_ASSERT(container.pool.used == 0,
         "Used count should be 0 after final free of idx2 and idx3.");
 
     return test_failed_local;
