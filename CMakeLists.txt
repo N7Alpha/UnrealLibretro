@@ -106,9 +106,9 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     Source/UnrealLibretro/Public/libretro
     Source/ThirdParty/libjuice/include
     Source/ThirdParty/zstd/lib
-    Source/ThirdParty/imgui/
-    Source/ThirdParty/imgui/backends/
-    Source/ThirdParty/implot/
+    Source/ThirdParty/imgui
+    Source/ThirdParty/imgui/backends
+    Source/ThirdParty/implot
     Source/ThirdParty/SDL/include
     Source/ThirdParty/netImgui/Code/Client
 )

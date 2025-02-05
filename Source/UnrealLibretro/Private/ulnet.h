@@ -764,7 +764,7 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
 
             session->room_we_are_in = new_room_state;
             if (!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
-                SAM2_LOG_INFO("The room %05" PRId16 ":'%s' was abandoned", session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX], session->room_we_are_in.name);
+                SAM2_LOG_INFO("Client %05" PRId16 " abandoned the room '%s'", session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX], session->room_we_are_in.name);
                 for (int peer_port = 0; peer_port < SAM2_ARRAY_LENGTH(session->agent); peer_port++) {
                     if (session->agent[peer_port]) {
                         ulnet_disconnect_peer(session, peer_port);
@@ -866,7 +866,6 @@ static void ulnet__on_state_changed(juice_agent_t *agent, juice_state_t state, v
     }
 }
 
-// On local candidate gathered
 static void ulnet__on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr) {
     ulnet_session_t *session = (ulnet_session_t *) user_ptr;
 
@@ -889,7 +888,6 @@ static void ulnet__on_candidate(juice_agent_t *agent, const char *sdp, void *use
     }
 }
 
-// On local candidates gathering done
 static void ulnet__on_gathering_done(juice_agent_t *agent, void *user_ptr) {
     ulnet_session_t *session = (ulnet_session_t *) user_ptr;
 
