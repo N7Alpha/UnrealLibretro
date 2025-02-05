@@ -52,6 +52,80 @@ int g_log_level = 1; // Info
 #include <string.h>
 #include <time.h>
 
+#ifndef MAX_PATH
+#define MAX_PATH 260
+#endif
+
+
+//portable_basename:
+//  Returns a pointer to the last component of path (i.e., the filename).
+//  Handles both Unix-style '/' and Windows-style '\' path separators.
+//  Modifies the input string in place by inserting a null terminator
+//  after stripping trailing separators.
+//
+//  If path is NULL or empty, returns "." (a static string).
+//
+//  Notes:
+//    1) This function returns a pointer into the given string. Make sure
+//       the lifetime of 'path' lasts as long as you need the basename.
+//    2) If you need to preserve the original string, you should make a copy
+//       of it before calling this function.
+//
+//Example usage:
+//  char path[] = "C:\\folder\\subfolder\\filename.txt";
+//  printf("%s\n", portable_basename(path)); // prints "filename.txt"
+char* portable_basename(char *path)
+{
+    static const char *dot = ".";
+
+    if (path == NULL || *path == '\0') {
+        // Edge case: NULL or empty input
+        return (char*)dot;
+    }
+
+    // 1. Strip trailing slashes/backslashes.
+    //    We'll replace them with '\0' so they don't appear in the filename.
+    size_t len = strlen(path);
+    while (len > 0) {
+        if (path[len - 1] == '/' || path[len - 1] == '\\') {
+            path[--len] = '\0';
+        } else {
+            break;
+        }
+    }
+
+    // If everything was trailing slashes, return ".".
+    if (len == 0) {
+        return (char*)dot;
+    }
+
+    // 2. Find the start of the filename component.
+    //    We'll search for the last occurrence of either separator.
+    char *last_slash = strrchr(path, '/');
+    char *last_backslash = strrchr(path, '\\');
+    char *last_sep = NULL;
+
+    if (last_slash && last_backslash) {
+        // Whichever separator appears later in the string is the "real" last separator
+        last_sep = (last_slash > last_backslash) ? last_slash : last_backslash;
+    } else if (last_slash) {
+        last_sep = last_slash;
+    } else if (last_backslash) {
+        last_sep = last_backslash;
+    } else {
+        // No path separator found
+        last_sep = NULL;
+    }
+
+    // 3. Return the filename portion (the part after the last separator).
+    if (last_sep != NULL) {
+        return last_sep + 1;
+    }
+
+    // If there's no separator at all, the entire input is the filename.
+    return path;
+}
+
 #ifdef _WIN32
 #else
 #include <unistd.h> // for sleep
@@ -75,6 +149,7 @@ int g_log_level = 1; // Info
 #define glDrawArrays RENAMED_BY_NETARCH_CPP_glDrawArrays
 #define glTexParameteri RENAMED_BY_NETARCH_CPP_glTexParameteri
 #define glTexSubImage2D RENAMED_BY_NETARCH_CPP_glTexSubImage2D
+#define glGetError RENAMED_BY_NETARCH_CPP_glGetError
 #include <SDL3/SDL_opengl.h>
 #undef glActiveTexture
 #undef glBindTexture
@@ -93,7 +168,7 @@ int g_log_level = 1; // Info
 #undef glDrawArrays
 #undef glTexParameteri
 #undef glTexSubImage2D
-
+#undef glGetError
 typedef void (APIENTRYP PFNGLBINDTEXTUREPROC)(GLenum target, GLuint texture);
 typedef void (APIENTRYP PFNGLCLEARPROC)(GLbitfield mask);
 typedef void (APIENTRYP PFNGLCLEARCOLORPROC)(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha);
@@ -111,6 +186,7 @@ typedef void (APIENTRYP PFNGLVIEWPORTPROC)(GLint x, GLint y, GLsizei width, GLsi
 typedef void (APIENTRYP PFNGLDRAWARRAYSPROC)(GLenum mode, GLint first, GLsizei count);
 typedef void (APIENTRYP PFNGLTEXPARAMETERIPROC)(GLenum target, GLenum pname, GLint param);
 typedef void (APIENTRYP PFNGLTEXSUBIMAGE2DPROC)(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels);
+typedef GLenum (APIENTRY* PFNGLGETERRORPROC) (void);
 
 #define ENUM_GL_PROCEDURES(EnumMacro) \
         EnumMacro(PFNGLACTIVETEXTUREPROC, glActiveTexture) \
@@ -172,10 +248,33 @@ typedef void (APIENTRYP PFNGLTEXSUBIMAGE2DPROC)(GLenum target, GLint level, GLin
         EnumMacro(PFNGLDRAWARRAYSPROC, glDrawArrays) \
         EnumMacro(PFNGLTEXPARAMETERIPROC, glTexParameteri) \
         EnumMacro(PFNGLTEXSUBIMAGE2DPROC, glTexSubImage2D) \
-
+        EnumMacro(PFNGLGETERRORPROC, glGetError) \
 
 #define DEFINE_GL_PROCEDURES(Type,Func) Type Func = NULL;
 ENUM_GL_PROCEDURES(DEFINE_GL_PROCEDURES);
+
+#if !defined(DEBUG_OPENGL_CALLBACK)
+#define LogGLErrors(x) GLClearErrors();\
+    x;\
+    GLLogCall(#x, __FILE__, __LINE__)
+#else
+#define LogGLErrors(x) x
+#endif
+
+static void GLClearErrors() {
+    /* loop while there are errors and until GL_NO_ERROR is returned */
+    while (glGetError() != GL_NO_ERROR);
+}
+
+static bool GLLogCall(const char* function, const char* file, int line) {
+    while (GLenum error = glGetError())
+    {
+        SAM2_LOG_ERROR("OpenGL: %s:%s:%d: GLenum (%d)", function, file, line, error);
+        return false;
+    }
+    return true;
+}
+
 
 static SDL_Window *g_win = NULL;
 static SDL_GLContext g_ctx = NULL;
@@ -672,9 +771,8 @@ static void create_window(int width, int height) {
         SAM2_LOG_FATAL("Failed to find all OpenGL entry points");
     }
 
-    SAM2_LOG_INFO("GL_SHADING_LANGUAGE_VERSION: %s", glGetString(GL_SHADING_LANGUAGE_VERSION));
-    SAM2_LOG_INFO("GL_VERSION: %s", glGetString(GL_VERSION));
-
+    SAM2_LOG_DEBUG("GL_SHADING_LANGUAGE_VERSION: %s", glGetString(GL_SHADING_LANGUAGE_VERSION));
+    SAM2_LOG_DEBUG("GL_VERSION: %s", glGetString(GL_VERSION));
 
     init_shaders();
 
@@ -701,55 +799,61 @@ static void resize_to_aspect(double ratio, int sw, int sh, int *dw, int *dh) {
 
 static void video_configure(const struct retro_game_geometry *geom) {
     int nwidth, nheight;
-
     resize_to_aspect(geom->aspect_ratio, geom->base_width * 1, geom->base_height * 1, &nwidth, &nheight);
-
     nwidth *= g_scale;
     nheight *= g_scale;
 
-    if (!g_win)
+    if (g_win == NULL && !g_headless) {
         create_window(nwidth, nheight);
+    }
 
-    if (g_video.tex_id)
+    if (g_video.tex_id) {
         glDeleteTextures(1, &g_video.tex_id);
+        g_video.tex_id = 0;
+    }
 
-    g_video.tex_id = 0;
-
-    if (!g_video.pixfmt)
+    if (!g_video.pixfmt) {
         g_video.pixfmt = GL_UNSIGNED_SHORT_5_5_5_1;
+    }
 
-    SDL_SetWindowSize(g_win, nwidth, nheight);
+    if (!g_headless) {
+        if (!SDL_SetWindowSize(g_win, nwidth, nheight)) {
+            SAM2_LOG_FATAL("Failed to set window size: %s", SDL_GetError());
+        }
 
-    glGenTextures(1, &g_video.tex_id);
+        LogGLErrors(glGenTextures(1, &g_video.tex_id));
 
-    if (!g_video.tex_id)
-        SAM2_LOG_FATAL("Failed to create the video texture");
+        if (!g_video.tex_id) {
+            SAM2_LOG_FATAL("Failed to create the video texture");
+        }
 
-    g_video.pitch = geom->max_width * g_video.bpp;
+        g_video.pitch = geom->max_width * g_video.bpp;
 
-    glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
+        glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
 
-//	glPixelStorei(GL_UNPACK_ALIGNMENT, s_video.pixfmt == GL_UNSIGNED_INT_8_8_8_8_REV ? 4 : 2);
-//	glPixelStorei(GL_UNPACK_ROW_LENGTH, s_video.pitch / s_video.bpp);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, geom->max_width, geom->max_height, 0,
+                g_video.pixtype, g_video.pixfmt, NULL);
 
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, geom->max_width, geom->max_height, 0,
-            g_video.pixtype, g_video.pixfmt, NULL);
+        glBindTexture(GL_TEXTURE_2D, 0);
 
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    init_framebuffer(geom->max_width, geom->max_height);
+        init_framebuffer(geom->max_width, geom->max_height);
+    }
 
     g_video.tex_w = geom->max_width;
     g_video.tex_h = geom->max_height;
     g_video.clip_w = geom->base_width;
     g_video.clip_h = geom->base_height;
 
-    refresh_vertex_data();
+    if (!g_headless) {
+        refresh_vertex_data();
+    }
 
-    g_video.hw.context_reset();
+    if (g_video.hw.context_reset) {
+        g_video.hw.context_reset();
+    }
 }
 
 
@@ -816,7 +920,8 @@ double format_unit_count(double count, char *unit)
 
 int g_argc;
 char **g_argv;
-
+char g_rom_path[MAX_PATH];
+bool g_rom_needs_reload = false;
 static sam2_room_t g_new_room_set_through_gui = { 
     "My Room Name", 0, "VERSIONCORE", 0,
     { SAM2_PORT_UNAVAILABLE,   SAM2_PORT_AVAILABLE,   SAM2_PORT_AVAILABLE,   SAM2_PORT_AVAILABLE,
@@ -958,8 +1063,8 @@ void draw_imgui() {
         ImGui::Text("Room: %s", room.name);
         ImGui::Text("Flags: %016" PRIx64, room.flags);
         ImGui::Text("Core: %s", room.core_and_version);
-        ImGui::Text("ROM Hash: %05" PRId16, room.rom_hash_xxh64);
-        
+        ImGui::Text("ROM Hash: %016" PRIx64, room.rom_hash_xxh64);
+
         for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
             ImVec4 color = g_ulnet_session.our_peer_id == room.peer_ids[p] ? GOLD : WHITE;
             if (p == SAM2_AUTHORITY_INDEX) {
@@ -1002,7 +1107,7 @@ void draw_imgui() {
             }
         } else if (memcmp(message, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
             sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
-            ImGui::Text("Peer ID: %05" PRId16, join_message->peer_id);
+            ImGui::Text("Peer ID: %05" PRId16, (uint16_t) join_message->peer_id);
             ImGui::Separator();
             show_room(join_message->room);
         } else if (memcmp(message, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
@@ -1081,7 +1186,7 @@ void draw_imgui() {
             display_count = format_unit_count(g_serialize_size / avg_zstd_cycle_count, unit);
             ImGui::Text("%s compression average speed: %.2f %s", algorithm_name, display_count, unit);
 
-            ImGui::Text("Remote Savestate hash: %05" PRId16 "", g_remote_savestate_hash);
+            ImGui::Text("Remote Savestate hash: %016" PRIx64 "", g_remote_savestate_hash);
         }
 
         ImGui::SliderInt("Sample size", &g_ulnet_session.sample_size, 1, MAX_SAMPLE_SIZE);
@@ -1131,21 +1236,21 @@ void draw_imgui() {
 
             int room_count = 0;
             bool room_header_is_open = ImGui::CollapsingHeader("Rooms");
-            for (uint16_t c = g_sam2_server->client_used_list; c != 0; c = g_sam2_server->client_next[c]) {
+            for (uint16_t c = g_sam2_server->client_pool.used_list; c != SAM2__INDEX_NULL; c = g_sam2_server->client_pool_node[c].next) {
                 if (g_sam2_server->rooms[c].flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
                     if (room_header_is_open) show_room(g_sam2_server->rooms[c]);
                     room_count++;
                 }
             }
 
-            ImGui::Text("Clients connected: %d", g_sam2_server->client_count);
+            ImGui::Text("Clients connected: %d", g_sam2_server->client_pool.used);
             ImGui::Text("Rooms Hosted: %d",room_count);
 
-            if (g_sam2_server->response_count) {
+            if (g_sam2_server->response_pool.used) {
                 char label[64];
-                snprintf(label, sizeof(label), "Unsent responses buffered: %d", (int) g_sam2_server->response_count);
+                snprintf(label, sizeof(label), "Unsent responses buffered: %d", (int) g_sam2_server->response_pool.used);
                 if (ImGui::CollapsingHeader(label)) {
-                    for (uint16_t r = g_sam2_server->response_used_list; r != 0; r = g_sam2_server->response_next[r]) {
+                    for (uint16_t r = g_sam2_server->response_pool.used_list; r != SAM2__INDEX_NULL; r = g_sam2_server->response_pool_node[r].next) {
                         show_message((char *) &g_sam2_server->responses[r]);
                     }
                 }
@@ -1246,7 +1351,10 @@ void draw_imgui() {
 
         static bool isWindowOpen = false;
         static int selected_message_index = 0;
-        if (ImGui::CollapsingHeader("Messages")) {
+
+        char header_label[32];
+        snprintf(header_label, sizeof(header_label), "Messages (%d)", g_libretro_context.message_history_length);
+        if (ImGui::CollapsingHeader(header_label)) {
             if (ImGui::BeginTable("MessagesTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
                 ImGui::TableSetupColumn("Header", ImGuiTableColumnFlags_WidthFixed, 150.0f);
                 ImGui::TableSetupColumn("Origin", ImGuiTableColumnFlags_WidthFixed, 100.0f);
@@ -1272,7 +1380,7 @@ void draw_imgui() {
                     ImGui::TableSetColumnIndex(1);
                     const char* origin = "Unknown";
                     char header[9] = {0};
-                    strncpy(header, (char*)message, 8);
+                    SDL_strlcpy(header, (char*)message, 8);
 
                     if (header[7] == 'r') {
                         ImGui::TextColored(GOLD, "Peer %05" PRIu16, g_ulnet_session.our_peer_id);
@@ -1458,7 +1566,7 @@ void draw_imgui() {
                     ImGui::TableSetColumnIndex(0);
 
                     // Display peer ID
-                    uint64_t peer_id = g_ulnet_session.room_we_are_in.peer_ids[s];
+                    uint16_t peer_id = g_ulnet_session.room_we_are_in.peer_ids[s];
                     if (peer_id == g_ulnet_session.our_peer_id) ImGui::TextColored(GOLD, "%05" PRId16, peer_id);
                     else                                        ImGui::Text(             "%05" PRId16, peer_id);
 
@@ -1610,8 +1718,8 @@ void draw_imgui() {
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip(
                         "Core or ROM hash mismatch\n"
-                        "server ROM hash: %05" PRId16 " core: %s\n"
-                        "client ROM hash: %05" PRId16 " core: %s",
+                        "server ROM hash: %016" PRIx64 " core: %s\n"
+                        "client ROM hash: %016" PRIx64 " core: %s",
                         g_sam2_rooms[selected_room_index].rom_hash_xxh64, g_sam2_rooms[selected_room_index].core_and_version,
                         g_new_room_set_through_gui.rom_hash_xxh64, g_new_room_set_through_gui.core_and_version
                     );
@@ -1624,6 +1732,14 @@ finished_drawing_sam2_interface:
 
     {
         ImGui::Begin("Libretro Core", NULL, ImGuiWindowFlags_AlwaysAutoResize);
+
+
+        if (SDL_GetError()) {
+            ImGui::Text("Error: %s", SDL_GetError());
+        }
+
+        // Display current ROM info
+        ImGui::Text("Core: %s", g_new_room_set_through_gui.core_and_version);
 
         // Assuming g_argc and g_argv are defined and populated
         if (ImGui::CollapsingHeader("Command Line Arguments")) {
@@ -1706,11 +1822,11 @@ finished_drawing_sam2_interface:
         }
 
         ImGui::Checkbox("Fuzz Input", &g_libretro_context.fuzz_input);
-        
+
         static bool old_vsync_enabled = true;
 
         if (g_vsync_enabled != old_vsync_enabled) {
-            printf("Toggled vsync\n");
+            SAM2_LOG_INFO("Toggled vsync %s", g_vsync_enabled ? "on" : "off");
             if (!SDL_GL_SetSwapInterval((int) g_vsync_enabled)) {
                 SAM2_LOG_ERROR("Unable to set VSync off: %s", SDL_GetError());
                 g_vsync_enabled = true;
@@ -1928,14 +2044,20 @@ static void video_deinit() {
 
 
 static void audio_init(int frequency) {
+    if (g_pcm) {
+        SDL_CloseAudioDevice(SDL_GetAudioStreamDevice(g_pcm));
+        SDL_DestroyAudioStream(g_pcm);
+    }
+
     SDL_AudioSpec spec;
     spec.format = SDL_AUDIO_S16;
     spec.channels = 2;
     spec.freq = frequency;
 
     g_pcm = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
-    if (!g_pcm)
+    if (!g_pcm) {
         SAM2_LOG_FATAL("Failed to open playback device: %s", SDL_GetError());
+    }
 
     SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(g_pcm));
 
@@ -2364,26 +2486,19 @@ static void core_load(const char *sofile) {
     SAM2_LOG_INFO("Core loaded");
 }
 
-static void core_load_game(const char *filename) {
-    struct retro_game_info info = { filename };
+static void core_load_game(const char *rom_path, void *rom_data, size_t rom_size) {
+    struct retro_game_info info;
 
-    info.path = filename;
+    info.path = rom_path;
     info.meta = "";
-    info.data = NULL;
-    info.size = 0;
+    info.data = rom_data;
+    info.size = rom_size;
 
-    if (filename) {
-        g_retro.retro_get_system_info(&g_libretro_context.system_info);
+    g_retro.retro_get_system_info(&g_libretro_context.system_info);
 
-        if (!g_libretro_context.system_info.need_fullpath) {
-            SDL_IOStream *file = SDL_IOFromFile(filename, "rb");
-
-            read_whole_file(filename, (void **)&info.data, &info.size);
-        }
-    }
-
-    if (!g_retro.retro_load_game(&info))
+    if (!g_retro.retro_load_game(&info)) {
         SAM2_LOG_FATAL("The core failed to load the content.");
+    }
 
     g_retro.retro_get_system_av_info(&g_av);
 
@@ -2392,8 +2507,13 @@ static void core_load_game(const char *filename) {
         audio_init(g_av.timing.sample_rate);
     }
 
-    if (info.data)
-        SDL_free((void*)info.data);
+    // Update room configuration with new ROM info
+    g_new_room_set_through_gui.rom_hash_xxh64 = ZSTD_XXH64(rom_data, rom_size, 0);
+    sam2_format_core_version(
+        &g_new_room_set_through_gui,
+        g_libretro_context.system_info.library_name,
+        g_libretro_context.system_info.library_version
+    );
 }
 
 static void core_unload() {
@@ -2687,7 +2807,7 @@ int main(int argc, char *argv[]) {
         } else if (strcmp("--no-netimgui", argv[i]) == 0) {
             no_netimgui = true;
         } else if (argv[i][0] == '-') {
-            SAM2_LOG_FATAL("Unknown option: %s\n", argv[i]);
+            SAM2_LOG_FATAL("Unknown option: %s", argv[i]);
         }
     }
 
@@ -2722,12 +2842,6 @@ int main(int argc, char *argv[]) {
     g_parameters.splitPoint = 0;
     g_parameters.zParams.compressionLevel = g_zstd_compress_level;
 
-    void *rom_data = NULL;
-    size_t rom_size = 0;
-    if (argc > 2) {
-        read_whole_file(g_argv[2], &rom_data, &rom_size);
-    }
-
     if (!SDL_Init(g_headless ? 0 : SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS)) {
         SAM2_LOG_FATAL("Failed to initialize SDL");
     }
@@ -2747,14 +2861,14 @@ int main(int argc, char *argv[]) {
         SAM2_LOG_FATAL("This core requires a game in order to run");
 
     // Load the game.
-    core_load_game(argc > 2 ? argv[2] : NULL);
-
-    g_new_room_set_through_gui.rom_hash_xxh64 = ZSTD_XXH64(rom_data, rom_size, 0);
-    sam2_format_core_version(
-        &g_new_room_set_through_gui,
-        g_libretro_context.system_info.library_name,
-        g_libretro_context.system_info.library_version
-    );
+    void *rom_data = NULL;
+    size_t rom_size = 0;
+    if (argc > 2) {
+        SDL_strlcpy(g_rom_path, g_argv[2], sizeof(g_rom_path));
+        g_rom_path[sizeof(g_rom_path)-1] = '\0';
+        read_whole_file(g_rom_path, &rom_data, &rom_size);
+    }
+    core_load_game(g_rom_path, rom_data, rom_size);
 
     // Configure the player input devices.
     g_retro.retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
@@ -2812,6 +2926,18 @@ int main(int argc, char *argv[]) {
     g_ulnet_session.sample_size = SAM2_MIN(100, ULNET_MAX_SAMPLE_SIZE);
 
     for (g_main_loop_cyclic_offset = 0; running; g_main_loop_cyclic_offset = (g_main_loop_cyclic_offset + 1) % MAX_SAMPLE_SIZE) {
+        if (g_rom_needs_reload) {
+            g_rom_needs_reload = false;
+
+            g_retro.retro_unload_game();
+
+            if (rom_data) {
+                SDL_free(rom_data);
+            }
+
+            read_whole_file(g_rom_path, &rom_data, &rom_size);
+            core_load_game(g_rom_path, rom_data, rom_size);
+        }
 
         // Update the game loop timer.
         if (runloop_frame_time.callback) {
