@@ -1046,6 +1046,26 @@ namespace ImGuiJank {
     }
 }
 
+#define NETARCH_CONTENT_FLAG_IS_DIRECTORY          0b00000001
+// ###WHERE IN THIS API DO WE STICK .. and . ? THEY SHOULD BE AVAILABLE FOR EASY NAVIGATION###
+// If path_utf8 is a file then get the contents of the parent
+int list_folder_contents(
+    const char path_utf8[/*MAX_PATH*/],
+    char content_name_utf8[/*content_capacity*/][MAX_PATH],
+    int content_flag[/*content_capacity*/],
+    int content_capacity,
+    int *content_size
+) {
+    // @todo: Implement this for NT, MacOS, Linux
+    return 0;
+}
+
+// Draws a table of files using the ImGui API in the current window and indicates whether content is a directory or file
+// Returns -1 if no file is selected otherwise it returns the index of selected file
+int imgui_file_picker(char path_utf8[/*MAX_PATH*/], const char content_name_utf8[/*n*/][MAX_PATH], const int content_flag[/*n*/], int n) {
+    return -1;
+}
+
 #include "imgui_internal.h"
 void draw_imgui() {
     static int spinnerIndex = 0;
@@ -1736,6 +1756,31 @@ finished_drawing_sam2_interface:
 
         if (SDL_GetError()) {
             ImGui::Text("Error: %s", SDL_GetError());
+        }
+
+        { // ROM picker
+            constexpr int max_n = 1024;
+            static int n = 0;
+            static char content_name_utf8[max_n][MAX_PATH];
+            static int content_flag[max_n] = {0};
+            static bool picker_open = false;
+
+            if (picker_open) {
+                int selected_index = imgui_file_picker(g_rom_path, content_name_utf8, content_flag, n);
+                if (selected_index >= 0) {
+                    if (content_flag[selected_index] & NETARCH_CONTENT_FLAG_IS_DIRECTORY) {
+                        list_folder_contents(g_rom_path, content_name_utf8, content_flag, max_n, &n);
+                    } else {
+                        picker_open = false;
+                        g_rom_needs_reload = true;
+                    }
+                }
+            } else {
+                if (ImGui::Button(portable_basename(g_rom_path))) {
+                    picker_open = true;
+                    list_folder_contents(g_rom_path, content_name_utf8, content_flag, max_n, &n);
+                }
+            }
         }
 
         // Display current ROM info
