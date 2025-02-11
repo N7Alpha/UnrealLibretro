@@ -43,6 +43,7 @@ int g_log_level = 1; // Info
 #include <SDL3/SDL_keycode.h>
 #include <SDL3/SDL_loadso.h>
 #include <SDL3/SDL_video.h>
+#include <SDL3/SDL_filesystem.h>
 #endif
 #include "libretro.h"
 
@@ -1046,24 +1047,166 @@ namespace ImGuiJank {
     }
 }
 
-#define NETARCH_CONTENT_FLAG_IS_DIRECTORY          0b00000001
-// ###WHERE IN THIS API DO WE STICK .. and . ? THEY SHOULD BE AVAILABLE FOR EASY NAVIGATION###
-// If path_utf8 is a file then get the contents of the parent
-int list_folder_contents(
-    const char path_utf8[/*MAX_PATH*/],
-    char content_name_utf8[/*content_capacity*/][MAX_PATH],
-    int content_flag[/*content_capacity*/],
-    int content_capacity,
-    int *content_size
-) {
-    // @todo: Implement this for NT, MacOS, Linux
-    return 0;
+static void strip_last_path_component(char *path) {
+    if (!path || !*path) return;
+
+    size_t len = strlen(path);
+
+    // Remove trailing slashes
+    while (len > 0 && (path[len-1] == '/' || path[len-1] == '\\')) {
+        path[--len] = '\0';
+    }
+
+    // Handle Windows root with drive letter (e.g., "C:\")
+    #ifdef _WIN32
+    if (len == 2 && path[1] == ':') {
+        path[2] = '\\';
+        path[3] = '\0';
+        return;
+    }
+    #endif
+
+    // Find last separator
+    char *last_sep = NULL;
+    for (char *p = path; *p; p++) {
+        if (*p == '/' || *p == '\\') {
+            last_sep = p;
+        }
+    }
+
+    if (!last_sep) {
+        // No separator found
+        #ifdef _WIN32
+        if (len >= 2 && path[1] == ':') {
+            // Windows drive letter without separator
+            path[2] = '\\';
+            path[3] = '\0';
+        } else {
+            path[0] = '.';
+            path[1] = '\0';
+        }
+        #else
+        path[0] = '.';
+        path[1] = '\0';
+        #endif
+    } else if (last_sep == path) {
+        // Root directory
+        path[1] = '\0';
+    } else {
+        *last_sep = '\0';
+    }
 }
 
-// Draws a table of files using the ImGui API in the current window and indicates whether content is a directory or file
-// Returns -1 if no file is selected otherwise it returns the index of selected file
-int imgui_file_picker(char path_utf8[/*MAX_PATH*/], const char content_name_utf8[/*n*/][MAX_PATH], const int content_flag[/*n*/], int n) {
+#ifdef _WIN32
+#define PATH_SEPARATOR "\\"
+#else
+#define PATH_SEPARATOR "/"
+#endif
+
+#define NETARCH_CONTENT_FLAG_IS_DIRECTORY          0b00000001
+static int list_folder_contents(
+    char* path_utf8,
+    char content_name_utf8[/*content_capacity*/][MAX_PATH],
+    int content_flag[/*content_capacity*/],
+    int content_capacity
+) {
+    // Add trailing slash if needed
+    size_t len = SDL_strlen(path_utf8);
+    if(len > 0 && path_utf8[len-1] != '/' && path_utf8[len-1] != '\\') {
+        SDL_strlcat(path_utf8, "/", MAX_PATH);
+}
+
+    // Add parent directory unconditionally
+    SDL_strlcpy(content_name_utf8[0], "..", MAX_PATH);
+    content_flag[0] = NETARCH_CONTENT_FLAG_IS_DIRECTORY;
+
+    struct DirData {
+        char (*names)[MAX_PATH];
+        int* flags;
+        int count;
+        int capacity;
+    } dirData = {content_name_utf8, content_flag, 1, content_capacity};
+
+    SDL_EnumerateDirectoryCallback callback = [](void *userdata, const char *, const char *fname) -> SDL_EnumerationResult {
+        DirData* data = static_cast<DirData*>(userdata);
+
+        if (data->count >= data->capacity) {
+            return SDL_ENUM_SUCCESS; // Stop enumeration, we're full
+        }
+
+        SDL_strlcpy(data->names[data->count], fname, MAX_PATH);
+        data->flags[data->count] = 0; // Will update type in second pass
+        data->count++;
+        return SDL_ENUM_CONTINUE;
+    };
+
+    // First pass: get all entries
+    if (!SDL_EnumerateDirectory(path_utf8, callback, &dirData)) {
     return -1;
+}
+
+    // Second pass: determine which entries are directories
+    for (int i = 0; i < dirData.count; ++i) {
+        char full_path[MAX_PATH];
+        SDL_snprintf(full_path, sizeof(full_path), "%s%s", path_utf8, content_name_utf8[i]);
+
+        SDL_PathInfo info;
+        if (SDL_GetPathInfo(full_path, &info)) {
+            content_flag[i] = (info.type == SDL_PATHTYPE_DIRECTORY) ?
+                NETARCH_CONTENT_FLAG_IS_DIRECTORY : 0;
+        }
+    }
+
+    return dirData.count;
+}
+
+int imgui_file_picker(char path_utf8[/*MAX_PATH*/], const char content_name_utf8[/*n*/][MAX_PATH], const int content_flag[/*n*/], int n) {
+    int selected_index = -1;
+    static float last_click_time = 0;
+
+    // Show current path
+    ImGui::Text("Path: %s", path_utf8);
+    ImGui::Separator();
+
+    // File list
+    if (ImGui::BeginChild(path_utf8, ImVec2(0, 300), true)) {
+        for (int i = 0; i < n; ++i) {
+            const bool is_dir = content_flag[i] & NETARCH_CONTENT_FLAG_IS_DIRECTORY;
+            const char* icon = is_dir ? "[D] " : "[F] ";
+
+            char label[MAX_PATH + 10];
+            SDL_snprintf(label, sizeof(label), "%s%s", icon, content_name_utf8[i]);
+
+            if (ImGui::Selectable(label)) {
+                // Double-click detection
+                if (ImGui::GetTime() - last_click_time < 0.3) {
+                    selected_index = i;
+                }
+                last_click_time = ImGui::GetTime();
+            }
+
+            if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+                selected_index = i;
+
+                size_t path_len = strlen(path_utf8);
+                const char* selected_name = content_name_utf8[selected_index];
+
+                if (strcmp(selected_name, "..") == 0) {
+                    // Go up one directory
+                    strip_last_path_component(path_utf8);
+                } else {
+                    // Append directory to path
+                    if (path_len > 0 && path_utf8[path_len-1] != '/' && path_utf8[path_len-1] != '\\') {
+                        strcat(path_utf8, PATH_SEPARATOR);
+                    }
+                    strcat(path_utf8, selected_name);
+                }
+            }
+        }
+    }
+    ImGui::EndChild();
+
+    return selected_index;
 }
 
 #include "imgui_internal.h"
@@ -1769,7 +1912,7 @@ finished_drawing_sam2_interface:
                 int selected_index = imgui_file_picker(g_rom_path, content_name_utf8, content_flag, n);
                 if (selected_index >= 0) {
                     if (content_flag[selected_index] & NETARCH_CONTENT_FLAG_IS_DIRECTORY) {
-                        list_folder_contents(g_rom_path, content_name_utf8, content_flag, max_n, &n);
+                        n = list_folder_contents(g_rom_path, content_name_utf8, content_flag, max_n);
                     } else {
                         picker_open = false;
                         g_rom_needs_reload = true;
@@ -1778,7 +1921,8 @@ finished_drawing_sam2_interface:
             } else {
                 if (ImGui::Button(portable_basename(g_rom_path))) {
                     picker_open = true;
-                    list_folder_contents(g_rom_path, content_name_utf8, content_flag, max_n, &n);
+                    strip_last_path_component(g_rom_path);
+                    n = list_folder_contents(g_rom_path, content_name_utf8, content_flag, max_n);
                 }
             }
         }
