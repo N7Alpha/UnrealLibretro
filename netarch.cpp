@@ -2941,7 +2941,7 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
             rle_encode32(buffer, g_serialize_size / 4, savebuffer_compressed, &g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size]);
             g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] *= 4;
         } else {
-            g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = rle8_encode(buffer, g_serialize_size, savebuffer_compressed); // @todo Technically this can overflow I don't really plan to use it though and I find the odds unlikely
+            g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = rle8_encode_capped(buffer, g_serialize_size, savebuffer_compressed, sizeof(savebuffer_compressed)); // @todo Technically this can overflow I don't really plan to use it though and I find the odds unlikely
         }
     } else {
         if (g_use_dictionary) {
