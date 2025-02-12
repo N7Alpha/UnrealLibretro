@@ -922,6 +922,8 @@ double format_unit_count(double count, char *unit)
 int g_argc;
 char **g_argv;
 char g_rom_path[MAX_PATH];
+static char g_core_path[MAX_PATH] = {0};
+static bool g_core_needs_reload = false;
 bool g_rom_needs_reload = false;
 static sam2_room_t g_new_room_set_through_gui = { 
     "My Room Name", 0, "VERSIONCORE", 0,
@@ -1113,8 +1115,8 @@ static int list_folder_contents(
     // Add trailing slash if needed
     size_t len = SDL_strlen(path_utf8);
     if(len > 0 && path_utf8[len-1] != '/' && path_utf8[len-1] != '\\') {
-        SDL_strlcat(path_utf8, "/", MAX_PATH);
-}
+        SDL_strlcat(path_utf8, PATH_SEPARATOR, MAX_PATH);
+    }
 
     // Add parent directory unconditionally
     SDL_strlcpy(content_name_utf8[0], "..", MAX_PATH);
@@ -1142,8 +1144,8 @@ static int list_folder_contents(
 
     // First pass: get all entries
     if (!SDL_EnumerateDirectory(path_utf8, callback, &dirData)) {
-    return -1;
-}
+        return -1;
+    }
 
     // Second pass: determine which entries are directories
     for (int i = 0; i < dirData.count; ++i) {
@@ -1160,16 +1162,21 @@ static int list_folder_contents(
     return dirData.count;
 }
 
-int imgui_file_picker(char path_utf8[/*MAX_PATH*/], const char content_name_utf8[/*n*/][MAX_PATH], const int content_flag[/*n*/], int n) {
+int imgui_file_picker(
+    const char *str_id,
+    char path_utf8[/*MAX_PATH*/],
+    const char content_name_utf8[/*n*/][MAX_PATH],
+    const int content_flag[/*n*/],
+    int n
+) {
     int selected_index = -1;
-    static float last_click_time = 0;
 
     // Show current path
     ImGui::Text("Path: %s", path_utf8);
     ImGui::Separator();
 
     // File list
-    if (ImGui::BeginChild(path_utf8, ImVec2(0, 300), true)) {
+    if (ImGui::BeginChild(str_id, ImVec2(0, 300), true)) {
         for (int i = 0; i < n; ++i) {
             const bool is_dir = content_flag[i] & NETARCH_CONTENT_FLAG_IS_DIRECTORY;
             const char* icon = is_dir ? "[D] " : "[F] ";
@@ -1177,13 +1184,7 @@ int imgui_file_picker(char path_utf8[/*MAX_PATH*/], const char content_name_utf8
             char label[MAX_PATH + 10];
             SDL_snprintf(label, sizeof(label), "%s%s", icon, content_name_utf8[i]);
 
-            if (ImGui::Selectable(label)) {
-                // Double-click detection
-                if (ImGui::GetTime() - last_click_time < 0.3) {
-                    selected_index = i;
-                }
-                last_click_time = ImGui::GetTime();
-            }
+            ImGui::Selectable(label);
 
             if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
                 selected_index = i;
@@ -1896,9 +1897,31 @@ finished_drawing_sam2_interface:
     {
         ImGui::Begin("Libretro Core", NULL, ImGuiWindowFlags_AlwaysAutoResize);
 
+        // Core picker
+        {
+            constexpr int max_n = 1024;
+            static int n = 0;
+            static char content_name_utf8[max_n][MAX_PATH];
+            static int content_flag[max_n] = {0};
+            static bool core_picker_open = false;
 
-        if (SDL_GetError()) {
-            ImGui::Text("Error: %s", SDL_GetError());
+            if (core_picker_open) {
+                int selected_index = imgui_file_picker("Core Picker", g_core_path, content_name_utf8, content_flag, n);
+                if (selected_index >= 0) {
+                    if (content_flag[selected_index] & NETARCH_CONTENT_FLAG_IS_DIRECTORY) {
+                        n = list_folder_contents(g_core_path, content_name_utf8, content_flag, max_n);
+                    } else {
+                        core_picker_open = false;
+                        g_core_needs_reload = true;
+                    }
+                }
+            } else {
+                if (ImGui::Button(portable_basename(g_core_path))) {
+                    core_picker_open = true;
+                    strip_last_path_component(g_core_path);
+                    n = list_folder_contents(g_core_path, content_name_utf8, content_flag, max_n);
+                }
+            }
         }
 
         { // ROM picker
@@ -1906,24 +1929,32 @@ finished_drawing_sam2_interface:
             static int n = 0;
             static char content_name_utf8[max_n][MAX_PATH];
             static int content_flag[max_n] = {0};
-            static bool picker_open = false;
+            static bool rom_picker_open = false;
 
-            if (picker_open) {
-                int selected_index = imgui_file_picker(g_rom_path, content_name_utf8, content_flag, n);
+            if (rom_picker_open) {
+                int selected_index = imgui_file_picker("ROM Picker", g_rom_path, content_name_utf8, content_flag, n);
                 if (selected_index >= 0) {
                     if (content_flag[selected_index] & NETARCH_CONTENT_FLAG_IS_DIRECTORY) {
                         n = list_folder_contents(g_rom_path, content_name_utf8, content_flag, max_n);
                     } else {
-                        picker_open = false;
+                        rom_picker_open = false;
                         g_rom_needs_reload = true;
                     }
                 }
             } else {
                 if (ImGui::Button(portable_basename(g_rom_path))) {
-                    picker_open = true;
+                    rom_picker_open = true;
                     strip_last_path_component(g_rom_path);
                     n = list_folder_contents(g_rom_path, content_name_utf8, content_flag, max_n);
                 }
+            }
+        }
+
+        if (SDL_GetError()[0] != '\0') {
+            ImGui::TextColored(ImVec4(1, 0, 0, 1), "SDL Error: %s", SDL_GetError());
+            ImGui::SameLine();
+            if (ImGui::Button("Clear")) {
+                SDL_ClearError();
             }
         }
 
@@ -3003,6 +3034,8 @@ int main(int argc, char *argv[]) {
     if (argc < 2)
         SAM2_LOG_FATAL("Usage: %s <core> [game] [options...]", argv[0]);
 
+    SDL_strlcpy(g_core_path, argv[1], sizeof(g_core_path));
+
     if (   strcmp(g_sam2_address, "localhost")
         || strcmp(g_sam2_address, "127.0.0.1")
         || strcmp(g_sam2_address, "::1")) {
@@ -3044,7 +3077,7 @@ int main(int argc, char *argv[]) {
     g_video.hw.context_destroy = noop;
 
     // Load the core.
-    core_load(argv[1]);
+    core_load(g_core_path);
 
     if (!g_retro.supports_no_game && argc < 3)
         SAM2_LOG_FATAL("This core requires a game in order to run");
@@ -3053,7 +3086,7 @@ int main(int argc, char *argv[]) {
     void *rom_data = NULL;
     size_t rom_size = 0;
     if (argc > 2) {
-        SDL_strlcpy(g_rom_path, g_argv[2], sizeof(g_rom_path));
+        SDL_strlcpy(g_rom_path, argv[2], sizeof(g_rom_path));
         g_rom_path[sizeof(g_rom_path)-1] = '\0';
         read_whole_file(g_rom_path, &rom_data, &rom_size);
     }
@@ -3115,6 +3148,13 @@ int main(int argc, char *argv[]) {
     g_ulnet_session.sample_size = SAM2_MIN(100, ULNET_MAX_SAMPLE_SIZE);
 
     for (g_main_loop_cyclic_offset = 0; running; g_main_loop_cyclic_offset = (g_main_loop_cyclic_offset + 1) % MAX_SAMPLE_SIZE) {
+        if (g_core_needs_reload) {
+            g_core_needs_reload = false;
+
+            core_unload();
+            core_load(g_core_path);
+        }
+
         if (g_rom_needs_reload) {
             g_rom_needs_reload = false;
 
