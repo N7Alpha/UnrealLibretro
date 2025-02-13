@@ -7,6 +7,7 @@ typedef struct juice_agent juice_agent_t;
 #include "zstd.h"
 #include "common/xxhash.h"
 #include "fec.h"
+#include "reliable.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -21,7 +22,7 @@ typedef struct juice_agent juice_agent_t;
 
 // The payload here is regarding the max payload that we *can* use
 // We don't want to exceed the MTU because that can result in guranteed lost packets under certain conditions
-// Considering various things like UDP/IP headers, STUN/TURN headers, and additional junk 
+// Considering various things like UDP/IP headers, STUN/TURN headers, and additional junk
 // load-balancers/routers might add I keep this conservative
 #define ULNET_PACKET_SIZE_BYTES_MAX 1408
 
@@ -36,6 +37,7 @@ typedef struct juice_agent juice_agent_t;
 #define ULNET_CHANNEL_INPUT                   0x10
 #define ULNET_CHANNEL_SPECTATOR_INPUT         0x20
 #define ULNET_CHANNEL_SAVESTATE_TRANSFER      0x30
+#define ULNET_CHANNEL_RELIABLE                0x40
 
 #define ULNET_WAITING_FOR_SAVE_STATE_SENTINEL INT64_MAX
 
@@ -48,6 +50,8 @@ typedef struct juice_agent juice_agent_t;
 #ifdef ULNET_IMGUI
 #define ULNET_MAX_SAMPLE_SIZE 128
 #endif
+
+#define ULNET_RELIABLE_RTT_HISTORY_SIZE 128
 
 // This constant defines the maximum number of frames that can be buffered before blocking.
 // A value of 2 implies no delay can be accomidated.
@@ -161,7 +165,7 @@ typedef struct {
     uint8_t compressed_savestate_data[compressed_savestate_size];
     uint8_t compressed_options_data[compressed_options_size];
 #else
-    uint8_t compressed_data[]; 
+    uint8_t compressed_data[];
 #endif
 } savestate_transfer_payload_t;
 
@@ -184,6 +188,8 @@ typedef struct ulnet_session {
     ulnet_input_state_t spectator_suggested_input_state[SAM2_TOTAL_PEERS][ULNET_PORT_COUNT];
     unsigned char  state_packet_history[SAM2_TOTAL_PEERS][ULNET_STATE_PACKET_HISTORY_SIZE][ULNET_PACKET_SIZE_BYTES_MAX];
     uint64_t       peer_needs_sync_bitfield;
+
+    reliable_endpoint_t *reliable_endpoint[SAM2_TOTAL_PEERS];
 
     int zstd_compress_level;
     unsigned char remote_savestate_transfer_packets[COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES + FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * sizeof(ulnet_save_state_packet_header_t)];
@@ -398,7 +404,7 @@ uint64_t ulnet__rdtsc() {
 #elif defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))   /* GCC compiler on x86 platforms */
     unsigned int lo, hi;
     __asm__ __volatile__ (
-      "rdtsc" : "=a" (lo), "=d" (hi)  
+      "rdtsc" : "=a" (lo), "=d" (hi)
     );
     return ((uint64_t)hi << 32) | lo;
 #else
@@ -461,7 +467,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
 
             // Wait until we can send netplay messages to everyone without fail
             if (state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED) {
-                juice_send(session->agent[p], (const char *) input_packet, sizeof(ulnet_state_packet_t) + actual_payload_size);
+                reliable_endpoint_send_packet(session->reliable_endpoint[p], (unsigned char *) input_packet, sizeof(ulnet_state_packet_t) + actual_payload_size);
                 if ((input_packet->channel_and_port & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_INPUT) {
                     SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%05" PRId16,
                         session->state[ulnet_our_port(session)].frame, p, session->room_we_are_in.peer_ids[p]);
@@ -514,6 +520,19 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
         }
     }
 #endif
+
+    // Update reliable endpoints
+    double current_time_seconds = get_unix_time_microseconds() / 1e6;
+    for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
+        if (session->reliable_endpoint[i]) {
+            reliable_endpoint_update(session->reliable_endpoint[i], current_time_seconds);
+            int num_acks;
+            uint16_t * acks = reliable_endpoint_get_acks(session->reliable_endpoint[i], &num_acks);
+            if (num_acks >= ULNET_RELIABLE_RTT_HISTORY_SIZE) {
+                reliable_endpoint_clear_acks(session->reliable_endpoint[i]);
+            }
+        }
+    }
 
     // We need to poll agents to make progress on the ICE connection
     juice_agent_t *agent[SAM2_ARRAY_LENGTH(session->agent)] = {0};
@@ -614,8 +633,19 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
         }
     }
 
-IMH(ImGuiIO& io = ImGui::GetIO();)
-IMH(ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);)
+#ifdef ULNET_IMGUI
+    ImGuiIO& io = ImGui::GetIO();
+    ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
+
+    ImGui::SeparatorText("Peer Latency");
+    for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
+        if (session->agent[i] && session->reliable_endpoint[i]) {
+            float rtt = reliable_endpoint_rtt(session->reliable_endpoint[i]);
+            ImGui::Text("Peer %05" PRId16 ": %.1f ms", session->room_we_are_in.peer_ids[i], rtt);
+        }
+    }
+#endif
+
 IMH(ImGui::SeparatorText("Things We are Waiting on Before we can Tick");)
 IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) { ImGui::Text("Waiting for savestate"); })
     bool netplay_ready_to_tick = !(session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL);
@@ -791,11 +821,15 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
 ULNET_LINKAGE void ulnet__swap_agent(ulnet_session_t *session, int peer_existing_port, int peer_new_port) {
     if (peer_existing_port == peer_new_port) return;
     juice_agent_t *temp_agent = session->agent[peer_existing_port];
+    reliable_endpoint_t *temp_reliable = session->reliable_endpoint[peer_existing_port];
     int64_t temp_agent_peer_ids = session->agent_peer_ids[peer_existing_port];
 
     session->agent[peer_existing_port] = session->agent[peer_new_port];
+    session->reliable_endpoint[peer_existing_port] = session->reliable_endpoint[peer_new_port];
     session->agent_peer_ids[peer_existing_port] = session->agent_peer_ids[peer_new_port];
+
     session->agent[peer_new_port] = temp_agent;
+    session->reliable_endpoint[peer_new_port] = temp_reliable;
     session->agent_peer_ids[peer_new_port] = temp_agent_peer_ids;
 }
 
@@ -807,6 +841,10 @@ ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port
     }
 
     assert(session->agent[peer_port] != NULL);
+    if (session->reliable_endpoint[peer_port]) {
+        reliable_endpoint_destroy(session->reliable_endpoint[peer_port]);
+        session->reliable_endpoint[peer_port] = NULL;
+    }
     juice_destroy(session->agent[peer_port]);
     session->agent[peer_port] = NULL;
     session->agent_peer_ids[peer_port] = SAM2_PORT_AVAILABLE;
@@ -904,6 +942,7 @@ static void ulnet__on_gathering_done(juice_agent_t *agent, void *user_ptr) {
     session->sam2_send_callback(session->user_ptr, (char *) &response);
 }
 
+
 static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data, size_t size, void *user_ptr) {
     ulnet_session_t *session = (ulnet_session_t *) user_ptr;
 
@@ -920,16 +959,30 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
         return;
     }
 
+    uint8_t channel_and_flags = data[0];
+    if ((channel_and_flags & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_RELIABLE) {
+        int header_size = 1;
+        reliable_endpoint_receive_packet(
+            session->reliable_endpoint[p],
+            (uint8_t*)&data[header_size],
+            (int)size-header_size
+        ); // Recursively recalls this function with the unwrapped packet
+        return;
+    }
+
     if (   p >= SAM2_PORT_MAX+1
         && (data[0] & ULNET_CHANNEL_MASK) != ULNET_CHANNEL_SPECTATOR_INPUT) {
         SAM2_LOG_WARN("A spectator sent us a UDP packet for unsupported channel %" PRIx8 " for some reason", data[0] & ULNET_CHANNEL_MASK);
         return;
     }
 
-    uint8_t channel_and_flags = data[0];
     switch (channel_and_flags & ULNET_CHANNEL_MASK) {
     case ULNET_CHANNEL_EXTRA: {
         assert(!"This is an error currently\n");
+        break;
+    }
+    case ULNET_CHANNEL_RELIABLE: {
+        SAM2_LOG_ERROR("Reliable packets should have been unwrapped already");
         break;
     }
     case ULNET_CHANNEL_INPUT: {
@@ -949,7 +1002,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
         }
 
         if (rle8_decode_size(input_packet->coded_state, size - 1) != sizeof(ulnet_state_t)) {
-            SAM2_LOG_WARN("Received input packet with an invalid decode size");
+            SAM2_LOG_WARN("Received input packet with an invalid decode size %" PRId64, rle8_decode_size(input_packet->coded_state, size - 1));
             break;
         }
 
@@ -1007,7 +1060,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
             int64_t frame_index = frame_to_compare % ULNET_DELAY_BUFFER_SIZE;
 
             if (our_desync_debug_packet->input_state_hash[frame_index] != their_desync_debug_packet->input_state_hash[frame_index]) {
-                SAM2_LOG_ERROR("Input state hash mismatch for frame %" PRId64 " Our hash: %" PRIx64 " Their hash: %" PRIx64 "", 
+                SAM2_LOG_ERROR("Input state hash mismatch for frame %" PRId64 " Our hash: %" PRIx64 " Their hash: %" PRIx64 "",
                     frame_to_compare, our_desync_debug_packet->input_state_hash[frame_index], their_desync_debug_packet->input_state_hash[frame_index]);
             } else if (   our_desync_debug_packet->save_state_hash[frame_index]
                        && their_desync_debug_packet->save_state_hash[frame_index]) {
@@ -1192,6 +1245,36 @@ cleanup:
     }
 }
 
+static void reliable_transmit_packet(void* ctx, uint64_t id, uint16_t seq, uint8_t* data, int size) {
+    ulnet_session_t* session = (ulnet_session_t *) ctx;
+    juice_agent_t* agent = (juice_agent_t *) id;
+
+    struct {
+        uint8_t header;
+        uint8_t data[ULNET_PACKET_SIZE_BYTES_MAX - 1];
+    } packet = { ULNET_CHANNEL_RELIABLE };
+
+    if (size <= sizeof(packet.data)) {
+        memcpy(packet.data, data, size);
+
+        int result = juice_send(agent, (const char*)&packet, size + 1);
+        if (result != 0) {
+            SAM2_LOG_ERROR("Failed to transmit reliable packet to peer %d", (int)id);
+        }
+    } else {
+        SAM2_LOG_ERROR("Reliable packet too large to send");
+        return;
+    }
+}
+
+static int reliable_process_packet(void* ctx, uint64_t id, uint16_t seq, uint8_t* data, int size) {
+    ulnet_session_t *session = (ulnet_session_t *) ctx;
+    juice_agent_t* agent = (juice_agent_t *) id;
+
+    ulnet_receive_packet_callback(agent, (const char*)data, size, session);
+    return RELIABLE_OK;
+}
+
 ULNET_LINKAGE void ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, int p, const char *remote_description) {
     SAM2_LOG_INFO("Starting Interactive-Connectivity-Establishment for peer %04" PRIx64, peer_id);
 
@@ -1232,6 +1315,20 @@ ULNET_LINKAGE void ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t
     // This call starts an asynchronous task that requires periodic polling via juice_user_poll to complete
     // it will call the ulnet__on_gathering_done callback once it's finished
     juice_gather_candidates(session->agent[p]);
+
+    // Initialize reliable endpoint
+    struct reliable_config_t reliable_config;
+    reliable_default_config(&reliable_config);
+    snprintf(reliable_config.name, sizeof(reliable_config.name), "peer_%" PRIu64, peer_id);
+    reliable_config.context = session;
+    reliable_config.id = (uint64_t) session->agent[p];
+    reliable_config.max_packet_size = ULNET_PACKET_SIZE_BYTES_MAX;
+    reliable_config.rtt_history_size = ULNET_RELIABLE_RTT_HISTORY_SIZE;
+    reliable_config.transmit_packet_function = reliable_transmit_packet;
+    reliable_config.process_packet_function = reliable_process_packet;
+
+    session->reliable_endpoint[p] = reliable_endpoint_create(&reliable_config,
+        get_unix_time_microseconds() / 1e6);
 }
 
 sam2_room_t ulnet__infer_future_room_we_are_in(ulnet_session_t *session) {
