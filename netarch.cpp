@@ -895,7 +895,7 @@ double format_unit_count(double count, char *unit)
     const char* prefixes[] = { "", "kilo", "mega", "giga" };
     const char* binary_prefixes[] = { "", "kibi", "mebi", "gibi" };
     int prefix_count = sizeof(prefixes) / sizeof(prefixes[0]);
-    
+
     // Choose the correct set of prefixes and scaling factor based on the postfix
     const char** prefix_to_use = prefixes;
     double scale_factor = 1000.0;
@@ -925,7 +925,7 @@ char g_rom_path[MAX_PATH];
 static char g_core_path[MAX_PATH] = {0};
 static bool g_core_needs_reload = false;
 bool g_rom_needs_reload = false;
-static sam2_room_t g_new_room_set_through_gui = { 
+static sam2_room_t g_new_room_set_through_gui = {
     "My Room Name", 0, "VERSIONCORE", 0,
     { SAM2_PORT_UNAVAILABLE,   SAM2_PORT_AVAILABLE,   SAM2_PORT_AVAILABLE,   SAM2_PORT_AVAILABLE,
       SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE }
@@ -1600,6 +1600,14 @@ void draw_imgui() {
         const char* levelNames[] = {"Debug", "Info", "Warn", "Error", "Fatal"};
         ImGui::SliderInt("Log Level", &g_log_level, 0, 4, levelNames[g_log_level]);
 
+        switch (g_log_level) {
+            case 0: reliable_log_level(RELIABLE_LOG_LEVEL_DEBUG); break;
+            case 1: reliable_log_level(RELIABLE_LOG_LEVEL_INFO); break;
+            case 2: reliable_log_level(RELIABLE_LOG_LEVEL_ERROR); break;
+            case 3: reliable_log_level(RELIABLE_LOG_LEVEL_ERROR); break;
+            case 4: reliable_log_level(RELIABLE_LOG_LEVEL_NONE); break;
+        }
+
         if (isWindowOpen && selected_message_index != -1) {
             ImGui::Begin("Messages", &isWindowOpen); // Use isWindowOpen to allow closing the window
 
@@ -1712,7 +1720,7 @@ void draw_imgui() {
         }
 
         {
-            ImGui::BeginChild("SpectatorsTableWindow", 
+            ImGui::BeginChild("SpectatorsTableWindow",
                 ImVec2(
                     ImGui::GetContentRegionAvail().x,
                     ImGui::GetWindowContentRegionMax().y / 4
@@ -2322,7 +2330,7 @@ static void core_log(enum retro_log_level level, const char *fmt, ...) {
     if (sam2__get_localtime(&t, &lt) != 0 || strftime(timestamp, 16, "%H:%M:%S", &lt) == 0) {
         timestamp[0] = '\0';
     }
-    switch (level) { 
+    switch (level) {
     default:
     case 0: fprintf(stdout, SAM2__GREY    "%s "    "DEBUG "  "%16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
     case 1: fprintf(stdout, SAM2__DEFAULT "%s "    "INFO  "  "%16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
@@ -2754,6 +2762,25 @@ void receive_juice_log(juice_log_level_t level, const char *message) {
     assert(level < JUICE_LOG_LEVEL_ERROR);
 }
 
+// Custom logging function for reliable library
+int reliable_log_redirect(const char *fmt, ...) {
+    char buffer[4096];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+
+    time_t t = time(NULL);
+    struct tm lt;
+    char timestamp[16];
+    if (sam2__get_localtime(&t, &lt) != 0 || strftime(timestamp, 16, "%H:%M:%S", &lt) == 0) {
+        timestamp[0] = '\0';
+    }
+
+    fprintf(stdout, "%s "    "UNK   "  "%11s:%-5s"   "| %s", timestamp, "reliable.c", "?", buffer);
+    return 0;
+}
+
 void rle_encode32(void *input_typeless, size_t inputSize, void *output_typeless, size_t *outputSize) {
     size_t writeIndex = 0;
     size_t readIndex = 0;
@@ -2791,9 +2818,9 @@ static void heuristic_byte_swap(uint32_t *data, size_t size) {
 
         if ((ieee_float_32_exponent < 0x6F) || (ieee_float_32_exponent >= 0x8F)) {
             // Byte swap if the value is not within the specified range
-            data[i] = ((word >> 24) & 0x000000FF) | 
-                      ((word >> 8) & 0x0000FF00) | 
-                      ((word << 8) & 0x00FF0000) | 
+            data[i] = ((word >> 24) & 0x000000FF) |
+                      ((word >> 8) & 0x0000FF00) |
+                      ((word << 8) & 0x00FF0000) |
                       ((word << 24) & 0xFF000000);
         }
     }
@@ -2846,7 +2873,7 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
         for (int i = 0; i < g_serialize_size; i++) {
             int delta_index = (g_save_state_index - g_save_state_used_for_delta_index_offset + MAX_SAVE_STATES) % MAX_SAVE_STATES;
             g_savebuffer_delta[i] = g_savebuffer[delta_index][i] ^ g_savebuffer[g_save_state_index][i];
-        } 
+        }
     }
 
     static unsigned char savebuffer_compressed[2 * sizeof(g_savebuffer[0])]; // Double the savestate size just cause degenerate run length encoding could make it about 1.5x I think
@@ -2865,7 +2892,7 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
             static ZSTD_CDict *cdict = NULL;
             if (g_dictionary_is_dirty) {
                 size_t partition_size = rom_size / 8;
-                size_t samples_sizes[8] = { partition_size, partition_size, partition_size, partition_size, 
+                size_t samples_sizes[8] = { partition_size, partition_size, partition_size, partition_size,
                                             partition_size, partition_size, partition_size, partition_size };
                 size_t dictionary_size = ZDICT_optimizeTrainFromBuffer_cover(
                     g_dictionary, sizeof(g_dictionary),
@@ -2900,9 +2927,9 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
             //ZSTD_CCtx_setParameter(cctx, ZSTD_c_ldmHashLog, 0);
 
             if (cdict) {
-                g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = ZSTD_compress_usingCDict(cctx, 
+                g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = ZSTD_compress_usingCDict(cctx,
                                                                                        savebuffer_compressed, COMPRESSED_SAVE_STATE_BOUND_BYTES,
-                                                                                       buffer, g_serialize_size, 
+                                                                                       buffer, g_serialize_size,
                                                                                        cdict);
             }
         } else {
@@ -3067,6 +3094,9 @@ int main(int argc, char *argv[]) {
     if (!SDL_Init(g_headless ? 0 : SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS)) {
         SAM2_LOG_FATAL("Failed to initialize SDL");
     }
+
+    // Set up reliable library logging
+    reliable_set_printf_function(reliable_log_redirect);
 
     // Setup Platform/Renderer backends
     // GL 3.0 + GLSL 130
