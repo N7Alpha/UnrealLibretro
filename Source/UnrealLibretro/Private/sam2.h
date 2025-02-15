@@ -768,7 +768,7 @@ static void SAM2_UNUSED sam2__log_write(int level, const char *file, int line, c
 
     const char *prefix_fmt;
     switch (level) {
-    default: //          ANSI color escape-codes  HH:MM:SS level     filename:line  |
+    default: //          ANSI color escape-codes  HH:MM:SS level  filename:line     |
     case 4: prefix_fmt = SAM2__WHITE SAM2__BG_RED "%s "    "FATAL "  "%11s:%-5d"   "| "; break;
     case 0: prefix_fmt = SAM2__GREY               "%s "    "DEBUG "  "%11s:%-5d"   "| "; break;
     case 1: prefix_fmt = SAM2__DEFAULT            "%s "    "INFO  "  "%11s:%-5d"   "| "; break;
