@@ -52,6 +52,7 @@ int g_log_level = 1; // Info
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/stat.h>
 
 #ifndef MAX_PATH
 #define MAX_PATH 260
@@ -2678,7 +2679,15 @@ static void core_load(const char *sofile) {
     g_retro.handle = SDL_LoadObject(sofile);
 
     if (!g_retro.handle)
-        SAM2_LOG_FATAL("Failed to load core: %s", SDL_GetError()); // @todo I've got to add a x86_64,x86/aarch64,arm32 check here. It does not give reasonable errors on its own
+    {
+        struct stat file_stat;
+        if (stat(sofile, &file_stat) == 0)
+            SAM2_LOG_FATAL("Failed to load core: '%s' exists, but could not be loaded. "
+                          "This may be due to an architecture mismatch or incompatible dependencies. SDL_Error: %s",
+                          sofile, SDL_GetError());
+        else
+            SAM2_LOG_FATAL("Failed to load core: '%s' does not exist. SDL_Error: %s", sofile, SDL_GetError());
+    }
 
     load_retro_sym(retro_init);
     load_retro_sym(retro_deinit);
