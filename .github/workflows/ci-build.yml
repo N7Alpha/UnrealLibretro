@@ -22,7 +22,8 @@ jobs:
         -ISource/UnrealLibretro/Private \
         -ISource/ThirdParty/zstd/lib \
         -ISource/ThirdParty/libjuice/include \
-        -ISource/ThirdParty/libuv/include
+        -ISource/ThirdParty/libuv/include \
+        -ISource/ThirdParty/reliable
 
   build-macos:
     runs-on: macos-latest
