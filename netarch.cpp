@@ -43,9 +43,19 @@ int g_log_level = 1; // Info
 #include <SDL3/SDL_keycode.h>
 #include <SDL3/SDL_loadso.h>
 #include <SDL3/SDL_video.h>
-#include <SDL3/SDL_filesystem.h>
 #endif
 #include "libretro.h"
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#define PATH_SEPARATOR "\\"
+#else
+#include <dirent.h>
+#define PATH_SEPARATOR "/"
+#endif
 
 #include <ctype.h>
 #include <stdio.h>
@@ -1100,67 +1110,91 @@ static void strip_last_path_component(char *path) {
     }
 }
 
-#ifdef _WIN32
-#define PATH_SEPARATOR "\\"
-#else
-#define PATH_SEPARATOR "/"
-#endif
+#define NETARCH_CONTENT_FLAG_IS_DIRECTORY 0b00000001
 
-#define NETARCH_CONTENT_FLAG_IS_DIRECTORY          0b00000001
 static int list_folder_contents(
-    char* path_utf8,
+    char path_utf8[/*MAX_PATH*/],
     char content_name_utf8[/*content_capacity*/][MAX_PATH],
     int content_flag[/*content_capacity*/],
     int content_capacity
 ) {
+    int count = 0;
+
     // Add trailing slash if needed
-    size_t len = SDL_strlen(path_utf8);
-    if(len > 0 && path_utf8[len-1] != '/' && path_utf8[len-1] != '\\') {
-        SDL_strlcat(path_utf8, PATH_SEPARATOR, MAX_PATH);
+    size_t len = strlen(path_utf8);
+    if (len > 0 && path_utf8[len-1] != '/' && path_utf8[len-1] != '\\') {
+        strcat(path_utf8, PATH_SEPARATOR);
     }
 
     // Add parent directory unconditionally
-    SDL_strlcpy(content_name_utf8[0], "..", MAX_PATH);
+    strncpy(content_name_utf8[0], "..", MAX_PATH - 1);
+    content_name_utf8[0][MAX_PATH - 1] = '\0';
     content_flag[0] = NETARCH_CONTENT_FLAG_IS_DIRECTORY;
+    count = 1;
 
-    struct DirData {
-        char (*names)[MAX_PATH];
-        int* flags;
-        int count;
-        int capacity;
-    } dirData = {content_name_utf8, content_flag, 1, content_capacity};
+#ifdef _WIN32
+    WIN32_FIND_DATAA find_data;
+    char search_path[MAX_PATH];
+    snprintf(search_path, sizeof(search_path), "%s*", path_utf8);
 
-    SDL_EnumerateDirectoryCallback callback = [](void *userdata, const char *, const char *fname) -> SDL_EnumerationResult {
-        DirData* data = static_cast<DirData*>(userdata);
-
-        if (data->count >= data->capacity) {
-            return SDL_ENUM_SUCCESS; // Stop enumeration, we're full
-        }
-
-        SDL_strlcpy(data->names[data->count], fname, MAX_PATH);
-        data->flags[data->count] = 0; // Will update type in second pass
-        data->count++;
-        return SDL_ENUM_CONTINUE;
-    };
-
-    // First pass: get all entries
-    if (!SDL_EnumerateDirectory(path_utf8, callback, &dirData)) {
+    HANDLE find_handle = FindFirstFileA(search_path, &find_data);
+    if (find_handle == INVALID_HANDLE_VALUE) {
         return -1;
     }
 
-    // Second pass: determine which entries are directories
-    for (int i = 0; i < dirData.count; ++i) {
-        char full_path[MAX_PATH];
-        SDL_snprintf(full_path, sizeof(full_path), "%s%s", path_utf8, content_name_utf8[i]);
-
-        SDL_PathInfo info;
-        if (SDL_GetPathInfo(full_path, &info)) {
-            content_flag[i] = (info.type == SDL_PATHTYPE_DIRECTORY) ?
-                NETARCH_CONTENT_FLAG_IS_DIRECTORY : 0;
+    do {
+        if (count >= content_capacity) {
+            break;
         }
+
+        // Skip "." and ".." entries
+        if (strcmp(find_data.cFileName, ".") == 0 ||
+            strcmp(find_data.cFileName, "..") == 0) {
+            continue;
+        }
+
+        strncpy(content_name_utf8[count], find_data.cFileName, MAX_PATH - 1);
+        content_name_utf8[count][MAX_PATH - 1] = '\0';
+
+        content_flag[count] = (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ?
+            NETARCH_CONTENT_FLAG_IS_DIRECTORY : 0;
+
+        count++;
+    } while (FindNextFileA(find_handle, &find_data));
+
+    FindClose(find_handle);
+
+#else
+    DIR* dir = opendir(path_utf8);
+    if (!dir) {
+        return -1;
     }
 
-    return dirData.count;
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (count >= content_capacity) {
+            break;
+        }
+
+        // Skip "." and ".." entries
+        if (strcmp(entry->d_name, ".") == 0 ||
+            strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        strncpy(content_name_utf8[count], entry->d_name, MAX_PATH - 1);
+        content_name_utf8[count][MAX_PATH - 1] = '\0';
+
+        content_flag[count] = (entry->d_type == DT_DIR) ?
+            NETARCH_CONTENT_FLAG_IS_DIRECTORY : 0;
+
+        count++;
+    }
+
+    closedir(dir);
+#endif
+
+    return count;
 }
 
 int imgui_file_picker(
