@@ -189,7 +189,7 @@ typedef struct ulnet_session {
     unsigned char  state_packet_history[SAM2_TOTAL_PEERS][ULNET_STATE_PACKET_HISTORY_SIZE][ULNET_PACKET_SIZE_BYTES_MAX];
     uint64_t       peer_needs_sync_bitfield;
 
-    reliable_endpoint_t *reliable_endpoint[SAM2_TOTAL_PEERS];
+    struct reliable_endpoint_t *reliable_endpoint[SAM2_TOTAL_PEERS];
 
     int zstd_compress_level;
     unsigned char remote_savestate_transfer_packets[COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES + FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * sizeof(ulnet_save_state_packet_header_t)];
@@ -821,7 +821,7 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
 ULNET_LINKAGE void ulnet__swap_agent(ulnet_session_t *session, int peer_existing_port, int peer_new_port) {
     if (peer_existing_port == peer_new_port) return;
     juice_agent_t *temp_agent = session->agent[peer_existing_port];
-    reliable_endpoint_t *temp_reliable = session->reliable_endpoint[peer_existing_port];
+    struct reliable_endpoint_t *temp_reliable = session->reliable_endpoint[peer_existing_port];
     int64_t temp_agent_peer_ids = session->agent_peer_ids[peer_existing_port];
 
     session->agent[peer_existing_port] = session->agent[peer_new_port];
