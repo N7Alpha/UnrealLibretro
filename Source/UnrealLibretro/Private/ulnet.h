@@ -38,7 +38,11 @@ typedef struct juice_agent juice_agent_t;
 #define ULNET_CHANNEL_INPUT                   0x10
 #define ULNET_CHANNEL_SPECTATOR_INPUT         0x20
 #define ULNET_CHANNEL_SAVESTATE_TRANSFER      0x30
-#define ULNET_CHANNEL_RELIABLE                0x40
+#define ULNET_CHANNEL_ASCII_1                 0x40
+#define ULNET_CHANNEL_ASCII_2                 0x50
+#define ULNET_CHANNEL_RELIABLE                0x60
+
+#define ulnet_exit_header  "E" "X" "I" "T" SAM2__STR(SAM2_VERSION_MAJOR) "." SAM2__STR(SAM2_VERSION_MINOR) "r"
 
 #define ULNET_WAITING_FOR_SAVE_STATE_SENTINEL INT64_MAX
 
@@ -189,6 +193,7 @@ typedef struct ulnet_session {
     ulnet_input_state_t spectator_suggested_input_state[SAM2_TOTAL_PEERS][ULNET_PORT_COUNT];
     unsigned char  state_packet_history[SAM2_TOTAL_PEERS][ULNET_STATE_PACKET_HISTORY_SIZE][ULNET_PACKET_SIZE_BYTES_MAX];
     uint64_t       peer_needs_sync_bitfield;
+    uint64_t       peer_pending_disconnect_bitfield;
 
     struct reliable_endpoint_t *reliable_endpoint[SAM2_TOTAL_PEERS];
 
@@ -217,6 +222,7 @@ ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, juice_agent_t
 ULNET_LINKAGE void ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, int p, const char *remote_description);
 ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port);
 ULNET_LINKAGE void ulnet__swap_agent(ulnet_session_t *session, int peer_existing_port, int peer_new_port);
+ULNET_LINKAGE sam2_room_t ulnet__infer_future_room_we_are_in(ulnet_session_t *session);
 ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session);
 
 static inline int ulnet_our_port(ulnet_session_t *session) {
@@ -535,14 +541,13 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
         }
     }
 
-    // We need to poll agents to make progress on the ICE connection
+    // Get rid of dead agents
     juice_agent_t *agent[SAM2_ARRAY_LENGTH(session->agent)] = {0};
     int agent_count = 0;
     for (int p = 0; p < SAM2_ARRAY_LENGTH(session->agent); p++) {
         if (session->agent[p]) {
-            if (juice_get_state(session->agent[p]) != JUICE_STATE_FAILED) {
-                agent[agent_count++] = session->agent[p];
-            } else {
+            if (   juice_get_state(session->agent[p]) == JUICE_STATE_FAILED
+                || session->peer_pending_disconnect_bitfield & (1ULL << p)) {
                 if (p >= SAM2_PORT_MAX+1) {
                     SAM2_LOG_INFO("Spectator %05" PRId16 " left" , session->room_we_are_in.peer_ids[p]);
                 } else {
@@ -550,6 +555,8 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
                 }
 
                 ulnet_disconnect_peer(session, p);
+            } else {
+                agent[agent_count++] = session->agent[p];
             }
         }
     }
@@ -835,6 +842,8 @@ ULNET_LINKAGE void ulnet__swap_agent(ulnet_session_t *session, int peer_existing
 }
 
 ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port) {
+    session->peer_pending_disconnect_bitfield &= ~(1ULL << peer_port);
+
     if (peer_port > SAM2_AUTHORITY_INDEX) {
         SAM2_LOG_INFO("Disconnecting spectator %05" PRId16, session->room_we_are_in.peer_ids[peer_port]);
     } else {
@@ -858,15 +867,13 @@ static inline void ulnet__reset_save_state_bookkeeping(ulnet_session_t *session)
 }
 
 ULNET_LINKAGE void ulnet_session_tear_down(ulnet_session_t *session) {
+    juice_send(session->agent[SAM2_AUTHORITY_INDEX], ulnet_exit_header, SAM2_HEADER_SIZE);
+
     for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
         if (session->agent[i]) {
             ulnet_disconnect_peer(session, i);
         }
     }
-
-    sam2_signal_message_t response = { SAM2_SIGX_HEADER };
-    response.peer_id = session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX];
-    session->sam2_send_callback(session->user_ptr, (char *) &response);
 
     session->room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
     session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
@@ -901,7 +908,8 @@ static void ulnet__on_state_changed(juice_agent_t *agent, juice_state_t state, v
         SAM2_LOG_INFO("Setting peer needs sync bit for peer %05" PRId16, session->our_peer_id);
         session->peer_needs_sync_bitfield |= (1ULL << p);
     } else if (state == JUICE_STATE_FAILED) {
-        //ulnet_disconnect_peer(session, p); // This is called from within juice_user_poll()... So freeing the agent here isn't safe. @todo There might be something I can do about this
+        //ulnet_disconnect_peer(session, p); // This is called from within juice_user_poll()... So freeing the agent here isn't safe
+        session->peer_pending_disconnect_bitfield |= (1ULL << p);
     }
 }
 
@@ -943,7 +951,7 @@ static void ulnet__on_gathering_done(juice_agent_t *agent, void *user_ptr) {
     session->sam2_send_callback(session->user_ptr, (char *) &response);
 }
 
-
+// MARK: UDP Packet Processing
 static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data, size_t size, void *user_ptr) {
     ulnet_session_t *session = (ulnet_session_t *) user_ptr;
 
@@ -972,7 +980,9 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
     }
 
     if (   p >= SAM2_PORT_MAX+1
-        && (data[0] & ULNET_CHANNEL_MASK) != ULNET_CHANNEL_SPECTATOR_INPUT) {
+        && (data[0] & ULNET_CHANNEL_MASK) != ULNET_CHANNEL_SPECTATOR_INPUT
+        && (data[0] & ULNET_CHANNEL_MASK) != ULNET_CHANNEL_ASCII_1
+        && (data[0] & ULNET_CHANNEL_MASK) != ULNET_CHANNEL_ASCII_2) {
         SAM2_LOG_WARN("A spectator sent us a UDP packet for unsupported channel %" PRIx8 " for some reason", data[0] & ULNET_CHANNEL_MASK);
         return;
     }
@@ -980,6 +990,39 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
     switch (channel_and_flags & ULNET_CHANNEL_MASK) {
     case ULNET_CHANNEL_EXTRA: {
         assert(!"This is an error currently\n");
+        break;
+    }
+    case ULNET_CHANNEL_ASCII_1:
+    case ULNET_CHANNEL_ASCII_2: {
+        if (size < SAM2_HEADER_SIZE) {
+            SAM2_LOG_ERROR("Message doesn't even have complete header %zu/%zu bytes", size, SAM2_HEADER_SIZE);
+            break;
+        }
+
+        SAM2_LOG_INFO("Received message with header '%.8s' from peer %05" PRId16 " on channel 0x%" PRIx8 " with %zu bytes", data, session->agent_peer_ids[p], channel_and_flags & ULNET_CHANNEL_MASK, size);
+
+        if (memcmp(data, ulnet_exit_header, SAM2_HEADER_TAG_SIZE) == 0) {
+            if (p > SAM2_AUTHORITY_INDEX) {
+                session->peer_pending_disconnect_bitfield |= (1ULL << p);
+
+                if (ulnet_is_authority(session)) {
+                    sam2_room_t future_room_we_are_in = ulnet__infer_future_room_we_are_in(session);
+                    session->next_room_xor_delta.peer_ids[p] = future_room_we_are_in.peer_ids[p] ^ SAM2_PORT_AVAILABLE;
+                }
+            } else {
+                SAM2_LOG_WARN("Protocol violation: room.peer_ids[%d]=%05" PRId16 " signaled disconnect before exiting room", p, session->room_we_are_in.peer_ids[p]);
+                sam2_error_message_t error = {
+                    SAM2_FAIL_HEADER,
+                    session->room_we_are_in.peer_ids[p],
+                    "Protocol violation: Signaled disconnect before detatching port",
+                    SAM2_RESPONSE_AUTHORITY_ERROR
+                };
+
+                session->sam2_send_callback(session->user_ptr, (char *) &error);
+                // @todo Resync broadcast
+            }
+        }
+
         break;
     }
     case ULNET_CHANNEL_RELIABLE: {
@@ -1448,7 +1491,7 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
 
             session->sam2_send_callback(session->user_ptr, (char *) &make_message);
         }
-    } else if (memcmp(response, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
+    }  else if (memcmp(response, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_signal_message_t *room_signal = (sam2_signal_message_t *) response;
         SAM2_LOG_INFO("Received signal from peer %05" PRId16 "", room_signal->peer_id);
 
@@ -1514,31 +1557,6 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
             } else {
                 SAM2_LOG_ERROR("Unable to parse signal message '%s'", room_signal->ice_sdp);
             }
-        }
-    } else if (memcmp(response, sam2_sigx_header, SAM2_HEADER_TAG_SIZE) == 0) {
-        sam2_signal_message_t *room_signal = (sam2_signal_message_t *) response;
-
-        int p = 0;
-        SAM2_LOCATE(session->agent_peer_ids, room_signal->peer_id, p);
-
-        if (p > SAM2_AUTHORITY_INDEX) {
-            ulnet_disconnect_peer(session, p);
-
-            if (ulnet_is_authority(session)) {
-                sam2_room_t future_room_we_are_in = ulnet__infer_future_room_we_are_in(session);
-                session->next_room_xor_delta.peer_ids[p] = future_room_we_are_in.peer_ids[p] ^ SAM2_PORT_AVAILABLE;
-            }
-        } else {
-            SAM2_LOG_WARN("Protocol violation: room.peer_ids[%d]=%05" PRId16 " signaled disconnect before exiting room", p, room_signal->peer_id);
-            sam2_error_message_t error = {
-                SAM2_FAIL_HEADER,
-                room_signal->peer_id,
-                "Protocol violation: Signaled disconnect before detatching port",
-                SAM2_RESPONSE_AUTHORITY_ERROR
-            };
-
-            session->sam2_send_callback(session->user_ptr, (char *) &error);
-            // @todo Resync broadcast
         }
     }
 

@@ -48,8 +48,6 @@
 #define SAM2_CONN_HEADER {'C','O','N','N',    '0' + SAM2_VERSION_MAJOR, '.',    '0' + SAM2_VERSION_MINOR, 'r'}
 #define sam2_sign_header  "S" "I" "G" "N" SAM2__STR(SAM2_VERSION_MAJOR) "." SAM2__STR(SAM2_VERSION_MINOR) "r"
 #define SAM2_SIGN_HEADER {'S','I','G','N',    '0' + SAM2_VERSION_MAJOR, '.',    '0' + SAM2_VERSION_MINOR, 'r'}
-#define sam2_sigx_header  "S" "I" "G" "X" SAM2__STR(SAM2_VERSION_MAJOR) "." SAM2__STR(SAM2_VERSION_MINOR) "r"
-#define SAM2_SIGX_HEADER {'S','I','G','X',    '0' + SAM2_VERSION_MAJOR, '.',    '0' + SAM2_VERSION_MINOR, 'r'}
 #define sam2_fail_header  "F" "A" "I" "L" SAM2__STR(SAM2_VERSION_MAJOR) "." SAM2__STR(SAM2_VERSION_MINOR) "r"
 #define SAM2_FAIL_HEADER {'F','A','I','L',    '0' + SAM2_VERSION_MAJOR, '.',    '0' + SAM2_VERSION_MINOR, 'r'}
 
@@ -292,7 +290,6 @@ static sam2_message_metadata_t sam2__message_metadata[] = {
     {sam2_join_header, sizeof(sam2_room_join_message_t)},
     {sam2_conn_header, sizeof(sam2_connect_message_t)},
     {sam2_sign_header, sizeof(sam2_signal_message_t)},
-    {sam2_sigx_header, sizeof(sam2_signal_message_t)},
     {sam2_fail_header, sizeof(sam2_error_message_t)},
 };
 
@@ -1085,8 +1082,7 @@ static void sam2__sanitize_message(void *message) {
     } else if (memcmp(message, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_room_join_message_t *join_message = (sam2_room_join_message_t *)message;
         SAM2__SANITIZE_STRING(join_message->room.name);
-    } else if (   memcmp(message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0
-               || memcmp(message, sam2_sigx_header, SAM2_HEADER_TAG_SIZE) == 0) {
+    } else if (memcmp(message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
         sam2_signal_message_t *signal_message = (sam2_signal_message_t *)message;
         SAM2__SANITIZE_STRING(signal_message->ice_sdp);
     } else if (memcmp(message, sam2_fail_header, 8) == 0) {
@@ -1637,8 +1633,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
             memcpy(response, request, sizeof(sam2_room_join_message_t));
             response->peer_id = sam2__peer_id(client);
             sam2__write_response((uv_stream_t*) authority, (sam2_message_u *) response);
-        } else if (   memcmp(&message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0
-                   || memcmp(&message, sam2_sigx_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        } else if (memcmp(&message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
             // Clients forwarding sdp's between eachother
             sam2_signal_message_t *request = (sam2_signal_message_t *) &message;
 
