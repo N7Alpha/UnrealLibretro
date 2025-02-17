@@ -621,17 +621,19 @@ int64_t rle8_encode_capped(const uint8_t *input, int64_t input_size, uint8_t *ou
                 i++;
             }
 
-            if (output_size >= output_capacity-2) return -1;
+            if (output_size >= output_capacity-2) goto err;
             output[output_size++] = 0; // Mark the start of a zero run
             // Encode count as little endian
             output[output_size++] = (uint8_t)(count & 0xFF);
             output[output_size++] = (uint8_t)((count >> 8) & 0xFF);
         } else {
-            if (output_size >= output_capacity) return -1;
+            if (output_size >= output_capacity) goto err;
             output[output_size++] = input[i]; // Copy non-zero values directly
         }
     }
+
     return output_size; // Return the size of the encoded data
+err:return -1;
 }
 
 // Encodes input array of uint8_t into a byte stream with RLE for zeros.
@@ -666,23 +668,31 @@ int64_t rle8_decode(const uint8_t* input, int64_t input_size, uint8_t* output, i
     return rle8_decode_extra(input, input_size, &input_consumed, output, output_capacity);
 }
 
-// Calculates the decoded size from the encoded byte stream. @todo Remove you can just roll these checks into the actual decoder
-int64_t rle8_decode_size(const uint8_t* input, int64_t input_size) {
-    int64_t decoded_size = 0;
-    int64_t i = 0;
-    while (i < input_size) {
-        if (input[i] == 0) {
-            i++; // Move past the zero marker
-            uint16_t count = input[i] | (input[i + 1] << 8); // Decode count as little endian
-            i += 2; // Move past the count bytes
+int64_t rle8_pack_message(void *message, int64_t message_size) {
+    char message_rle8[1408];
 
-            decoded_size += count;
-        } else {
-            decoded_size++;
-            i++;
-        }
+    int64_t message_size_rle8 = rle8_encode_capped((uint8_t *)message, message_size, (uint8_t *) message_rle8, sizeof(message_rle8));
+
+    bool compressed_message_is_larger = message_size_rle8 >= message_size;
+    bool compression_failed = message_size_rle8 == -1;
+
+    if (compressed_message_is_larger || compression_failed) {
+        ((char *) message)[7] = 'r';
+        return message_size;
+    } else {
+        memcpy(message, message_rle8, message_size_rle8);
+        memset((char *) message + message_size_rle8, 0, message_size - message_size_rle8);
+        ((char *) message)[7] = 'z';
+        return message_size_rle8;
     }
-    return decoded_size;
+}
+
+void rle8_unpack_message(uint8_t *message, int64_t message_size, void *message_rle8, int64_t message_size_rle8) {
+    if (((char *) message)[7] == 'z' || ((char *) message)[7] == 'Z') {
+        rle8_decode(message, message_size, (uint8_t *) message_rle8, message_size_rle8);
+    }
+
+    ((char *) message)[7] = 'R';
 }
 
 #define SAM2__GREY    "\x1B[90m"
@@ -1300,21 +1310,7 @@ static void sam2__write_response(uv_stream_t *client_tcp, sam2_message_u *messag
         return;
     }
 
-    sam2_message_u *message_rle8 = sam2__alloc_message_raw(server);
-    int64_t message_size_rle8 = rle8_encode_capped((uint8_t *)message, metadata->message_size, (uint8_t *) message_rle8, sizeof(*message_rle8));
-
-    // If this fails, we just send the message uncompressed
-    int64_t message_size;
-    if (message_size_rle8 != -1) {
-        ((char *) message_rle8)[7] = 'z';
-        sam2__free_response(server, message);
-        message = message_rle8;
-        message_size = message_size_rle8;
-    } else {
-        ((char *) message)[7] = 'r';
-        sam2__free_response(server, message_rle8);
-        message_size = metadata->message_size;
-    }
+    int message_size = rle8_pack_message(message, metadata->message_size);
 
     uv_buf_t buffer;
     buffer.len = message_size;

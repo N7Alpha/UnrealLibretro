@@ -30,6 +30,7 @@ typedef struct juice_agent juice_agent_t;
 #define ULNET_CORE_OPTIONS_MAX 128
 #define ULNET_STATE_PACKET_HISTORY_SIZE 256
 
+#define ULNET_HEADER_SIZE                     1
 #define ULNET_FLAGS_MASK                      0x0F
 #define ULNET_CHANNEL_MASK                    0xF0
 
@@ -1001,13 +1002,10 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
             break;
         }
 
-        if (rle8_decode_size(input_packet->coded_state, size - 1) != sizeof(ulnet_state_t)) {
-            SAM2_LOG_WARN("Received input packet with an invalid decode size %" PRId64, rle8_decode_size(input_packet->coded_state, size - 1));
-            break;
-        }
+        int64_t coded_state_size = size - ULNET_HEADER_SIZE;
 
         int64_t frame;
-        rle8_decode(input_packet->coded_state, size - 1, (uint8_t *) &frame, sizeof(frame));
+        rle8_decode(input_packet->coded_state, coded_state_size, (uint8_t *) &frame, sizeof(frame));
 
         SAM2_LOG_DEBUG("Recv input packet for frame %" PRId64 " from peer_ids[%d]=%05" PRId16 "",
             frame, original_sender_port, session->room_we_are_in.peer_ids[original_sender_port]);
@@ -1017,10 +1015,19 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
             SAM2_LOG_DEBUG("Received outdated input packet for frame %" PRId64 ". We are already on frame %" PRId64 ". Dropping it",
                 frame, session->state[original_sender_port].frame);
         } else {
-            rle8_decode(
-                input_packet->coded_state, size - 1,
-                (uint8_t *) &session->state[original_sender_port], sizeof(ulnet_state_t)
+            int64_t input_consumed = 0;
+            int64_t output_produced = rle8_decode_extra(
+                input_packet->coded_state, coded_state_size,
+                &input_consumed,
+                (uint8_t *) &session->state[original_sender_port],
+                sizeof(ulnet_state_t)
             );
+
+            if (input_consumed != coded_state_size) {
+                SAM2_LOG_WARN("Input packet sent with oversize payload %" PRId64 " bytes left to decode", input_consumed - coded_state_size);
+            } else if (output_produced != sizeof(ulnet_state_t)) {
+                SAM2_LOG_WARN("Input packet sent with insuffcient size %" PRId64 " bytes produced", output_produced);
+            }
 
             // Store the input packet in the history buffer. Arbitrary zero runs decode to no bytes conveniently so we don't need to store the packet size
             int i = 0;
