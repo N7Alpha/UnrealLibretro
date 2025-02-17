@@ -1592,8 +1592,7 @@ void draw_imgui() {
                             origin = g_sam2_address;
                         } else if (strncmp(header, sam2_join_header, 4) == 0) {
                             peer_id = ((sam2_room_join_message_t*)message)->peer_id;
-                        } else if (strncmp(header, sam2_sign_header, 4) == 0 ||
-                                   strncmp(header, sam2_sigx_header, 4) == 0) {
+                        } else if (strncmp(header, sam2_sign_header, 4) == 0) {
                             peer_id = ((sam2_signal_message_t*)message)->peer_id;
                         }
 
