@@ -96,5 +96,8 @@ public class UnrealLibretro : ModuleRules
 
 		// zstd stuff
 		PublicIncludePaths.Add("$(PluginDir)/Source/ThirdParty/zstd/lib");
+
+		// reliable stuff
+		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/reliable");
 	}
 }
