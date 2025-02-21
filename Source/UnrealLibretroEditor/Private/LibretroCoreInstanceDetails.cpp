@@ -639,6 +639,14 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                            return FText::FromString("");
                        }
                    })
+               .ToolTipText_Lambda([this]() -> FText {
+                   FString CorePath;
+                   if(FPropertyAccess::Result::Success == CorePathProperty->GetValueAsFormattedString(CorePath))
+                   {
+                       return FText::FromString(FUnrealLibretroModule::ResolveCorePath(CorePath));
+                   }
+                   return FText::GetEmpty();
+               })
                .OnTextCommitted_Lambda([this](const FText& NewValue, ETextCommit::Type) 
                    { 
                        CorePathProperty->SetValueFromFormattedString(NewValue.ToString()); 
