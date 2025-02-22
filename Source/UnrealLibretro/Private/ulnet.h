@@ -28,7 +28,7 @@ typedef struct juice_agent juice_agent_t;
 
 #define ULNET_SPECTATOR_MAX (SAM2_TOTAL_PEERS - SAM2_PORT_MAX - 1)
 #define ULNET_CORE_OPTIONS_MAX 128
-#define ULNET_STATE_PACKET_HISTORY_SIZE 256
+#define ULNET_STATE_PACKET_HISTORY_SIZE 64
 
 #define ULNET_HEADER_SIZE                     1
 #define ULNET_FLAGS_MASK                      0x0F
@@ -48,6 +48,7 @@ typedef struct juice_agent juice_agent_t;
 
 #define ULNET_SESSION_FLAG_TICKED                 0b00000001ULL
 #define ULNET_SESSION_FLAG_CORE_OPTIONS_DIRTY     0b00000010ULL
+#define ULNET_SESSION_FLAG_READY_TO_TICK_SET      0b00000100ULL
 
 // @todo Remove this define once it becomes possible through normal featureset
 #define ULNET__DEBUG_EVERYONE_ON_PORT_0
@@ -92,12 +93,12 @@ typedef struct ulnet_core_option {
 
 // @todo This is really sparse so you should just add routines to read values from it in the serialized format
 typedef struct {
-    int64_t frame;
+    int64_t frame; // Frame for which currently buffered input, room_xor_delta, and core_option should be applied
     ulnet_input_state_t input_state[ULNET_DELAY_BUFFER_SIZE][ULNET_PORT_COUNT];
     sam2_room_t room_xor_delta[ULNET_DELAY_BUFFER_SIZE];
     ulnet_core_option_t core_option[ULNET_DELAY_BUFFER_SIZE]; // Max 1 option per frame provided by the authority
 
-    int64_t save_state_frame;
+    int64_t save_state_frame; // This is the current frame the peer is on the essentially
     int64_t save_state_hash[ULNET_DELAY_BUFFER_SIZE];
     int64_t input_state_hash[ULNET_DELAY_BUFFER_SIZE];
 } ulnet_state_t;
@@ -425,6 +426,23 @@ double core_wants_tick_in_seconds(int64_t core_wants_tick_at_unix_usec) {
     return seconds;
 }
 
+static void ulnet_update_state_history(ulnet_session_t *session, int port, ulnet_state_packet_t *packet, size_t size) {
+    // Only store every 8th packet... frame 7, 15, 23, etc.
+    int64_t frame;
+    rle8_decode(packet->coded_state, ULNET_PACKET_SIZE_BYTES_MAX, (uint8_t *) &frame, sizeof(frame));
+    if ((frame + 1) % ULNET_DELAY_BUFFER_SIZE == 0) {
+        int history_idx = (frame / ULNET_DELAY_BUFFER_SIZE) % ULNET_STATE_PACKET_HISTORY_SIZE;
+
+        int i = 0;
+        for (; i < size; i++) {
+            session->state_packet_history[port][history_idx][i] = ((unsigned char *)packet)[i];
+        }
+        for (; i < SAM2_ARRAY_LENGTH(session->state_packet_history[0][0]); i++) {
+            session->state_packet_history[port][history_idx][i] = 0;
+        }
+    }
+}
+
 #define ULNET_POLL_SESSION_SAVED_STATE 0b00000001
 #define ULNET_POLL_SESSION_TICKED      0b00000010
 // This procedure always sends an input packet if the core is ready to tick. This subsumes retransmission logic and generally makes protocol logic less strict
@@ -455,13 +473,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
         );
 
         if ((input_packet->channel_and_port & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_INPUT) {
-            void *next_history_packet = &session->state_packet_history[ulnet_our_port(session)][session->state[ulnet_our_port(session)].frame % ULNET_STATE_PACKET_HISTORY_SIZE];
-            memset(next_history_packet, 0, sizeof(session->state_packet_history[0][0]));
-            memcpy(
-                next_history_packet,
-                input_packet,
-                actual_payload_size
-            );
+            ulnet_update_state_history(session, ulnet_our_port(session), input_packet, actual_payload_size);
         }
 
         if (sizeof(ulnet_state_packet_t) + actual_payload_size > ULNET_PACKET_SIZE_BYTES_MAX) {
@@ -612,32 +624,29 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
             SAM2_LOG_WARN("juice_user_poll was called %d times. This is inefficent", debug_loop_count);
         }
     }
-
-    // Reconstruct input required for next tick if we're spectating... this crashes when without sufficient history to pull from @todo
+    // JOHN LOOK HERE THE ISSUE IS THAT INDEXING IS JUST TRICKY FOR INPUT PACKET ON FRAME 7 IT HAS THE FIRST 8 FRAMES OF INPUT
+    // SAME WITH 15 AND 23 ETC. I THINK WE JUST WANT TO SAVE THOSE PACKETS SO IT SHOULD BE FRAME + 1 / 8 % PACKET_HISTORY_SIZE I THINK
+    // Reconstruct input required for next tick if we're spectating
     if (ulnet_is_spectator(session, session->our_peer_id)) {
         for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-            if (session->room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
+            if (session->room_we_are_in.peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
+                int history_index_for_frame = (session->frame_counter / ULNET_DELAY_BUFFER_SIZE) % ULNET_STATE_PACKET_HISTORY_SIZE;
+                ulnet_state_packet_t *maybe_state_packet_for_frame = (ulnet_state_packet_t *) session->state_packet_history[p][history_index_for_frame];
 
-            int i;
-            for (i = ULNET_DELAY_BUFFER_SIZE-1; i >= 0; i--) {
                 int64_t frame = -1;
-                ulnet_state_packet_t *ulnet_state_packet_that_could_contain_input_for_current_frame = (ulnet_state_packet_t *) session->state_packet_history[p][(session->frame_counter + i) % ULNET_STATE_PACKET_HISTORY_SIZE];
-                rle8_decode(ulnet_state_packet_that_could_contain_input_for_current_frame->coded_state, ULNET_PACKET_SIZE_BYTES_MAX, (uint8_t *) &frame, sizeof(frame));
+                rle8_decode(maybe_state_packet_for_frame->coded_state, ULNET_PACKET_SIZE_BYTES_MAX, (uint8_t *) &frame, sizeof(frame));
+
                 if (SAM2_ABS(frame - session->frame_counter) < ULNET_DELAY_BUFFER_SIZE) {
-                    int64_t input_consumed = 0;
-                    int64_t decode_size = rle8_decode_extra(ulnet_state_packet_that_could_contain_input_for_current_frame->coded_state, ULNET_PACKET_SIZE_BYTES_MAX,
-                        &input_consumed, (uint8_t *) &session->state[p], sizeof(session->state[p]));
+                    rle8_decode(
+                        maybe_state_packet_for_frame->coded_state, ULNET_PACKET_SIZE_BYTES_MAX - sizeof(maybe_state_packet_for_frame[0]),
+                        (uint8_t *) &session->state[p], sizeof(session->state[p])
+                    );
+                }
 
-//                        SAM2_LOG_DEBUG("Reconstructed input for frame %" PRId64 " from peer %05" PRId16 "consumed %" PRId64 " bytes of input to produce %" PRId64,
-//                            session->frame_counter, session->room_we_are_in.peer_ids[p], input_consumed, decode_size);
-
-                    break;
+                if (session->state[p].frame - session->frame_counter > ULNET_STATE_PACKET_HISTORY_SIZE * ULNET_DELAY_BUFFER_SIZE) {
+                    SAM2_LOG_ERROR("We are too far behind to catch up we should resync");
                 }
             }
-
-            //if (i == ULNET_DELAY_BUFFER_SIZE) {
-            //    SAM2_LOG_FATAL("Failed to reconstruct input for frame %" PRId64 " from peer %05" PRId16 "\n", session->frame_counter, session->room_we_are_in.peer_ids[p]);
-            //}
         }
     }
 
@@ -955,6 +964,10 @@ static void ulnet__on_gathering_done(juice_agent_t *agent, void *user_ptr) {
 static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data, size_t size, void *user_ptr) {
     ulnet_session_t *session = (ulnet_session_t *) user_ptr;
 
+    if (session->flags & ULNET_SESSION_FLAG_READY_TO_TICK_SET) {
+        SAM2_LOG_ERROR("Received a UDP packet while we were ready to tick. Set a breakpoint here to investigate");
+    }
+
     int p;
     SAM2_LOCATE(session->agent, agent, p);
 
@@ -1072,15 +1085,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
                 SAM2_LOG_WARN("Input packet sent with insuffcient size %" PRId64 " bytes produced", output_produced);
             }
 
-            // Store the input packet in the history buffer. Arbitrary zero runs decode to no bytes conveniently so we don't need to store the packet size
-            int i = 0;
-            for (; i < size; i++) {
-                session->state_packet_history[original_sender_port][frame % ULNET_STATE_PACKET_HISTORY_SIZE][i] = data[i];
-            }
-
-            for (; i < SAM2_ARRAY_LENGTH(session->state_packet_history[0][0]); i++) {
-                session->state_packet_history[original_sender_port][frame % ULNET_STATE_PACKET_HISTORY_SIZE][i] = 0;
-            }
+            ulnet_update_state_history(session, original_sender_port, input_packet, size);
 
             // Broadcast the input packet to spectators
             if (ulnet_is_authority(session)) {
@@ -1103,7 +1108,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
         ulnet_state_t *our_desync_debug_packet = &session->state[ulnet_our_port(session)];
 
         int64_t latest_common_frame = SAM2_MIN(our_desync_debug_packet->save_state_frame, their_desync_debug_packet->save_state_frame);
-        int64_t frame_difference = SAM2_ABS(our_desync_debug_packet->frame - their_desync_debug_packet->frame);
+        int64_t frame_difference = SAM2_ABS(our_desync_debug_packet->save_state_frame - their_desync_debug_packet->save_state_frame);
         int64_t total_frames_to_compare = ULNET_DELAY_BUFFER_SIZE - frame_difference;
         for (int f = total_frames_to_compare-1; f >= 0 ; f--) {
             int64_t frame_to_compare = latest_common_frame - f;
