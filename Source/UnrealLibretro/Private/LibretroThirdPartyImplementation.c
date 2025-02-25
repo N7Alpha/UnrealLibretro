@@ -51,7 +51,9 @@
 // Static linking is the most practical thing to do since:
 //   - We don't have to worry about loading the dll
 //   - We aren't at risk of polluting the symbol-space
+//   - Source code indexing works still :D
 // This may end up being unmaintainable in which case I'll do something more sane
+
 // MARK: libjuice
 #pragma push
 #define __STDC_VERSION__ 0
@@ -87,8 +89,16 @@
 #include "../../ThirdParty/libjuice/src/timestamp.c"
 #include "../../ThirdParty/libjuice/src/turn.c"
 #include "../../ThirdParty/libjuice/src/udp.c"
+#pragma pop
+
+// MARK: reliable
+#pragma push
+#define log_level unreallibretro_renamed_this_identifier__log_level
+#include "../../ThirdParty/reliable/reliable.c"
+#pragma pop
 
 // MARK: zstd
+#pragma push
 #define ZSTD_LEGACY_SUPPORT 0
 #define ZSTDLIB_STATIC_API
 #define ZDICTLIB_STATIC_API
@@ -128,8 +138,10 @@
 #include "../../ThirdParty/zstd/lib/dictBuilder/fastcover.c"
 #include "../../ThirdParty/zstd/lib/dictBuilder/zdict.c"
 #endif
+#pragma pop
 
 // MARK: libuv
+#pragma push 
 // Non platform-specific files
 #include "../../ThirdParty/libuv/src/fs-poll.c"
 #include "../../ThirdParty/libuv/src/idna.c"
@@ -262,11 +274,9 @@ static char *getenv_hijack(const char *name) {
 // This source file defines static variables with names like mutex and cond which are very
 // likely to conflict with local definitions so I stuck it at the bottom here
 #include "../../ThirdParty/libuv/src/threadpool.c"
+#pragma pop
 
+// This is good practice but also necessary considering Unreal allows unity builds
 #ifdef _MSC_VER
 #pragma warning(pop)
 #endif
-
-#define log_level unreallibretro_reliable_log_level
-#include "reliable.c"
-#undef log_level
