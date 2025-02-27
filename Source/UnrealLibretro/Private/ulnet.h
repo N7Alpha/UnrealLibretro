@@ -118,12 +118,6 @@ typedef struct {
     uint8_t coded_state[];
 } ulnet_state_packet_t;
 
-typedef struct {
-    uint8_t channel;
-    uint8_t port;
-    uint16_t sequence;
-} ulnet_retransmit_packet_t;
-
 #define FEC_PACKET_GROUPS_MAX 16
 #define FEC_REDUNDANT_BLOCKS 16 // ULNET is hardcoded based on this value so it can't really be changed without breaking the protocol
 
@@ -181,7 +175,7 @@ typedef struct {
 } savestate_transfer_payload_t;
 
 // Use a fixed retransmission interval
-#define ULNET_RELIABLE_RETRANSMIT_INTERVAL_MS 50  // Check every 50ms for retransmissions
+#define ULNET_RELIABLE_RETRANSMIT_INTERVAL_MS 150
 
 // Simplified retransmission tracking structure
 typedef struct {
@@ -226,7 +220,7 @@ typedef struct ulnet_session {
     int32_t reliable_pending_arena_head;
     uint8_t reliable_pending_arena[65536];
     uint16_t reliable_pending_acks[SAM2_TOTAL_PEERS][ULNET_RELIABLE_ACK_BUFFER_SIZE];
-    uint16_t reliable_pending_num_acks[SAM2_TOTAL_PEERS];
+
     // Add to ulnet_session_t
     ulnet_reliable_retransmit_info_t reliable_retransmit_info[SAM2_TOTAL_PEERS][ULNET_RELIABLE_ACK_BUFFER_SIZE];
     uint16_t reliable_arena_head[SAM2_TOTAL_PEERS];  // Track circular buffer head per peer
@@ -492,14 +486,14 @@ static void ulnet__send_reliable_message(ulnet_session_t *session, int port, uns
     session->reliable_retransmit_info[port][slot_index].pending = true;
 
     // Store packet-specific metadata
-    if ((packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_INPUT) {
+    if (   (packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_INPUT
+        || (packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_SPECTATOR_INPUT) {
         int64_t frame;
         int header_size = sizeof(ulnet_state_packet_t);
         rle8_decode(&packet[header_size], ULNET_PACKET_SIZE_BYTES_MAX - header_size, (uint8_t *) &frame, sizeof(frame));
         session->reliable_pending_metadata[port][slot_index].ulnet_state.frame = frame;
-    }
-    else if (   (packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_ASCII_1
-             || (packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_ASCII_2) {
+    } else if (   (packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_ASCII_1
+               || (packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_ASCII_2) {
 
         // For ASCII messages, use circular buffer approach for arena
         if (size > sizeof(session->reliable_pending_arena)) {
@@ -663,9 +657,11 @@ static void ulnet__send_state_packet(ulnet_session_t *session, int port, ulnet_s
     int64_t frame;
     rle8_decode(packet->coded_state, ULNET_PACKET_SIZE_BYTES_MAX, (uint8_t *) &frame, sizeof(frame));
 
+    uint16_t next_packet_sequence = reliable_endpoint_next_packet_sequence(session->reliable_endpoint[port]);
+    uint16_t last_packet_sequence = (uint16_t) (next_packet_sequence - 1) % ULNET_RELIABLE_ACK_BUFFER_SIZE;
     // Only send every 8th packet reliably... frame 7, 15, 23, etc.
     if (   (frame + 1) % ULNET_DELAY_BUFFER_SIZE == 0
-        && (packet->channel_and_port & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_INPUT) {
+        && session->reliable_pending_metadata[port][last_packet_sequence].ulnet_state.frame != frame) {
         ulnet__send_reliable_message(session, port, (unsigned char *) packet, size);
     } else {
         int result = juice_send(session->agent[port], (char *) packet, size);
@@ -718,7 +714,16 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
 
             // Wait until we can send netplay messages to everyone without fail
             if (state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED) {
-                ulnet__send_state_packet(session, p, state_packet, state_packet_size);
+                if ((state_packet->channel_and_port & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_INPUT) {
+                    ulnet__send_state_packet(session, p, state_packet, state_packet_size);
+                } else {
+                    if (session->frame_counter % 8 == 0) {
+                        SAM2_LOG_WARN("Add the don't send multiple packets for the same frame thing");
+                        ulnet__send_reliable_message(session, p, (unsigned char *) state_packet, state_packet_size);
+                    } else {
+                        juice_send(session->agent[p], (char *) state_packet, state_packet_size);
+                    }
+                }
                 if ((state_packet->channel_and_port & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_INPUT) {
                     SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%05" PRId16,
                         session->state[ulnet_our_port(session)].frame, p, session->room_we_are_in.peer_ids[p]);
