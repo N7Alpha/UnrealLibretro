@@ -1629,6 +1629,22 @@ void draw_imgui() {
 
                 g_libretro_context.SAM2Send((char *) &message);
             }
+
+            if (ulnet_is_authority(&g_libretro_context.ulnet_session)) {
+                if (ImGui::Button("Test Authority Join Self")) {
+                    sam2_room_join_message_t joinMsg = { 0 };
+                    memcpy(joinMsg.header, sam2_join_header, SAM2_HEADER_TAG_SIZE);
+                    joinMsg.peer_id = g_ulnet_session.our_peer_id;
+                    joinMsg.room = g_ulnet_session.room_we_are_in;
+
+                    int result = ulnet_process_message(&g_ulnet_session, (char *)&joinMsg);
+                    if (result == -1) {
+                        SAM2_LOG_INFO("Test Authority Join Self passed: join request rejected.");
+                    } else {
+                        SAM2_LOG_ERROR("Test Authority Join Self FAILED: join request was not rejected (result = %d).", result);
+                    }
+                }
+            }
         }
 
         const char* levelNames[] = {"Debug", "Info", "Warn", "Error", "Fatal"};
