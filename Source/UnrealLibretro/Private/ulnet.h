@@ -325,7 +325,6 @@ static int64_t ulnet__logical_partition_offset_bytes(uint8_t sequence_hi, uint8_
 ULNET_LINKAGE void ulnet_input_poll(ulnet_session_t *session, ulnet_input_state_t (*input_state)[ULNET_PORT_COUNT]) {
     for (int peer_idx = 0; peer_idx < SAM2_PORT_MAX+1; peer_idx++) {
         if (   session->room_we_are_in.peer_ids[peer_idx] > SAM2_PORT_SENTINELS_MAX
-            || peer_idx == SAM2_AUTHORITY_INDEX
             && !(session->room_we_are_in.flags & (SAM2_FLAG_PORT0_PEER_IS_INACTIVE << peer_idx))) {
 
             if (!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
@@ -1417,10 +1416,15 @@ int ulnet_process_message(ulnet_session_t *session, void *response) {
             session->room_we_are_in = room_make->room;
         }
     } else if (memcmp(response, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
-        if (!ulnet_is_authority(session)) {
+        sam2_room_join_message_t *room_join = (sam2_room_join_message_t *) response;
+        if (ulnet_is_authority(session)) {
+            if (room_join->room.peer_ids[SAM2_AUTHORITY_INDEX] != session->our_peer_id) {
+                SAM2_LOG_WARN("Authority can't join their own room");
+                return -1;
+            }
+        } else {
             SAM2_LOG_FATAL("We shouldn't get here anymore"); // @todo Make error instead
         }
-        sam2_room_join_message_t *room_join = (sam2_room_join_message_t *) response;
 
         sam2_room_t future_room_we_are_in = ulnet__infer_future_room_we_are_in(session);
         sam2_room_t futureer_room_we_are_in = future_room_we_are_in;
