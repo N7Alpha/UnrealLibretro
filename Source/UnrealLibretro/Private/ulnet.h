@@ -1097,7 +1097,6 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
         }
 
         // Check for desync
-        if (sam2_get_port_of_peer(&session->room_we_are_in, original_sender_port) == -1) break;
         ulnet_state_t *their_desync_debug_packet = &session->state[original_sender_port];
         ulnet_state_t *our_desync_debug_packet = &session->state[ulnet_our_port(session)];
 
