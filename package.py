@@ -57,6 +57,14 @@ if __name__ == "__main__":
     else:
         package_path = os.path.abspath(args.package_path) 
 
+    win64_redist_path = os.path.join(plugin_path, "Binaries", "Win64", "ThirdParty", "libretro")
+
+    # Check if the directory exists
+    if not os.path.isdir(win64_redist_path):
+        print(f"{__file__}: ERROR: Required directory not found: {win64_redist_path}")
+        print(f"{__file__}: Please run setup.sh (Linux/macOS) or setup.cmd (Windows) first.")
+        sys.exit(1)
+
     major, minor = get_unreal_version(ue_path)
 
     if major == 4 or minor <= 2:
@@ -74,7 +82,7 @@ if __name__ == "__main__":
     )
 
     if status:
-        exit(status)
+        sys.exit(status)
 
     def unix_touch(path):
         from pathlib import Path
