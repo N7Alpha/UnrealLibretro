@@ -212,10 +212,9 @@ typedef struct ulnet_session {
             uint32_t arena_offset;
         } channel_ascii;
     } reliable_pending_metadata[SAM2_TOTAL_PEERS][ULNET_RELIABLE_ACK_BUFFER_SIZE];
-    int32_t reliable_pending_arena_head;
-    uint8_t reliable_pending_arena[65536];
+    uint8_t  arena_buffer[256 * 1024];
+    uint32_t arena_head;
     uint16_t reliable_greatest_sequence[SAM2_TOTAL_PEERS]; // Greatest sequence number sent, wraps around
-    uint16_t reliable_arena_head[SAM2_TOTAL_PEERS];
 
     // MARK: Save state transfer
     int zstd_compress_level;
@@ -632,24 +631,24 @@ static void ulnet__reliable_send(ulnet_session_t *session, int port, unsigned ch
                || (packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_ASCII_2) {
 
         // For ASCII messages, use circular buffer approach for arena
-        if (size > sizeof(session->reliable_pending_arena)) {
+        if (size > sizeof(session->arena_buffer)) {
             SAM2_LOG_WARN("ASCII message too large for arena buffer");
             return;
         }
 
         // Check if we need to wrap around
-        if (session->reliable_arena_head[port] + size > sizeof(session->reliable_pending_arena)) {
-            session->reliable_arena_head[port] = 0;
+        if (session->arena_head + size > sizeof(session->arena_buffer)) {
+            session->arena_head = 0;
         }
 
         // Store message in arena
-        int arena_offset = session->reliable_arena_head[port];
-        memcpy(&session->reliable_pending_arena[arena_offset], packet, size);
+        int arena_offset = session->arena_head;
+        memcpy(&session->arena_buffer[arena_offset], packet, size);
         session->reliable_pending_metadata[port][slot_index].channel_ascii.arena_offset = arena_offset;
         session->reliable_pending_metadata[port][slot_index].channel_ascii.size = (int32_t)size;
 
         // Update arena head
-        session->reliable_arena_head[port] += size;
+        session->arena_head += size;
     } else if ((packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_SPECTATOR_INPUT) {
         session->reliable_pending_metadata[port][slot_index].channel_state.frame = session->frame_counter;
     } else {
@@ -798,10 +797,10 @@ static void ulnet__check_retransmissions(ulnet_session_t *session, double curren
                 int size = session->reliable_pending_metadata[port][slot_index].channel_ascii.size;
 
                 if (   arena_offset >= 0 && size > 0
-                    && arena_offset + size <= sizeof(session->reliable_pending_arena)) {
+                    && arena_offset + size <= sizeof(session->arena_buffer)) {
                     SAM2_LOG_INFO("Retransmitting ASCII message, sequence %d", sequence);
 
-                    ulnet__reliable_send(session, port, &session->reliable_pending_arena[arena_offset], size);
+                    ulnet__reliable_send(session, port, &session->arena_buffer[arena_offset], size);
                 } else {
                     SAM2_LOG_WARN("Invalid arena data for ASCII message: offset=%d, size=%d",
                                  arena_offset, size);
@@ -986,8 +985,10 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
 
     ulnet__check_retransmissions(session, current_time_seconds);
 
+#if defined(ULNET_IMGUI)
     ImGui::SliderFloat("UDP Induced Receive Drop Rate", &session->debug_udp_recv_drop_rate, 0.0f, 1.0f);
     ImGui::SliderFloat("UDP Induced Transmit Drop Rate", &session->debug_udp_send_drop_rate, 0.0f, 1.0f);
+#endif
 
     // @todo This timing code is messy I should formally model the problem and then create a solution based on that
     bool ignore_frame_pacing_so_we_can_catch_up = false;
@@ -1194,7 +1195,7 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
                         && new_room_state.peer_ids[p] != session->our_peer_id
                         && new_room_state.peer_ids[p] != session->agent_peer_ids[p]) {
 
-                        juice_destroy(session->agent[p]);
+                        ulnet_disconnect_peer(session, p);
                         session->agent[p] = NULL;
 
                         // Convention: The peer with the lesser ID initiates ICE
@@ -1313,7 +1314,7 @@ ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session) {
     memset(&session->state, 0, sizeof(session->state));
     memset(&session->state_packet_history, 0, sizeof(session->state_packet_history));
 
-    memset(&session->reliable_arena_head, 0, sizeof(session->reliable_arena_head));
+    memset(&session->arena_head, 0, sizeof(session->arena_head));
     session->reliable_next_retransmit_time = 0;
 
     session->frame_counter = 0;

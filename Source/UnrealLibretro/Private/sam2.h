@@ -692,8 +692,8 @@ int64_t rle8_pack_message(void *message, int64_t message_size) {
 
     int64_t message_size_rle8 = rle8_encode_capped((uint8_t *)message, message_size, (uint8_t *) message_rle8, sizeof(message_rle8));
 
-    bool compressed_message_is_larger = message_size_rle8 >= message_size;
-    bool compression_failed = message_size_rle8 == -1;
+    int compressed_message_is_larger = message_size_rle8 >= message_size;
+    int compression_failed = message_size_rle8 == -1;
 
     if (compressed_message_is_larger || compression_failed) {
         ((char *) message)[7] = 'r';
