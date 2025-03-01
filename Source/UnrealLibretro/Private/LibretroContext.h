@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Runtime/Launch/Resources/Version.h"
+
 // Libretro API
 #include "libretro/libretro.h"
 static_assert(RETRO_API_VERSION == 1, "Retro API version changed");
@@ -187,7 +189,11 @@ protected:
     struct
     {
         // These are all ThreadSafe shared pointers that are the main bridge between and unreal
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 1
+        FTextureRHIRef TextureRHI;
+#else
         FTexture2DRHIRef TextureRHI;
+#endif
         TSharedPtr<TCircularQueue<int32>, ESPMode::ThreadSafe> AudioQueue;
         
         struct
