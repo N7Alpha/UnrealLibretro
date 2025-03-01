@@ -1245,14 +1245,31 @@ ULNET_LINKAGE void ulnet__swap_agent(ulnet_session_t *session, int peer_existing
     juice_agent_t *temp_agent = session->agent[peer_existing_port];
     struct reliable_endpoint_t *temp_reliable = session->reliable_endpoint[peer_existing_port];
     int64_t temp_agent_peer_ids = session->agent_peer_ids[peer_existing_port];
+    uint16_t temp_reliable_greatest_sequence = session->reliable_greatest_sequence[peer_existing_port];
 
     session->agent[peer_existing_port] = session->agent[peer_new_port];
     session->reliable_endpoint[peer_existing_port] = session->reliable_endpoint[peer_new_port];
     session->agent_peer_ids[peer_existing_port] = session->agent_peer_ids[peer_new_port];
+    session->reliable_greatest_sequence[peer_existing_port] = session->reliable_greatest_sequence[peer_new_port];
 
     session->agent[peer_new_port] = temp_agent;
     session->reliable_endpoint[peer_new_port] = temp_reliable;
     session->agent_peer_ids[peer_new_port] = temp_agent_peer_ids;
+    session->reliable_greatest_sequence[peer_new_port] = temp_reliable_greatest_sequence;
+
+    // Swap reliable_pending_header
+    for (int i = 0; i < ULNET_RELIABLE_ACK_BUFFER_SIZE; i++) {
+        uint8_t temp_header = session->reliable_pending_header[peer_existing_port][i];
+        session->reliable_pending_header[peer_existing_port][i] = session->reliable_pending_header[peer_new_port][i];
+        session->reliable_pending_header[peer_new_port][i] = temp_header;
+
+        // Swap reliable_pending_metadata using memcpy for the union
+        char temp_metadata[sizeof(session->reliable_pending_metadata[0][0])];
+
+        memcpy(temp_metadata, &session->reliable_pending_metadata[peer_existing_port][i], sizeof(temp_metadata));
+        memcpy(&session->reliable_pending_metadata[peer_existing_port][i], &session->reliable_pending_metadata[peer_new_port][i], sizeof(temp_metadata));
+        memcpy(&session->reliable_pending_metadata[peer_new_port][i], temp_metadata, sizeof(temp_metadata));
+    }
 }
 
 static void ulnet_peer_init_defaulted(ulnet_session_t *session, int peer_port) {
