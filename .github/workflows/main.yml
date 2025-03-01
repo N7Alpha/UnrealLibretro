@@ -44,7 +44,7 @@ jobs:
           - {major: 5, minor: 5}
 
     steps:
-      - uses: actions/checkout@v3.5.2
+      - uses: actions/checkout@v4
 
       - name: Run Setup Script
         run: C:\msys64\msys2_shell.cmd -defterm -here -no-start -mingw64 -shell bash setup.sh
@@ -54,7 +54,7 @@ jobs:
 
       - name: Upload Build-Artifact
         if: startsWith(github.ref, 'refs/heads/') # Upload artifacts when commits (not tags) are pushed
-        uses: actions/upload-artifact@v3.1.2
+        uses: actions/upload-artifact@v4
         with:
           name: UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}
           path: ${{ runner.temp }}/UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}
