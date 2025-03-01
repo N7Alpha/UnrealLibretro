@@ -678,7 +678,7 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
         
         int32 Utf8Length = FTCHARToUTF8_Convert::ConvertedLength(*TargetValue, TargetValue.Len());
         TArray<char>& TargetValueCString = OptionsCache.FindOrAdd(var->key);
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 2
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 4
         TargetValueCString.SetNumZeroed(Utf8Length + 1, EAllowShrinking::No);
 #else
         TargetValueCString.SetNumZeroed(Utf8Length + 1, false);
@@ -708,7 +708,7 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
                 }
 
                 // By libretro spec the 0 index setting is the default one
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 2
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 4
                 OptionSelectedIndex.SetNumZeroed(OptionDescriptions.Num(), EAllowShrinking::No);
 #else
                 OptionSelectedIndex.SetNumZeroed(OptionDescriptions.Num(), false);
@@ -1053,14 +1053,10 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
     auto ConvertPath = [](auto &core_directory, const FString& CoreDirectory)
     {
         FString AbsoluteCoreDirectory = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::IfRelativeResolvePathRelativeToThisPluginWithPathExtensions(CoreDirectory));
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 2
-        core_directory.SetNumZeroed(TStringConvert<TCHAR, char>::ConvertedLength(*AbsoluteCoreDirectory, AbsoluteCoreDirectory.Len()) + 1, EAllowShrinking::No);
-#else
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 2
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 4
         core_directory.SetNumZeroed(TStringConvert<TCHAR, char>::ConvertedLength(*AbsoluteCoreDirectory, AbsoluteCoreDirectory.Len()) + 1, EAllowShrinking::No);
 #else
         core_directory.SetNumZeroed(TStringConvert<TCHAR, char>::ConvertedLength(*AbsoluteCoreDirectory, AbsoluteCoreDirectory.Len()) + 1);
-#endif
 #endif
         TStringConvert<TCHAR, char>::Convert(core_directory.GetData(), // has internal assertion if fails
                                              core_directory.Num(),

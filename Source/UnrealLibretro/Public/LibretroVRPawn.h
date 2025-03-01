@@ -335,7 +335,7 @@ public:
         //PredictProjectilePathResult.PathData.InsertDefaulted(0);
         //PredictProjectilePathResult.PathData[0].Location = StartPos;
 
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 2
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 4
         TeleportTracePathPositions.SetNumUninitialized(PredictProjectilePathResult.PathData.Num(), EAllowShrinking::No);
 #else
         TeleportTracePathPositions.SetNumUninitialized(PredictProjectilePathResult.PathData.Num(), false);
@@ -371,7 +371,7 @@ public:
             }
         }
         
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 2
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 4
         TeleportTraceSplineMeshComponents.SetNum(FMath::Max(TeleportTraceSplineMeshComponents.Num(), TeleportTracePathPositions.Num()-1), EAllowShrinking::No);
 #else
         TeleportTraceSplineMeshComponents.SetNum(FMath::Max(TeleportTraceSplineMeshComponents.Num(), TeleportTracePathPositions.Num()-1), false);
