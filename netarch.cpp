@@ -1245,6 +1245,431 @@ int imgui_file_picker(
     return selected_index;
 }
 
+// Can you make an imgui window in C++ that captures arrow key input and let's you move a circle around in an environment made of squares roughly the same size as the circle. The squares should implement one sided collision per line segment that forms the square. Even though you're making squares each collision should be handled with the constituent line segments. The collision being one sided is very important as it makes the handling more robust. By one-sided I mean if the line segment connecting the circle to the line segment of collision has a negative dot-product with the surface normal then that collision won't be handled as the circle would be colliding with the back side of one of the squares sides. The collision response should be simple: If you're colliding with the front side of a line segment then the circle is pushed back in the direction of the surface normal until it is no longer colliding. The squares shouldn't all be axis-oriented. I just say imgui cause I want to copy and paste it into my current project. The graphics just need to get the point across nothing fancy.
+
+// Also I'm using SDL3 (pretty similar to 2 but don't lean to heavily on this)
+
+// Don't use any other dependencies besides this. Don't give me a full program. I already have a program
+#include <cmath>
+namespace o3 {
+inline ImVec2 operator+(const ImVec2& a, const ImVec2& b)
+{
+return ImVec2(a.x + b.x, a.y + b.y);
+}
+inline ImVec2 operator-(const ImVec2& a, const ImVec2& b)
+{
+return ImVec2(a.x - b.x, a.y - b.y);
+}
+inline ImVec2 operator*(const ImVec2& a, float s)
+{
+return ImVec2(a.x * s, a.y * s);
+}
+inline ImVec2 operator*(float s, const ImVec2& a)
+{
+return a * s;
+}
+
+static float Dot(const ImVec2& a, const ImVec2& b)
+{
+return a.x * b.x + a.y * b.y;
+}
+static float Length(const ImVec2& a)
+{
+return std::sqrt(Dot(a, a));
+}
+static ImVec2 Normalize(const ImVec2& a)
+{
+float len = Length(a);
+return (len > 0.0f) ? (a * (1.0f / len)) : ImVec2(0,0);
+}
+
+// Given a point p and a line segment from a to b, return the closest point.
+static ImVec2 ClosestPointOnLineSegment(const ImVec2& p, const ImVec2& a, const ImVec2& b)
+{
+ImVec2 ab = b - a;
+float ab2 = Dot(ab, ab);
+if(ab2 == 0.0f)
+return a;
+float t = Dot(p - a, ab) / ab2;
+if(t < 0.0f) t = 0.0f;
+if(t > 1.0f) t = 1.0f;
+return a + ab * t;
+}
+
+//-----------------------------------------------------------------
+// Structure representing a square obstacle.
+// Even though it’s a square, we’ll handle collision for each edge.
+// center: position of the square’s center in canvas space.
+// size: width and height (we assume a square)
+// rotation: in radians (counter-clockwise)
+struct Square
+{
+ImVec2 center;
+float size;
+float rotation; // in radians
+};
+
+// Given a Square, compute its four vertices (in counter–clockwise order)
+static std::vector<ImVec2> GetSquareVertices(const Square& sq)
+{
+float half = sq.size * 0.5f;
+// local coordinates (a square centered at (0,0))
+std::vector<ImVec2> local = {
+ImVec2(-half, -half),
+ImVec2( half, -half),
+ImVec2( half,  half),
+ImVec2(-half,  half)
+};
+std::vector<ImVec2> vertices;
+float cosR = std::cos(sq.rotation);
+float sinR = std::sin(sq.rotation);
+for (auto v : local)
+{
+// rotate and translate into world (canvas) space
+ImVec2 rotated(v.x * cosR - v.y * sinR, v.x * sinR + v.y * cosR);
+vertices.push_back(rotated + sq.center);
+}
+return vertices;
+}
+
+//-----------------------------------------------------------------
+// The demo function – call this inside your per–frame ImGui code.
+// It creates a window with a drawing region, processes arrow key input,
+// moves a circle, tests collisions with squares (per edge using one–sided checks),
+// and draws the updated scene.
+// (You can copy and paste this into your project. Adjust sizes, speeds, colors, etc.,
+//  as needed for your project.)
+//-----------------------------------------------------------------
+void ShowCollisionDemo()
+{
+    ImGui::Begin("o3 Collision Demo");
+    // Establish a canvas region inside the window.
+    ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+    ImVec2 canvas_size = ImGui::GetContentRegionAvail();
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+
+    // Draw a dark background for the canvas.
+    draw_list->AddRectFilled(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), IM_COL32(50,50,50,255));
+
+    //--------------------------------------------------------------------------
+    // Simulation state: circle and squares (static so they persist from frame to frame)
+    //--------------------------------------------------------------------------
+    static ImVec2 circlePos = ImVec2(150, 150);
+    static float circleRadius = 20.0f;
+
+    static std::vector<Square> squares;
+    if(squares.empty())
+    {
+        // Create a few sample squares (roughly the same size as the circle, rotated arbitrarily)
+        squares.push_back({ ImVec2(300, 150), circleRadius * 2.0f, 0.3f });
+        squares.push_back({ ImVec2(150, 300), circleRadius * 2.0f, -0.7f });
+        squares.push_back({ ImVec2(400, 300), circleRadius * 2.0f, 1.2f });
+    }
+
+    //--------------------------------------------------------------------------
+    // Process arrow–key input to move the circle.
+    // Use io.DeltaTime to move smoothly (speed is in pixels per second).
+    //--------------------------------------------------------------------------
+    ImGuiIO& io = ImGui::GetIO();
+    float dt = io.DeltaTime;
+    float speed = 200.0f; // pixels per second
+    if(ImGui::IsKeyDown(ImGuiKey_LeftArrow))  circlePos.x -= speed * dt;
+    if(ImGui::IsKeyDown(ImGuiKey_RightArrow)) circlePos.x += speed * dt;
+    if(ImGui::IsKeyDown(ImGuiKey_UpArrow))    circlePos.y -= speed * dt;
+    if(ImGui::IsKeyDown(ImGuiKey_DownArrow))  circlePos.y += speed * dt;
+
+    //--------------------------------------------------------------------------
+    // Collision detection / response:
+    // For each square, test each edge (line segment) against the circle.
+    // If the distance from the circle center to the segment is less than circleRadius,
+    // then test the one–sided condition. (If the vector from the segment to the circle
+    // has a negative dot–product with the segment's outward normal, then ignore collision.)
+    // Otherwise, push the circle outward along that normal.
+    //--------------------------------------------------------------------------
+    for(auto& sq : squares)
+    {
+        std::vector<ImVec2> verts = GetSquareVertices(sq);
+        for (int i = 0; i < 4; i++)
+        {
+            int next = (i + 1) % 4;
+            ImVec2 a = verts[i];
+            ImVec2 b = verts[next];
+
+            // Compute the edge vector.
+            ImVec2 edge = b - a;
+            // Candidate normal is the normalized perpendicular.
+            // (Using (edge.y, -edge.x) by default.)
+            ImVec2 normal = Normalize(ImVec2(edge.y, -edge.x));
+
+            // To choose the OUTWARD normal (pointing out of the square),
+            // compare with the vector from the square center to the edge midpoint.
+            ImVec2 mid = (a + b) * 0.5f;
+            if(Dot(normal, mid - sq.center) < 0)
+                normal = normal * -1.0f;
+
+            // Find the closest point on the edge to the circle’s center.
+            ImVec2 closest = ClosestPointOnLineSegment(circlePos, a, b);
+            ImVec2 diff = circlePos - closest;
+            float dist = Length(diff);
+            if(dist < circleRadius)
+            {
+                // One–sided check:
+                // If the vector from the edge to the circle (diff) is pointing
+                // “behind” the edge (dot < 0), skip collision resolution.
+                if(Dot(diff, normal) < 0)
+                    continue;
+                float penetration = circleRadius - dist;
+                // Push the circle out along the normal.
+                circlePos = circlePos + normal * penetration;
+            }
+        }
+    }
+
+    //--------------------------------------------------------------------------
+    // Draw the squares.
+    // For clarity we add the canvas offset so that our simulation coordinates
+    // (which assume (0,0) is the upper–left of the canvas) line up.
+    //--------------------------------------------------------------------------
+    for(auto& sq : squares)
+    {
+        std::vector<ImVec2> verts = GetSquareVertices(sq);
+        for (int i = 0; i < 4; i++)
+        {
+            int next = (i + 1) % 4;
+            // Add canvas_pos offset.
+            ImVec2 p1 = verts[i] + canvas_pos;
+            ImVec2 p2 = verts[next] + canvas_pos;
+            draw_list->AddLine(p1, p2, IM_COL32(255, 0, 0, 255), 2.0f);
+        }
+    }
+
+    //--------------------------------------------------------------------------
+    // Draw the circle.
+    //--------------------------------------------------------------------------
+    draw_list->AddCircle(circlePos + canvas_pos, circleRadius, IM_COL32(0, 255, 0, 255), 16, 2.0f);
+
+    // Padding so the canvas keeps its size.
+    ImGui::Dummy(canvas_size);
+    ImGui::End();
+}
+};
+
+#include <vector>
+
+// Vector2D Structure
+struct Vector2D {
+    float x, y;
+    
+    Vector2D(float _x = 0.0f, float _y = 0.0f) : x(_x), y(_y) {}
+    
+    Vector2D operator+(const Vector2D& other) const { return Vector2D(x + other.x, y + other.y); }
+    Vector2D operator-(const Vector2D& other) const { return Vector2D(x - other.x, y - other.y); }
+    Vector2D operator*(float scalar) const { return Vector2D(x * scalar, y * scalar); }
+    
+    float dot(const Vector2D& other) const { return x * other.x + y * other.y; }
+    float lengthSquared() const { return x * x + y * y; }
+    float length() const { return std::sqrt(lengthSquared()); }
+    
+    Vector2D normalized() const {
+        float len = length();
+        if (len > 0.0f) return Vector2D(x / len, y / len);
+        return *this;
+    }
+};
+
+// Circle Structure
+struct Circle {
+    Vector2D position;
+    float radius;
+    
+    Circle(const Vector2D& pos = Vector2D(0, 0), float r = 20.0f) : position(pos), radius(r) {}
+};
+
+// Line Segment Structure
+struct LineSegment {
+    Vector2D start, end;
+    Vector2D normal; // Outward facing normal
+    
+    LineSegment(const Vector2D& s, const Vector2D& e) : start(s), end(e) {
+        Vector2D lineVec = end - start;
+        // Create normal (perpendicular to line segment, pointing outward)
+        // FIXED: Use (lineVec.y, -lineVec.x) for outward normal
+        normal = Vector2D(lineVec.y, -lineVec.x).normalized();
+    }
+};
+
+// Square Structure
+struct Square {
+    std::vector<LineSegment> sides;
+    
+    Square(const Vector2D& center, float size, float rotationAngle = 0.0f) {
+        float halfSize = size / 2.0f;
+        float cosA = std::cos(rotationAngle);
+        float sinA = std::sin(rotationAngle);
+        
+        Vector2D corners[4] = {
+            Vector2D(center.x + halfSize * cosA - halfSize * sinA, center.y + halfSize * sinA + halfSize * cosA),
+            Vector2D(center.x - halfSize * cosA - halfSize * sinA, center.y - halfSize * sinA + halfSize * cosA),
+            Vector2D(center.x - halfSize * cosA + halfSize * sinA, center.y - halfSize * sinA - halfSize * cosA),
+            Vector2D(center.x + halfSize * cosA + halfSize * sinA, center.y + halfSize * sinA - halfSize * cosA)
+        };
+        
+        // Create sides from corners
+        for (int i = 0; i < 4; ++i) {
+            sides.push_back(LineSegment(corners[i], corners[(i + 1) % 4]));
+        }
+    }
+};
+
+// Check collision between circle and line segment
+bool checkCircleLineSegmentCollision(const Circle& circle, const LineSegment& lineSegment, 
+                                     Vector2D& collisionNormal, float& penetrationDepth) {
+    // Project circle's center onto the line segment
+    Vector2D lineVec = lineSegment.end - lineSegment.start;
+    float lineLength = lineVec.length();
+    Vector2D lineDir = lineVec * (1.0f / lineLength);
+    
+    Vector2D circleToStart = circle.position - lineSegment.start;
+    float projection = circleToStart.dot(lineDir);
+    
+    // Find closest point on line segment to circle's center
+    Vector2D closestPoint;
+    if (projection <= 0.0f) {
+        closestPoint = lineSegment.start;
+    } else if (projection >= lineLength) {
+        closestPoint = lineSegment.end;
+    } else {
+        closestPoint = lineSegment.start + lineDir * projection;
+    }
+    
+    // Vector from closest point to circle center
+    Vector2D closestToCircle = circle.position - closestPoint;
+    
+    // ONE-SIDED COLLISION CHECK
+    // If the dot product is negative, circle is approaching from the back side - ignore collision
+    if (closestToCircle.dot(lineSegment.normal) < 0.0f) {
+        return false;
+    }
+    
+    float distanceSquared = closestToCircle.lengthSquared();
+    
+    // Check if circle is colliding
+    if (distanceSquared <= circle.radius * circle.radius) {
+        float distance = std::sqrt(distanceSquared);
+        
+        // Set collision normal (use segment normal for very small distances to avoid numerical issues)
+        if (distance < 0.0001f) {
+            collisionNormal = lineSegment.normal;
+        } else {
+            collisionNormal = closestToCircle * (1.0f / distance);
+        }
+        
+        penetrationDepth = circle.radius - distance;
+        return true;
+    }
+    
+    return false;
+}
+
+// Handle collisions between circle and all squares
+void handleCollisions(Circle& circle, const std::vector<Square>& squares) {
+    for (const auto& square : squares) {
+        for (const auto& side : square.sides) {
+            Vector2D collisionNormal;
+            float penetrationDepth;
+            
+            if (checkCircleLineSegmentCollision(circle, side, collisionNormal, penetrationDepth)) {
+                // Resolve collision by moving circle away along collision normal
+                circle.position = circle.position + collisionNormal * penetrationDepth;
+            }
+        }
+    }
+}
+
+// Render the game window with ImGui
+void renderGameWindow() {
+    static Circle player(Vector2D(400.0f, 300.0f), 20.0f);
+    static std::vector<Square> squares;
+    
+    // Initialize squares if first run
+    if (squares.empty()) {
+        // Create squares with different rotations to demonstrate one-sided collision
+        squares.push_back(Square(Vector2D(200.0f, 200.0f), 120.0f, 0.0f));  // No rotation
+        squares.push_back(Square(Vector2D(500.0f, 200.0f), 120.0f, 0.3f));  // ~17 degrees
+        squares.push_back(Square(Vector2D(200.0f, 400.0f), 120.0f, 0.7f));  // ~40 degrees
+        squares.push_back(Square(Vector2D(500.0f, 400.0f), 120.0f, 1.2f));  // ~69 degrees
+    }
+    
+    ImGui::Begin("claude's Collision Demo");
+    
+    // Handle arrow key input
+    Vector2D moveDir(0.0f, 0.0f);
+    bool moved = false;
+    
+    if (ImGui::IsKeyDown(ImGuiKey_UpArrow)) {
+        moveDir.y -= 1.0f;
+        moved = true;
+    }
+    if (ImGui::IsKeyDown(ImGuiKey_DownArrow)) {
+        moveDir.y += 1.0f;
+        moved = true;
+    }
+    if (ImGui::IsKeyDown(ImGuiKey_LeftArrow)) {
+        moveDir.x -= 1.0f;
+        moved = true;
+    }
+    if (ImGui::IsKeyDown(ImGuiKey_RightArrow)) {
+        moveDir.x += 1.0f;
+        moved = true;
+    }
+    
+    // Move player and handle collisions
+    if (moved && moveDir.lengthSquared() > 0.0f) {
+        moveDir = moveDir.normalized();
+        float moveSpeed = 5.0f;
+        player.position = player.position + moveDir * moveSpeed;
+        handleCollisions(player, squares);
+    }
+    
+    // Render game
+    ImVec2 windowPos = ImGui::GetCursorScreenPos();
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    
+    // Draw squares
+    for (const auto& square : squares) {
+        for (const auto& side : square.sides) {
+            // Draw line segment
+            drawList->AddLine(
+                ImVec2(windowPos.x + side.start.x, windowPos.y + side.start.y),
+                ImVec2(windowPos.x + side.end.x, windowPos.y + side.end.y),
+                IM_COL32(255, 255, 255, 255),
+                2.0f
+            );
+            
+            // Visualize normals (now pointing outward correctly)
+            Vector2D midPoint = (side.start + side.end) * 0.5f;
+            Vector2D normalEnd = midPoint + side.normal * 15.0f;
+            drawList->AddLine(
+                ImVec2(windowPos.x + midPoint.x, windowPos.y + midPoint.y),
+                ImVec2(windowPos.x + normalEnd.x, windowPos.y + normalEnd.y),
+                IM_COL32(0, 255, 0, 128),
+                1.0f
+            );
+        }
+    }
+    
+    // Draw player circle
+    drawList->AddCircleFilled(
+        ImVec2(windowPos.x + player.position.x, windowPos.y + player.position.y),
+        player.radius,
+        IM_COL32(255, 100, 100, 255)
+    );
+    
+    ImGui::Dummy(ImVec2(700, 500)); // Make the window big enough
+    ImGui::End();
+}
+
+
 #include "imgui_internal.h"
 void draw_imgui() {
     static int spinnerIndex = 0;
@@ -1324,6 +1749,8 @@ void draw_imgui() {
     if (show_demo_window)
         ImGui::ShowDemoWindow(&show_demo_window);
 
+    o3::ShowCollisionDemo();
+    renderGameWindow();
     // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
     {
         char unit[FORMAT_UNIT_COUNT_SIZE] = {0};
@@ -2941,7 +3368,7 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
             rle_encode32(buffer, g_serialize_size / 4, savebuffer_compressed, &g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size]);
             g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] *= 4;
         } else {
-            g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = rle8_encode(buffer, g_serialize_size, savebuffer_compressed); // @todo Technically this can overflow I don't really plan to use it though and I find the odds unlikely
+            g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = rle8_encode_capped(buffer, g_serialize_size, savebuffer_compressed, sizeof(savebuffer_compressed)); // @todo Technically this can overflow I don't really plan to use it though and I find the odds unlikely
         }
     } else {
         if (g_use_dictionary) {

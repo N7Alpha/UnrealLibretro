@@ -633,11 +633,6 @@ int64_t rle8_encode_capped(const uint8_t *input, int64_t input_size, uint8_t *ou
 err:return -1;
 }
 
-// Encodes input array of uint8_t into a byte stream with RLE for zeros.
-int64_t rle8_encode(const uint8_t *input, int64_t input_size, uint8_t *output) {
-    return rle8_encode_capped(input, input_size, output, RLE8_ENCODE_UPPER_BOUND(input_size));
-}
-
 int64_t rle8_decode_extra(const uint8_t* input, int64_t input_size, int64_t *input_consumed, uint8_t* output, int64_t output_capacity) {
     int64_t output_index = 0;
     while (*input_consumed < input_size) {
@@ -663,6 +658,33 @@ int64_t rle8_decode_extra(const uint8_t* input, int64_t input_size, int64_t *inp
 int64_t rle8_decode(const uint8_t* input, int64_t input_size, uint8_t* output, int64_t output_capacity) {
     int64_t input_consumed = 0;
     return rle8_decode_extra(input, input_size, &input_consumed, output, output_capacity);
+}
+
+int64_t rle8_decode_size(const uint8_t* input, int64_t input_size) {
+    int64_t output_size = 0;
+    int64_t input_consumed = 0;
+
+    while (input_consumed < input_size) {
+        if (input[input_consumed] == 0) {
+            // Need at least 3 bytes for a run-length encoding (zero marker + 2 bytes for count)
+            if (input_size - input_consumed < 3) {
+                return -1; // Incomplete/truncated encoding
+            }
+
+            input_consumed++; // Skip zero marker
+            // Extract 16-bit count in little-endian format
+            uint16_t count = input[input_consumed] | (input[input_consumed + 1] << 8);
+            input_consumed += 2;
+
+            output_size += count; // Add zeros to output size
+        } else {
+            // Regular byte - copied directly
+            output_size++;
+            input_consumed++;
+        }
+    }
+
+    return output_size;
 }
 
 int64_t rle8_pack_message(void *message, int64_t message_size) {
