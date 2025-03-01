@@ -78,9 +78,33 @@ void FUnrealLibretroEditorModule::StartupModule()
                             TArray<FString> CoreIndexColumnEntries;
                             CoreIndexRow.ParseIntoArrayWS(CoreIndexColumnEntries);
 
-                            int32 CoreIdentiferEnd = CoreIndexColumnEntries.Last().Find(CoreLibMetadata[PlatformIndex].Extension, ESearchCase::CaseSensitive);
-                            FString CoreIdentifer = FString(CoreIdentiferEnd, *CoreIndexColumnEntries.Last());
-                            CoreListViewDataSource.FindOrAdd(CoreIdentifer).PlatformAvailableBitField |= (1UL << PlatformIndex);
+                            // Make sure we have at least one entry for the filename
+                            if (CoreIndexColumnEntries.Num() == 0 || CoreIndexColumnEntries.Last().IsEmpty())
+                            {
+                                UE_LOG(Libretro, Warning, TEXT("Skipping malformed row: %s"), *CoreIndexRow);
+                                continue;
+                            }
+
+                            FString FileName = CoreIndexColumnEntries.Last();
+                            int32 CoreIdentiferEnd = FileName.Find(CoreLibMetadata[PlatformIndex].Extension, ESearchCase::CaseSensitive);
+
+                            // Check if the file has the expected extension
+                            if (CoreIdentiferEnd == INDEX_NONE)
+                            {
+                                UE_LOG(Libretro, Warning, TEXT("Skipping file with unexpected format: %s"), *FileName);
+                                continue;
+                            }
+
+                            FString CoreIdentifer = FileName.Left(CoreIdentiferEnd);
+
+                            if (!CoreIdentifer.IsEmpty())
+                            {
+                                CoreListViewDataSource.FindOrAdd(CoreIdentifer).PlatformAvailableBitField |= (1UL << PlatformIndex);
+                            }
+                            else
+                            {
+                                UE_LOG(Libretro, Warning, TEXT("Skipping file with empty core identifier: %s"), *FileName);
+                            }
                         }
                     }
                     else
