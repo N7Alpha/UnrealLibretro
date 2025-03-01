@@ -696,7 +696,19 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                     // Make paths relative instead of absolute
                     for (int i = 0; i < RomPaths.Num(); i++)
                     {
-                        FString RomRelativePath = FPaths::GetPath(RomPaths[i]).RightChop(MyROMsPath.Len()) + TEXT("/") + FPaths::GetCleanFilename(RomPaths[i]);
+                        FString PathPart = FPaths::GetPath(RomPaths[i]).RightChop(MyROMsPath.Len());
+                        FString RomRelativePath;
+                        
+                        // If PathPart is empty, the ROM is at the root level
+                        if (PathPart.IsEmpty())
+                        {
+                            RomRelativePath = FPaths::GetCleanFilename(RomPaths[i]);
+                        }
+                        else
+                        {
+                            RomRelativePath = PathPart + TEXT("/") + FPaths::GetCleanFilename(RomPaths[i]);
+                        }
+                        
                         RomPaths[i] = MoveTemp(RomRelativePath);
                         continue;
                     }
