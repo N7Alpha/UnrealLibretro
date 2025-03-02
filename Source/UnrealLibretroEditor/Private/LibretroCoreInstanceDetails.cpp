@@ -26,7 +26,11 @@
 #include "HAL/FileManager.h"
 #include "HAL/PlatformTime.h"  // For FPlatformTime
 #include "Misc/FileHelper.h"
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 1
+#include "Styling/AppStyle.h"
+#else
 #include "EditorStyleSet.h"
+#endif
 
 TSharedRef<IDetailCustomization> FLibretroCoreInstanceDetails::MakeInstance()
 {
@@ -520,7 +524,11 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                             .MaxWidth(SupportedPlatformImageWidthAndHeight)
                             [
                                 SNew(SImage)
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 1
+                                .Image(FAppStyle::GetBrush(CoreLibMetadata[PlatformIndex].ImageName))
+#else
                                 .Image(FEditorStyle::GetBrush(CoreLibMetadata[PlatformIndex].ImageName))
+#endif
                                 .ToolTipText(FText::FromString(bForBuildbot ?              CoreLibMetadata[PlatformIndex].BuildbotPath 
                                                                             : "MyCores/" + CoreLibMetadata[PlatformIndex].DistributionPath))
                             ];
@@ -586,7 +594,9 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                     SAssignNew(CoreAvailableOnBuildbotListView, SListView<TSharedRef<FText>>)
                         .ListItemsSource(&this->CoreAvailableOnBuildbotListViewRows)
                         .SelectionMode(ESelectionMode::Single)
+#if ENGINE_MAJOR_VERSION < 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION < 6)
                         .ItemHeight(30.f)
+#endif
                         .OnGenerateRow_Lambda(GenerateTableViewRow)
                         .OnSelectionChanged(this, &FLibretroCoreInstanceDetails::StartBuildbotBatchDownload)
                     ],
