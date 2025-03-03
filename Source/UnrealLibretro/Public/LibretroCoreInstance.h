@@ -221,6 +221,10 @@ public:
     UPROPERTY(BlueprintReadOnly, Category = Libretro)
     bool bFrameBottomLeftOrigin;
 
+    /** Contains the last error message if the core failed to launch */
+    UPROPERTY(BlueprintReadOnly, Category = Libretro)
+    FString LastErrorMessage;
+
     /** Forward keyboard input from this APlayerController to the libretro core if the core can receive it */
     UPROPERTY(BlueprintReadWrite, Category = Libretro)
     APlayerController* KeyboardInputSourcePlayerController{nullptr};

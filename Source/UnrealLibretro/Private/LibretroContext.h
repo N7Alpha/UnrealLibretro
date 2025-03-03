@@ -108,7 +108,7 @@ public:
      * @brief analogous to new except asynchronous
      * @post The LoadedCallback is always called
      */
-    static FLibretroContext* Launch(class ULibretroCoreInstance* LibretroCoreInstance, FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TUniqueFunction<void(FLibretroContext*, libretro_api_t&)> LoadedCallback);
+    static FLibretroContext* Launch(class ULibretroCoreInstance* LibretroCoreInstance, FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TUniqueFunction<void(FLibretroContext*, libretro_api_t&, const FString&)> LoadedCallback);
     
     /**
      * @brief analogous to delete except asynchronous
@@ -266,9 +266,10 @@ protected:
     ENUM_GL_WIN32_INTEROP_PROCEDURES(DEFINE_GL_PROCEDURES)
     bool gl_win32_interop_supported_by_driver{false};
     
-    void create_window();
-    void video_configure(const struct retro_game_geometry* geom);
+    FString ErrorMessage{};
+    int create_window();
+    int video_configure(const struct retro_game_geometry* geom);
 
-    void load(const char* sofile);
-    void load_game(const char* filename);
+    int load(const char* sofile);
+    int load_game(const char* filename);
 };

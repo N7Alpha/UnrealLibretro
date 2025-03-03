@@ -158,7 +158,10 @@ static bool core_environment(unsigned cmd, void* data)
 void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 {
     check(IsInGameThread()); // We access some static data, but as long as we're single threaded theres no data race here
-    
+
+    // This is how you get a weak pointer to this... In newer Unreal versions you can call AsSharedSubobject(this) if you want a cleaner look
+    auto WeakCoreDetails = TWeakPtr<FLibretroCoreInstanceDetails>(TSharedRef<FLibretroCoreInstanceDetails>(AsShared(), this));
+
     // This represents a hook to the Libretro Panel and let's us customize the UI elements within it
     IDetailCategoryBuilder& LibretroCategory = DetailBuilder.EditCategory("Libretro");
 
@@ -472,12 +475,13 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
         .NameContent()
         [
             SNew(STextBlock)
-            .Text_Lambda([this]()
+            .Text_Lambda([WeakCoreDetails]()
                 {
                     FString CorePath;
-                    verify(FPropertyAccess::Result::Success == CorePathProperty->GetValueAsFormattedString(CorePath));
-
-                    if (FUnrealLibretroModule::IsCoreName(CorePath))
+                    
+                    if (   WeakCoreDetails.IsValid()
+                        && FPropertyAccess::Result::Success == WeakCoreDetails.Pin()->CorePathProperty->GetValueAsFormattedString(CorePath)
+                        && FUnrealLibretroModule::IsCoreName(CorePath))
                     {
                         return FText::FromString(TEXT("Core Name"));
                     }
@@ -594,9 +598,6 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                     SAssignNew(CoreAvailableOnBuildbotListView, SListView<TSharedRef<FText>>)
                         .ListItemsSource(&this->CoreAvailableOnBuildbotListViewRows)
                         .SelectionMode(ESelectionMode::Single)
-#if ENGINE_MAJOR_VERSION < 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION < 6)
-                        .ItemHeight(30.f)
-#endif
                         .OnGenerateRow_Lambda(GenerateTableViewRow)
                         .OnSelectionChanged(this, &FLibretroCoreInstanceDetails::StartBuildbotBatchDownload)
                     ],
@@ -636,11 +637,12 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                //.MinDesiredWidth(InArgs._MinDesiredValueWidth)
                .RevertTextOnEscape(true)
                .SelectAllTextWhenFocused(true)
-               .Text_Lambda([this]() 
+               .Text_Lambda([WeakCoreDetails]()
                    { 
                        //return FText::FromString(this->LibretroCoreInstance->CorePath); // This causes a segfault not sure why exactly
                        FText CorePath;
-                       if (FPropertyAccess::Result::Success == CorePathProperty->GetValueAsDisplayText(CorePath))
+                       if (   WeakCoreDetails.IsValid()
+                           && FPropertyAccess::Result::Success == WeakCoreDetails.Pin()->CorePathProperty->GetValueAsDisplayText(CorePath))
                        {
                            return CorePath;
                        }
@@ -649,9 +651,12 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                            return FText::FromString("");
                        }
                    })
-               .OnTextCommitted_Lambda([this](const FText& NewValue, ETextCommit::Type) 
-                   { 
-                       CorePathProperty->SetValueFromFormattedString(NewValue.ToString()); 
+               .OnTextCommitted_Lambda([WeakCoreDetails](const FText& NewValue, ETextCommit::Type)
+                   {
+                       if (WeakCoreDetails.IsValid())
+                       {
+                           WeakCoreDetails.Pin()->CorePathProperty->SetValueFromFormattedString(NewValue.ToString());
+                       }
                    })
            ]
         ];

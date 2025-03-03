@@ -42,7 +42,7 @@ extern "C"
 #define DEBUG_OPENGL_CALLBACK
 #endif
 
-// MY EYEEEEESSS.... Even though this looks heavily obfuscated what this actually accomplishes is relatively simple. It allows us to run multiple libretro cores at once. 
+// MY EYEEEEESSS.... Even though this looks heavily obfuscated what this actually accomplishes is relatively simple. It allows us to run multiple libretro cores at once.
 // We have to do it this way because when libretro calls a callback we implemented there really isn't any suitable way to tell which core the call came from.
 // So we just statically generate a bunch of callback functions with macros and write their function pointers into an array of libretro_callbacks_t's and issue them at runtime.
 // These generated callbacks call std::functions which can capture arguments. So we capture this and now it calls our callbacks on a per instance basis.
@@ -78,12 +78,6 @@ extern struct libretro_callbacks_t {
 
 REP100(FUNC_WRAP_DEF)
 libretro_callbacks_t libretro_callbacks_table[] = { REP100(FUNC_WRAP_INIT) };
-
-#define load_sym(V, S) do {\
-    if (0 == ((*(void**)&V) = FPlatformProcess::GetDllExport(libretro_api.handle, TEXT(#S)))) \
-        UE_LOG(Libretro, Fatal, TEXT("Failed to load symbol '" #S "'': %u"), FPlatformMisc::GetLastError()); \
-    } while (0)
-#define load_retro_sym(S) load_sym(libretro_api.S, retro_##S)
 
 
 void glDebugOutput(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam){
@@ -133,7 +127,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
     return true;
 }
 
- void FLibretroContext::create_window() {
+int FLibretroContext::create_window() {
 #if PLATFORM_ANDROID
     // Get an OpenGL context via EGL
     const EGLint attribs[] = {
@@ -186,7 +180,9 @@ static bool GLLogCall(const char* function, const char* file, int line)
     );
 
     if (!core.gl.window) {
-        UE_LOG(Libretro, Fatal, TEXT("Failed to create window"));
+        ErrorMessage = TEXT("Failed to create window");
+        UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
+        return 1;
     }
 
     core.gl.hdc = GetDC(core.gl.window);
@@ -200,20 +196,28 @@ static bool GLLogCall(const char* function, const char* file, int line)
 
     int pixel_format = ChoosePixelFormat(core.gl.hdc, &pfd);
     if (!pixel_format) {
-        UE_LOG(Libretro, Fatal, TEXT("Failed to choose pixel format"));
+        ErrorMessage = TEXT("Failed to choose pixel format");
+        UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
+        return 1;
     }
 
     if (!SetPixelFormat(core.gl.hdc, pixel_format, &pfd)) {
-        UE_LOG(Libretro, Fatal, TEXT("Failed to set pixel format"));
+        ErrorMessage = TEXT("Failed to set pixel format");
+        UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
+        return 1;
     }
 
     core.gl.context = wglCreateContext(core.gl.hdc);
     if (!core.gl.context) {
-        UE_LOG(Libretro, Fatal, TEXT("Failed to create OpenGL context"));
+        ErrorMessage = TEXT("Failed to create OpenGL context");
+        UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
+        return 1;
     }
 
     if (!wglMakeCurrent(core.gl.hdc, core.gl.context)) {
-        UE_LOG(Libretro, Fatal, TEXT("Failed to activate OpenGL context"));
+        ErrorMessage = TEXT("Failed to activate OpenGL context");
+        UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
+        return 1;
     }
 #else
     // @todo Other platforms don't have routines to get OpenGL contexts currently
@@ -222,7 +226,9 @@ static bool GLLogCall(const char* function, const char* file, int line)
     // My current thoughts are use Google ANGLE since then the EGL code used above for PLATFORM_ANDROID should work without modification
     // ANGLE potentially could allow for easier interop with Unreal's RHI since you can run ANGLE on top of it if its DX12 or Vulkan
     // However the main issue with ANGLE is that it seems the Libretro Cores need to be built for it in mind and I don't know if that feature is being actively developed right now
-    checkNoEntry();
+    ErrorMessage = TEXT("OpenGL context creation not implemented for this platform");
+    UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
+    return 1;
 #endif
 
     #pragma warning(push)
@@ -237,13 +243,21 @@ static bool GLLogCall(const char* function, const char* file, int line)
     bool bFoundAllEntryPoints = true;
     #define CHECK_GL_PROCEDURES(Type,Func) if (Func == NULL) { bFoundAllEntryPoints = false; UE_LOG(Libretro, Warning, TEXT("Failed to find entry point for %s"), TEXT(#Func)); }
     ENUM_GL_PROCEDURES(CHECK_GL_PROCEDURES);
-    checkf(bFoundAllEntryPoints, TEXT("Failed to find all OpenGL entry points."));
+    if (!bFoundAllEntryPoints) {
+        ErrorMessage = TEXT("Failed to find all OpenGL entry points.");
+        UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
+        return 1;
+    }
 
     ENUM_GL_WIN32_INTEROP_PROCEDURES(CHECK_GL_PROCEDURES);
     this->gl_win32_interop_supported_by_driver = false; // bFoundAllEntryPoints; Not ready
-    
+
     glGetError = (PFNGLGETERRORPROC)GL_GET_PROC_ADDRESS("glGetError");
-    check(glGetError);
+    if (!glGetError) {
+        ErrorMessage = TEXT("Failed to get glGetError function pointer");
+        UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
+        return 1;
+    }
 
     // Restore warning C4191.
     #pragma warning(pop)
@@ -268,9 +282,11 @@ static bool GLLogCall(const char* function, const char* file, int line)
 
     UE_LOG(Libretro, Log, TEXT("GL_SHADING_LANGUAGE_VERSION: %s\n"), ANSI_TO_TCHAR((char*)glGetString(GL_SHADING_LANGUAGE_VERSION)));
     UE_LOG(Libretro, Log, TEXT("GL_VERSION: %s\n"), ANSI_TO_TCHAR((char*)glGetString(GL_VERSION)));
+
+    return 0;
 }
 
- void FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
+int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
     if (!core.gl.pixel_format) {
         auto data = RETRO_PIXEL_FORMAT_0RGB1555;
         this->core_environment(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &data);
@@ -361,20 +377,20 @@ static bool GLLogCall(const char* function, const char* file, int line)
                     UnrealSoundBuffer->NumChannels = 2;
                     UnrealSoundBuffer->AudioQueue = Unreal.AudioQueue;
     }
-        
+
             }, TStatId(), nullptr, ENamedThreads::GameThread)
     ); // mfence
 
     // Libretro Core resource init
-    if (core.using_opengl) { 
+    if (core.using_opengl) {
         if (gl_win32_interop_supported_by_driver && SharedHandle != nullptr) {
 #if PLATFORM_WINDOWS
             UE_LOG(Libretro, Log, TEXT("Sharing RHI RenderTarget memory with OpenGL"))
             glCreateMemoryObjectsEXT(1, &core.gl.rhi_interop_memory);
             glImportMemoryWin32HandleEXT(core.gl.rhi_interop_memory, SizeInBytes, handleType, SharedHandle);
             glCreateTextures(GL_TEXTURE_2D, 1, &core.gl.texture);
-            glTextureStorageMem2DEXT(core.gl.texture, MipLevels, GL_RGBA8, core.av.geometry.max_width, 
-                                                                           core.av.geometry.max_height, 
+            glTextureStorageMem2DEXT(core.gl.texture, MipLevels, GL_RGBA8, core.av.geometry.max_width,
+                                                                           core.av.geometry.max_height,
                                                                            core.gl.rhi_interop_memory, 0);
 
             // NOTE: ID3D12Device::CreateSharedHandle gives as an NT Handle, and so we need to call CloseHandle on it
@@ -387,10 +403,10 @@ static bool GLLogCall(const char* function, const char* file, int line)
             glGenTextures(1, &core.gl.texture);
 
             glBindTexture(GL_TEXTURE_2D, core.gl.texture);
-            LogGLErrors(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, geom->max_width, 
+            LogGLErrors(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, geom->max_width,
                                                                  geom->max_height,
                                                                  0,
-                                                                 core.gl.pixel_format, 
+                                                                 core.gl.pixel_format,
                                                                  core.gl.pixel_type,
                                                                  NULL));
             glBindTexture(GL_TEXTURE_2D, 0);
@@ -402,11 +418,11 @@ static bool GLLogCall(const char* function, const char* file, int line)
 
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, core.gl.texture, 0);
 
-        if (   core.hw.depth  
+        if (   core.hw.depth
             && core.hw.stencil) {
             glGenRenderbuffers(1, &core.gl.renderbuffer);
             glBindRenderbuffer(GL_RENDERBUFFER, core.gl.renderbuffer);
-            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, geom->max_width, 
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, geom->max_width,
                                                                         geom->max_height);
 
             glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, core.gl.renderbuffer);
@@ -414,15 +430,19 @@ static bool GLLogCall(const char* function, const char* file, int line)
         else if (core.hw.depth) {
             glGenRenderbuffers(1, &core.gl.renderbuffer);
             glBindRenderbuffer(GL_RENDERBUFFER, core.gl.renderbuffer);
-            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, geom->max_width, 
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, geom->max_width,
                                                                          geom->max_height);
 
             glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, core.gl.renderbuffer);
-        }  
+        }
 
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
 
-        check(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            ErrorMessage = TEXT("OpenGL framebuffer is incomplete");
+            UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
+            return 1;
+        }
 
         glClearColor(0, 0, 0, 1);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -444,8 +464,9 @@ static bool GLLogCall(const char* function, const char* file, int line)
                                                               * core.av.geometry.max_height, PLATFORM_CACHE_LINE_SIZE);
         }
     }
-    
+
     core.hw.context_reset();
+    return 0;
 }
 
 #include "Async/TaskGraphInterfaces.h"
@@ -454,7 +475,7 @@ static bool GLLogCall(const char* function, const char* file, int line)
     DECLARE_SCOPE_CYCLE_COUNTER(TEXT("PrepareFrameBufferForRenderThread"), STAT_LibretroPrepareFrameBufferForRenderThread, STATGROUP_UnrealLibretro);
 
     unsigned SrcPitch = 4 * core.av.geometry.max_width;
-    
+
     auto prepare_frame_for_upload_to_unreal_RHI = [&](void* const buffer)
     {
         void* old_buffer;
@@ -473,7 +494,11 @@ static bool GLLogCall(const char* function, const char* file, int line)
                 Region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height)]
             (FRHICommandListImmediate& RHICmdList)
             {
-                check(this->Unreal.TextureRHI.GetReference());
+                if (!this->Unreal.TextureRHI.GetReference()) {
+                    ErrorMessage = TEXT("Texture RHI reference is null");
+                    UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
+                    return;
+                }
 
                 RHICmdList.EnqueueLambda([=, this](FRHICommandList& RHICmdList)
                     {
@@ -496,10 +521,10 @@ static bool GLLogCall(const char* function, const char* file, int line)
             );
         }
     };
-    
+
     if (data && data != RETRO_HW_FRAME_BUFFER_VALID) {
         DECLARE_SCOPE_CYCLE_COUNTER(TEXT("CPUConvertAndCopyFramebuffer"), STAT_LibretroCPUConvertAndCopyFramebuffer, STATGROUP_UnrealLibretro);
-        
+
         auto bgra_buffer = core.software.bgra_buffers[core.free_framebuffer_index = !core.free_framebuffer_index];
 
         if (core.gl.pixel_format == GL_BGRA) {
@@ -570,7 +595,11 @@ static bool GLLogCall(const char* function, const char* file, int line)
                                                               0, // Offset
                                                               4 * core.av.geometry.max_width * core.av.geometry.max_height,
                                                               GL_MAP_READ_BIT);
-                        check(frame_buffer);
+                        if (!frame_buffer) {
+                            ErrorMessage = TEXT("Failed to map OpenGL buffer");
+                            UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
+                            return;
+                        }
                         prepare_frame_for_upload_to_unreal_RHI(frame_buffer);
                     }
 
@@ -578,7 +607,11 @@ static bool GLLogCall(const char* function, const char* file, int line)
                         LogGLErrors(glBindFramebuffer(GL_READ_FRAMEBUFFER, core.gl.framebuffer));
                         LogGLErrors(glBindBuffer(GL_PIXEL_PACK_BUFFER, core.gl.pixel_buffer_objects[core.free_framebuffer_index]));
                         LogGLErrors(glReadBuffer(GL_COLOR_ATTACHMENT0));
-                        verify(glUnmapBuffer(GL_PIXEL_PACK_BUFFER) == GL_TRUE);
+                        if (glUnmapBuffer(GL_PIXEL_PACK_BUFFER) != GL_TRUE) {
+                            ErrorMessage = TEXT("Failed to unmap OpenGL buffer");
+                            UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
+                            return;
+                        }
                         { // Async copy bound framebuffer color component into bound pbo
                             GLint mip_level = 0;
                             void* offset_into_pbo_where_data_is_written = 0x0;
@@ -602,7 +635,8 @@ static bool GLLogCall(const char* function, const char* file, int line)
                 }
                 case GL_WAIT_FAILED:
                 default:
-                    checkNoEntry();
+                    ErrorMessage = TEXT("OpenGL fence sync wait failed");
+                    UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
             }
         }
     }
@@ -659,7 +693,7 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
     {
         delegate_status = CoreEnvironmentCallback(cmd, data);
     }
-    
+
     switch (cmd) {
     case RETRO_ENVIRONMENT_GET_VARIABLE: {
         retro_variable* var = (struct retro_variable*)data;
@@ -670,12 +704,12 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
         }
 
         if (i == OptionDescriptions.Num()) {
-            UE_LOG(Libretro, Warning, TEXT ("Core '%s' violated libretro spec asked for unkown option '%s'"), UTF8_TO_TCHAR(system.library_name), UTF8_TO_TCHAR(var->key));
+            UE_LOG(Libretro, Warning, TEXT ("Core '%s' violated libretro spec asked for unknown option '%s'"), UTF8_TO_TCHAR(system.library_name), UTF8_TO_TCHAR(var->key));
             return false;
         }
-        
+
         FString TargetValue = OptionDescriptions[i].Values[OptionSelectedIndex[i].load(std::memory_order_relaxed)];
-        
+
         int32 Utf8Length = FTCHARToUTF8_Convert::ConvertedLength(*TargetValue, TargetValue.Len());
         TArray<char>& TargetValueCString = OptionsCache.FindOrAdd(var->key);
 #if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 4
@@ -683,7 +717,7 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
 #else
         TargetValueCString.SetNumZeroed(Utf8Length + 1, false);
 #endif
-        
+
         FTCHARToUTF8_Convert::Convert(TargetValueCString.GetData(), Utf8Length, *TargetValue, TargetValue.Len());
         var->value = TargetValueCString.GetData();
 
@@ -751,11 +785,15 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
     case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: {
         const enum retro_pixel_format *format = (enum retro_pixel_format *)data;
 
-        if (*format > RETRO_PIXEL_FORMAT_RGB565)
+        if (*format > RETRO_PIXEL_FORMAT_RGB565) {
             return false;
+        }
 
-        if (core.gl.texture)
-            UE_LOG(Libretro, Fatal, TEXT("Tried to change pixel format after initialization."));
+        if (core.gl.texture) {
+            ErrorMessage = TEXT("Tried to change pixel format after initialization.");
+            UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
+            return false;
+        }
 
         switch (*format) {
             case RETRO_PIXEL_FORMAT_0RGB1555:
@@ -764,7 +802,7 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
                 core.gl.bits_per_pixel = sizeof(uint16_t);
                 break;
             case RETRO_PIXEL_FORMAT_XRGB8888:
-                
+
                 core.gl.pixel_type = GL_UNSIGNED_BYTE;
                 core.gl.pixel_format = GL_BGRA;
                 core.gl.bits_per_pixel = sizeof(uint32_t);
@@ -776,7 +814,9 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
                 core.gl.bits_per_pixel = sizeof(uint16_t);
                 break;
             default:
-                UE_LOG(Libretro, Fatal, TEXT("Unknown pixel type %u"), *format);
+                ErrorMessage = FString::Printf(TEXT("Unknown pixel type %u"), *format);
+                UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
+                return false;
         }
 
         // @todo The OpenGL RHI backend is supposed to swizzle the red and blue components of textures created with render targets
@@ -830,7 +870,7 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
         auto RAII = StringCast<TCHAR>(this->core.system_directory.GetData());
         verify(IFileManager::Get().MakeDirectory(RAII.Get(), true));
         *retro_path = core.system_directory.GetData();
-        
+
         return true;
     }
     case RETRO_ENVIRONMENT_GET_LANGUAGE: {
@@ -904,7 +944,7 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
         if (!delegate_status) {
         core_log(RETRO_LOG_WARN, "Unhandled env #%u", cmd);
         }
-        
+
         return delegate_status;
     }
 
@@ -916,7 +956,7 @@ int16_t FLibretroContext::core_input_state(unsigned port, unsigned device, unsig
     // To get the core to poll for certain types of input sometimes requires setting particular controllers for compatible ports
     // or changing specific options related to the input you're trying to poll for. If it's not obvious your main resources are
     // experimenting in Retroarch, forums, the libretro documentation, or looking through the core's code itself.
-    // Regarding searching the repo of the core you're having trouble with on github you can search for symbols from libretro.h directly 
+    // Regarding searching the repo of the core you're having trouble with on github you can search for symbols from libretro.h directly
     // in the repo you're browsing with the search bar. You can even change the url from e.g. github.com/libretro/[CORE] to github1s.com/libretro/[CORE]
     // to get a web based IDE with syntax highlighting and code navigation
     //
@@ -942,19 +982,34 @@ void FLibretroContext::core_audio_sample(int16_t left, int16_t right) {
     core_audio_write(buf, (size_t)1);
 }
 
-void FLibretroContext::load(const char *sofile) {
+int FLibretroContext::load(const char *sofile) {
     void (*set_environment)(retro_environment_t) = NULL;
     void (*set_video_refresh)(retro_video_refresh_t) = NULL;
     void (*set_input_poll)(retro_input_poll_t) = NULL;
     void (*set_input_state)(retro_input_state_t) = NULL;
     void (*set_audio_sample)(retro_audio_sample_t) = NULL;
     void (*set_audio_sample_batch)(retro_audio_sample_batch_t) = NULL;
-    
+
     libretro_api.handle = FPlatformProcess::GetDllHandle(ANSI_TO_TCHAR(sofile));
 
-    if (!libretro_api.handle)
-        UE_LOG(LogTemp, Fatal ,TEXT("Failed to load core: %s"), ANSI_TO_TCHAR(sofile));
+    if (!libretro_api.handle) {
+        ErrorMessage = FString::Printf(TEXT("Failed to load core: %s"), ANSI_TO_TCHAR(sofile));
+        UE_LOG(LogTemp, Warning, TEXT("%s"), *ErrorMessage);
+        return 1;
+    }
 
+    // Define a macro to handle symbol loading errors
+    #define load_sym(V, S) do { \
+        if (0 == ((*(void**)&V) = FPlatformProcess::GetDllExport(libretro_api.handle, TEXT(#S)))) { \
+            ErrorMessage = FString::Printf(TEXT("Failed to load symbol '" #S "': %u"), FPlatformMisc::GetLastError()); \
+            UE_LOG(Libretro, Warning, TEXT("%s"), *ErrorMessage); \
+            return 1; \
+        } \
+    } while (0)
+
+    #define load_retro_sym(S) load_sym(libretro_api.S, retro_##S)
+
+    // Load all required symbols
     load_retro_sym(init);
     load_retro_sym(deinit);
     load_retro_sym(api_version);
@@ -978,13 +1033,16 @@ void FLibretroContext::load(const char *sofile) {
     load_sym(set_audio_sample, retro_set_audio_sample);
     load_sym(set_audio_sample_batch, retro_set_audio_sample_batch);
 
+    #undef LOAD_SYM_SAFE
+    #undef LOAD_RETRO_SYM_SAFE
+
     libretro_callbacks->video_refresh = [this](const void* data, unsigned width, unsigned height, size_t pitch) { return core_video_refresh(data, width, height, pitch); };
     libretro_callbacks->audio_write = [this](const int16_t *data, size_t frames) { return core_audio_write(data, frames); };
     libretro_callbacks->audio_sample = [this](int16_t left, int16_t right) { return core_audio_sample(left, right); };
     libretro_callbacks->input_state = [this](unsigned port, unsigned device, unsigned index, unsigned id) { return core_input_state(port, device, index, id); };
     libretro_callbacks->input_poll = [=]() { };
     libretro_callbacks->environment = [this](unsigned cmd, void* data) { return core_environment(cmd, data); };
-     libretro_callbacks->get_current_framebuffer = [this]() { return core.gl.framebuffer; };
+    libretro_callbacks->get_current_framebuffer = [this]() { return core.gl.framebuffer; };
 
     set_environment(libretro_callbacks->c_environment);
     set_video_refresh(libretro_callbacks->c_video_refresh);
@@ -995,44 +1053,58 @@ void FLibretroContext::load(const char *sofile) {
 
     libretro_api.init();
     libretro_api.initialized = true;
+
+    return 0;
 }
 
 
-void FLibretroContext::load_game(const char* filename) {
+int FLibretroContext::load_game(const char* filename) {
     struct retro_game_info info = { filename , nullptr, (size_t)0, "" };
     TArray<uint8> gameBinary;
-    
+
     if (filename && !system.need_fullpath) {
-        verify(FFileHelper::LoadFileToArray(gameBinary, UTF8_TO_TCHAR(filename)));
+        if (!FFileHelper::LoadFileToArray(gameBinary, UTF8_TO_TCHAR(filename))) {
+            ErrorMessage = FString::Printf(TEXT("Failed to load game file: %s"), UTF8_TO_TCHAR(filename));
+            UE_LOG(Libretro, Warning, TEXT("%s"), *ErrorMessage);
+            return 1;
+        }
 
         info.data = gameBinary.GetData();
         info.size = gameBinary.Num();
     }
 
-    if (!libretro_api.load_game(&info))
-        UE_LOG(Libretro, Fatal, TEXT("The core failed to load the content."));
+    if (!libretro_api.load_game(&info)) {
+        ErrorMessage = TEXT("The core failed to load the content.");
+        UE_LOG(Libretro, Warning, TEXT("%s"), *ErrorMessage);
+        return 1;
+    }
 
     libretro_api.get_system_av_info(&core.av);
-     
+
+    int ErrorCode;
     if (core.using_opengl) {
-// SDL State isn't threadlocal like OpenGL so we have to synchronize here when we create a window
+        // SDL State isn't threadlocal like OpenGL so we have to synchronize here when we create a window
 #if PLATFORM_APPLE
         // Apple OS's impose an additional requirement that 'all' rendering operations are done on the main thread
         dispatch_sync(dispatch_get_main_queue(),
             ^{
-                create_window();
+                ErrorCode = create_window();
              });
 #else
         static FCriticalSection WindowLock; // Threadsafe initializatation as of c++11
         FScopeLock scoped_lock(&WindowLock);
-        create_window();
+        ErrorCode = create_window();
 #endif
     }
 
-    video_configure(&core.av.geometry);
+    if (ErrorCode) {
+        return ErrorCode;
+    }
+
+    return video_configure(&core.av.geometry);
 }
 
-FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInstance, FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TUniqueFunction<void(FLibretroContext*, libretro_api_t&)> LoadedCallback)
+FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInstance, FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TUniqueFunction<void(FLibretroContext*, libretro_api_t&, const FString&)> LoadedCallback)
 {
 
     check(IsInGameThread()); // So static initialization is safe + UObject access
@@ -1068,18 +1140,18 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
     ConvertPath(l->core.save_directory,   LibretroSettings->CoreSaveDirectory);
     ConvertPath(l->core.system_directory, LibretroSettings->CoreSystemDirectory);
-    
+
     l->StartingOptions = LibretroSettings->GlobalCoreOptions;
     l->StartingOptions.Append(LibretroCoreInstance->EditorPresetOptions); // Potentially overrides global options
 
     l->UnrealRenderTarget = MakeWeakObjectPtr(RenderTarget);
-    l->UnrealSoundBuffer  = MakeWeakObjectPtr(SoundBuffer );
+    l->UnrealSoundBuffer  = MakeWeakObjectPtr(SoundBuffer);
 
     // Kick the initialization process off to another thread. It shouldn't be added to the Unreal task pool because those are too slow and my code relies on OpenGL state being thread local.
     // The Runnable system is the standard way for spawning and managing threads in Unreal. FThread looks enticing, but they removed any way to detach threads since "it doesn't work as expected"
     l->LambdaRunnable = FLambdaRunnable::RunLambdaOnBackGroundThread(FPaths::GetCleanFilename(core) + FPaths::GetCleanFilename(game),
         [=, LoadedCallback = MoveTemp(LoadedCallback), EditorPresetControllers = LibretroCoreInstance->EditorPresetControllers]() {
-
+            int ErrorCode;
             // Here I load a copy of the dll instead of the original. If you load the same dll multiple times you won't obtain a new instance of the dll loaded into memory,
             // instead all variables and function pointers will point to the original loaded dll
             // WARNING: Don't ever even try to load the original dll since the editor needs to load it to query core settings (This can happen when you pause in PIE!)
@@ -1097,7 +1169,12 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
             uint64 frames = 0;
             auto   start = FDateTime::Now();
 
-            verify(IPlatformFile::GetPlatformPhysical().CopyFile(*InstancedCorePath, *core));
+            if (!IPlatformFile::GetPlatformPhysical().CopyFile(*InstancedCorePath, *core)) {
+                l->ErrorMessage = FString::Printf(TEXT("Failed to copy core file from %s to %s"), *core, *InstancedCorePath);
+                UE_LOG(Libretro, Warning, TEXT("%s"), *l->ErrorMessage);
+                l->CoreState.store(ECoreState::StartFailed, std::memory_order_release);
+                goto cleanup;
+            }
 
             l->core.hw.version_major = 4;
             l->core.hw.version_minor = 5;
@@ -1106,7 +1183,12 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
             l->core.hw.context_destroy = []() {};
 
             // Loads the dll and its function pointers into libretro_api
-            l->load(TCHAR_TO_UTF8(*InstancedCorePath));
+            ErrorCode = l->load(TCHAR_TO_UTF8(*InstancedCorePath));
+            if (ErrorCode)
+            {
+                l->CoreState.store(ECoreState::StartFailed, std::memory_order_release);
+                goto cleanup;
+            }
 
             l->libretro_api.get_system_info(&l->system);
             for (int Port = 0; Port < PortCount; Port++)
@@ -1123,24 +1205,31 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
             if (!l->libretro_api.supports_no_game && game.IsEmpty())
             {
-                UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Path given for ROM was empty"), *core);
+                l->ErrorMessage = FString::Printf(TEXT("Failed to launch Libretro core '%s'. Path given for ROM was empty"), *core);
+                UE_LOG(Libretro, Warning, TEXT("%s"), *l->ErrorMessage);
                 l->CoreState.store(ECoreState::StartFailed, std::memory_order_release);
                 goto cleanup;
             }
 
             // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
-            l->load_game(game.IsEmpty() ? nullptr : TCHAR_TO_UTF8(*game));
-        
+            ErrorCode = l->load_game(game.IsEmpty() ? nullptr : TCHAR_TO_UTF8(*game));
+            if (ErrorCode)
+            {
+                l->CoreState.store(ECoreState::StartFailed, std::memory_order_release);
+                goto cleanup;
+            }
+
             l->CoreState.store(ECoreState::Running, std::memory_order_release);
-            LoadedCallback(l, l->libretro_api);
-            
+            LoadedCallback(l, l->libretro_api, l->ErrorMessage);
+
             // This simplifies the logic in core_video_refresh, It stops us from erroring when we try to unmap this pixel buffer in core_video_refresh
             // You could just move this to the beginning of core_video_refresh and surround it with an if statement that does this the first time through
-            if (l->core.using_opengl) {
+            if (l->core.using_opengl)
+            {
                 l->glBindBuffer(GL_PIXEL_PACK_BUFFER, l->core.gl.pixel_buffer_objects[l->core.free_framebuffer_index]);
                 l->glMapBufferRange(GL_PIXEL_PACK_BUFFER,
                                     0, // Offset
-                                    1, // Size... 
+                                    1, // Size...
                                     GL_MAP_READ_BIT);
                 l->core.gl.fence = l->glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
                 l->glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
@@ -1156,16 +1245,21 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                     {
                         l->libretro_api.run();
                     }
-                    
+
+                    if (l->ErrorMessage.Len() > 0)
+                    {
+                        goto cleanup;
+                    }
+
                     // Execute tasks from command queue  Note: It's semantically significant that this is here. Since I hook in save state
                     //                                         operations here it must necessarily come after run is called on the core
                     TUniqueFunction<void(libretro_api_t&)> Task;
-                    while (l->LibretroAPITasks.Dequeue(Task)) 
+                    while (l->LibretroAPITasks.Dequeue(Task))
                     {
                         Task(l->libretro_api);
                     }
                 }
-                
+
                 { // @todo My timing solution is a bit adhoc. I'm sure theres probably a better way.
                     DECLARE_SCOPE_CYCLE_COUNTER(TEXT("Sleep"), STAT_LibretroSleep, STATGROUP_UnrealLibretro);
 
@@ -1181,17 +1275,32 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                 }
             }
 
-cleanup:
-            if (l->CoreState.load(std::memory_order_relaxed) == ECoreState::StartFailed)
+cleanup:    // @todo Make state transitions better so StartFailed can't be overwritten
+            if (   l->ErrorMessage.Len() > 0
+                || l->CoreState.load(std::memory_order_relaxed) == ECoreState::StartFailed)
             {
-                LoadedCallback(l, l->libretro_api);
+                l->CoreState.store(ECoreState::StartFailed, std::memory_order_release);
+                LoadedCallback(l, l->libretro_api, l->ErrorMessage);
+            }
+
+            // Check for unexecuted tasks and warn if any exist
+            int32 UnexecutedTaskCount = 0;
+            TUniqueFunction<void(libretro_api_t&)> Task;
+            while (l->LibretroAPITasks.Dequeue(Task))
+            {
+                UnexecutedTaskCount++;
+            }
+
+            if (UnexecutedTaskCount > 0)
+            {
+                UE_LOG(Libretro, Warning, TEXT("There were %d unexecuted tasks during cleanup. This could lead to resource leaks."), UnexecutedTaskCount);
             }
 
             if (l->libretro_api.initialized)
             {
                 l->libretro_api.deinit();
             }
-            
+
             if (l->libretro_api.handle)
             {
                 FPlatformProcess::FreeDllHandle(l->libretro_api.handle);
@@ -1200,7 +1309,7 @@ cleanup:
             IPlatformFile::GetPlatformPhysical().DeleteFile(*InstancedCorePath);
 
             l->Unreal.AudioQueue.Reset();
-            
+
             FFunctionGraphTask::CreateAndDispatchWhenReady([=]
             {
                 AllocatedInstances[InstanceNumber] = false;
@@ -1276,7 +1385,9 @@ void FLibretroContext::Pause(bool ShouldPause)
     // Alternatively you could add one more state to accomplish this, but this is fine for now
     EnqueueTask([this, ShouldPause](auto&&)
         {
-            if (CoreState.load(std::memory_order_relaxed) != ECoreState::Shutdown) 
+            ECoreState State = CoreState.load(std::memory_order_relaxed);
+            if (   State != ECoreState::Shutdown
+                && State != ECoreState::StartFailed)
             {
                 CoreState.store(ShouldPause ? ECoreState::Paused : ECoreState::Running, std::memory_order_relaxed);
             }

@@ -98,6 +98,9 @@ void ULibretroCoreInstance::Launch()
 {
     Shutdown();
     
+    // Clear any previous error message
+    LastErrorMessage.Empty();
+    
     FString _CorePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::ResolveCorePath(this->CorePath));
     FString _RomPath = "";
 
@@ -107,19 +110,34 @@ void ULibretroCoreInstance::Launch()
         _RomPath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::ResolveROMPath(this->RomPath));
     }
     
-
 #if PLATFORM_WINDOWS
     _RomPath.ReplaceCharInline('/', '\\');
 #endif
 
     if (!IPlatformFile::GetPlatformPhysical().FileExists(*_CorePath))
     {
-        UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Couldn't find core at path '%s'"), *_CorePath, *_CorePath);
+        LastErrorMessage = FString::Printf(TEXT("Failed to launch Libretro core '%s'. Couldn't find core at path '%s'"), *_CorePath, *_CorePath);
+        UE_LOG(Libretro, Warning, TEXT("%s"), *LastErrorMessage);
+        
+        // Notify of failure
+        FFunctionGraphTask::CreateAndDispatchWhenReady(
+            [this]()
+            {
+                OnLaunchComplete.Broadcast(nullptr, nullptr, false);
+            }, TStatId(), nullptr, ENamedThreads::GameThread);
         return;
     }
-    else if (!IPlatformFile::GetPlatformPhysical().FileExists(*_RomPath) && !IPlatformFile::GetPlatformPhysical().DirectoryExists(*_RomPath))
+    else if (!_RomPath.IsEmpty() && !IPlatformFile::GetPlatformPhysical().FileExists(*_RomPath) && !IPlatformFile::GetPlatformPhysical().DirectoryExists(*_RomPath))
     {
-        UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Couldn't find ROM at path '%s'"), *_CorePath, *_RomPath);
+        LastErrorMessage = FString::Printf(TEXT("Failed to launch Libretro core '%s'. Couldn't find ROM at path '%s'"), *_CorePath, *_RomPath);
+        UE_LOG(Libretro, Warning, TEXT("%s"), *LastErrorMessage);
+        
+        // Notify of failure
+        FFunctionGraphTask::CreateAndDispatchWhenReady(
+            [this]()
+            {
+                OnLaunchComplete.Broadcast(nullptr, nullptr, false);
+            }, TStatId(), nullptr, ENamedThreads::GameThread);
         return;
     }
 
@@ -142,18 +160,19 @@ void ULibretroCoreInstance::Launch()
 
     this->CoreInstance = FLibretroContext::Launch(this, _CorePath, _RomPath, RenderTarget, static_cast<URawAudioSoundWave*>(AudioBuffer),
         [weakThis = MakeWeakObjectPtr(this), SRAMPath = FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath)]
-        (FLibretroContext *_CoreInstance, libretro_api_t &libretro_api) 
+        (FLibretroContext *_CoreInstance, libretro_api_t &libretro_api, const FString& ErrorMessage) 
         {   
             bool bCoreLaunchSucceeded = _CoreInstance->CoreState.load(std::memory_order_relaxed) != FLibretroContext::ECoreState::StartFailed;
 
             FFunctionGraphTask::CreateAndDispatchWhenReady(
-                [weakThis, bCoreLaunchSucceeded]()
+                [weakThis, bCoreLaunchSucceeded, ErrorMessage]()
             {
                 if (weakThis.IsValid())
                 {
                     if (!bCoreLaunchSucceeded)
                     {
-                        weakThis->Shutdown();
+                        weakThis->LastErrorMessage = ErrorMessage;
+                        weakThis->CoreInstance.Reset();
                     }
 
                     weakThis->OnLaunchComplete.Broadcast(weakThis->RenderTarget,
