@@ -1081,24 +1081,25 @@ int FLibretroContext::load_game(const char* filename) {
 
     libretro_api.get_system_av_info(&core.av);
 
-    int ErrorCode;
     if (core.using_opengl) {
-        // SDL State isn't threadlocal like OpenGL so we have to synchronize here when we create a window
+        // SDL State isn't threadlocal like OpenGL so we have to synchronize here when we create a window @todo Since I'm no longer using SDL it could be looking into if this is still required
 #if PLATFORM_APPLE
+        __block int ErrorCode = 0;
         // Apple OS's impose an additional requirement that 'all' rendering operations are done on the main thread
         dispatch_sync(dispatch_get_main_queue(),
             ^{
                 ErrorCode = create_window();
              });
 #else
+        int ErrorCode;
         static FCriticalSection WindowLock; // Threadsafe initializatation as of c++11
         FScopeLock scoped_lock(&WindowLock);
         ErrorCode = create_window();
 #endif
-    }
 
-    if (ErrorCode) {
-        return ErrorCode;
+        if (ErrorCode) {
+            return ErrorCode;
+        }
     }
 
     return video_configure(&core.av.geometry);
@@ -1215,6 +1216,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
             ErrorCode = l->load_game(game.IsEmpty() ? nullptr : TCHAR_TO_UTF8(*game));
             if (ErrorCode)
             {
+                UE_LOG(Libretro, Error, TEXT("Error loading %s"), *game);
                 l->CoreState.store(ECoreState::StartFailed, std::memory_order_release);
                 goto cleanup;
             }
