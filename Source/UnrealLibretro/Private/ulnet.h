@@ -138,17 +138,19 @@ void *arena_dereference(arena_t *arena, arena_reference_t reference) {
     }
 
     void *ptr = &arena->arena[reference.offset];
-    
+
     // Case 1: Same generation - definitely valid
     if (arena->generation == reference.generation) {
         return ptr;
     }
-    
+
     // Case 2: Arena has wrapped around once (generation + 1)
     // Handle generation wraparound properly using modular arithmetic
-    if (((arena->generation - reference.generation) & 0xFFFF) == 1 && 
-        arena->head <= reference.offset) {
+    if (   ((arena->generation - reference.generation) & 0xFFFF) == 1
+        && reference.offset >= arena->head) {
         // Return the original pointer - the data is still valid
+        // This condition checks if the reference is in memory that hasn't been
+        // overwritten yet after a wraparound
         return ptr;
     }
 
@@ -278,9 +280,7 @@ typedef struct ulnet_session {
         } channel_state;
 
         struct {
-            uint16_t size;
-            uint16_t arena_generation;
-            uint32_t arena_offset;
+            arena_reference_t reference;
         } channel_ascii;
     } reliable_pending_metadata[SAM2_TOTAL_PEERS][ULNET_RELIABLE_ACK_BUFFER_SIZE];
     arena_t arena;
@@ -700,25 +700,21 @@ static void ulnet__reliable_send(ulnet_session_t *session, int port, unsigned ch
     } else if (   (packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_ASCII_1
                || (packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_ASCII_2) {
 
-        // For ASCII messages, use circular buffer approach for arena
-        if (size > sizeof(session->arena_buffer)) {
-            SAM2_LOG_WARN("ASCII message too large for arena buffer");
+        // For ASCII messages, allocate in the arena
+        arena_reference_t ref = arena_allocate(&session->arena, (uint16_t)size);
+        if (ref.size == 0) {
+            SAM2_LOG_WARN("ASCII message allocation failed in arena");
             return;
         }
 
-        // Check if we need to wrap around
-        if (session->arena_head + size > sizeof(session->arena_buffer)) {
-            session->arena_head = 0;
-        }
-
         // Store message in arena
-        int arena_offset = session->arena_head;
-        memcpy(&session->arena_buffer[arena_offset], packet, size);
-        session->reliable_pending_metadata[port][slot_index].channel_ascii.arena_offset = arena_offset;
-        session->reliable_pending_metadata[port][slot_index].channel_ascii.size = (int32_t)size;
-
-        // Update arena head
-        session->arena_head += size;
+        void *ptr = arena_dereference(&session->arena, ref);
+        if (ptr) {
+            memcpy(ptr, packet, size);
+            session->reliable_pending_metadata[port][slot_index].channel_ascii.reference = ref;
+        } else {
+            SAM2_LOG_WARN("Failed to dereference arena allocation for ASCII message");
+        }
     } else if ((packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_SPECTATOR_INPUT) {
         session->reliable_pending_metadata[port][slot_index].channel_state.frame = session->frame_counter;
     } else {
@@ -863,17 +859,15 @@ static void ulnet__check_retransmissions(ulnet_session_t *session, double curren
             } else if (   (channel_and_flags & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_ASCII_1
                        || (channel_and_flags & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_ASCII_2) {
 
-                int arena_offset = session->reliable_pending_metadata[port][slot_index].channel_ascii.arena_offset;
-                int size = session->reliable_pending_metadata[port][slot_index].channel_ascii.size;
+                arena_reference_t ref = session->reliable_pending_metadata[port][slot_index].channel_ascii.reference;
+                void *ptr = arena_dereference(&session->arena, ref);
 
-                if (   arena_offset >= 0 && size > 0
-                    && arena_offset + size <= sizeof(session->arena_buffer)) {
+                if (ptr && ref.size > 0) {
                     SAM2_LOG_INFO("Retransmitting ASCII message, sequence %d", sequence);
-
-                    ulnet__reliable_send(session, port, &session->arena_buffer[arena_offset], size);
+                    ulnet__reliable_send(session, port, (unsigned char*)ptr, ref.size);
                 } else {
-                    SAM2_LOG_WARN("Invalid arena data for ASCII message: offset=%d, size=%d",
-                                 arena_offset, size);
+                    SAM2_LOG_WARN("Invalid arena reference for ASCII message: size=%d, generation=%d, offset=%d",
+                                 ref.size, ref.generation, ref.offset);
                 }
             } else {
                 SAM2_LOG_WARN("Unknown channel for retransmission: %d", (channel_and_flags & ULNET_CHANNEL_MASK));
@@ -1400,7 +1394,7 @@ ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session) {
     memset(&session->state, 0, sizeof(session->state));
     memset(&session->state_packet_history, 0, sizeof(session->state_packet_history));
 
-    memset(&session->arena_head, 0, sizeof(session->arena_head));
+    memset(&session->arena, 0, sizeof(session->arena));
     session->reliable_next_retransmit_time = 0;
 
     session->frame_counter = 0;

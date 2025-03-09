@@ -987,7 +987,7 @@ static int g_save_state_used_for_delta_index_offset = 1;
 
 static bool g_is_refreshing_rooms = false;
 
-static int g_volume = 3;
+static int g_volume = 0;
 static bool g_vsync_enabled = true;
 
 static ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
