@@ -86,6 +86,77 @@ typedef struct juice_agent juice_agent_t;
 #define ULNET_PORT_COUNT 8
 typedef int16_t ulnet_input_state_t[64]; // This must be a POD for putting into packets
 
+typedef struct arena_reference {
+    uint16_t size;
+    uint16_t generation;
+    uint32_t offset;
+} arena_reference_t;
+static const arena_reference_t arena_reference_null = { 0x0, 0x0, 0x0 }; // Null reference is characterized by 0's in all fields
+
+typedef struct arena {
+    uint16_t generation; // Wraps around on overflow
+    uint32_t head; // Wraps around when exceeding arena size
+    uint8_t arena[256 * 1024];
+} arena_t;
+
+arena_reference_t arena_allocate(arena_t *arena, uint16_t size) {
+    // Reject zero-sized and too-large allocations
+    if (size == 0 || size > sizeof(arena->arena)) {
+        return arena_reference_null;
+    }
+
+    // Check if allocation would exceed arena remaining space
+    if (arena->head + size > sizeof(arena->arena)) {
+        // Wrap around to beginning if we don't have space
+        arena->head = 0;
+        // Increment generation on wrap
+        arena->generation++;
+    }
+
+    arena_reference_t ref = {
+        size,
+        arena->generation,
+        arena->head
+    };
+
+    // Advance head pointer
+    arena->head += size;
+
+    return ref;
+}
+
+void *arena_dereference(arena_t *arena, arena_reference_t reference) {
+    // Check for null reference
+    if (reference.size == 0 && reference.generation == 0 && reference.offset == 0) {
+        return NULL;
+    }
+
+    // Validate bounds
+    if (reference.offset >= sizeof(arena->arena) ||
+        reference.offset + reference.size > sizeof(arena->arena)) {
+        return NULL;
+    }
+
+    void *ptr = &arena->arena[reference.offset];
+    
+    // Case 1: Same generation - definitely valid
+    if (arena->generation == reference.generation) {
+        return ptr;
+    }
+    
+    // Case 2: Arena has wrapped around once (generation + 1)
+    // Handle generation wraparound properly using modular arithmetic
+    if (((arena->generation - reference.generation) & 0xFFFF) == 1 && 
+        arena->head <= reference.offset) {
+        // Return the original pointer - the data is still valid
+        return ptr;
+    }
+
+    // In all other cases, the memory has been overwritten
+    return NULL;
+}
+
+
 typedef struct ulnet_core_option {
     char key[128];
     char value[128];
@@ -212,8 +283,7 @@ typedef struct ulnet_session {
             uint32_t arena_offset;
         } channel_ascii;
     } reliable_pending_metadata[SAM2_TOTAL_PEERS][ULNET_RELIABLE_ACK_BUFFER_SIZE];
-    uint8_t  arena_buffer[256 * 1024];
-    uint32_t arena_head;
+    arena_t arena;
     uint16_t reliable_greatest_sequence[SAM2_TOTAL_PEERS]; // Greatest sequence number sent, wraps around
 
     // MARK: Save state transfer
