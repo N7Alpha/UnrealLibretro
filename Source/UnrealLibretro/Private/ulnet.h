@@ -311,6 +311,7 @@ typedef struct ulnet_session {
 #endif
 } ulnet_session_t;
 
+ULNET_LINKAGE int ulnet_process_message(ulnet_session_t *session, const void *response);
 ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, void *save_state, size_t save_state_size, int64_t save_state_frame);
 ULNET_LINKAGE void ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, int p, const char *remote_description);
 ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port);
@@ -675,10 +676,11 @@ static int ulnet__udp_send(ulnet_session_t *session, int port, const char *packe
     }
 }
 
-static void ulnet__reliable_send(ulnet_session_t *session, int port, unsigned char *packet, size_t size) {
+static int ulnet__reliable_send(ulnet_session_t *session, int port, unsigned char *packet, size_t size) {
     struct reliable_endpoint_t *endpoint = session->reliable_endpoint[port];
     if (!endpoint) {
-        return;
+        SAM2_LOG_ERROR("Attempt to send reliable packet on uninitialized endpoint");
+        return 1;
     }
 
     // Get next sequence number before sending
@@ -702,24 +704,26 @@ static void ulnet__reliable_send(ulnet_session_t *session, int port, unsigned ch
 
         // For ASCII messages, allocate in the arena
         arena_reference_t ref = arena_allocate(&session->arena, (uint16_t)size);
-        if (ref.size == 0) {
-            SAM2_LOG_WARN("ASCII message allocation failed in arena");
-            return;
-        }
-
-        // Store message in arena
         void *ptr = arena_dereference(&session->arena, ref);
-        if (ptr) {
-            memcpy(ptr, packet, size);
-            session->reliable_pending_metadata[port][slot_index].channel_ascii.reference = ref;
-        } else {
-            SAM2_LOG_WARN("Failed to dereference arena allocation for ASCII message");
-        }
+        memcpy(ptr, packet, size);
+        session->reliable_pending_metadata[port][slot_index].channel_ascii.reference = ref;
     } else if ((packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_SPECTATOR_INPUT) {
         session->reliable_pending_metadata[port][slot_index].channel_state.frame = session->frame_counter;
     } else {
         SAM2_LOG_ERROR("Tried to send a reliable message with invalid channel: %d", (packet[0] & ULNET_CHANNEL_MASK));
+        return 1;
     }
+
+    return 0;
+}
+
+void ulnet_message_send(ulnet_session_t *session, int port, unsigned char *packet) {
+    if (   (packet[0] & ULNET_CHANNEL_MASK) != ULNET_CHANNEL_ASCII_1
+        && (packet[0] & ULNET_CHANNEL_MASK) != ULNET_CHANNEL_ASCII_2) {
+        SAM2_LOG_FATAL("Attempt to send non-ASCII message with ulnet_message_send");
+    }
+
+    ulnet__reliable_send(session, port, packet, sam2_get_metadata((const char *) packet)->message_size);
 }
 
 static uint64_t ulnet__process_reliable_acks(uint16_t acks[/* num_acks */], int num_acks, uint16_t *greatest_sequence) {
@@ -862,11 +866,11 @@ static void ulnet__check_retransmissions(ulnet_session_t *session, double curren
                 arena_reference_t ref = session->reliable_pending_metadata[port][slot_index].channel_ascii.reference;
                 void *ptr = arena_dereference(&session->arena, ref);
 
-                if (ptr && ref.size > 0) {
+                if (ptr) {
                     SAM2_LOG_INFO("Retransmitting ASCII message, sequence %d", sequence);
                     ulnet__reliable_send(session, port, (unsigned char*)ptr, ref.size);
                 } else {
-                    SAM2_LOG_WARN("Invalid arena reference for ASCII message: size=%d, generation=%d, offset=%d",
+                    SAM2_LOG_WARN("Unable to resend packet arena reference overwritten: size=%d, generation=%d, offset=%d",
                                  ref.size, ref.generation, ref.offset);
                 }
             } else {
@@ -1537,6 +1541,14 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
                 session->sam2_send_callback(session->user_ptr, (char *) &error);
                 // @todo Resync broadcast
             }
+        } else if (memcmp(data, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
+            // @todo This can be much simpler
+            sam2_room_join_message_t join_message;
+            memcpy(&join_message, data, sizeof(join_message));
+            join_message.peer_id = session->agent_peer_ids[p];
+            if (ulnet_process_message(session, &join_message) != 0) {
+                SAM2_LOG_ERROR("Failed to process join message");
+            }
         }
 
         break;
@@ -1916,7 +1928,7 @@ sam2_room_t ulnet__infer_future_room_we_are_in(ulnet_session_t *session) {
     return future_room_we_are_in;
 }
 
-int ulnet_process_message(ulnet_session_t *session, void *response) {
+int ulnet_process_message(ulnet_session_t *session, const void *response) {
 
     if (sam2_get_metadata((char *) response) == NULL) {
         return -1;
