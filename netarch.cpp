@@ -1711,7 +1711,7 @@ void draw_imgui() {
                     sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
                     request.room = g_ulnet_session.room_we_are_in;
                     request.room.peer_ids[p] = g_ulnet_session.our_peer_id;
-                    g_libretro_context.SAM2Send((char *) &request);
+                    ulnet_message_send(&g_ulnet_session, SAM2_AUTHORITY_INDEX, (unsigned char *) &request);
                 }
             } else {
                 if (p == SAM2_AUTHORITY_INDEX) {
@@ -1835,7 +1835,7 @@ void draw_imgui() {
                 if (ImGui::Button("Detach Port")) {
 #if 1
                     message.room.peer_ids[ulnet_our_port(&g_ulnet_session)] = SAM2_PORT_AVAILABLE;
-                    g_libretro_context.SAM2Send((char *) &message);
+                    ulnet_message_send(&g_ulnet_session, SAM2_AUTHORITY_INDEX, (unsigned char *) &message);
 #else
                     sam2_room_t future_room_we_are_in = ulnet_future_room_we_are_in(&g_ulnet_session);
                     int future_our_port = sam2_get_port_of_peer(&future_room_we_are_in, g_ulnet_session.our_peer_id);
