@@ -260,7 +260,7 @@ typedef struct ulnet_session {
     int64_t        peer_desynced_frame [SAM2_TOTAL_PEERS];
     ulnet_state_t  state               [SAM2_PORT_MAX+1];
     ulnet_input_state_t spectator_suggested_input_state[SAM2_TOTAL_PEERS][ULNET_PORT_COUNT];
-    unsigned char  state_packet_history[SAM2_TOTAL_PEERS][ULNET_STATE_PACKET_HISTORY_SIZE][ULNET_PACKET_SIZE_BYTES_MAX];
+    arena_reference_t state_packet_history[SAM2_TOTAL_PEERS][ULNET_STATE_PACKET_HISTORY_SIZE];
     uint64_t       peer_needs_sync_bitfield;
     uint64_t       peer_pending_disconnect_bitfield;
 
@@ -819,16 +819,12 @@ static void ulnet__check_retransmissions(ulnet_session_t *session, double curren
                 int sender_port = channel_and_flags & ULNET_FLAGS_MASK;
 
                 if (sender_port < SAM2_ARRAY_LENGTH(session->state_packet_history)) {
-                    unsigned char *packet = session->state_packet_history[sender_port][frame_history_idx];
-                    if (packet[0] != 0) {  // Make sure it's a valid packet
-                        int packet_size = 0;
-                        // Find packet size (first zero byte pair)
-                        for (packet_size = 0; packet_size < ULNET_PACKET_SIZE_BYTES_MAX - 1; packet_size++) {
-                            if (packet[packet_size] == 0 && packet[packet_size+1] == 0) {
-                                break;
-                            }
-                        }
-
+                    arena_reference_t ref = session->state_packet_history[sender_port][frame_history_idx];
+                    uint8_t *packet = arena_dereference(&session->arena, ref);
+                    
+                    if (packet != NULL && packet[0] != 0) {  // Make sure it's a valid packet
+                        int packet_size = ref.size;
+                        
                         if (packet_size > 0) {
                             SAM2_LOG_INFO("Retransmitting input packet for frame %" PRId64 ", sequence %d", frame, sequence);
 
@@ -881,14 +877,19 @@ static void ulnet_update_state_history(ulnet_session_t *session, uint8_t *packet
     rle8_decode(&packet[1], ULNET_PACKET_SIZE_BYTES_MAX - 1, (uint8_t *) &frame, sizeof(frame));
     if ((frame + 1) % ULNET_DELAY_BUFFER_SIZE == 0) {
         int history_idx = (frame / ULNET_DELAY_BUFFER_SIZE) % ULNET_STATE_PACKET_HISTORY_SIZE;
-
-        int i = 0;
-        for (; i < size; i++) {
-            session->state_packet_history[port][history_idx][i] = ((unsigned char *)packet)[i];
+        
+        // Allocate space in the arena for a copy of this packet
+        arena_reference_t ref = arena_allocate(&session->arena, (uint16_t)size);
+        if (ref.size == 0) {
+            SAM2_LOG_ERROR("Unable to allocate state_packet_history entry in arena");
+            return;
         }
-        for (; i < SAM2_ARRAY_LENGTH(session->state_packet_history[0][0]); i++) {
-            session->state_packet_history[port][history_idx][i] = 0;
-        }
+        
+        // Copy the packet data to the arena
+        memcpy(arena_dereference(&session->arena, ref), packet, size);
+        
+        // Store the reference
+        session->state_packet_history[port][history_idx] = ref;
     }
 }
 
@@ -987,12 +988,10 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
             for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
                 if (session->room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
 
-                uint8_t *peer_packet = session->state_packet_history[p][session->frame_counter % ULNET_STATE_PACKET_HISTORY_SIZE];
-                int packet_size_bytes = 0;
-                uint16_t u16_0 = 0;
-                for (; packet_size_bytes < ULNET_PACKET_SIZE_BYTES_MAX; packet_size_bytes++) {
-                    if (memcmp(peer_packet + packet_size_bytes, &u16_0, sizeof(u16_0)) == 0) break;
-                }
+                arena_reference_t ref = session->state_packet_history[p][session->frame_counter % ULNET_STATE_PACKET_HISTORY_SIZE];
+                uint8_t *peer_packet = arena_dereference(&session->arena, ref);
+                int packet_size_bytes = peer_packet ? ref.size : 0;
+                
                 session->input_packet_size[p][session->frame_counter % session->sample_size] = packet_size_bytes;
 
                 char label[32];
@@ -1390,7 +1389,13 @@ ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session) {
     }
 
     memset(&session->state, 0, sizeof(session->state));
-    memset(&session->state_packet_history, 0, sizeof(session->state_packet_history));
+    
+    // Initialize state_packet_history with null references
+    for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
+        for (int j = 0; j < ULNET_STATE_PACKET_HISTORY_SIZE; j++) {
+            session->state_packet_history[i][j] = arena_reference_null;
+        }
+    }
 
     memset(&session->arena, 0, sizeof(session->arena));
     session->reliable_next_retransmit_time = 0;
