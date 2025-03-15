@@ -2986,13 +2986,13 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
 
             if (cdict) {
                 g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = ZSTD_compress_usingCDict(cctx,
-                                                                                       savebuffer_compressed, COMPRESSED_SAVE_STATE_BOUND_BYTES,
+                                                                                       savebuffer_compressed, sizeof(savebuffer_compressed),
                                                                                        buffer, g_serialize_size,
                                                                                        cdict);
             }
         } else {
             g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = ZSTD_compress(savebuffer_compressed,
-                                                                        COMPRESSED_SAVE_STATE_BOUND_BYTES,
+                                                                        sizeof(savebuffer_compressed),
                                                                         buffer, g_serialize_size, g_zstd_compress_level);
         }
 
