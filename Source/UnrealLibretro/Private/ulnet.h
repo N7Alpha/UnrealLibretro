@@ -96,7 +96,7 @@ static const arena_reference_t arena_reference_null = { 0x0, 0x0, 0x0 }; // Null
 typedef struct arena {
     uint16_t generation; // Wraps around on overflow
     uint32_t head; // Wraps around when exceeding arena size
-    uint8_t arena[256 * 1024];
+    uint8_t arena[2 * 1024 * 1024];
 } arena_t;
 
 arena_reference_t arena_allocate(arena_t *arena, uint16_t size) {
@@ -198,11 +198,6 @@ typedef struct {
 #define ULNET_SAVESTATE_TRANSFER_FLAG_K_IS_239         0b0001
 #define ULNET_SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0 0b0010
 
-// @todo Just get rid of these
-#define COMPRESSED_SAVE_STATE_BOUND_BYTES ZSTD_COMPRESSBOUND(20 * 1024 * 1024) // @todo Magic number
-#define COMPRESSED_CORE_OPTIONS_BOUND_BYTES ZSTD_COMPRESSBOUND(sizeof(ulnet_core_option_t[ULNET_CORE_OPTIONS_MAX])) // @todo Probably make the type in here a typedef
-#define COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES (255 * (COMPRESSED_SAVE_STATE_BOUND_BYTES + COMPRESSED_CORE_OPTIONS_BOUND_BYTES) / (255 - FEC_REDUNDANT_BLOCKS))
-
 typedef struct {
     uint8_t channel_and_flags;
     union {
@@ -231,7 +226,7 @@ typedef struct {
 SAM2_STATIC_ASSERT(sizeof(ulnet_save_state_packet_fragment2_t) == ULNET_PACKET_SIZE_BYTES_MAX, "Savestate transfer is the wrong size");
 
 typedef struct {
-    int64_t total_size_bytes; // @todo This isn't necessary
+    int64_t total_size_bytes;
     int64_t frame_counter;
     sam2_room_t room;
     uint64_t encoding_chain; // @todo probably won't use this
@@ -263,7 +258,7 @@ typedef struct ulnet_session {
     juice_agent_t *agent               [SAM2_TOTAL_PEERS];
     uint64_t       agent_peer_ids      [SAM2_TOTAL_PEERS];
     int64_t        peer_desynced_frame [SAM2_TOTAL_PEERS];
-    ulnet_state_t  state               [SAM2_TOTAL_PEERS];
+    ulnet_state_t  state               [SAM2_PORT_MAX+1];
     ulnet_input_state_t spectator_suggested_input_state[SAM2_TOTAL_PEERS][ULNET_PORT_COUNT];
     unsigned char  state_packet_history[SAM2_TOTAL_PEERS][ULNET_STATE_PACKET_HISTORY_SIZE][ULNET_PACKET_SIZE_BYTES_MAX];
     uint64_t       peer_needs_sync_bitfield;
@@ -288,10 +283,9 @@ typedef struct ulnet_session {
 
     // MARK: Save state transfer
     int zstd_compress_level;
-    unsigned char remote_savestate_transfer_packets[COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES + FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS) * sizeof(ulnet_save_state_packet_header_t)];
     int64_t remote_savestate_transfer_offset;
     uint8_t remote_packet_groups; // This is used to bookkeep how much data we actually need to receive to reform the complete savestate
-    void *fec_packet[FEC_PACKET_GROUPS_MAX][GF_SIZE - FEC_REDUNDANT_BLOCKS];
+    arena_reference_t packet_reference[FEC_PACKET_GROUPS_MAX][GF_SIZE - FEC_REDUNDANT_BLOCKS];
     int fec_index[FEC_PACKET_GROUPS_MAX][GF_SIZE - FEC_REDUNDANT_BLOCKS];
     int fec_index_counter[FEC_PACKET_GROUPS_MAX]; // Counts packets received in each "packet group"
 
@@ -1709,19 +1703,26 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
 
         SAM2_LOG_DEBUG("Received savestate packet sequence_hi: %hhu sequence_lo: %hhu", sequence_hi, sequence_lo);
 
-        uint8_t *copied_packet_ptr = (uint8_t *) memcpy(&session->remote_savestate_transfer_packets[session->remote_savestate_transfer_offset], data, size);
+        size_t payload_size = size - sizeof(ulnet_save_state_packet_header_t);
+        arena_reference_t ref = arena_allocate(&session->arena, payload_size);
+        memcpy(arena_dereference(&session->arena, ref), data + sizeof(ulnet_save_state_packet_header_t), payload_size);
+
         session->remote_savestate_transfer_offset += size;
 
-        session->fec_packet[sequence_hi][session->fec_index_counter[sequence_hi]] = copied_packet_ptr + sizeof(ulnet_save_state_packet_header_t);
+        session->packet_reference[sequence_hi][session->fec_index_counter[sequence_hi]] = ref;
         session->fec_index [sequence_hi][session->fec_index_counter[sequence_hi]++] = sequence_lo;
 
         if (session->fec_index_counter[sequence_hi] == k) {
             SAM2_LOG_DEBUG("Received all the savestate data for packet group: %hhu", sequence_hi);
+            void *fec_packet[GF_SIZE - FEC_REDUNDANT_BLOCKS];
+            for (int i = 0; i < k; i++) {
+                fec_packet[i] = arena_dereference(&session->arena, session->packet_reference[sequence_hi][k]);
+            }
 
             int redudant_blocks_sent = k * FEC_REDUNDANT_BLOCKS / (GF_SIZE - FEC_REDUNDANT_BLOCKS);
             void *rs_code = fec_new(k, k + redudant_blocks_sent);
             int rs_block_size = (int) (size - sizeof(ulnet_save_state_packet_header_t));
-            int status = fec_decode(rs_code, session->fec_packet[sequence_hi], session->fec_index[sequence_hi], rs_block_size);
+            int status = fec_decode(rs_code, fec_packet, session->fec_index[sequence_hi], rs_block_size);
             assert(status == 0);
             fec_free(rs_code);
 
@@ -1735,13 +1736,17 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
                 uint64_t their_savestate_transfer_payload_xxhash = 0;
                 uint64_t   our_savestate_transfer_payload_xxhash = 0;
                 unsigned char *save_state_data = NULL;
-                savestate_transfer_payload_t *savestate_transfer_payload = (savestate_transfer_payload_t *) malloc(sizeof(savestate_transfer_payload_t) /* Fixed size header */ + COMPRESSED_DATA_WITH_REDUNDANCY_BOUND_BYTES);
+                savestate_transfer_payload_t *savestate_transfer_payload = (savestate_transfer_payload_t *) malloc(sizeof(savestate_transfer_payload_t) /* Fixed size header */ + k * session->remote_packet_groups * rs_block_size);
 
                 int64_t remote_payload_size = 0;
-                // @todo The last packet contains some number of garbage bytes probably add the size thing back?
                 for (int i = 0; i < k; i++) {
                     for (int j = 0; j < session->remote_packet_groups; j++) {
-                        memcpy(((uint8_t *) savestate_transfer_payload) + remote_payload_size, session->fec_packet[j][i], rs_block_size);
+                        void *decoded_packet = arena_dereference(&session->arena, session->packet_reference[j][i]);
+                        if (decoded_packet == NULL) {
+                            SAM2_LOG_ERROR("Savestate transfer packet already overwritten");
+                            goto cleanup;
+                        }
+                        memcpy(((uint8_t *) savestate_transfer_payload) + remote_payload_size, decoded_packet, rs_block_size);
                         remote_payload_size += rs_block_size;
                     }
                 }
