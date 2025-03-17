@@ -550,7 +550,7 @@ static sam2_room_t* sam2__find_hosted_room(sam2_server_t *server, sam2_room_t *r
 // ```c
 // // Init server
 // sam2_server_t server;
-// sam2_server_create(&server, SAM2_SERVER_DEFAULT_PORT);
+// sam2_server_init(&server, SAM2_SERVER_DEFAULT_PORT);
 //
 // // Wait for some events
 // for (int i = 0; i < 10; i++) {
@@ -576,9 +576,9 @@ SAM2_LINKAGE int sam2_server_begin_destroy(sam2_server_t *server);
 // Non-blocking trys to read a response sent by the server
 // Returns negative on error, positive if there are more messages to read, and zero when you've processed the last message
 // Errors can't be recovered from you must call sam2_client_disconnect and then sam2_client_connect again
-SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *response, char *buffer, int *buffer_length);
+SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *message);
 
-// Connnects to host which is either an IPv4/IPv6 Address or domain name
+// Connects to host which is either an IPv4/IPv6 Address or domain name
 // Will bias IPv6 if connecting via domain name and also block
 SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host, int port);
 
@@ -1113,45 +1113,45 @@ static void sam2__sanitize_message(void *message) {
     }
 }
 
-SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *message, char *buffer, int *buffer_length) {
-    int bytes_desired = sizeof(sam2_message_u) - *buffer_length;
-    int bytes_read = 0;
-
-    // Trying to read zero bytes from a socket will close it
-    if (bytes_desired > 0) {
-        bytes_read = recv(sockfd, ((char *) buffer) + *buffer_length, bytes_desired, 0);
-
-        if (bytes_read < 0) {
-            if (SAM2_SOCKERRNO == SAM2_EAGAIN || SAM2_SOCKERRNO == EWOULDBLOCK) {
-                //SAM2_LOG_DEBUG("No more datagrams to receive");
-            } else if (SAM2_SOCKERRNO == SAM2_ENOTCONN) {
-                SAM2_LOG_INFO("Socket not connected");
-                return 0;
-            } else {
-                SAM2_LOG_ERROR("Error reading from socket");//, strerror(errno));
-                return -1;
-            }
-        } else if (bytes_read == 0) {
-            SAM2_LOG_WARN("Server closed connection");
-            return -1;
+SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *message) {
+    char temp_buf[sizeof(sam2_message_u)];
+    int peeked = recv(sockfd, temp_buf, sizeof(temp_buf), MSG_PEEK);
+    if (peeked < 0) {
+        if (SAM2_SOCKERRNO == SAM2_EAGAIN || SAM2_SOCKERRNO == EWOULDBLOCK) {
+            return 0;  // No data available now.
+        } else if (SAM2_SOCKERRNO == SAM2_ENOTCONN) {
+            SAM2_LOG_INFO("Socket not connected");
+            return 0;
         } else {
-            *buffer_length += bytes_read;
+            SAM2_LOG_ERROR("Error peeking into socket");
+            return -1;
         }
+    } else if (peeked == 0) {
+        SAM2_LOG_WARN("Server closed connection");
+        return -1;
     }
 
-    int message_frame_status = sam2__frame_message(message, buffer, buffer_length);
+    // See if we can frame a whole message
+    int buf_len = peeked;
+    int frame_status = sam2__frame_message(message, temp_buf, &buf_len);
 
-    if (message_frame_status == 0) {
-        //SAM2_LOG_DEBUG("Received %d/%d bytes of header", *buffer_length, SAM2_HEADER_SIZE);
+    if (frame_status == 0) {
+        // Not yet a complete message.
         return 0;
-    } else if (message_frame_status < 0) {
-        SAM2_LOG_ERROR("Message framing failed code (%d)", message_frame_status);
-        if (message_frame_status == SAM2_RESPONSE_INVALID_HEADER) {
-            SAM2_LOG_WARN("Invalid header received '%.4s'", buffer);
+    } else if (frame_status < 0) {
+        SAM2_LOG_ERROR("Message framing failed with code (%d)", frame_status);
+        if (frame_status == SAM2_RESPONSE_INVALID_HEADER) {
+            SAM2_LOG_WARN("Invalid header received '%.4s'", temp_buf);
         }
-        return message_frame_status;
+
+        return frame_status;
     } else {
-        SAM2_LOG_DEBUG("Received complete message with header '%.8s'", (char *) message);
+        // Complete message was framed.
+        // Calculate how many bytes were consumed by the framing routine
+        int consumed = peeked - buf_len;
+        // Now remove exactly the consumed bytes from the socket
+        recv(sockfd, temp_buf, consumed, 0);
+        SAM2_LOG_DEBUG("Received complete message with header '%.8s'", (char *)message);
         ((char *) message)[7] = 'R';
         sam2__sanitize_message(message);
 
@@ -1427,21 +1427,6 @@ static void sam2__client_destroy(sam2_client_t *client) {
 static void sam2__write_fatal_error(uv_stream_t *client, sam2_error_message_t *response) {
     write_error(client, response);
     sam2__client_destroy((sam2_client_t *) client);
-}
-
-// Sanus is latin for healthy
-static int sam2__sanity_check_message(sam2_message_u *message, sam2_room_t *associated_room) {
-
-    if (memcmp(message, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
-
-    } else if (memcmp(message, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
-        sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
-        join_message->room.name[sizeof(join_message->room.name) - 1] = '\0';
-        // @todo Issue a conventional warning to console log if more than one flag or peer_id has changed
-        //       Even one flag and one peer_id's changing simulaneously is a violation
-    }
-
-    return 0;
 }
 
 static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf) {

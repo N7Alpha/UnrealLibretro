@@ -1270,12 +1270,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
                             for (int _prevent_infinite_loop_counter = 0; _prevent_infinite_loop_counter < 64; _prevent_infinite_loop_counter++) {
 
-                                int status = sam2_client_poll(
-                                    l->sam_socket,
-                                    &l->latest_sam2_message,
-                                    l->temp_buffer,
-                                    &l->temp_buffer_length
-                                );
+                                int status = sam2_client_poll(l->sam_socket, &l->latest_sam2_message);
 
                                 if (status < 0) {
                                     SAM2_LOG_ERROR("Error polling sam2 server: %d", status);
