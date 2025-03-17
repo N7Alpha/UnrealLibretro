@@ -182,8 +182,6 @@ public:
     int netimgui_port = 0;
     bool connected_to_sam2 = false;
     sam2_message_u latest_sam2_message;
-    char temp_buffer[sizeof(sam2_message_u)];
-    int temp_buffer_length = 0;
 
     struct ulnet_session* netplay_session = nullptr;
     unsigned char* netplay_save_state_data = nullptr;
