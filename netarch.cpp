@@ -1623,6 +1623,12 @@ void draw_imgui() {
                 }
             }
 
+            if (ImGui::Button("Test sync")) {
+                if (ulnet__test_sync()) {
+                    SAM2_LOG_ERROR("Test sync failed.");
+                }
+            }
+
             if (ImGui::Button("Ask for equivalent peer id")) {
                 sam2_connect_message_t message = { SAM2_CONN_HEADER };
                 message.peer_id = g_ulnet_session.our_peer_id;
