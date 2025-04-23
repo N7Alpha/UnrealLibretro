@@ -2233,9 +2233,136 @@ ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, voi
 #endif
 #endif
 
-int ulnet__test_reliable_retransmit() {
-    ulnet_session_t session;
-    ulnet_session_init_defaulted(&session);
+#define ULNET__TEST_SAM2_PORT (SAM2_SERVER_DEFAULT_PORT + 1)
+
+int ulnet__test_forward_messages(sam2_server_t *server, ulnet_session_t *session, sam2_socket_t socket) {
+    int status;
+    sam2_message_u message;
+
+    while (status = sam2_client_poll(socket, &message)) {
+        if (status < 0) {
+            SAM2_LOG_ERROR("Error polling sam2 server: %d", status);
+            return status;
+        } else if (status > 0) {
+            status = ulnet_process_message(session, &message);
+            if (status < 0) {
+                SAM2_LOG_ERROR("Error processing message: %d", status);
+                return status;
+            }
+        }
+    }
 
     return 0;
 }
+
+int ulnet__test_sam2_send_callback(void *socket, char *message) {
+    sam2_socket_t sam2_socket = *((sam2_socket_t *) socket);
+    return sam2_client_send(sam2_socket, message);
+}
+
+//static int64_t ulnet__test_core_state1;
+//void (*retro_run)(void), bool (*retro_serialize)(void *, size_t), bool (*retro_unserialize)(const void *, size_t)
+//int ulnet__test_retro_run1(void *session) {
+//    return 0;
+//}
+
+void ulnet__test_retro_run(void) {
+    
+}
+
+bool ulnet__test_retro_serialize(void *data, size_t size) {
+    return true;
+}
+
+bool ulnet__test_retro_unserialize(const void *data, size_t size) {
+    return true;
+}
+
+int ulnet__test_sync() {
+    sam2_server_t *server = 0;
+    ulnet_session_t *sessions[2] = {0};
+    sam2_socket_t sockets[2] = {0};
+
+    server = (sam2_server_t *) malloc(sizeof(sam2_server_t));
+    int status = sam2_server_init(server, ULNET__TEST_SAM2_PORT);
+    if (status) {
+        SAM2_LOG_ERROR("Error while initializing sam2 server");
+        goto _10;
+    }
+
+    for (int i = 0; i < sizeof(sessions)/sizeof(sessions[0]); i++) {
+        sessions[i] = (ulnet_session_t *)calloc(1, sizeof(ulnet_session_t));
+        sessions[i]->sam2_send_callback = ulnet__test_sam2_send_callback;
+        sessions[i]->user_ptr = &sockets[i];
+        ulnet_session_init_defaulted(sessions[i]);
+
+        status = sam2_client_connect(&sockets[i], "localhost", ULNET__TEST_SAM2_PORT);
+        if (status) {
+            SAM2_LOG_ERROR("Error while starting connection to sam2 server");
+            goto _10;
+        }
+
+        int connection_established = 0;
+        for (int attempt = 0; attempt < 10; attempt++) {
+            connection_established = sam2_client_poll_connection(sockets[i], 0);
+            status = uv_run(&server->loop, UV_RUN_NOWAIT);
+            if (status < 0) {
+                SAM2_LOG_ERROR("Error running uv loop: %d", status);
+                goto _10;
+            }
+        }
+
+        if (!connection_established) {
+            SAM2_LOG_ERROR("Failed to connect to sam2 server");
+            status = 1;
+            goto _10;
+        }
+
+        status = ulnet__test_forward_messages(server, sessions[i], sockets[i]);
+        if (status < 0) {
+            SAM2_LOG_ERROR("Error forwarding messages: %d", status);
+            goto _10;
+        }
+    }
+
+    sessions[1]->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = sessions[0]->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX];
+    sessions[1]->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
+    ulnet_startup_ice_for_peer(sessions[1], sessions[0]->our_peer_id, SAM2_AUTHORITY_INDEX, NULL);
+
+    for (int attempt = 0; attempt < 10; attempt++) {
+        for (int i = 0; i < sizeof(sessions)/sizeof(sessions[0]); i++) {
+            status = ulnet_poll_session(sessions[i], 0, 0, 0, 60.0, 0,
+                ulnet__test_retro_run, ulnet__test_retro_serialize, ulnet__test_retro_unserialize);
+            if (status < 0) {
+                SAM2_LOG_ERROR("Error polling ulnet session: %d", status);
+                goto _10;
+            }
+
+            status = ulnet__test_forward_messages(server, sessions[i], sockets[i]);
+            if (status < 0) {
+                SAM2_LOG_ERROR("Error forwarding messages: %d", status);
+                goto _10;
+            }
+        }
+    }
+
+
+_10:int test_passed = 0;
+
+    if (   sessions[0]
+        && sessions[0]->agent[SAM2_SPECTATOR_START]
+        && juice_get_state(sessions[0]->agent[SAM2_SPECTATOR_START]) == JUICE_STATE_COMPLETED) {
+        test_passed = 1;
+    }
+
+    sam2_server_begin_destroy(server);
+    uv_run(&server->loop, UV_RUN_DEFAULT);
+    uv_close((uv_handle_t*)&server->tcp, NULL);
+    uv_loop_close(&server->loop);
+    free(server);
+    free(sessions[0]);
+    free(sessions[1]);
+
+    return !test_passed && !status;
+}
+
