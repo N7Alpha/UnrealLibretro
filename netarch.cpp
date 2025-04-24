@@ -1,3 +1,6 @@
+// This is a personal academic project. Dear PVS-Studio, please check it.
+// PVS-Studio Static Code Analyzer for C, C++, C#, and Java: https://pvs-studio.com
+
 #include <stdbool.h>
 #include <stdint.h>
 #ifdef _WIN32
@@ -149,7 +152,9 @@ char* portable_basename(char *path)
 #define glClear RENAMED_BY_NETARCH_CPP_glClear
 #define glClearColor RENAMED_BY_NETARCH_CPP_glClearColor
 #define glDeleteTextures RENAMED_BY_NETARCH_CPP_glDeleteTextures
+#define glDisable RENAMED_BY_NETARCH_CPP_glDisable
 #define glEnable RENAMED_BY_NETARCH_CPP_glEnable
+#define glIsEnabled RENAMED_BY_NETARCH_CPP_glIsEnabled
 #define glGenTextures RENAMED_BY_NETARCH_CPP_glGenTextures
 #define glGetIntegerv RENAMED_BY_NETARCH_CPP_glGetIntegerv
 #define glGetString RENAMED_BY_NETARCH_CPP_glGetString
@@ -162,13 +167,16 @@ char* portable_basename(char *path)
 #define glTexParameteri RENAMED_BY_NETARCH_CPP_glTexParameteri
 #define glTexSubImage2D RENAMED_BY_NETARCH_CPP_glTexSubImage2D
 #define glGetError RENAMED_BY_NETARCH_CPP_glGetError
+#define glDrawBuffer RENAMED_BY_NETARCH_CPP_glDrawBuffer
 #include <SDL3/SDL_opengl.h>
 #undef glActiveTexture
 #undef glBindTexture
 #undef glClear
 #undef glClearColor
 #undef glDeleteTextures
+#undef glDisable
 #undef glEnable
+#undef glIsEnabled
 #undef glGenTextures
 #undef glGetIntegerv
 #undef glGetString
@@ -181,6 +189,8 @@ char* portable_basename(char *path)
 #undef glTexParameteri
 #undef glTexSubImage2D
 #undef glGetError
+#undef glDrawBuffer
+
 typedef void (APIENTRYP PFNGLBINDTEXTUREPROC)(GLenum target, GLuint texture);
 typedef void (APIENTRYP PFNGLCLEARPROC)(GLbitfield mask);
 typedef void (APIENTRYP PFNGLCLEARCOLORPROC)(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha);
@@ -199,7 +209,11 @@ typedef void (APIENTRYP PFNGLDRAWARRAYSPROC)(GLenum mode, GLint first, GLsizei c
 typedef void (APIENTRYP PFNGLTEXPARAMETERIPROC)(GLenum target, GLenum pname, GLint param);
 typedef void (APIENTRYP PFNGLTEXSUBIMAGE2DPROC)(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels);
 typedef GLenum (APIENTRY* PFNGLGETERRORPROC) (void);
-
+typedef void (APIENTRYP PFNGLDISABLEPROC) (GLenum cap);
+typedef void (APIENTRYP PFNGLENABLEPROC) (GLenum cap);
+typedef GLboolean (APIENTRYP PFNGLISENABLEDPROC) ( GLenum cap );
+typedef void(APIENTRYP PFNGLGETUNIFORMIVPROC)(GLuint program, GLint location, GLint* params);
+typedef void (APIENTRYP PFNGLDRAWBUFFERPROC) ( GLenum mode );
 #define ENUM_GL_PROCEDURES(EnumMacro) \
         EnumMacro(PFNGLACTIVETEXTUREPROC, glActiveTexture) \
         EnumMacro(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer) \
@@ -210,7 +224,9 @@ typedef GLenum (APIENTRY* PFNGLGETERRORPROC) (void);
         EnumMacro(PFNGLCLEARCOLORPROC, glClearColor) \
         EnumMacro(PFNGLDELETEBUFFERSPROC, glDeleteBuffers) \
         EnumMacro(PFNGLDELETETEXTURESPROC, glDeleteTextures) \
+        EnumMacro(PFNGLDISABLEPROC, glDisable) \
         EnumMacro(PFNGLENABLEPROC, glEnable) \
+        EnumMacro(PFNGLISENABLEDPROC, glIsEnabled) \
         EnumMacro(PFNGLFRAMEBUFFERRENDERBUFFERPROC, glFramebufferRenderbuffer) \
         EnumMacro(PFNGLFRAMEBUFFERTEXTURE2DPROC, glFramebufferTexture2D) \
         EnumMacro(PFNGLGENFRAMEBUFFERSPROC, glGenFramebuffers) \
@@ -261,6 +277,8 @@ typedef GLenum (APIENTRY* PFNGLGETERRORPROC) (void);
         EnumMacro(PFNGLTEXPARAMETERIPROC, glTexParameteri) \
         EnumMacro(PFNGLTEXSUBIMAGE2DPROC, glTexSubImage2D) \
         EnumMacro(PFNGLGETERRORPROC, glGetError) \
+        EnumMacro(PFNGLGETUNIFORMIVPROC, glGetUniformiv) \
+        EnumMacro(PFNGLDRAWBUFFERPROC, glDrawBuffer) \
 
 #define DEFINE_GL_PROCEDURES(Type,Func) Type Func = NULL;
 ENUM_GL_PROCEDURES(DEFINE_GL_PROCEDURES);
@@ -298,7 +316,7 @@ static const bool *g_kbd = NULL;
 struct retro_system_av_info g_av = {0};
 static struct retro_audio_callback audio_callback;
 
-static float g_scale = 3;
+static float g_scale = 2.0f;
 bool running = true;
 
 
@@ -581,11 +599,11 @@ static int64_t logical_partition_offset_bytes(uint8_t sequence_hi, uint8_t seque
 
 static GLuint compile_shader(unsigned type, unsigned count, const char **strings) {
     GLuint shader = glCreateShader(type);
-    glShaderSource(shader, count, strings, NULL);
-    glCompileShader(shader);
+    LogGLErrors(glShaderSource(shader, count, strings, NULL));
+    LogGLErrors(glCompileShader(shader));
 
     GLint status;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
+    LogGLErrors(glGetShaderiv(shader, GL_COMPILE_STATUS, &status));
 
     if (status == GL_FALSE) {
         char buffer[4096];
@@ -618,17 +636,17 @@ static void init_shaders() {
 
     SDL_assert(program);
 
-    glAttachShader(program, vshader);
-    glAttachShader(program, fshader);
-    glLinkProgram(program);
+    LogGLErrors(glAttachShader(program, vshader));
+    LogGLErrors(glAttachShader(program, fshader));
+    LogGLErrors(glLinkProgram(program));
 
-    glDeleteShader(vshader);
-    glDeleteShader(fshader);
+    LogGLErrors(glDeleteShader(vshader));
+    LogGLErrors(glDeleteShader(fshader));
 
-    glValidateProgram(program);
+    LogGLErrors(glValidateProgram(program));
 
     GLint status;
-    glGetProgramiv(program, GL_LINK_STATUS, &status);
+    LogGLErrors(glGetProgramiv(program, GL_LINK_STATUS, &status));
 
     if(status == GL_FALSE) {
         char buffer[4096];
@@ -642,12 +660,12 @@ static void init_shaders() {
     g_shader.u_tex   = glGetUniformLocation(program, "u_tex");
     g_shader.u_mvp   = glGetUniformLocation(program, "u_mvp");
 
-    glGenVertexArrays(1, &g_shader.vao);
-    glGenBuffers(1, &g_shader.vbo);
+    LogGLErrors(glGenVertexArrays(1, &g_shader.vao));
+    LogGLErrors(glGenBuffers(1, &g_shader.vbo));
 
-    glUseProgram(g_shader.program);
+    LogGLErrors(glUseProgram(g_shader.program));
 
-    glUniform1i(g_shader.u_tex, 0);
+    LogGLErrors(glUniform1i(g_shader.u_tex, 0));
 
     float m[4][4];
     if (g_video.hw.bottom_left_origin)
@@ -657,7 +675,7 @@ static void init_shaders() {
 
     glUniformMatrix4fv(g_shader.u_mvp, 1, GL_FALSE, (float*)m);
 
-    glUseProgram(0);
+    LogGLErrors(glUseProgram(0));
 }
 
 
@@ -678,57 +696,58 @@ static void refresh_vertex_data() {
          1.0f,  1.0f, right,  0.0f,  // right-top
     };
 
-    glBindVertexArray(g_shader.vao);
+    LogGLErrors(glBindVertexArray(g_shader.vao));
 
-    glBindBuffer(GL_ARRAY_BUFFER, g_shader.vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_data), vertex_data, GL_STREAM_DRAW);
+    LogGLErrors(glBindBuffer(GL_ARRAY_BUFFER, g_shader.vbo));
+    LogGLErrors(glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_data), vertex_data, GL_STREAM_DRAW));
 
-    glEnableVertexAttribArray(g_shader.i_pos);
-    glEnableVertexAttribArray(g_shader.i_coord);
-    glVertexAttribPointer(g_shader.i_pos, 2, GL_FLOAT, GL_FALSE, sizeof(float)*4, 0);
-    glVertexAttribPointer(g_shader.i_coord, 2, GL_FLOAT, GL_FALSE, sizeof(float)*4, (void*)(2 * sizeof(float)));
+    LogGLErrors(glEnableVertexAttribArray(g_shader.i_pos));
+    LogGLErrors(glEnableVertexAttribArray(g_shader.i_coord));
+    LogGLErrors(glVertexAttribPointer(g_shader.i_pos, 2, GL_FLOAT, GL_FALSE, sizeof(float)*4, 0));
+    LogGLErrors(glVertexAttribPointer(g_shader.i_coord, 2, GL_FLOAT, GL_FALSE, sizeof(float)*4, (void*)(2 * sizeof(float))));
 
-    glBindVertexArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    LogGLErrors(glBindVertexArray(0));
+    LogGLErrors(glBindBuffer(GL_ARRAY_BUFFER, 0));
 }
 
 static void init_framebuffer(int width, int height)
 {
-    glGenFramebuffers(1, &g_video.fbo_id);
-    glBindFramebuffer(GL_FRAMEBUFFER, g_video.fbo_id);
+    LogGLErrors(glGenFramebuffers(1, &g_video.fbo_id));
+    LogGLErrors(glBindFramebuffer(GL_FRAMEBUFFER, g_video.fbo_id));
 
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_video.tex_id, 0);
+    LogGLErrors(glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_video.tex_id, 0));
 
     if (g_video.hw.depth && g_video.hw.stencil) {
-        glGenRenderbuffers(1, &g_video.rbo_id);
-        glBindRenderbuffer(GL_RENDERBUFFER, g_video.rbo_id);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
+        LogGLErrors(glGenRenderbuffers(1, &g_video.rbo_id));
+        LogGLErrors(glBindRenderbuffer(GL_RENDERBUFFER, g_video.rbo_id));
+        LogGLErrors(glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height));
 
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, g_video.rbo_id);
+        LogGLErrors(glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, g_video.rbo_id));
     } else if (g_video.hw.depth) {
-        glGenRenderbuffers(1, &g_video.rbo_id);
-        glBindRenderbuffer(GL_RENDERBUFFER, g_video.rbo_id);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
+        LogGLErrors(glGenRenderbuffers(1, &g_video.rbo_id));
+        LogGLErrors(glBindRenderbuffer(GL_RENDERBUFFER, g_video.rbo_id));
+        LogGLErrors(glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height));
 
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_video.rbo_id);
+        LogGLErrors(glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_video.rbo_id));
     }
 
-    if (g_video.hw.depth || g_video.hw.stencil)
-        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    if (g_video.hw.depth || g_video.hw.stencil) {
+        LogGLErrors(glBindRenderbuffer(GL_RENDERBUFFER, 0));
+    }
 
-    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    LogGLErrors(glBindRenderbuffer(GL_RENDERBUFFER, 0));
 
     SDL_assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
 
-    glClearColor(0, 0, 0, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
+    LogGLErrors(glClearColor(0, 0, 0, 1));
+    LogGLErrors(glClear(GL_COLOR_BUFFER_BIT));
 
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    LogGLErrors(glBindFramebuffer(GL_FRAMEBUFFER, 0));
 }
 
 
 static void resize_cb(int w, int h) {
-    glViewport(0, 0, w, h);
+    LogGLErrors(glViewport(0, 0, w, h));
 }
 
 
@@ -820,17 +839,26 @@ static void resize_to_aspect(double ratio, int sw, int sh, int *dw, int *dh) {
         ratio = (double)sw / sh;
 
     if ((float)sw / sh < 1)
-        *dw = *dh * ratio;
+        *dw = round(*dh * ratio);
     else
-        *dh = *dw / ratio;
+        *dh = round(*dw / ratio);
 }
 
 
 static void video_configure(const struct retro_game_geometry *geom) {
     int nwidth, nheight;
-    resize_to_aspect(geom->aspect_ratio, geom->base_width * 1, geom->base_height * 1, &nwidth, &nheight);
-    nwidth *= g_scale;
-    nheight *= g_scale;
+    for (int counter_so_loop_exits = 0; counter_so_loop_exits < 4; counter_so_loop_exits++) {
+        resize_to_aspect(geom->aspect_ratio, geom->base_width * 1, geom->base_height * 1, &nwidth, &nheight);
+        nwidth = round(nwidth * g_scale);
+        nheight = round(nheight * g_scale);
+
+        if (nheight > 400) {
+            break;
+        } else {
+            SAM2_LOG_INFO("The window is small so we are scaling it up");
+            g_scale++;
+        }
+    }
 
     if (g_win == NULL && !g_headless) {
         create_window(nwidth, nheight);
@@ -840,7 +868,7 @@ static void video_configure(const struct retro_game_geometry *geom) {
         SDL_GL_MakeCurrent(g_win, g_core_ctx);
     }
     if (g_video.tex_id) {
-        glDeleteTextures(1, &g_video.tex_id);
+        LogGLErrors(glDeleteTextures(1, &g_video.tex_id));
         g_video.tex_id = 0;
     }
 
@@ -861,15 +889,15 @@ static void video_configure(const struct retro_game_geometry *geom) {
 
         g_video.pitch = geom->max_width * g_video.bpp;
 
-        glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
+        LogGLErrors(glBindTexture(GL_TEXTURE_2D, g_video.tex_id));
 
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        LogGLErrors(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST));
+        LogGLErrors(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST));
 
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, geom->max_width, geom->max_height, 0,
                 g_video.pixtype, g_video.pixfmt, NULL);
 
-        glBindTexture(GL_TEXTURE_2D, 0);
+        LogGLErrors(glBindTexture(GL_TEXTURE_2D, 0));
 
         init_framebuffer(geom->max_width, geom->max_height);
     }
@@ -2274,25 +2302,102 @@ finished_drawing_sam2_interface:
     }
 }
 
-static int g_h, g_w;
 static void draw_core_frame() {
     int w = 0, h = 0;
     SDL_GetWindowSize(g_win, &w, &h);
-    glViewport(0, 0, w, h);
+    LogGLErrors(glViewport(0, 0, w, h));
 
-    glClear(GL_COLOR_BUFFER_BIT);
+    LogGLErrors(glClear(GL_COLOR_BUFFER_BIT));
 
-    glUseProgram(g_shader.program);
+    LogGLErrors(glUseProgram(g_shader.program));
 
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
+    LogGLErrors(glActiveTexture(GL_TEXTURE0));
+    LogGLErrors(glBindTexture(GL_TEXTURE_2D, g_video.tex_id));
 
 
-    glBindVertexArray(g_shader.vao);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
+    LogGLErrors(glBindVertexArray(g_shader.vao));
 
-    glUseProgram(0);
+    {
+        // Simplified helper functions
+        auto ShowGLStateInt = [](const char* label, GLenum pname, GLint expectedValue) {
+            GLint currentValue = -1;
+            glGetIntegerv(pname, &currentValue);
+            bool match = (currentValue == expectedValue);
+            ImGui::Text("%s:", label);
+            ImGui::SameLine();
+            ImGui::TextColored(match ? ImVec4(0,1,0,1) : ImVec4(1,0,0,1),
+                match ? "%d" : "%d (Expected: %d)", currentValue, expectedValue);
+        };
+
+        auto ShowGLStateBool = [](const char* label, GLenum cap, GLboolean expectedValue) {
+            GLboolean currentValue = glIsEnabled(cap);
+            bool match = (currentValue == expectedValue);
+            ImGui::Text("%s:", label);
+            ImGui::SameLine();
+            ImGui::TextColored(match ? ImVec4(0,1,0,1) : ImVec4(1,0,0,1),
+                "%s%s", currentValue ? "Enabled" : "Disabled",
+                match ? "" : expectedValue ? " (Expected: Enabled)" : " (Expected: Disabled)");
+        };
+
+        auto ShowGLStateViewport = [](const char* label, GLint expectedX, GLint expectedY, GLint expectedW, GLint expectedH) {
+            GLint viewport[4] = {-1, -1, -1, -1};
+            glGetIntegerv(GL_VIEWPORT, viewport);
+            bool match = (viewport[0] == expectedX && viewport[1] == expectedY &&
+                         viewport[2] == expectedW && viewport[3] == expectedH);
+            ImGui::Text("%s:", label);
+            ImGui::SameLine();
+            ImGui::TextColored(match ? ImVec4(0,1,0,1) : ImVec4(1,0,0,1),
+                match ? "(%d, %d, %d, %d)" : "(%d, %d, %d, %d) (Expected: %d, %d, %d, %d)",
+                viewport[0], viewport[1], viewport[2], viewport[3],
+                expectedX, expectedY, expectedW, expectedH);
+        };
+
+        int w = 0, h = 0;
+        if (g_win) {
+            SDL_GetWindowSize(g_win, &w, &h);
+        }
+
+        ImGui::Begin("Libretro Core", NULL, ImGuiWindowFlags_AlwaysAutoResize);
+        if (ImGui::CollapsingHeader("GL Debug")) {
+            ImGui::Text("State before window framebuffer draw call");
+            ImGui::Separator();
+
+            ShowGLStateBool("Blend Enabled", GL_BLEND, GL_FALSE);
+            ShowGLStateBool("Depth Test Enabled", GL_DEPTH_TEST, GL_FALSE);
+            ShowGLStateBool("Scissor Test Enabled", GL_SCISSOR_TEST, GL_FALSE);
+            ShowGLStateBool("Cull Face Enabled", GL_CULL_FACE, GL_FALSE);
+            ShowGLStateViewport("Viewport", 0, 0, w, h);
+            ShowGLStateInt("Draw Framebuffer", GL_DRAW_FRAMEBUFFER_BINDING, 0);
+
+            ImGui::Separator();
+
+            // Core Output Texture Preview
+            ImGui::Text("Core Output Texture:");
+            if (g_video.tex_id != 0) {
+                ImVec2 uv0(0.0f, 0.0f);
+                ImVec2 uv1((float)g_video.clip_w / g_video.tex_w,
+                        (float)g_video.clip_h / g_video.tex_h);
+                if (g_video.hw.bottom_left_origin) {
+                    uv0.y = (float)g_video.clip_h / g_video.tex_h;
+                    uv1.y = 0.0f;
+                }
+                float aspect = (g_video.clip_h > 0) ?
+                            ((float)g_video.clip_w / (float)g_video.clip_h) : 1.0f;
+                float display_width = ImGui::GetContentRegionAvail().x;
+                float display_height = display_width / aspect;
+                ImGui::Image((ImTextureID)g_video.tex_id,
+                            ImVec2(display_width, display_height), uv0, uv1);
+            } else {
+                ImGui::Text("Core texture not initialized (tex_id is 0)");
+            }
+        }
+        ImGui::End();
+    }
+
+    LogGLErrors(glDrawArrays(GL_TRIANGLE_STRIP, 0, 4));
+    LogGLErrors(glBindVertexArray(0));
+
+    LogGLErrors(glUseProgram(0));
 }
 
 static void video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
@@ -2304,34 +2409,39 @@ static void video_refresh(const void *data, unsigned width, unsigned height, uns
         refresh_vertex_data();
     }
 
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glBindTexture(GL_TEXTURE_2D, g_video.tex_id);
+    LogGLErrors(glBindFramebuffer(GL_FRAMEBUFFER, 0));
+    LogGLErrors(glBindTexture(GL_TEXTURE_2D, g_video.tex_id));
 
     if (pitch != g_video.pitch)
         g_video.pitch = pitch;
 
     if (data && data != RETRO_HW_FRAME_BUFFER_VALID) {
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, g_video.pitch / g_video.bpp);
+        LogGLErrors(glPixelStorei(GL_UNPACK_ROW_LENGTH, g_video.pitch / g_video.bpp));
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
                         g_video.pixtype, g_video.pixfmt, data);
     }
 }
 
 static void video_deinit() {
-    if (g_video.fbo_id)
-        glDeleteFramebuffers(1, &g_video.fbo_id);
+    if (g_video.fbo_id) {
+        LogGLErrors(glDeleteFramebuffers(1, &g_video.fbo_id));
+    }
 
-    if (g_video.tex_id)
-        glDeleteTextures(1, &g_video.tex_id);
+    if (g_video.tex_id) {
+        LogGLErrors(glDeleteTextures(1, &g_video.tex_id));
+    }
 
-    if (g_shader.vao)
-        glDeleteVertexArrays(1, &g_shader.vao);
+    if (g_shader.vao) {
+        LogGLErrors(glDeleteVertexArrays(1, &g_shader.vao));
+    }
 
-    if (g_shader.vbo)
-        glDeleteBuffers(1, &g_shader.vbo);
+    if (g_shader.vbo) {
+        LogGLErrors(glDeleteBuffers(1, &g_shader.vbo));
+    }
 
-    if (g_shader.program)
-        glDeleteProgram(g_shader.program);
+    if (g_shader.program) {
+        LogGLErrors(glDeleteProgram(g_shader.program));
+    }
 
     g_video.fbo_id = 0;
     g_video.tex_id = 0;
@@ -2631,9 +2741,10 @@ static bool core_environment(unsigned cmd, void *data) {
         return true;
     }
     case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY:
+    case RETRO_ENVIRONMENT_GET_CORE_ASSETS_DIRECTORY:
     case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY: {
         const char **dir = (const char**)data;
-        *dir = ".";
+        *dir = "System";
         return true;
     }
     case RETRO_ENVIRONMENT_SET_GEOMETRY: {
@@ -3355,7 +3466,7 @@ int main(int argc, char *argv[]) {
         }
 
         if (!g_headless) {
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            LogGLErrors(glBindFramebuffer(GL_FRAMEBUFFER, 0));
         }
 #if 0
         // Timing for frame rate
