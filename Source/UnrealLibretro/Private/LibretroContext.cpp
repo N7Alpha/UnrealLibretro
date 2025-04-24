@@ -191,6 +191,24 @@ static bool GLLogCall(const char* function, const char* file, int line)
     if (!eglMakeCurrent(core.gl.egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, core.gl.egl_context)) {
         UE_LOG(Libretro, Fatal, TEXT("eglMakeCurrent() returned error %d"), eglGetError());
     }
+
+    // Shared context creation for Android
+    if(core.gl.use_shared_context) {
+        const EGLint shared_attribs[] = {
+            EGL_CONTEXT_MAJOR_VERSION, core.hw.version_major,
+            EGL_CONTEXT_MINOR_VERSION, core.hw.version_minor,
+            EGL_NONE
+        };
+        core.gl.shared_context = eglCreateContext(core.gl.egl_display,
+                                                  config,
+                                                  core.gl.egl_context,
+                                                  shared_attribs);
+        if(core.gl.shared_context == EGL_NO_CONTEXT)
+            UE_LOG(Libretro, Fatal, TEXT("Failed to create shared EGL context: %d"), eglGetError());
+        verify(eglMakeCurrent(core.gl.egl_display,
+                              EGL_NO_SURFACE, EGL_NO_SURFACE,
+                              core.gl.shared_context));
+    }
 #elif PLATFORM_WINDOWS
     // Use wgl to create a hidden window to get an OpenGL context
     core.gl.window = CreateWindowEx(
@@ -229,6 +247,15 @@ static bool GLLogCall(const char* function, const char* file, int line)
 
     if (!wglMakeCurrent(core.gl.hdc, core.gl.context)) {
         UE_LOG(Libretro, Fatal, TEXT("Failed to activate OpenGL context"));
+    }
+
+    // Shared context creation for Windows
+    if(core.gl.use_shared_context) {
+        core.gl.shared_context = wglCreateContext(core.gl.hdc);
+        if(!core.gl.shared_context)
+            UE_LOG(Libretro, Fatal, TEXT("Failed to create shared GL context"));
+        verify(wglShareLists(core.gl.context, core.gl.shared_context));
+        verify(wglMakeCurrent(core.gl.hdc, core.gl.shared_context));
     }
 #else
     // @todo Other platforms don't have routines to get OpenGL contexts currently
@@ -286,6 +313,16 @@ static bool GLLogCall(const char* function, const char* file, int line)
 }
 
  void FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
+    // Ensure shared context is current if used
+    if(core.gl.use_shared_context && core.gl.shared_context){
+#if PLATFORM_WINDOWS
+        verify(wglMakeCurrent(core.gl.hdc, core.gl.shared_context));
+#elif PLATFORM_ANDROID
+        verify(eglMakeCurrent(core.gl.egl_display,
+                              EGL_NO_SURFACE, EGL_NO_SURFACE,
+                              core.gl.shared_context));
+#endif
+    }
     if (!core.gl.pixel_format) {
         auto data = RETRO_PIXEL_FORMAT_0RGB1555;
         this->core_environment(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &data);
@@ -676,6 +713,15 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
     }
     
     switch (cmd) {
+    case RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE: {
+        auto rumble = (retro_rumble_interface*)data;
+        rumble->set_rumble_state = [](unsigned, retro_rumble_effect, uint16_t){ return false; };
+        return true;
+    }
+    case RETRO_ENVIRONMENT_SET_HW_SHARED_CONTEXT: {
+        core.gl.use_shared_context = true;
+        return true;
+    }
     case RETRO_ENVIRONMENT_GET_VARIABLE: {
         retro_variable* var = (struct retro_variable*)data;
 
@@ -1386,11 +1432,17 @@ cleanup:
                                     }
                                 }
 #if PLATFORM_WINDOWS
+                                if (l->core.gl.shared_context){
+                                    wglDeleteContext(l->core.gl.shared_context);
+                                }
                                 if (l->core.gl.context)
                                 {
                                     wglDeleteContext(l->core.gl.context); /** implicitly releases resources like fbos, pbos, and textures */
                                 }
 #elif PLATFORM_ANDROID
+                                if (l->core.gl.shared_context){
+                                    eglDestroyContext(l->core.gl.egl_display, l->core.gl.shared_context);
+                                }
                                 if (l->core.gl.egl_context) 
                                 {
                                     verify(eglDestroyContext(l->core.gl.egl_display, 

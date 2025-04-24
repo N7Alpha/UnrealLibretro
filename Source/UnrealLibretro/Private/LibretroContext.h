@@ -231,6 +231,14 @@ protected:
             HDC hdc;
 #endif
 
+            // Shared context support
+            bool use_shared_context = false;
+#if PLATFORM_WINDOWS
+            HGLRC shared_context = NULL;
+#elif PLATFORM_ANDROID
+            EGLContext shared_context = nullptr;
+#endif
+
             GLuint texture;
             GLuint framebuffer;
             GLuint renderbuffer;
