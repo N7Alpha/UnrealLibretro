@@ -287,9 +287,10 @@ static bool GLLogCall(const char* function, const char* file, int line) {
     return true;
 }
 
-
+static bool g_use_shared_context = false;
 static SDL_Window *g_win = NULL;
 static SDL_GLContext g_ctx = NULL;
+static SDL_GLContext g_core_ctx = NULL;
 static SDL_AudioStream *g_pcm = NULL;
 static struct retro_frame_time_callback runloop_frame_time;
 static retro_usec_t runloop_frame_time_last = 0;
@@ -767,6 +768,22 @@ static void create_window(int width, int height) {
 
     SDL_GL_MakeCurrent(g_win, g_ctx);
 
+    if (g_use_shared_context) {
+        // g_ctx must be current here
+        //SDL_GL_MakeCurrent(g_win, g_ctx);
+
+        SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1);
+        g_core_ctx = SDL_GL_CreateContext(g_win);
+        SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 0);
+
+        SDL_GL_MakeCurrent(g_win, g_ctx);
+
+        if (!g_core_ctx) {
+           SAM2_LOG_ERROR("Failed to create shared GL context: %s",
+                          SDL_GetError());
+        }
+    }
+
     if (!g_ctx)
         SAM2_LOG_FATAL("Failed to create OpenGL context: %s", SDL_GetError());
 
@@ -819,6 +836,9 @@ static void video_configure(const struct retro_game_geometry *geom) {
         create_window(nwidth, nheight);
     }
 
+    if (g_use_shared_context) {
+        SDL_GL_MakeCurrent(g_win, g_core_ctx);
+    }
     if (g_video.tex_id) {
         glDeleteTextures(1, &g_video.tex_id);
         g_video.tex_id = 0;
@@ -859,12 +879,16 @@ static void video_configure(const struct retro_game_geometry *geom) {
     g_video.clip_w = geom->base_width;
     g_video.clip_h = geom->base_height;
 
-    if (!g_headless) {
-        refresh_vertex_data();
-    }
-
     if (g_video.hw.context_reset) {
         g_video.hw.context_reset();
+    }
+
+    if (g_use_shared_context) {
+        SDL_GL_MakeCurrent(g_win, g_ctx);
+    }
+
+    if (!g_headless) {
+        refresh_vertex_data();
     }
 }
 
@@ -1349,11 +1373,8 @@ void draw_imgui() {
         avg_zstd_compress_size /= g_ulnet_session.sample_size;
         avg_zstd_cycle_count   /= g_ulnet_session.sample_size;
 
-        strcpy(unit, "bits");
-        double display_count = format_unit_count(8 * g_retro.retro_serialize_size(), unit);
-        ImGui::Text("retro_serialize_size: %g %s", display_count, unit);
         strcpy(unit, "cycles");
-        display_count = format_unit_count(avg_cycle_count, unit);
+        double display_count = format_unit_count(avg_cycle_count, unit);
         ImGui::Text("retro_serialize average cycle count: %.2f %s", display_count, unit);
         ImGui::Checkbox("Compress serialized data with zstd", &g_do_zstd_compress);
         if (g_do_zstd_compress) {
@@ -2648,8 +2669,25 @@ static bool core_environment(unsigned cmd, void *data) {
         g_retro.quirks = *quirks;
         return true;
     }
+    case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER: {
+        unsigned *hw = (unsigned*)data;
+        *hw = RETRO_HW_CONTEXT_OPENGL;
+        return true;
+    }
+    case RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE: {
+        struct retro_rumble_interface *rumble = (struct retro_rumble_interface*)data;
+        rumble->set_rumble_state = []   (unsigned port, enum retro_rumble_effect effect, uint16_t strength) -> bool {
+            return false;
+        };
+        return true;
+    }
+    case RETRO_ENVIRONMENT_SET_HW_SHARED_CONTEXT: {
+        g_use_shared_context = true;
+
+        return true;
+    }
     default:
-        core_log(RETRO_LOG_DEBUG, "Unhandled env #%u", cmd);
+        core_log(RETRO_LOG_WARN, "Unhandled env #%u\n", cmd);
         return false;
     }
 
@@ -2809,11 +2847,23 @@ static void core_load_game(const char *rom_path, void *rom_data, size_t rom_size
 }
 
 static void core_unload() {
-    if (g_retro.initialized)
+    if (g_retro.initialized) {
+        if (g_core_ctx) {
+            SDL_GL_MakeCurrent(g_win, g_core_ctx);
+        }
         g_retro.retro_deinit();
+        if (g_core_ctx) {
+            SDL_GL_DestroyContext(g_core_ctx);
+            SDL_GL_MakeCurrent(g_win, g_ctx);
+        }
 
-    if (g_retro.handle)
+        g_core_ctx = NULL;
+        g_use_shared_context = false;
+    }
+
+    if (g_retro.handle) {
         SDL_UnloadObject(g_retro.handle);
+    }
 }
 
 static void noop() {}
@@ -3105,6 +3155,16 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
 #endif
 }
 
+static void wrapped_retro_run() {
+    if (g_use_shared_context) {
+        SDL_GL_MakeCurrent(g_win, g_core_ctx);
+    }
+    g_retro.retro_run();
+    if (g_use_shared_context) {
+        SDL_GL_MakeCurrent(g_win, g_ctx);
+    }
+};
+
 int main(int argc, char *argv[]) {
     g_argc = argc;
     g_argv = argv;
@@ -3241,6 +3301,10 @@ int main(int argc, char *argv[]) {
 
     g_ulnet_session.sample_size = SAM2_MIN(100, ULNET_MAX_SAMPLE_SIZE);
 
+    if (strcmp(g_libretro_context.system_info.library_name, "dolphin-emu") == 0) { // @todo Really we just should prevent saving before retro_run is called
+        g_do_zstd_compress = false;
+    }
+
     for (g_main_loop_cyclic_offset = 0; running; g_main_loop_cyclic_offset = (g_main_loop_cyclic_offset + 1) % MAX_SAMPLE_SIZE) {
         if (g_core_needs_reload) {
             g_core_needs_reload = false;
@@ -3328,16 +3392,18 @@ int main(int argc, char *argv[]) {
             }
         }
 
-
-        g_serialize_size = g_retro.retro_serialize_size();
-        if (g_serialize_size > sizeof(g_savebuffer[g_save_state_index])) {
-            SAM2_LOG_FATAL("Save state buffer is too small (%zu > %zu)", g_serialize_size, sizeof(g_savebuffer[g_save_state_index]));
+        if (g_do_zstd_compress) {
+            g_serialize_size = g_retro.retro_serialize_size();
+            if (g_serialize_size > sizeof(g_savebuffer[g_save_state_index])) {
+                SAM2_LOG_ERROR("Save state buffer is too small (%zu > %zu)", g_serialize_size, sizeof(g_savebuffer[g_save_state_index]));
+                g_do_zstd_compress = false;
+            }
         }
 
         double max_sleeping_allowed_when_polling_network_seconds = g_headless ? 1.0 : 0.0; // We just use vertical sync for frame-pacing when we have a head
         int status = ulnet_poll_session(&g_ulnet_session, g_do_zstd_compress, g_savebuffer[g_save_state_index], g_serialize_size,
             g_av.timing.fps, max_sleeping_allowed_when_polling_network_seconds,
-            g_retro.retro_run, g_retro.retro_serialize, g_retro.retro_unserialize);
+            wrapped_retro_run, g_retro.retro_serialize, g_retro.retro_unserialize);
 
         if (g_do_zstd_compress && (status & ULNET_POLL_SESSION_SAVED_STATE)) {
             tick_compression_investigation((char *)g_savebuffer[g_save_state_index], g_serialize_size, (char*)rom_data, rom_size);
@@ -3431,6 +3497,7 @@ int main(int argc, char *argv[]) {
         }
     }
 //cleanup:
+    g_retro.retro_unload_game();
     core_unload();
     audio_deinit();
     video_deinit();
