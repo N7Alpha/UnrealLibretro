@@ -371,19 +371,31 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
     LibretroOptions = MoveTemp(static_LibretroOptions);
     for (const FLibretroOptionDescription& Option : LibretroOptions)
     {
-        OptionsCategory.AddCustomRow(FText::GetEmpty())
+        // Build a single search-string that includes key, description and all values
+        FString SearchString = Option.Key;
+        SearchString += TEXT(" ");
+        SearchString += Option.Description;
+        for (const FString& Val : Option.Values)
+        {
+            SearchString += TEXT(" ");
+            SearchString += Val;
+        }
+        FText FilterText = FText::FromString(SearchString);
+
+        OptionsCategory.AddCustomRow(FilterText)
 #if ENGINE_MAJOR_VERSION >= 5
                 .OverrideResetToDefault(FResetToDefaultOverride::Create
                     (
                         FIsResetToDefaultVisible::CreateLambda([&Option, this](TSharedPtr<IPropertyHandle> EditorPresetOptionsOverrideProperty)
                             {
-                                return LibretroCoreInstance.IsValid() ? LibretroCoreInstance->EditorPresetOptions.Contains(Option.Key) : false;
+                                return LibretroCoreInstance.IsValid() && LibretroCoreInstance->EditorPresetOptions.Contains(Option.Key);
                             }),
                         FResetToDefaultHandler::CreateLambda([&Option, this](TSharedPtr<IPropertyHandle> EditorPresetOptionsOverrideProperty)
                             {
                                 if (LibretroCoreInstance.IsValid() && LibretroCoreInstance->EditorPresetOptions.Contains(Option.Key))
                                 {
                                     LibretroCoreInstance->EditorPresetOptions.FindAndRemoveChecked(Option.Key);
+                                    MarkEditorNeedsSave();
                                 }
                             })
                      ))
@@ -394,7 +406,7 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                 .MinDesiredWidth(150.0f)
                 [
                     SNew(STextBlock)
-                    .Text_Lambda([&Option](){ return FText::FromString(Option.Description);  })
+                    .Text(FText::FromString(Option.Description))
                     .Font(IDetailLayoutBuilder::GetDetailFont())
                 ]
                 .ValueContent()
@@ -429,7 +441,7 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                                             }
                                         }
                                     }));
-                                MenuBuilder.AddMenuEntry(FText::FromString(Option.Values[i]), TAttribute<FText>(), FSlateIcon(), ItemAction);
+                                MenuBuilder.AddMenuEntry(FText::FromString(Option.Values[i]), FText::GetEmpty(), FSlateIcon(), ItemAction);
                             }
 
                             return MenuBuilder.MakeWidget();
@@ -440,20 +452,19 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                         SNew(STextBlock)
                         .Text_Lambda([&Option, this]()
                             {
-                                if (this->LibretroCoreInstance.IsValid())
+                                if (!LibretroCoreInstance.IsValid())
                                 {
-                                    FString* SelectedOptionString = this->LibretroCoreInstance->EditorPresetOptions.Find(Option.Key);
-                                    if (SelectedOptionString == nullptr)
-                                    {
-                                        return FText::FromString(Option.Values[FLibretroOptionDescription::DefaultOptionIndex]);
-                                    }
-                                    else
-                                    {
-                                        return FText::FromString(*SelectedOptionString);
-                                    }
+                                    return FText::FromString(TEXT("Error"));
                                 }
-
-                                return FText::FromString(TEXT("Error"));
+                                else if (LibretroCoreInstance->EditorPresetOptions.Contains(Option.Key))
+                                {
+                                    // If we we have set a non-default option
+                                    return FText::FromString(LibretroCoreInstance->EditorPresetOptions[Option.Key]);
+                                }
+                                else
+                                {
+                                    return FText::FromString(Option.Values[FLibretroOptionDescription::DefaultOptionIndex]);;
+                                }
                             })
                         .Font(IDetailLayoutBuilder::GetDetailFont())
                     ]
