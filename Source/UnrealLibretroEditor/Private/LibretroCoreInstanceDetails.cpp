@@ -4,6 +4,7 @@
 
 #include "LibretroCoreInstanceDetails.h"
 #include "LibretroInputDefinitions.h"
+#include "LibretroSettings.h"
 #include "UnrealLibretro.h"
 #include "UnrealLibretroEditor.h" 
 
@@ -27,6 +28,7 @@
 #include "HAL/PlatformTime.h"  // For FPlatformTime
 #include "Misc/FileHelper.h"
 #include "EditorStyleSet.h"
+#include "ISettingsModule.h"
 
 TSharedRef<IDetailCustomization> FLibretroCoreInstanceDetails::MakeInstance()
 {
@@ -367,6 +369,13 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
     }
 
     // Construct Libreto Core Options Panel... It's directly under the Libretro section
+    auto IsOptionOverriddenByGlobalSetting = [](const FString& OptionKey, const TWeakObjectPtr<ULibretroCoreInstance>& LibretroCoreInstance)
+        {
+            auto* LibretroSettings = GetMutableDefault<ULibretroSettings>();
+            bool OptionIsSetGlobally = LibretroSettings->GlobalCoreOptions.Contains(OptionKey);
+            bool OptionIsSetLocally = LibretroCoreInstance.IsValid() && LibretroCoreInstance->EditorPresetOptions.Contains(OptionKey);
+            return OptionIsSetGlobally && !OptionIsSetLocally;
+        };
     IDetailCategoryBuilder& OptionsCategory = DetailBuilder.EditCategory("Libretro Core Options");
     LibretroOptions = MoveTemp(static_LibretroOptions);
     for (const FLibretroOptionDescription& Option : LibretroOptions)
@@ -411,6 +420,10 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                 ]
                 .ValueContent()
                 [
+                SNew(SHorizontalBox)
+                +SHorizontalBox::Slot()
+                .FillWidth(1.0f)
+                [
                     SNew(SComboButton)
                     // The following is fired when the user clicks an option to modify it this callback fills the drop down with options
                     .OnGetMenuContent_Lambda([&Option, this]()
@@ -450,6 +463,11 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                     .ButtonContent()
                     [
                         SNew(STextBlock)
+                        .ColorAndOpacity_Lambda([this, &Option, IsOptionOverriddenByGlobalSetting]()
+                            {
+                                return IsOptionOverriddenByGlobalSetting(Option.Key, LibretroCoreInstance) ?
+                                    FSlateColor::UseSubduedForeground() : FSlateColor::UseForeground();
+                            })
                         .Text_Lambda([&Option, this]()
                             {
                                 if (!LibretroCoreInstance.IsValid())
@@ -463,10 +481,46 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                                 }
                                 else
                                 {
-                                    return FText::FromString(Option.Values[FLibretroOptionDescription::DefaultOptionIndex]);;
+                                    return FText::FromString(Option.Values[FLibretroOptionDescription::DefaultOptionIndex]);
                                 }
                             })
                         .Font(IDetailLayoutBuilder::GetDetailFont())
+                    ]
+                ]
+                +SHorizontalBox::Slot()
+                .AutoWidth()
+                .Padding(2.0f, 0.0f, 0.0f, 0.0f)
+                .VAlign(VAlign_Center)
+                    [
+                        SNew(SButton)
+                        .ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+                        .Visibility_Lambda([this, &Option, IsOptionOverriddenByGlobalSetting]()
+                        {
+                            return IsOptionOverriddenByGlobalSetting(Option.Key, LibretroCoreInstance) ?
+                                EVisibility::Visible : EVisibility::Collapsed;
+                        })
+                        .OnClicked_Lambda([&Option]()
+                        {
+                            // Navigate user to the Unreal Libretro details panel in the project settings
+                            FModuleManager::LoadModuleChecked<ISettingsModule>("Settings")
+                                .ShowViewer("Project", "Plugins", "Unreal Libretro");
+                            return FReply::Handled();
+                        })
+                        .ToolTipText_Lambda([&Option]()
+                        {
+                            auto* LibretroSettings = GetMutableDefault<ULibretroSettings>();
+                            if (LibretroSettings->GlobalCoreOptions.Contains(Option.Key))
+                            {
+                                return FText::Format(
+                                    FText::FromString("Global override ({0})"),
+                                    FText::FromString(LibretroSettings->GlobalCoreOptions[Option.Key]));
+                            }
+                            return FText::GetEmpty();
+                        })
+                        [
+                            SNew(SImage)
+                            .Image(FEditorStyle::GetBrush("SceneOutliner.World"))
+                        ]
                     ]
                 ];
     }

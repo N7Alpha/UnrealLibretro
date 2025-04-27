@@ -21,8 +21,14 @@ public:
     UPROPERTY(config, EditAnywhere, Category = Libretro)
     TMap<FString, FString> GlobalCoreOptions;
 
+    /* GetCategoryName and GetSectionName are used for linking to the settings details pane */
     FName GetCategoryName() const override
     {
         return TEXT("Plugins");
+    }
+
+    FName GetSectionName() const override
+    {
+        return TEXT("Unreal Libretro");
     }
 };
