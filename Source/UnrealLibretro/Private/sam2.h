@@ -506,22 +506,6 @@ typedef struct sam2_server {
 
 SAM2_STATIC_ASSERT(offsetof(sam2_server_t, tcp) == 0, "We need this so we can cast between sam2_server_t and uv_tcp_t");
 
-#if defined(_MSC_VER)
-__pragma(warning(push))
-__pragma(warning(disable: 4101 4189 4505 4127))
-#elif defined(__GNUC__) || defined(__clang__)
-_Pragma("GCC diagnostic push")
-_Pragma("GCC diagnostic ignored \"-Wunused-variable\"") \
-_Pragma("GCC diagnostic ignored \"-Wunused-function\"") \
-_Pragma("GCC diagnostic ignored \"-Wunused-but-set-variable\"")
-#endif
-
-#if defined(_MSC_VER)
-__pragma(warning(pop))
-#elif defined(__GNUC__) || defined(__clang__)
-_Pragma("GCC diagnostic pop")
-#endif
-
 static sam2_client_t* sam2__find_client(sam2_server_t *server, uint16_t peer_id) {
     uint16_t client_index = server->peer_id_map[peer_id];
 
