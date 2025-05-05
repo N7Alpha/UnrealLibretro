@@ -348,9 +348,15 @@ typedef struct sam2__pool {
     //sam2__pool_node_t node[n]; // capacity == n - 1 because 0-index reserved for null
 } sam2__pool_t;
 
-SAM2_FORCEINLINE sam2__pool_node_t *sam2__pool_node(sam2__pool_t *pool) {
+static SAM2_FORCEINLINE sam2__pool_node_t *sam2__pool_node(sam2__pool_t *pool) {
     char *node = ((char *) pool) + sizeof(pool[0]);
     return (sam2__pool_node_t *) node;
+}
+
+static SAM2_FORCEINLINE int sam2__pool_is_free(sam2__pool_t *pool, uint16_t idx) {
+    sam2__pool_node_t *node = sam2__pool_node(pool);
+
+    return idx == pool->free_list || node[idx].prev != SAM2__INDEX_NULL;
 }
 
 static void sam2__pool_init(sam2__pool_t *pool, int n) {
@@ -370,40 +376,15 @@ static void sam2__pool_init(sam2__pool_t *pool, int n) {
     pool->capacity = n - 1;
 }
 
-static uint16_t sam2__pool_alloc(sam2__pool_t *pool) {
+static uint16_t sam2__pool_alloc_at_index(sam2__pool_t *pool, uint16_t idx) {
     sam2__pool_node_t *node = sam2__pool_node(pool);
 
-    if (pool->free_list == SAM2__INDEX_NULL) {
-        return SAM2__INDEX_NULL;
+    if ((uint16_t)(idx-1) >= pool->capacity) {
+        return SAM2__INDEX_NULL; // Invalid index
     }
 
-    uint16_t new_idx = pool->free_list;
-
-    // Remove from free list
-    pool->free_list = node[new_idx].next;
-    if (pool->free_list != SAM2__INDEX_NULL) {
-        node[pool->free_list].prev = SAM2__INDEX_NULL;
-    } else {
-        pool->free_list_tail = SAM2__INDEX_NULL; // Freelist becomes empty
-    }
-
-    // Add to used list
-    node[new_idx].next = pool->used_list;
-    node[new_idx].prev = SAM2__INDEX_NULL;
-    if (pool->used_list != SAM2__INDEX_NULL) {
-        node[pool->used_list].prev = new_idx;
-    }
-    pool->used_list = new_idx;
-    pool->used++;
-
-    return new_idx;
-}
-
-static uint16_t sam2__pool_alloc_at_index(sam2__pool_t *pool, int idx) {
-    sam2__pool_node_t *node = sam2__pool_node(pool);
-
-    if (idx >= pool->capacity) {
-        return SAM2__INDEX_NULL;
+    if (!sam2__pool_is_free(pool, idx)) {
+        return SAM2__INDEX_NULL; // Already allocated
     }
 
     // Remove from free list
@@ -425,26 +406,32 @@ static uint16_t sam2__pool_alloc_at_index(sam2__pool_t *pool, int idx) {
     // Add to used list
     node[idx].next = pool->used_list;
     node[idx].prev = SAM2__INDEX_NULL;
-    if (pool->used_list != SAM2__INDEX_NULL) {
-        node[pool->used_list].prev = idx;
-    }
     pool->used_list = idx;
     pool->used++;
 
     return idx;
 }
 
+static SAM2_FORCEINLINE uint16_t sam2__pool_alloc(sam2__pool_t *pool) {
+    return sam2__pool_alloc_at_index(pool, pool->free_list);
+}
+
 static const char *sam2__pool_free(sam2__pool_t *pool, uint16_t idx) {
     sam2__pool_node_t *node = sam2__pool_node(pool);
+
+    if ((uint16_t)(idx-1) >= pool->capacity) {
+        return "Invalid index";
+    }
+
+    if (sam2__pool_is_free(pool, idx)) {
+        return "Already free";
+    }
 
     // Remove from used list
     if (idx == pool->used_list) {
         pool->used_list = node[idx].next;
     } else {
         node[node[idx].prev].next = node[idx].next;
-    }
-    if (node[idx].next != SAM2__INDEX_NULL) {
-        node[node[idx].next].prev = node[idx].prev;
     }
 
     // Add to free list at tail
