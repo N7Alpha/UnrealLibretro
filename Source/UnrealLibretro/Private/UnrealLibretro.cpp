@@ -20,6 +20,7 @@ PFN_wglCreateContext _wglCreateContext;
 PFN_wglDeleteContext _wglDeleteContext;
 PFN_wglMakeCurrent _wglMakeCurrent;
 PFN_wglGetProcAddress _wglGetProcAddress;
+PFN_wglShareLists _wglShareLists;
 #endif
 
 char UnrealLibretroVersionAnsi[256] = {0}; // IModuleInterface can give you this but it's GameThread only
@@ -106,6 +107,7 @@ void FUnrealLibretroModule::StartupModule()
     wglGetProcAddress = (decltype(wglGetProcAddress))FPlatformProcess::GetDllExport(OpenGLDLL, TEXT("wglGetProcAddress"));
     wglDeleteContext = (decltype(wglDeleteContext))FPlatformProcess::GetDllExport(OpenGLDLL, TEXT("wglDeleteContext"));
     wglMakeCurrent = (decltype(wglMakeCurrent))FPlatformProcess::GetDllExport(OpenGLDLL, TEXT("wglMakeCurrent"));
+    wglShareLists = (decltype(wglShareLists))FPlatformProcess::GetDllExport(OpenGLDLL, TEXT("wglShareLists"));
 
     WNDCLASS wc = { 0 };
     wc.lpfnWndProc = DefWindowProc;

@@ -281,7 +281,3 @@ static char *getenv_hijack(const char *name) {
 #ifdef _MSC_VER
 #pragma warning(pop)
 #endif
-
-#define log_level unreallibretro_reliable_log_level
-#include "reliable.c"
-#undef log_level

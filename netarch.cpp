@@ -15,8 +15,9 @@
 #define SAM2_LOG_WRITE(level, file, line, ...) do { if (level >= g_log_level) { sam2__log_write(level, __FILE__, __LINE__, __VA_ARGS__); } } while (0)
 int g_log_level = 1; // Info
 
-#define ULNET_IMGUI
 #define ULNET_IMPLEMENTATION
+#define ULNET_IMGUI
+#define ULNET_TEST_IMPLEMENTATION
 #include "ulnet.h"
 #include "sam2.h"
 
@@ -380,6 +381,7 @@ static const char *g_fshader_src =
 static struct {
     SDL_SharedObject *handle;
     bool initialized;
+    bool game_loaded;
     bool supports_no_game;
     uint64_t quirks;
     // The last performance counter registered. TODO: Make it a linked list.
@@ -2939,7 +2941,8 @@ static void core_load_game(const char *rom_path, void *rom_data, size_t rom_size
 
     g_retro.retro_get_system_info(&g_libretro_context.system_info);
 
-    if (!g_retro.retro_load_game(&info)) {
+    g_retro.game_loaded = g_retro.retro_load_game(&info);
+    if (!g_retro.game_loaded) {
         SAM2_LOG_FATAL("The core failed to load the content.");
     }
 
@@ -3268,15 +3271,6 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
 #endif
 }
 
-static void wrapped_retro_run() {
-    if (g_use_shared_context) {
-        SDL_GL_MakeCurrent(g_win, g_core_ctx);
-    }
-    g_retro.retro_run();
-    if (g_use_shared_context) {
-        SDL_GL_MakeCurrent(g_win, g_ctx);
-    }
-};
 
 int main(int argc, char *argv[]) {
     g_argc = argc;
@@ -3514,9 +3508,26 @@ int main(int argc, char *argv[]) {
         }
 
         double max_sleeping_allowed_when_polling_network_seconds = g_headless ? 1.0 : 0.0; // We just use vertical sync for frame-pacing when we have a head
-        int status = ulnet_poll_session(&g_ulnet_session, g_do_zstd_compress, g_savebuffer[g_save_state_index], g_serialize_size,
+        int status = ulnet_poll_session(&g_ulnet_session, g_do_zstd_compress, g_savebuffer[g_save_state_index], sizeof(g_savebuffer[g_save_state_index]),
             g_av.timing.fps, max_sleeping_allowed_when_polling_network_seconds,
-            wrapped_retro_run, g_retro.retro_serialize, g_retro.retro_unserialize);
+            [](void *user_ptr) {
+                if (g_use_shared_context) {
+                    SDL_GL_MakeCurrent(g_win, g_core_ctx);
+                }
+                g_retro.retro_run();
+                if (g_use_shared_context) {
+                    SDL_GL_MakeCurrent(g_win, g_ctx);
+                }
+            },
+            [](void *user_ptr) {
+                return g_retro.retro_serialize_size();
+            },
+            [](void *user_ptr, void *data, size_t size) {
+                return g_retro.retro_serialize(data, size);
+            },
+            [](void *user_ptr, const void *data, size_t size) {
+                return g_retro.retro_unserialize(data, size);
+            });
 
         if (g_do_zstd_compress && (status & ULNET_POLL_SESSION_SAVED_STATE)) {
             tick_compression_investigation((char *)g_savebuffer[g_save_state_index], g_serialize_size, (char*)rom_data, rom_size);
@@ -3610,7 +3621,10 @@ int main(int argc, char *argv[]) {
         }
     }
 //cleanup:
-    g_retro.retro_unload_game();
+    if (g_retro.game_loaded) {
+        g_retro.retro_unload_game();
+    }
+
     core_unload();
     audio_deinit();
     video_deinit();
