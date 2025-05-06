@@ -84,6 +84,7 @@ DECLARE_STATS_GROUP(TEXT("UnrealLibretro"), STATGROUP_UnrealLibretro, STATCAT_Ad
 struct libretro_api_t {
     void* handle;
     bool initialized;
+    bool game_loaded;
     bool supports_no_game;
 
     void     (*init)(void);
@@ -234,7 +235,9 @@ protected:
             // Shared context support
             bool use_shared_context = false;
 #if PLATFORM_WINDOWS
-            HGLRC shared_context = NULL;
+            HWND shared_window;
+            HGLRC shared_context;
+            HDC shared_hdc;
 #elif PLATFORM_ANDROID
             EGLContext shared_context = nullptr;
 #endif
@@ -294,4 +297,5 @@ protected:
 
     void load(const char* sofile);
     void load_game(const char* filename);
+    int SwitchOpenGLContext(int context_type);
 };

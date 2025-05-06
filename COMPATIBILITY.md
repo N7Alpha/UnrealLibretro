@@ -17,10 +17,10 @@ Unfortunately the full Libretro API is quite complex so I have only partially im
 * `desmume2015     `
 * `mame            `
 * `dosbox_svn      `
+* `dolphin         `
 
 ## Known broken cores
 
-* `dolphin         `
 * `sameboy         `
 * `dosbox_pure     ` (This one fails when loading the content)
 

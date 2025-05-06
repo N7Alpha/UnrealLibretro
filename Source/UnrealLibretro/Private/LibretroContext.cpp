@@ -148,7 +148,50 @@ static bool GLLogCall(const char* function, const char* file, int line)
     return true;
 }
 
- void FLibretroContext::create_window() {
+#define UNREALLIBRETRO_FRONTEND_CONTEXT 0x0001
+#define UNREALLIBRETRO_SHARED_CONTEXT   0x0002
+int FLibretroContext::SwitchOpenGLContext(int context_type) {
+    switch (context_type) {
+    case UNREALLIBRETRO_FRONTEND_CONTEXT: {
+#if PLATFORM_WINDOWS
+        if (!wglMakeCurrent(core.gl.hdc, core.gl.context)) {
+            UE_LOG(Libretro, Error, TEXT("Failed to make frontend context current"));
+            return -1;
+        }
+#elif PLATFORM_ANDROID
+        if (!eglMakeCurrent(core.gl.egl_display,
+                          EGL_NO_SURFACE, EGL_NO_SURFACE,
+                          core.gl.egl_context)) {
+            UE_LOG(Libretro, Error, TEXT("Failed to make frontend context current"));
+            return -1;
+        }
+#endif
+        return 0;
+    }
+    case UNREALLIBRETRO_SHARED_CONTEXT: {
+#if PLATFORM_WINDOWS
+        if (!wglMakeCurrent(core.gl.shared_hdc, core.gl.shared_context)) {
+            UE_LOG(Libretro, Error, TEXT("Failed to make shared context current"));
+            return -1;
+        }
+#elif PLATFORM_ANDROID
+        if (!eglMakeCurrent(core.gl.egl_display,
+                          EGL_NO_SURFACE, EGL_NO_SURFACE,
+                          core.gl.shared_context)) {
+            UE_LOG(Libretro, Error, TEXT("Failed to make shared context current"));
+            return -1;
+        }
+#endif
+        return 0;
+    }
+    default:
+        UE_LOG(Libretro, Error, TEXT("Invalid context type"));
+        return -1;
+    }
+}
+
+
+void FLibretroContext::create_window() {
 #if PLATFORM_ANDROID
     // Get an OpenGL context via EGL
     const EGLint attribs[] = {
@@ -205,9 +248,6 @@ static bool GLLogCall(const char* function, const char* file, int line)
                                                   shared_attribs);
         if(core.gl.shared_context == EGL_NO_CONTEXT)
             UE_LOG(Libretro, Fatal, TEXT("Failed to create shared EGL context: %d"), eglGetError());
-        verify(eglMakeCurrent(core.gl.egl_display,
-                              EGL_NO_SURFACE, EGL_NO_SURFACE,
-                              core.gl.shared_context));
     }
 #elif PLATFORM_WINDOWS
     // Use wgl to create a hidden window to get an OpenGL context
@@ -249,13 +289,37 @@ static bool GLLogCall(const char* function, const char* file, int line)
         UE_LOG(Libretro, Fatal, TEXT("Failed to activate OpenGL context"));
     }
 
-    // Shared context creation for Windows
-    if(core.gl.use_shared_context) {
-        core.gl.shared_context = wglCreateContext(core.gl.hdc);
-        if(!core.gl.shared_context)
+    if (core.gl.use_shared_context) {
+        // Create a separate window for the shared context
+        core.gl.shared_window = CreateWindowEx(
+            0, TEXT("my_opengl_class"), TEXT("Shared OpenGL Context"),
+            WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_POPUP,
+            0, 0, 1, 1,
+            NULL, NULL, GetModuleHandle(NULL), NULL
+        );
+
+        if (!core.gl.shared_window) {
+            UE_LOG(Libretro, Fatal, TEXT("Failed to create shared window"));
+        }
+
+        // Get a device context for the shared window
+        core.gl.shared_hdc = GetDC(core.gl.shared_window);
+
+        // Set the same pixel format for the shared window
+        if (!SetPixelFormat(core.gl.shared_hdc, pixel_format, &pfd)) {
+            UE_LOG(Libretro, Fatal, TEXT("Failed to set pixel format for shared context"));
+        }
+
+        // Create the shared context
+        core.gl.shared_context = wglCreateContext(core.gl.shared_hdc);
+        if (!core.gl.shared_context) {
             UE_LOG(Libretro, Fatal, TEXT("Failed to create shared GL context"));
-        verify(wglShareLists(core.gl.context, core.gl.shared_context));
-        verify(wglMakeCurrent(core.gl.hdc, core.gl.shared_context));
+        }
+
+        // Share lists between contexts
+        if (!wglShareLists(core.gl.context, core.gl.shared_context)) {
+            UE_LOG(Libretro, Fatal, TEXT("Failed to share OpenGL context lists"));
+        }
     }
 #else
     // @todo Other platforms don't have routines to get OpenGL contexts currently
@@ -266,6 +330,9 @@ static bool GLLogCall(const char* function, const char* file, int line)
     // However the main issue with ANGLE is that it seems the Libretro Cores need to be built for it in mind and I don't know if that feature is being actively developed right now
     checkNoEntry();
 #endif
+    if (core.gl.use_shared_context) {
+        verify(0 == SwitchOpenGLContext(UNREALLIBRETRO_FRONTEND_CONTEXT));
+    }
 
     #pragma warning(push)
     #pragma warning(disable:4191)
@@ -313,16 +380,6 @@ static bool GLLogCall(const char* function, const char* file, int line)
 }
 
  void FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
-    // Ensure shared context is current if used
-    if(core.gl.use_shared_context && core.gl.shared_context){
-#if PLATFORM_WINDOWS
-        verify(wglMakeCurrent(core.gl.hdc, core.gl.shared_context));
-#elif PLATFORM_ANDROID
-        verify(eglMakeCurrent(core.gl.egl_display,
-                              EGL_NO_SURFACE, EGL_NO_SURFACE,
-                              core.gl.shared_context));
-#endif
-    }
     if (!core.gl.pixel_format) {
         auto data = RETRO_PIXEL_FORMAT_0RGB1555;
         this->core_environment(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &data);
@@ -665,6 +722,11 @@ static bool GLLogCall(const char* function, const char* file, int line)
 }
 
 size_t FLibretroContext::core_audio_write(const int16_t *buf, size_t frames) {
+    if (Unreal.AudioQueue == nullptr) {
+        UE_LOG(Libretro, Warning, TEXT("Call to core_audio_write when AudioQueue was null this is a programming error or the Libretro Core is doing something weird"));
+        return 0;
+    }
+
     unsigned FramesEnqueued = 0;
     while (FramesEnqueued < frames && Unreal.AudioQueue->Enqueue(((int32*)buf)[FramesEnqueued])) {
         FramesEnqueued++;
@@ -716,10 +778,6 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
     case RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE: {
         auto rumble = (retro_rumble_interface*)data;
         rumble->set_rumble_state = [](unsigned, retro_rumble_effect, uint16_t){ return false; };
-        return true;
-    }
-    case RETRO_ENVIRONMENT_SET_HW_SHARED_CONTEXT: {
-        core.gl.use_shared_context = true;
         return true;
     }
     case RETRO_ENVIRONMENT_GET_VARIABLE: {
@@ -856,6 +914,10 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
         if (core.hw.context_type == RETRO_HW_CONTEXT_OPENGLES2) { core.hw.version_major = 2; core.hw.version_minor = 0; }
         if (core.hw.context_type == RETRO_HW_CONTEXT_OPENGLES3) { core.hw.version_major = 3; core.hw.version_minor = 0; }
 
+        return true;
+    }
+    case RETRO_ENVIRONMENT_SET_HW_SHARED_CONTEXT: {
+        core.gl.use_shared_context = true;
         return true;
     }
     case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO: {
@@ -1066,8 +1128,10 @@ void FLibretroContext::load_game(const char* filename) {
         info.size = gameBinary.Num();
     }
 
-    if (!libretro_api.load_game(&info))
-        UE_LOG(Libretro, Fatal, TEXT("The core failed to load the content."));
+    libretro_api.game_loaded = libretro_api.load_game(&info);
+    if (!libretro_api.game_loaded) {
+        UE_LOG(Libretro, Error, TEXT("The core failed to load the content."));
+    }
 
     libretro_api.get_system_av_info(&core.av);
      
@@ -1086,7 +1150,13 @@ void FLibretroContext::load_game(const char* filename) {
 #endif
     }
 
+    if (core.gl.use_shared_context) {
+        verify(0 == SwitchOpenGLContext(UNREALLIBRETRO_SHARED_CONTEXT));
+    }
     video_configure(&core.av.geometry);
+    if (core.gl.use_shared_context) {
+        verify(0 == SwitchOpenGLContext(UNREALLIBRETRO_FRONTEND_CONTEXT));
+    }
 }
 
 void memor(void *dst, const void *src, size_t n) {
@@ -1187,6 +1257,17 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
             l->load(TCHAR_TO_UTF8(*InstancedCorePath));
 
             l->libretro_api.get_system_info(&l->system);
+
+            if (!l->libretro_api.supports_no_game && game.IsEmpty())
+            {
+                UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Path given for ROM was empty"), *core);
+                l->CoreState.store(ECoreState::StartFailed, std::memory_order_release);
+                goto cleanup;
+            }
+
+            // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
+            l->load_game(game.IsEmpty() ? nullptr : TCHAR_TO_UTF8(*game));
+
             for (int Port = 0; Port < PortCount; Port++)
             {
                 unsigned DeviceID = RETRO_DEVICE_DEFAULT;
@@ -1199,16 +1280,6 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                 l->libretro_api.set_controller_port_device(Port, DeviceID);
             }
 
-            if (!l->libretro_api.supports_no_game && game.IsEmpty())
-            {
-                UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Path given for ROM was empty"), *core);
-                l->CoreState.store(ECoreState::StartFailed, std::memory_order_release);
-                goto cleanup;
-            }
-
-            // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
-            l->load_game(game.IsEmpty() ? nullptr : TCHAR_TO_UTF8(*game));
-        
             l->CoreState.store(ECoreState::Running, std::memory_order_release);
             LoadedCallback(l, l->libretro_api);
             
@@ -1276,10 +1347,29 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                             memor(state, l->NextInputState, sizeof(*state));
                         }
 
-                        l->netplay_save_state_size = l->libretro_api.serialize_size();
-                        l->netplay_save_state_data = (unsigned char*)realloc(l->netplay_save_state_data, l->netplay_save_state_size);
-                        ulnet_poll_session(l->netplay_session, true, l->netplay_save_state_data, l->netplay_save_state_size, l->core.av.timing.fps, 1.0,
-                            l->libretro_api.run, l->libretro_api.serialize, l->libretro_api.unserialize);
+                        ulnet_poll_session(l->netplay_session, false, NULL, 0, l->core.av.timing.fps, 1.0,
+                            [](void *user_ptr) {
+                                FLibretroContext *l = (FLibretroContext*)user_ptr;
+                                if (l->core.gl.shared_context) {
+                                    verify(0 == l->SwitchOpenGLContext(UNREALLIBRETRO_SHARED_CONTEXT));
+                                }
+                                l->libretro_api.run();
+                                if (l->core.gl.shared_context) {
+                                    verify(0 == l->SwitchOpenGLContext(UNREALLIBRETRO_FRONTEND_CONTEXT));
+                                }
+                            },
+                            [](void* user_ptr) {
+                                FLibretroContext* l = (FLibretroContext*)user_ptr;
+                                return l->libretro_api.serialize_size();
+                            },
+                            [](void *user_ptr, void *data, size_t size) {
+                                FLibretroContext *l = (FLibretroContext*)user_ptr;
+                                return l->libretro_api.serialize(data, size);
+                            },
+                            [](void *user_ptr, const void *data, size_t size) {
+                                FLibretroContext *l = (FLibretroContext*)user_ptr;
+                                return l->libretro_api.unserialize(data, size);
+                            });
 
                         if (!l->connected_to_sam2 && l->sam_socket != SAM2_SOCKET_INVALID) {
                             l->connected_to_sam2 = static_cast<bool>(sam2_client_poll_connection(l->sam_socket, 0));
@@ -1374,16 +1464,46 @@ cleanup:
             ImGui::DestroyContext();
 #endif
 
+            // I do this to signal failure back on the game thread... eh
             if (l->CoreState.load(std::memory_order_relaxed) == ECoreState::StartFailed)
             {
                 LoadedCallback(l, l->libretro_api);
+            }
+
+            if (l->core.gl.use_shared_context)
+            {
+                // We need to switch back to the shared context we unload the game and deinit the core
+                verify(0 == l->SwitchOpenGLContext(UNREALLIBRETRO_SHARED_CONTEXT));
+            }
+
+            if (l->libretro_api.game_loaded)
+            {
+                l->libretro_api.unload_game();
             }
 
             if (l->libretro_api.initialized)
             {
                 l->libretro_api.deinit();
             }
-            
+
+            if (l->core.gl.use_shared_context)
+            {
+                // The context here doesn't have shared ownership with Unreal's render thread so we can delete it immediately
+#if PLATFORM_WINDOWS
+                verify(wglMakeCurrent(l->core.gl.shared_hdc, NULL));
+                verify(wglDeleteContext(l->core.gl.shared_context));
+                verify(ReleaseDC(l->core.gl.shared_window, l->core.gl.shared_hdc));
+                verify(DestroyWindow(l->core.gl.shared_window));
+#elif PLATFORM_ANDROID
+                if (l->core.gl.shared_context) {
+                    if (!eglDestroyContext(l->core.gl.egl_display, l->core.gl.shared_context)) {
+                        UE_LOG(Libretro, Error, TEXT("eglDestroyContext() returned error %d"), eglGetError());
+                    }
+                }
+#endif
+                verify(0 == l->SwitchOpenGLContext(UNREALLIBRETRO_FRONTEND_CONTEXT));
+            }
+
             if (l->libretro_api.handle)
             {
                 FPlatformProcess::FreeDllHandle(l->libretro_api.handle);
@@ -1432,21 +1552,25 @@ cleanup:
                                     }
                                 }
 #if PLATFORM_WINDOWS
-                                if (l->core.gl.shared_context){
-                                    wglDeleteContext(l->core.gl.shared_context);
-                                }
                                 if (l->core.gl.context)
                                 {
                                     wglDeleteContext(l->core.gl.context); /** implicitly releases resources like fbos, pbos, and textures */
                                 }
 #elif PLATFORM_ANDROID
-                                if (l->core.gl.shared_context){
-                                    eglDestroyContext(l->core.gl.egl_display, l->core.gl.shared_context);
-                                }
                                 if (l->core.gl.egl_context) 
                                 {
-                                    verify(eglDestroyContext(l->core.gl.egl_display, 
-                                                             l->core.gl.egl_context));
+                                    if (!eglDestroyContext(l->core.gl.egl_display, l->core.gl.egl_context))
+                                    {
+                                        UE_LOG(Libretro, Error, TEXT("eglDestroyContext() for main context returned error %d"), eglGetError());
+                                    }
+                                }
+
+                                if (l->core.gl.egl_display)
+                                {
+                                    if (!eglTerminate(l->core.gl.egl_display))
+                                    {
+                                        UE_LOG(Libretro, Error, TEXT("eglTerminate() returned error %d"), eglGetError());
+                                    }
                                 }
 #endif
 
