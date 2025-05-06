@@ -1484,15 +1484,17 @@ void draw_imgui() {
 
             int room_count = 0;
             bool room_header_is_open = ImGui::CollapsingHeader("Rooms");
-            for (uint16_t c = g_sam2_server->client_pool.used_list; c != SAM2__INDEX_NULL; c = g_sam2_server->client_pool_node[c].next) {
-                if (g_sam2_server->rooms[c].flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
-                    if (room_header_is_open) show_room(g_sam2_server->rooms[c]);
+            for (uint16_t peer_id = g_sam2_server->peer_id_pool.used_list; peer_id != SAM2__INDEX_NULL; peer_id = g_sam2_server->peer_id_pool_node[peer_id].next) {
+                if (g_sam2_server->rooms[peer_id].flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+                    if (room_header_is_open) {
+                        show_room(g_sam2_server->rooms[peer_id]);
+                    }
                     room_count++;
                 }
             }
 
             ImGui::Text("Clients connected: %d", g_sam2_server->client_pool.used);
-            ImGui::Text("Rooms Hosted: %d",room_count);
+            ImGui::Text("Rooms Hosted: %d", room_count);
 
             if (g_sam2_server->response_pool.used) {
                 char label[64];
