@@ -294,7 +294,7 @@ typedef struct ulnet_session {
     int (*sam2_send_callback)(void *user_ptr, char *response);
     int (*populate_core_options_callback)(void *user_ptr, ulnet_core_option_t options[ULNET_CORE_OPTIONS_MAX]);
 
-    bool (*retro_unserialize)(const void *data, size_t size);
+    bool (*retro_unserialize)(void *user_ptr, const void *data, size_t size);
 
     float debug_udp_recv_drop_rate;
     float debug_udp_send_drop_rate;
@@ -941,9 +941,12 @@ static void ulnet_update_state_history(ulnet_session_t *session, uint8_t *packet
 #define ULNET_POLL_SESSION_SAVED_STATE 0b00000001
 #define ULNET_POLL_SESSION_TICKED      0b00000010
 // This procedure always sends an input packet if the core is ready to tick. This subsumes retransmission logic and generally makes protocol logic less strict
-ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_state_on_tick, uint8_t *save_state, size_t save_state_size,
+ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_state_on_tick, uint8_t *save_state, size_t save_state_capacity,
     double frame_rate, double max_sleeping_allowed_when_polling_network_seconds,
-    void (*retro_run)(void), bool (*retro_serialize)(void *, size_t), bool (*retro_unserialize)(const void *, size_t)) {
+    void (*retro_run)(void *user_ptr),
+    size_t (*retro_serialize_size)(void *user_ptr),
+    bool (*retro_serialize)(void *user_ptr, void *, size_t),
+    bool (*retro_unserialize)(void *user_ptr, const void *, size_t)) {
     IMH(ImGui::Begin("P2P UDP Netplay", NULL, ImGuiWindowFlags_AlwaysAutoResize);)
     int status = 0;
 
@@ -1234,10 +1237,18 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
         }
 
         session->flags &= ~ULNET_SESSION_FLAG_TICKED;
+        bool save_state_allocated = false;
+        size_t  save_state_size;
         int64_t save_state_frame = session->frame_counter;
         if (force_save_state_on_tick || session->peer_needs_sync_bitfield) {
             IMH(uint64_t start = ulnet__rdtsc();)
-            retro_serialize(save_state, save_state_size);
+            save_state_size = retro_serialize_size(session->user_ptr);
+            if (save_state_size > save_state_capacity) {
+                SAM2_LOG_WARN("Save state size %zu is larger than buffer size %zu", save_state_size, save_state_capacity);
+                save_state = (uint8_t *) malloc(save_state_size);
+                save_state_allocated = true;
+            }
+            retro_serialize(session->user_ptr, save_state, save_state_size);
             IMH(session->save_state_execution_time_cycles[session->frame_counter % session->sample_size] = ulnet__rdtsc() - start;)
             status |= ULNET_POLL_SESSION_SAVED_STATE;
 
@@ -1257,7 +1268,7 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
         }
 
         if (!(session->flags & ULNET_SESSION_FLAG_TICKED)) {
-            retro_run();
+            retro_run(session->user_ptr);
         }
 
         session->core_wants_tick_at_unix_usec += 1000000 / frame_rate;
@@ -1316,10 +1327,16 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
             }
         }
 
-        if (session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+        if (   session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED
+            && status & ULNET_POLL_SESSION_SAVED_STATE) {
             session->state[ulnet_our_port(session)].save_state_frame = save_state_frame;
             session->state[ulnet_our_port(session)].save_state_hash[save_state_frame % ULNET_DELAY_BUFFER_SIZE] = ZSTD_XXH64(save_state, save_state_size, 0);
             //session->desync_debug_packet.input_state_hash[save_state_frame % ULNET_DELAY_BUFFER_SIZE] = ZSTD_XXH64(g_libretro_context.InputState, sizeof(g_libretro_context.InputState));
+        }
+
+        if (save_state_allocated) {
+            free(save_state);
+            save_state = NULL;
         }
 
         // Ideally I'd place this right after ticking the core, but we need to update the room state first
@@ -1661,7 +1678,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
                         session->peer_desynced_frame[p] = frame_to_compare;
                     }
 
-                    SAM2_LOG_ERROR("Save state hash mismatch for frame %" PRId64 " Our hash: %016" PRIx64 " Their hash: %016" PRIx64 "",
+                    SAM2_LOG_ERROR("Save state hash mismatch for frame %" PRId64 " Our hash: %016" PRIx64 " Their hash: %016" PRIx64,
                         frame_to_compare, our_desync_debug_packet->save_state_hash[frame_index], their_desync_debug_packet->save_state_hash[frame_index]);
                 } else if (session->peer_desynced_frame[p]) {
                     session->peer_desynced_frame[p] = 0;
@@ -1820,7 +1837,7 @@ static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *data
                     if (ZSTD_isError(save_state_size)) {
                         SAM2_LOG_ERROR("Error decompressing savestate: %s", ZSTD_getErrorName(save_state_size));
                     } else {
-                        if (!session->retro_unserialize(save_state_data, save_state_size)) {
+                        if (!session->retro_unserialize(session->user_ptr, save_state_data, save_state_size)) {
                             SAM2_LOG_ERROR("Failed to load savestate");
                         } else {
                             SAM2_LOG_DEBUG("Save state loaded");
@@ -2233,6 +2250,9 @@ ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, voi
 #endif
 #endif
 
+#if defined(ULNET_TEST_IMPLEMENTATION)
+#ifndef ULNET_TEST_C
+#define ULNET_TEST_C
 #define ULNET__TEST_SAM2_PORT (SAM2_SERVER_DEFAULT_PORT + 1)
 
 int ulnet__test_forward_messages(sam2_server_t *server, ulnet_session_t *session, sam2_socket_t socket) {
@@ -2266,15 +2286,19 @@ int ulnet__test_sam2_send_callback(void *socket, char *message) {
 //    return 0;
 //}
 
-void ulnet__test_retro_run(void) {
+void ulnet__test_retro_run(void *user_ptr) {
     
 }
 
-bool ulnet__test_retro_serialize(void *data, size_t size) {
+size_t ulnet__test_retro_serialize_size(void *user_ptr) {
+    return 0;
+}
+
+bool ulnet__test_retro_serialize(void *user_ptr, void *data, size_t size) {
     return true;
 }
 
-bool ulnet__test_retro_unserialize(const void *data, size_t size) {
+bool ulnet__test_retro_unserialize(void *user_ptr, const void *data, size_t size) {
     return true;
 }
 
@@ -2332,7 +2356,7 @@ int ulnet__test_sync() {
     for (int attempt = 0; attempt < 10; attempt++) {
         for (int i = 0; i < sizeof(sessions)/sizeof(sessions[0]); i++) {
             status = ulnet_poll_session(sessions[i], 0, 0, 0, 60.0, 0,
-                ulnet__test_retro_run, ulnet__test_retro_serialize, ulnet__test_retro_unserialize);
+                ulnet__test_retro_run, ulnet__test_retro_serialize_size, ulnet__test_retro_serialize, ulnet__test_retro_unserialize);
             if (status < 0) {
                 SAM2_LOG_ERROR("Error polling ulnet session: %d", status);
                 goto _10;
@@ -2365,4 +2389,5 @@ _10:int test_passed = 0;
 
     return !test_passed && !status;
 }
-
+#endif // ULNET_TEST_C
+#endif // ULNET_TEST_IMPLEMENTATION

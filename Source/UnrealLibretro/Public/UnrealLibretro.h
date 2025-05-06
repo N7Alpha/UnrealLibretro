@@ -45,6 +45,7 @@ typedef BOOL(WINAPI* PFN_wglShareLists)(HGLRC, HGLRC);
 #define wglDeleteContext _wglDeleteContext
 #define wglMakeCurrent _wglMakeCurrent
 #define wglGetProcAddress _wglGetProcAddress
+#define wglShareLists _wglShareLists
 
 #define GL_GET_PROC_ADDRESS Win32GLGetProcAddress
 
@@ -53,6 +54,7 @@ extern PFN_wglCreateContext _wglCreateContext;
 extern PFN_wglDeleteContext _wglDeleteContext;
 extern PFN_wglMakeCurrent _wglMakeCurrent;
 extern PFN_wglGetProcAddress _wglGetProcAddress;
+extern PFN_wglShareLists _wglShareLists;
 
 static void* Win32GLGetProcAddress(const char* procname)
 {
