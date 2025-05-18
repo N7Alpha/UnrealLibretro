@@ -87,12 +87,12 @@ typedef struct juice_agent juice_agent_t;
 #define ULNET_PORT_COUNT 8
 typedef int16_t ulnet_input_state_t[64]; // This must be a POD for putting into packets
 
-typedef struct arena_reference {
+typedef struct arena_ref {
     uint16_t size;
     uint16_t generation;
     uint32_t offset;
-} arena_reference_t;
-static const arena_reference_t arena_reference_null = { 0x0, 0x0, 0x0 }; // Null reference is characterized by 0's in all fields
+} arena_ref_t;
+static const arena_ref_t arena_null = { 0x0, 0x0, 0x0 };
 
 typedef struct arena {
     uint16_t generation; // Wraps around on overflow
@@ -100,10 +100,10 @@ typedef struct arena {
     uint8_t arena[2 * 1024 * 1024];
 } arena_t;
 
-arena_reference_t arena_allocate(arena_t *arena, uint16_t size) {
+arena_ref_t arena_alloc(arena_t *arena, uint16_t size) {
     // Reject zero-sized and too-large allocations
-    if (size == 0 || size > sizeof(arena->arena)) {
-        return arena_reference_null;
+    if (size - 1  >= sizeof(arena->arena)) {
+        return arena_null;
     }
 
     // Check if allocation would exceed arena remaining space
@@ -114,7 +114,7 @@ arena_reference_t arena_allocate(arena_t *arena, uint16_t size) {
         arena->generation++;
     }
 
-    arena_reference_t ref = {
+    arena_ref_t ref = {
         size,
         arena->generation,
         arena->head
@@ -126,15 +126,14 @@ arena_reference_t arena_allocate(arena_t *arena, uint16_t size) {
     return ref;
 }
 
-void *arena_dereference(arena_t *arena, arena_reference_t reference) {
-    // Check for null reference
-    if (reference.size == 0 && reference.generation == 0 && reference.offset == 0) {
+void *arena_deref(arena_t *arena, arena_ref_t reference) {
+    if (memcmp(&reference, &arena_null, sizeof(reference)) == 0) {
         return NULL;
     }
 
     // Validate bounds
-    if (reference.offset >= sizeof(arena->arena) ||
-        reference.offset + reference.size > sizeof(arena->arena)) {
+    if (   reference.offset >= sizeof(arena->arena)
+        || reference.offset + reference.size > sizeof(arena->arena)) {
         return NULL;
     }
 
@@ -157,6 +156,17 @@ void *arena_dereference(arena_t *arena, arena_reference_t reference) {
 
     // In all other cases, the memory has been overwritten
     return NULL;
+}
+
+arena_ref_t arena_reref(arena_ref_t ref, int offset) {
+    if (offset > ref.size) {
+        return arena_null;
+    } else {
+        arena_ref_t new_ref = ref;
+        new_ref.offset += offset;
+        new_ref.size -= offset;
+        return new_ref;
+    }
 }
 
 
