@@ -81,7 +81,6 @@ set(SOURCE_FILES
     Source/ThirdParty/imgui/imgui_widgets.cpp
     Source/ThirdParty/implot/implot.cpp
     Source/ThirdParty/implot/implot_items.cpp
-    Source/ThirdParty/reliable/reliable.c
 )
 
 # Add SDL and libuv subdirectories
@@ -112,7 +111,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     Source/ThirdParty/implot
     Source/ThirdParty/SDL/include
     Source/ThirdParty/netImgui/Code/Client
-    Source/ThirdParty/reliable
 )
 
 # Static link everything so we don't have to deal with dll hell

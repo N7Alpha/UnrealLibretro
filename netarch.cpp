@@ -1676,11 +1676,43 @@ void draw_imgui() {
                 }
             }
 
+            static ulnet_session_t *test_session1 = NULL;
+            static ulnet_session_t *test_session2 = NULL;
+            static bool show_test_sessions = false;
+
             if (ImGui::Button("Test sync")) {
-                if (ulnet__test_sync()) {
+                if (ulnet__test_sync(&test_session1, &test_session2)) {
                     SAM2_LOG_ERROR("Test sync failed.");
+                    show_test_sessions = true;
+                } else {
+                    SAM2_LOG_INFO("Test sync passed.");
                 }
             }
+
+            ImGui::SameLine();
+            if (ImGui::Button("Show sessions") && (test_session1 || test_session2)) {
+                show_test_sessions = !show_test_sessions;
+            }
+
+            // Only show the sessions window if we have sessions and the show flag is true
+            if (show_test_sessions && (test_session1 || test_session2)) {
+                ImGui::Begin("Test Sessions");
+                if (ImGui::BeginTabBar("SessionTabs")) {
+                    if (test_session1 && ImGui::BeginTabItem("Session 1")) {
+                        ulnet_imgui_show_session(test_session1);
+                        ImGui::EndTabItem();
+                    }
+
+                    if (test_session2 && ImGui::BeginTabItem("Session 2")) {
+                        ulnet_imgui_show_session(test_session2);
+                        ImGui::EndTabItem();
+                    }
+
+                    ImGui::EndTabBar();
+                }
+                ImGui::End();
+            }
+
 
             if (ImGui::Button("Ask for equivalent peer id")) {
                 sam2_connect_message_t message = { SAM2_CONN_HEADER };
@@ -1708,14 +1740,6 @@ void draw_imgui() {
 
         const char* levelNames[] = {"Debug", "Info", "Warn", "Error", "Fatal"};
         ImGui::SliderInt("Log Level", &g_log_level, 0, 4, levelNames[g_log_level]);
-
-        switch (g_log_level) {
-            case 0: reliable_log_level(RELIABLE_LOG_LEVEL_DEBUG); break;
-            case 1: reliable_log_level(RELIABLE_LOG_LEVEL_INFO); break;
-            case 2: reliable_log_level(RELIABLE_LOG_LEVEL_ERROR); break;
-            case 3: reliable_log_level(RELIABLE_LOG_LEVEL_ERROR); break;
-            case 4: reliable_log_level(RELIABLE_LOG_LEVEL_NONE); break;
-        }
 
         if (isWindowOpen && selected_message_index != -1) {
             ImGui::Begin("Messages", &isWindowOpen); // Use isWindowOpen to allow closing the window
@@ -1977,20 +2001,25 @@ void draw_imgui() {
                 ImGui::SameLine();
                 if (ImGui::Button("Spectate")) {
                     // Directly signaling the authority just means spectate
-                    ulnet_session_init_defaulted(&g_ulnet_session);
-                    // Both of these methods should work
+                    if (g_ulnet_session.frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) {
+                        // We are already in a room, so we need to leave it first
+                        SAM2_LOG_INFO("We are already in a room, leaving it first");
+                    } else {
+                                            ulnet_session_init_defaulted(&g_ulnet_session);
+                        // Both of these methods should work
 #if 0
-                    g_ulnet_session.room_we_are_in = g_sam2_rooms[selected_room_index];
+                        g_ulnet_session.room_we_are_in = g_sam2_rooms[selected_room_index];
 #else
-                    g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX];
+                        g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX];
 #endif
-                    g_ulnet_session.frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
-                    ulnet_startup_ice_for_peer(
-                        &g_ulnet_session,
-                         g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX],
-                         SAM2_AUTHORITY_INDEX,
-                         NULL
-                    );
+                        g_ulnet_session.frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
+                        ulnet_startup_ice_for_peer(
+                            &g_ulnet_session,
+                            g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX],
+                            SAM2_AUTHORITY_INDEX,
+                            NULL
+                        );
+                    }
                 }
             } else {
                 ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
@@ -2534,7 +2563,7 @@ static uintptr_t core_get_current_framebuffer() {
     return g_video.fbo_id;
 }
 
-int64_t get_unix_time_microseconds();
+int64_t ulnet__get_unix_time_microseconds();
 /**
  * cpu_features_get_time_usec:
  *
@@ -2543,7 +2572,7 @@ int64_t get_unix_time_microseconds();
  * Returns: time in microseconds.
  **/
 retro_time_t cpu_features_get_time_usec(void) {
-    return get_unix_time_microseconds();
+    return ulnet__get_unix_time_microseconds();
 }
 
 /**
@@ -3326,9 +3355,6 @@ int main(int argc, char *argv[]) {
         SAM2_LOG_FATAL("Failed to initialize SDL");
     }
 
-    // Set up reliable library logging
-    reliable_set_printf_function(reliable_log_redirect);
-
     // Setup Platform/Renderer backends
     // GL 3.0 + GLSL 130
     g_video.hw.version_major = 4;
@@ -3537,8 +3563,8 @@ int main(int argc, char *argv[]) {
 
         if (status & ULNET_POLL_SESSION_TICKED) {
             // Keep track of frame-times for plotting purposes
-            static int64_t last_tick_usec = get_unix_time_microseconds();
-            int64_t current_time_usec = get_unix_time_microseconds();
+            static int64_t last_tick_usec = ulnet__get_unix_time_microseconds();
+            int64_t current_time_usec = ulnet__get_unix_time_microseconds();
             int64_t elapsed_time_milliseconds = (current_time_usec - last_tick_usec) / 1000;
             g_frame_time_milliseconds[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = elapsed_time_milliseconds;
             last_tick_usec = current_time_usec;
