@@ -862,9 +862,11 @@ static int sam2__resolve_hostname(const char *hostname, char *ip) {
 }
 
 SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host, int port) {
+    sam2_socket_t sockfd = SAM2_SOCKET_INVALID;
     struct sockaddr_storage server_addr = {0};
     // Initialize winsock / Increment winsock reference count
 #ifdef _WIN32
+    u_long flags;
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
         SAM2_LOG_ERROR("WSAStartup failed!");
@@ -876,18 +878,18 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
     int family = sam2__resolve_hostname(host, ip); // This blocks
     if (family < 0) {
         SAM2_LOG_ERROR("Failed to resolve hostname for '%s'", host);
-        return -1;
+        goto fail;
     }
     host = ip;
 
-    sam2_socket_t sockfd = socket(family, SOCK_STREAM, 0);
+    sockfd = socket(family, SOCK_STREAM, 0);
     if (sockfd == SAM2_SOCKET_INVALID) {
         SAM2_LOG_ERROR("Failed to create socket");
-        return -1;
+        goto fail;
     }
 
 #ifdef _WIN32
-    u_long flags = 1; // 1 for non-blocking, 0 for blocking
+    flags = 1; // 1 for non-blocking, 0 for blocking
     if (ioctlsocket(sockfd, FIONBIO, &flags) < 0) {
         SAM2_LOG_ERROR("Failed to set socket to non-blocking mode");
         goto fail;
@@ -930,6 +932,9 @@ fail:
     if (sockfd != SAM2_SOCKET_INVALID) {
         SAM2_CLOSESOCKET(sockfd);
     }
+#ifdef _WIN32
+    WSACleanup();
+#endif
     return -1;
 }
 
