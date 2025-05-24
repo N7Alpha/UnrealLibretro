@@ -298,12 +298,13 @@ static void GLClearErrors() {
 }
 
 static bool GLLogCall(const char* function, const char* file, int line) {
+    bool success = true;
     while (GLenum error = glGetError())
     {
         SAM2_LOG_ERROR("OpenGL: %s:%s:%d: GLenum (%d)", function, file, line, error);
-        return false;
+        success = false;
     }
-    return true;
+    return success;
 }
 
 static bool g_use_shared_context = false;
@@ -528,32 +529,6 @@ struct FLibretroContext {
     }
 
     void AuthoritySendSaveState(juice_agent_t *agent);
-
-    bool Spectating() {
-        return ulnet_is_spectator(&ulnet_session, ulnet_session.our_peer_id);
-    }
-
-    juice_agent_t *AuthorityAgent() {
-        return ulnet_session.agent[SAM2_AUTHORITY_INDEX];
-    }
-
-    juice_agent_t *LocateAgent(uint64_t peer_id) {
-        for (int p = 0; p < SAM2_ARRAY_LENGTH(ulnet_session.agent); p++) {
-            if (ulnet_session.agent[p] && ulnet_session.room_we_are_in.peer_ids[p] == peer_id) {
-                return ulnet_session.agent[p];
-            }
-        }
-
-        return NULL;
-    }
-
-    bool IsAuthority() const {
-        return ulnet_session.our_peer_id == ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX];
-    }
-
-    int OurPort() {
-        return ulnet_our_port(&ulnet_session);
-    }
 
     int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id);
     void core_input_poll();
@@ -1724,7 +1699,7 @@ void draw_imgui() {
             if (ulnet_is_authority(&g_libretro_context.ulnet_session)) {
                 if (ImGui::Button("Test Authority Join Self")) {
                     sam2_room_join_message_t joinMsg = { 0 };
-                    memcpy(joinMsg.header, sam2_join_header, SAM2_HEADER_TAG_SIZE);
+                    memcpy(joinMsg.header, sam2_join_header, SAM2_HEADER_SIZE);
                     joinMsg.peer_id = g_ulnet_session.our_peer_id;
                     joinMsg.room = g_ulnet_session.room_we_are_in;
 
@@ -1899,35 +1874,37 @@ void draw_imgui() {
             ImGui::EndChild();
         }
 
-            sam2_room_join_message_t message = { SAM2_JOIN_HEADER };
-            message.room = g_ulnet_session.room_we_are_in;
-            if (ulnet_is_authority(&g_ulnet_session)) {
-                if (ImGui::Button("Abandon")) {
-                    message.room = g_ulnet_session.room_we_are_in;
-                    message.room.flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
-                    message.peer_id = g_ulnet_session.our_peer_id;
-                    ulnet_process_message(&g_ulnet_session, &message); // *Send* a message to ourselves
-                }
-            } else if (ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id)) {
-                if (   ImGui::Button("Exit")
-                    && ulnet_is_spectator(&g_ulnet_session, g_ulnet_session.our_peer_id) /* Can't disconnect before leaving the room */) {
-                    ulnet_session_tear_down(&g_ulnet_session);
-                    g_ulnet_session.room_we_are_in = g_new_room_set_through_gui;
-                }
-            } else {
-                if (ImGui::Button("Detach Port")) {
-#if 1
-                    message.room.peer_ids[ulnet_our_port(&g_ulnet_session)] = SAM2_PORT_AVAILABLE;
-                    ulnet_message_send(&g_ulnet_session, SAM2_AUTHORITY_INDEX, (unsigned char *) &message);
-#else
-                    sam2_room_t future_room_we_are_in = ulnet_future_room_we_are_in(&g_ulnet_session);
-                    int future_our_port = sam2_get_port_of_peer(&future_room_we_are_in, g_ulnet_session.our_peer_id);
-                    if (future_our_port != -1) {
-                        g_ulnet_session.next_room_xor_delta.peer_ids[future_our_port] = future_room_we_are_in.peer_ids[future_our_port] ^ SAM2_PORT_AVAILABLE;
-                    }
-#endif
-                }
+        sam2_room_join_message_t message = { SAM2_JOIN_HEADER };
+        message.room = g_ulnet_session.room_we_are_in;
+        int our_port = sam2_get_port_of_peer(&g_ulnet_session.room_we_are_in, g_ulnet_session.our_peer_id);
+        if (our_port <= -1) {
+            SAM2_LOG_WARN("No port associated for our peer_id=%d", g_ulnet_session.our_peer_id);
+        } else if (our_port == SAM2_AUTHORITY_INDEX) {
+            if (ImGui::Button("Abandon")) {
+                message.room = g_ulnet_session.room_we_are_in;
+                message.room.flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+                message.peer_id = g_ulnet_session.our_peer_id;
+                ulnet_process_message(&g_ulnet_session, &message); // *Send* a message to ourselves
             }
+        } else if (our_port >= SAM2_SPECTATOR_START) {
+            if (ImGui::Button("Exit")) {
+                ulnet_session_tear_down(&g_ulnet_session);
+                g_ulnet_session.room_we_are_in = g_new_room_set_through_gui;
+            }
+        } else {
+            if (ImGui::Button("Detach Port")) {
+#if 1
+                message.room.peer_ids[our_port] = SAM2_PORT_AVAILABLE;
+                ulnet_message_send(&g_ulnet_session, SAM2_AUTHORITY_INDEX, (unsigned char *) &message);
+#else
+                sam2_room_t future_room_we_are_in = ulnet_future_room_we_are_in(&g_ulnet_session);
+                int future_our_port = sam2_get_port_of_peer(&future_room_we_are_in, g_ulnet_session.our_peer_id);
+                if (future_our_port != -1) {
+                    g_ulnet_session.next_room_xor_delta.peer_ids[future_our_port] = future_room_we_are_in.peer_ids[future_our_port] ^ SAM2_PORT_AVAILABLE;
+                }
+#endif
+            }
+        }
     } else {
         // Create a "Make" button that sends a make room request when clicked
         if (ImGui::Button("Make")) {
@@ -1974,7 +1951,7 @@ void draw_imgui() {
 
                 // Make the row selectable and keep track of the selected room
                 char label[128];
-                sprintf(label, "%s##%05" PRId16, g_sam2_rooms[room_index].name, g_sam2_rooms[room_index].peer_ids[SAM2_AUTHORITY_INDEX]);
+                sprintf(label, "%s##%05" PRIu16, g_sam2_rooms[room_index].name, g_sam2_rooms[room_index].peer_ids[SAM2_AUTHORITY_INDEX]);
                 if (ImGui::Selectable(label, selected_room_index == room_index, ImGuiSelectableFlags_SpanAllColumns)) {
                     selected_room_index = room_index;
                 }
@@ -2022,9 +1999,9 @@ void draw_imgui() {
                     }
                 }
             } else {
-                ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
-                ImGui::Button("Spectate");
-                ImGui::PopStyleVar();
+                ImGui::BeginDisabled();
+                (void)ImGui::Button("Spectate");
+                ImGui::EndDisabled();
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip(
                         "Core or ROM hash mismatch\n"
@@ -2151,7 +2128,7 @@ finished_drawing_sam2_interface:
                     flags |= (i == option_modified_at_index) ? 0 : ImGuiInputTextFlags_ReadOnly;
                 }
 
-                if (!g_libretro_context.IsAuthority()) {
+                if (g_ulnet_session.our_peer_id != g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
                     flags |= ImGuiInputTextFlags_ReadOnly;
                 }
 
