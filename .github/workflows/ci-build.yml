@@ -10,11 +10,11 @@ jobs:
       with:
         submodules: 'recursive'
     - name: Install dependencies
-      run: sudo apt-get update && sudo apt-get install -y build-essential cmake tcc
+      run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build tcc
     - name: Configure CMake (Linux GCC)
-      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
     - name: Build (GCC)
-      run: cmake --build build --config Release
+      run: cmake --build build --parallel
     # Check that our C code is reasonably portable
     - name: Build with TCC
       run: |
@@ -32,11 +32,11 @@ jobs:
       with:
         submodules: 'recursive'
     - name: Install dependencies
-      run: brew install cmake
+      run: brew install cmake ninja
     - name: Configure CMake (macOS Clang)
-      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
     - name: Build
-      run: cmake --build build --config Release
+      run: cmake --build build --parallel
 
   build-windows:
     runs-on: windows-latest
@@ -45,6 +45,6 @@ jobs:
       with:
         submodules: 'recursive'
     - name: Configure CMake (Windows MSVC)
-      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
     - name: Build
-      run: cmake --build build --config Release
+      run: cmake --build build --parallel
