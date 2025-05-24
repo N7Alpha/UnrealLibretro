@@ -302,7 +302,7 @@ typedef struct ulnet_session {
     uint64_t peer_needs_sync_bitfield;
     uint64_t peer_pending_disconnect_bitfield;
     juice_agent_t *agent[SAM2_TOTAL_PEERS];
-    uint64_t       agent_peer_ids[SAM2_TOTAL_PEERS];
+    uint16_t       agent_peer_ids[SAM2_TOTAL_PEERS];
     int64_t peer_desynced_frame[SAM2_TOTAL_PEERS];
     ulnet_input_state_t spectator_suggested_input_state[SAM2_TOTAL_PEERS][ULNET_PORT_COUNT];
     arena_ref_t state_packet_history[SAM2_TOTAL_PEERS][ULNET_STATE_PACKET_HISTORY_SIZE]; // Indexable by (frame / ULNET_DELAY_BUFFER_SIZE) % ULNET_STATE_PACKET_HISTORY_SIZE
@@ -311,7 +311,7 @@ typedef struct ulnet_session {
     arena_ref_t reliable_tx_packet_history[SAM2_TOTAL_PEERS][ULNET_RELIABLE_ACK_BUFFER_SIZE]; // Indexable by sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE
     arena_ref_t reliable_rx_packet_history[SAM2_TOTAL_PEERS][ULNET_RELIABLE_ACK_BUFFER_SIZE]; // Indexable by sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE
     uint16_t reliable_tx_next_seq[SAM2_TOTAL_PEERS]; // Greatest sequence we have sent
-    uint64_t reliable_tx_greatest[SAM2_TOTAL_PEERS]; // Greatest sequence a peer has seen from us
+    uint16_t reliable_tx_greatest[SAM2_TOTAL_PEERS]; // Greatest sequence a peer has seen from us
     uint16_t reliable_rx_greatest[SAM2_TOTAL_PEERS]; // Greatest sequence we have seen from a peer
     uint64_t reliable_tx_missing [SAM2_TOTAL_PEERS]; // Bitfield with 1's representing *known* missing packets, offset from `reliable_tx_greatest`, the 0th bit is always 0 as that is the greatest they have seen
     uint64_t reliable_rx_missing [SAM2_TOTAL_PEERS]; // Bitfield with 1's representing *known* missing packets, offset from `reliable_rx_greatest`, the 0th bit is always 0 as that is the greatest we have seen
@@ -340,6 +340,12 @@ typedef struct ulnet_session {
 #endif
 } ulnet_session_t;
 
+#ifdef __cplusplus
+#include <type_traits>
+static_assert(std::is_trivial_v<ulnet_session_t> && std::is_standard_layout_v<ulnet_session_t>,
+    "ulnet_session_t must be a POD type for safe memory operations");
+#endif
+
 ULNET_LINKAGE int ulnet_process_message(ulnet_session_t *session, const void *response);
 ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, void *save_state, size_t save_state_size, int64_t save_state_frame);
 ULNET_LINKAGE void ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, int p, const char *remote_description);
@@ -349,20 +355,6 @@ ULNET_LINKAGE sam2_room_t ulnet__infer_future_room_we_are_in(ulnet_session_t *se
 ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session);
 ULNET_LINKAGE void ulnet_imgui_show_session(ulnet_session_t *session);
 ULNET_LINKAGE void ulnet_imgui_show_recent_packets_table(ulnet_session_t *session, int p);
-
-static inline int ulnet_our_port(ulnet_session_t *session) {
-    // @todo There is a bug here where we are sending out packets as the authority when we are not the authority
-    if (session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
-        int port = sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id);
-        if (port == -1) {
-            SAM2_LOG_FATAL("Our peer ID %05" PRId16 " not found in room", session->our_peer_id);
-        }
-
-        return port;
-    } else {
-        return SAM2_AUTHORITY_INDEX;
-    }
-}
 
 static inline int ulnet_locate_spectator(sam2_room_t *room, uint64_t peer_id) {
     for (int i = SAM2_SPECTATOR_START; i < SAM2_TOTAL_PEERS; i++) {
@@ -587,37 +579,43 @@ ULNET_LINKAGE void ulnet_input_poll(ulnet_session_t *session, ulnet_input_state_
 // @todo Weird interface
 ULNET_LINKAGE ulnet_input_state_t (*ulnet_query_generate_next_input(ulnet_session_t *session, ulnet_core_option_t *next_frame_option))[ULNET_PORT_COUNT] {
     // Poll input with buffering for netplay
-    if (!ulnet_is_spectator(session, session->our_peer_id) && session->state[ulnet_our_port(session)].frame < session->frame_counter + session->delay_frames) {
-        // @todo The preincrement does not make sense to me here, but things have been working
-        int64_t next_buffer_index = ++session->state[ulnet_our_port(session)].frame % ULNET_DELAY_BUFFER_SIZE;
+    int our_port = sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id);
+    if (our_port == -1) {
+        SAM2_LOG_WARN("No port associated for our peer_id=%d, skipping input polling", session->our_peer_id);
+        return NULL;
+    } else if (our_port < SAM2_SPECTATOR_START) {
+        if (session->state[our_port].frame >= session->frame_counter + session->delay_frames) {
+            return NULL; // We already buffered enough input
+        }
 
-        session->state[ulnet_our_port(session)].core_option[next_buffer_index] = *next_frame_option;
+        // @todo The preincrement does not make sense to me here, but things have been working
+        int64_t next_buffer_index = ++session->state[our_port].frame % ULNET_DELAY_BUFFER_SIZE;
+
+        session->state[our_port].core_option[next_buffer_index] = *next_frame_option;
         memset(next_frame_option, 0, sizeof(*next_frame_option));
 
         //if (ulnet_is_authority(session)) {
-            session->state[ulnet_our_port(session)].room_xor_delta[next_buffer_index] = session->next_room_xor_delta;
+            session->state[our_port].room_xor_delta[next_buffer_index] = session->next_room_xor_delta;
             memset(&session->next_room_xor_delta, 0, sizeof(session->next_room_xor_delta));
         //}
 
         // Incoporate input from spectators into our input. This has the drawback of round trip latency but requires a single connection to the server
-        memset(session->state[ulnet_our_port(session)].input_state[next_buffer_index], 0, sizeof(session->state[ulnet_our_port(session)].input_state[next_buffer_index]));
+        memset(session->state[our_port].input_state[next_buffer_index], 0, sizeof(session->state[our_port].input_state[next_buffer_index]));
         for (int i = 0; i < SAM2_ARRAY_LENGTH(session->agent); i++) {
             if (session->agent[i]) {
                 for (int p = 0; p < SAM2_PORT_MAX; p++) {
-                    for (int j = 0; j < SAM2_ARRAY_LENGTH(session->state[ulnet_our_port(session)].input_state[next_buffer_index][p]); j++) {
-                        session->state[ulnet_our_port(session)].input_state[next_buffer_index][p][j] |= session->spectator_suggested_input_state[i][p][j];
+                    for (int j = 0; j < SAM2_ARRAY_LENGTH(session->state[our_port].input_state[next_buffer_index][p]); j++) {
+                        session->state[our_port].input_state[next_buffer_index][p][j] |= session->spectator_suggested_input_state[i][p][j];
                     }
                 }
             }
         }
 
-        return &session->state[ulnet_our_port(session)].input_state[next_buffer_index];
-    } else if (ulnet_is_spectator(session, session->our_peer_id)) {
+        return &session->state[our_port].input_state[next_buffer_index];
+    } else {
         memset(session->spectator_suggested_input_state[63], 0, sizeof(session->spectator_suggested_input_state[63]));
         return &session->spectator_suggested_input_state[63];
     }
-
-    return NULL;
 }
 
 double core_wants_tick_in_seconds(int64_t core_wants_tick_at_unix_usec) {
@@ -761,7 +759,7 @@ static int ulnet__udp_send(ulnet_session_t *session, int port, const uint8_t *pa
 static int ulnet__wrap_packet(const uint8_t packet[/* size */], int size, uint16_t sequence,
     uint64_t rx_missing, uint16_t rx_greatest, uint8_t wrapped_packet[/* ULNET_PACKET_SIZE_BYTES_MAX */]) {
     if ((wrapped_packet[0] & ULNET_CHANNEL_MASK) != ULNET_CHANNEL_RELIABLE) {
-        SAM2_LOG_ERROR("Expected filled out first header byte", wrapped_packet[0] & ULNET_CHANNEL_MASK);
+        SAM2_LOG_ERROR("Expected filled out first header byte");
         return -1;
     }
 
@@ -787,7 +785,7 @@ static int ulnet__wrap_packet(const uint8_t packet[/* size */], int size, uint16
     }
 
     if (ULNET_PACKET_SIZE_BYTES_MAX < offset + size) {
-        SAM2_LOG_ERROR("Reliable packet too large: %zu bytes", size);
+        SAM2_LOG_ERROR("Reliable packet too large: %d bytes", size);
         return -1;
     }
 
@@ -930,15 +928,18 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
     size_t (*retro_serialize_size)(void *user_ptr),
     bool (*retro_serialize)(void *user_ptr, void *, size_t),
     bool (*retro_unserialize)(void *user_ptr, const void *, size_t)) {
+
+    int our_port = sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id);
     IMH(ImGui::Begin("P2P UDP Netplay", NULL, ImGuiWindowFlags_AlwaysAutoResize);)
     int status = 0;
 
     session->retro_unserialize = retro_unserialize; // If used this is invoked through a callback within this function call
-    if (session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+    if (session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED
+        && our_port != -1) {
         uint8_t packet[ULNET_PACKET_SIZE_BYTES_MAX];
         int64_t packet_size;
 
-        if (ulnet_is_spectator(session, session->our_peer_id)) {
+        if (our_port >= SAM2_SPECTATOR_START) {
             packet[0] = ULNET_CHANNEL_SPECTATOR_INPUT;
             packet_size = sizeof(ulnet_state_packet_t) + rle8_encode_capped(
                 (uint8_t *) &session->spectator_suggested_input_state[63],
@@ -947,9 +948,9 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
                 sizeof(packet) - sizeof(ulnet_state_packet_t)
             );
         } else {
-            packet[0] = ULNET_CHANNEL_INPUT | ulnet_our_port(session);
+            packet[0] = ULNET_CHANNEL_INPUT | our_port;
             packet_size = sizeof(ulnet_state_packet_t) + rle8_encode_capped(
-                (uint8_t *) &session->state[ulnet_our_port(session)],
+                (uint8_t *) &session->state[our_port],
                 sizeof(session->state[0]),
                 &packet[sizeof(ulnet_state_packet_t)],
                 sizeof(packet) - sizeof(ulnet_state_packet_t)
@@ -968,9 +969,9 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
             if (state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED) {
                 ulnet_send(session, p, packet, packet_size);
 
-                if ((packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_INPUT) {
+                if (our_port < SAM2_SPECTATOR_START) {
                     SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%05" PRId16,
-                        session->state[ulnet_our_port(session)].frame, p, session->room_we_are_in.peer_ids[p]);
+                        session->state[our_port].frame, p, session->room_we_are_in.peer_ids[p]);
                 } else {
                     SAM2_LOG_DEBUG("Sent spectator input packet dest peer_ids[%d]=%05" PRId16, p, session->room_we_are_in.peer_ids[p]);
                 }
@@ -1107,8 +1108,8 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
         netplay_ready_to_tick &= session->state[p].frame <  session->frame_counter + ULNET_DELAY_BUFFER_SIZE; // This is needed for spectators only. By protocol it should always true for non-spectators unless we have a bug or someone is misbehaving
     }
 
-    if (!(session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) && !ulnet_is_spectator(session, session->our_peer_id)) {
-        int64_t frames_buffered = session->state[ulnet_our_port(session)].frame - session->frame_counter + 1;
+    if (!(session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) && our_port != -1 && our_port < SAM2_SPECTATOR_START) {
+        int64_t frames_buffered = session->state[our_port].frame - session->frame_counter + 1;
         assert(frames_buffered <= ULNET_DELAY_BUFFER_SIZE);
         assert(frames_buffered >= 0);
     IMH(if                      (frames_buffered <  session->delay_frames) { ImGui::Text("We have not buffered enough frames still need %" PRId64, session->delay_frames - frames_buffered); })
@@ -1205,7 +1206,7 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
                 }
             }
 
-            if (sam2_get_port_of_peer(&new_room_state, session->our_peer_id) < SAM2_SPECTATOR_START) {
+            if (our_port != -1 && our_port < SAM2_SPECTATOR_START) {
                 for (int p = 0; p < SAM2_PORT_MAX; p++) {
                     if (   new_room_state.peer_ids[p] > SAM2_PORT_SENTINELS_MAX
                         && new_room_state.peer_ids[p] != session->our_peer_id
@@ -1222,7 +1223,7 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
                 }
             }
 
-            for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
+            for (int p = 0; p < SAM2_SPECTATOR_START; p++) {
                 if (new_room_state.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
 
                 if (new_room_state.peer_ids[p] != session->room_we_are_in.peer_ids[p]) {
@@ -1243,10 +1244,15 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
             }
         }
 
+        // Room could have changed at this point so recompute our_port
+        our_port = sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id);
+
         if (   session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED
-            && status & ULNET_POLL_SESSION_SAVED_STATE) {
-            session->state[ulnet_our_port(session)].save_state_frame = save_state_frame;
-            session->state[ulnet_our_port(session)].save_state_hash[save_state_frame % ULNET_DELAY_BUFFER_SIZE] = ZSTD_XXH64(save_state, save_state_size, 0);
+            && status & ULNET_POLL_SESSION_SAVED_STATE
+            && our_port != -1
+            && our_port < SAM2_SPECTATOR_START) {
+            session->state[our_port].save_state_frame = save_state_frame;
+            session->state[our_port].save_state_hash[save_state_frame % ULNET_DELAY_BUFFER_SIZE] = ZSTD_XXH64(save_state, save_state_size, 0);
             //session->desync_debug_packet.input_state_hash[save_state_frame % ULNET_DELAY_BUFFER_SIZE] = ZSTD_XXH64(g_libretro_context.InputState, sizeof(g_libretro_context.InputState));
         }
 
@@ -1345,6 +1351,10 @@ static void ulnet__on_state_changed(juice_agent_t *agent, juice_state_t state, v
 
     int p;
     SAM2_LOCATE(session->agent, agent, p);
+    if (p == -1) {
+        SAM2_LOG_ERROR("Couldn't find agent on port=%d", p);
+        return;
+    }
 
     if (   state == JUICE_STATE_CONNECTED
         && session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
@@ -1392,6 +1402,36 @@ static void ulnet__on_gathering_done(juice_agent_t *agent, void *user_ptr) {
 
     response.peer_id = session->agent_peer_ids[p];
     session->sam2_send_callback(session->user_ptr, (char *) &response);
+}
+
+static void ulnet__check_for_desync(ulnet_state_t *our_state, ulnet_state_t *their_state, int64_t *our_desync_frame) {
+    int64_t desync_frame = 0;
+    int64_t latest_common_frame = SAM2_MIN(our_state->save_state_frame, their_state->save_state_frame);
+    int64_t frame_difference = SAM2_ABS(our_state->save_state_frame - their_state->save_state_frame);
+    int64_t total_frames_to_compare = ULNET_DELAY_BUFFER_SIZE - frame_difference;
+
+    for (int f = total_frames_to_compare-1; f >= 0 ; f--) { // Start from the oldest frame
+        int64_t frame = latest_common_frame - f;
+        int64_t frame_index = frame % ULNET_DELAY_BUFFER_SIZE;
+
+        if (our_state->input_state_hash[frame_index] != their_state->input_state_hash[frame_index]) {
+            SAM2_LOG_ERROR("Input state hash mismatch for frame %" PRId64 " Our hash: %" PRIx64 " Their hash: %" PRIx64 "",
+                frame, our_state->input_state_hash[frame_index], their_state->input_state_hash[frame_index]);
+        } else if (   our_state->save_state_hash[frame_index] != 0
+                   && their_state->save_state_hash[frame_index] != 0
+                   && our_state->save_state_hash[frame_index] != their_state->save_state_hash[frame_index]) {
+            SAM2_LOG_ERROR("Save state hash mismatch for frame %" PRId64 " Our hash: %016" PRIx64 " Their hash: %016" PRIx64,
+                frame, our_state->save_state_hash[frame_index], their_state->save_state_hash[frame_index]);
+            desync_frame = frame;
+            break;
+        }
+    }
+
+    if (desync_frame == 0 && *our_desync_frame != 0) {
+        SAM2_LOG_INFO("Peer resynced on frame %" PRId64, total_frames_to_compare-1);
+    }
+
+    *our_desync_frame = desync_frame;
 }
 
 static void ulnet__process_udp_packet(ulnet_session_t *session, int p, arena_ref_t packet_ref);
@@ -1444,7 +1484,7 @@ static void ulnet__process_udp_packet(ulnet_session_t *session, int p, arena_ref
         break;
     }
     case ULNET_CHANNEL_ASCII: {
-        SAM2_LOG_INFO("Received message with header '%.*s' from peer %05" PRId16 " on channel 0x%" PRIx8 " with %zu bytes",
+        SAM2_LOG_INFO("Received message with header '%.*s' from peer %05" PRIu16 " on channel 0x%" PRIx8 " with %zu bytes",
             (int)SAM2_MIN(size, SAM2_HEADER_SIZE), data, session->agent_peer_ids[p], channel_and_flags & ULNET_CHANNEL_MASK, size);
 
         if (memcmp(data, ulnet_exit_header, SAM2_HEADER_TAG_SIZE) == 0) {
@@ -1538,8 +1578,8 @@ static void ulnet__process_udp_packet(ulnet_session_t *session, int p, arena_ref
         if (nbytes > 0) {
             uint16_t tx_greatest;
             if (offset + sizeof(tx_greatest) + nbytes > size) {
-                SAM2_LOG_WARN("Reliable packet too small for ACK bitfield (%d bytes needed, %d available)",
-                    offset + sizeof(uint16_t) + nbytes, (int)size);
+                SAM2_LOG_WARN("Reliable packet too small for ACK bitfield (%zu bytes needed, %zu available)",
+                    offset + sizeof(uint16_t) + nbytes, size);
                 break;
             }
 
@@ -1551,7 +1591,7 @@ static void ulnet__process_udp_packet(ulnet_session_t *session, int p, arena_ref
 
             if (   ulnet__sequence_greater_than(tx_greatest, session->reliable_tx_greatest[p])
                 // This next check ensures we store the most recent missing bitfield when the greatest transmit sequence is the same
-                || tx_greatest == session->reliable_tx_greatest[p] && ULNET__POPCNT(tx_missing) < ULNET__POPCNT(session->reliable_tx_missing[p])) {
+                || (tx_greatest == session->reliable_tx_greatest[p] && ULNET__POPCNT(tx_missing) < ULNET__POPCNT(session->reliable_tx_missing[p]))) {
                 session->reliable_tx_greatest[p] = tx_greatest;
                 session->reliable_tx_missing[p] = tx_missing;
             }
@@ -1622,34 +1662,13 @@ static void ulnet__process_udp_packet(ulnet_session_t *session, int p, arena_ref
         }
 
         // Check for desync
-        ulnet_state_t *their_desync_debug_packet = &session->state[original_sender_port];
-        ulnet_state_t *our_desync_debug_packet = &session->state[ulnet_our_port(session)];
-
-        int64_t latest_common_frame = SAM2_MIN(our_desync_debug_packet->save_state_frame, their_desync_debug_packet->save_state_frame);
-        int64_t frame_difference = SAM2_ABS(our_desync_debug_packet->save_state_frame - their_desync_debug_packet->save_state_frame);
-        int64_t total_frames_to_compare = ULNET_DELAY_BUFFER_SIZE - frame_difference;
-        for (int f = total_frames_to_compare-1; f >= 0 ; f--) {
-            int64_t frame_to_compare = latest_common_frame - f;
-            int64_t frame_index = frame_to_compare % ULNET_DELAY_BUFFER_SIZE;
-
-            if (our_desync_debug_packet->input_state_hash[frame_index] != their_desync_debug_packet->input_state_hash[frame_index]) {
-                SAM2_LOG_ERROR("Input state hash mismatch for frame %" PRId64 " Our hash: %" PRIx64 " Their hash: %" PRIx64 "",
-                    frame_to_compare, our_desync_debug_packet->input_state_hash[frame_index], their_desync_debug_packet->input_state_hash[frame_index]);
-            } else if (   our_desync_debug_packet->save_state_hash[frame_index]
-                       && their_desync_debug_packet->save_state_hash[frame_index]) {
-
-                if (our_desync_debug_packet->save_state_hash[frame_index] != their_desync_debug_packet->save_state_hash[frame_index]) {
-                    if (!session->peer_desynced_frame[p]) {
-                        session->peer_desynced_frame[p] = frame_to_compare;
-                    }
-
-                    SAM2_LOG_ERROR("Save state hash mismatch for frame %" PRId64 " Our hash: %016" PRIx64 " Their hash: %016" PRIx64,
-                        frame_to_compare, our_desync_debug_packet->save_state_hash[frame_index], their_desync_debug_packet->save_state_hash[frame_index]);
-                } else if (session->peer_desynced_frame[p]) {
-                    session->peer_desynced_frame[p] = 0;
-                    SAM2_LOG_INFO("Peer resynced frame on frame %" PRId64 "", frame_to_compare);
-                }
-            }
+        int our_port = sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id);
+        if (our_port != -1 && our_port < SAM2_SPECTATOR_START) {
+            ulnet__check_for_desync(
+                &session->state[our_port],
+                &session->state[original_sender_port],
+                &session->peer_desynced_frame[our_port]
+            );
         }
 
         break;
@@ -1699,13 +1718,13 @@ static void ulnet__process_udp_packet(ulnet_session_t *session, int p, arena_ref
             session->remote_packet_groups = 1; // k != 239 => 1 packet group
         }
 
-        if (session->fec_index_counter[sequence_hi] == k) {
-            // We already have received enough Reed-Solomon blocks to decode the payload; we can ignore this packet
+        if (sequence_hi >= FEC_PACKET_GROUPS_MAX) {
+            SAM2_LOG_WARN("Received savestate transfer packet with sequence_hi >= FEC_PACKET_GROUPS_MAX");
             break;
         }
 
-        if (sequence_hi >= FEC_PACKET_GROUPS_MAX) {
-            SAM2_LOG_WARN("Received savestate transfer packet with sequence_hi >= FEC_PACKET_GROUPS_MAX");
+        if (session->fec_index_counter[sequence_hi] == k) {
+            // We already have received enough Reed-Solomon blocks to decode the payload; we can ignore this packet
             break;
         }
 
@@ -1933,8 +1952,9 @@ int ulnet_process_message(ulnet_session_t *session, const void *response) {
             if (current_port != -1) {
                 SAM2_LOG_INFO("Peer %05" PRId16 " left", (uint16_t) room_join->peer_id);
 
+                int available_spectator_port = ulnet_locate_spectator(&futureer_room_we_are_in, SAM2_PORT_AVAILABLE);
                 futureer_room_we_are_in.peer_ids[current_port] = SAM2_PORT_AVAILABLE;
-                futureer_room_we_are_in.peer_ids[ulnet_locate_spectator(&futureer_room_we_are_in, SAM2_PORT_AVAILABLE)] = room_join->peer_id;
+                futureer_room_we_are_in.peer_ids[available_spectator_port] = room_join->peer_id;
             } else {
                 SAM2_LOG_WARN("Peer %05" PRId16 " did something that doesn't look like joining or leaving", (uint16_t) room_join->peer_id);
 
@@ -2395,7 +2415,8 @@ int ulnet__test_forward_messages(sam2_server_t *server, ulnet_session_t *session
     sam2_message_u message;
 
     uv_run(&server->loop, UV_RUN_NOWAIT);
-    while (status = sam2_client_poll(socket, &message)) {
+    for (;;) {
+        status = sam2_client_poll(socket, &message);
         if (status < 0) {
             SAM2_LOG_ERROR("Error polling sam2 server: %d", status);
             return status;
@@ -2405,6 +2426,8 @@ int ulnet__test_forward_messages(sam2_server_t *server, ulnet_session_t *session
                 SAM2_LOG_ERROR("Error processing message: %d", status);
                 return status;
             }
+        } else {
+            break;
         }
     }
 
@@ -2442,6 +2465,8 @@ int ulnet__test_sync(ulnet_session_t **session_1_out, ulnet_session_t **session_
     sam2_server_t *server = 0;
     ulnet_session_t *sessions[2] = {0};
     sam2_socket_t sockets[2] = {0};
+    void *msg1;
+    void *msg2;
     int test_passed = 1;
 
     server = (sam2_server_t *) malloc(sizeof(sam2_server_t));
@@ -2534,8 +2559,8 @@ int ulnet__test_sync(ulnet_session_t **session_1_out, ulnet_session_t **session_
     ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3,
         ulnet__test_retro_run, ulnet__test_retro_serialize_size, ulnet__test_retro_serialize, ulnet__test_retro_unserialize);
 
-    char *msg1 = (char *) arena_deref(&sessions[1]->arena, sessions[1]->reliable_tx_packet_history[SAM2_SPECTATOR_START][0]);
-    char *msg2 = (char *) arena_deref(&sessions[1]->arena, sessions[1]->reliable_tx_packet_history[SAM2_SPECTATOR_START][1]);
+    msg1 = arena_deref(&sessions[1]->arena, sessions[1]->reliable_tx_packet_history[SAM2_SPECTATOR_START][0]);
+    msg2 = arena_deref(&sessions[1]->arena, sessions[1]->reliable_tx_packet_history[SAM2_SPECTATOR_START][1]);
     if (!(   msg1 && memcmp(msg1, "HELLO", sizeof("HELLO") - 1) == 0
           && msg2 && memcmp(msg2, "WORLD", sizeof("WORLD") - 1) == 0)) {
         SAM2_LOG_ERROR("Failed to send reliable messages");
