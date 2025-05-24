@@ -43,30 +43,6 @@ else()
   add_compile_options(-Wsizeof-pointer-div)
 endif()
 
-# Set Compiler Flags
-if(MSVC)
-else()
-  if(APPLE)
-      link_libraries(-static-libstdc++)
-  else()
-      link_libraries(-static-libgcc)
-  endif()
-endif()
-
-# Enable hardware safe stack for x86_64 and software for aarch64 clang (this won't work if compiled in a dll)
-if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "amd64|x86_64")
-  # Apply flags for MSVC
-  if(MSVC)
-    set_source_files_properties(sdlarch.cpp PROPERTIES COMPILE_OPTIONS "/CETCOMPAT")
-  # Apply flags for GCC/Clang
-  elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    set_source_files_properties(sdlarch.cpp PROPERTIES COMPILE_OPTIONS "-mshstk")
-  endif()
-elseif()
-  # This was causing the aarch64 build of clang-13 to segmentation fault
-  #set_source_files_properties(sdlarch.cpp PROPERTIES COMPILE_OPTIONS "-fsanitize=safe-stack")
-endif()
-
 
 # Source Files
 set(SOURCE_FILES
@@ -81,6 +57,12 @@ set(SOURCE_FILES
     Source/ThirdParty/imgui/imgui_widgets.cpp
     Source/ThirdParty/implot/implot.cpp
     Source/ThirdParty/implot/implot_items.cpp
+    Source/ThirdParty/netImgui/Code/Client/Private/NetImgui_Api.cpp
+    Source/ThirdParty/netImgui/Code/Client/Private/NetImgui_Client.cpp
+    Source/ThirdParty/netImgui/Code/Client/Private/NetImgui_CmdPackets_DrawFrame.cpp
+    Source/ThirdParty/netImgui/Code/Client/Private/NetImgui_NetworkPosix.cpp
+    Source/ThirdParty/netImgui/Code/Client/Private/NetImgui_NetworkUE4.cpp
+    Source/ThirdParty/netImgui/Code/Client/Private/NetImgui_NetworkWin32.cpp
 )
 
 # Add SDL and libuv subdirectories

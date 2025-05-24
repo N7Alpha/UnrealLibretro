@@ -27,6 +27,7 @@
 #include <inttypes.h>
 #include <stdlib.h> // @todo Remove when I remove malloc and free stuff
 #include <string.h>
+#include <stdio.h>
 
 #define SAM2__STR(s) _SAM2__STR(s)
 #define _SAM2__STR(s) #s
@@ -866,11 +867,11 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
     struct sockaddr_storage server_addr = {0};
     // Initialize winsock / Increment winsock reference count
 #ifdef _WIN32
-    u_long flags;
     WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+    int wsa_status = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (wsa_status != 0) {
         SAM2_LOG_ERROR("WSAStartup failed!");
-        return -1;
+        goto fail;
     }
 #endif
 
@@ -888,19 +889,21 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
         goto fail;
     }
 
+    { // Scope flags
 #ifdef _WIN32
-    flags = 1; // 1 for non-blocking, 0 for blocking
+    u_long flags = 1; // 1 for non-blocking, 0 for blocking
     if (ioctlsocket(sockfd, FIONBIO, &flags) < 0) {
         SAM2_LOG_ERROR("Failed to set socket to non-blocking mode");
         goto fail;
     }
 #else
-    int current_flags = fcntl(sockfd, F_GETFL, 0);
-    if (current_flags < 0 || fcntl(sockfd, F_SETFL, current_flags | O_NONBLOCK) < 0) {
+    int flags = fcntl(sockfd, F_GETFL, 0);
+    if (flags < 0 || fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0) {
         SAM2_LOG_ERROR("Failed to set socket to non-blocking mode");
         goto fail;
     }
 #endif
+    }
 
     if (family == AF_INET) {
         ((struct sockaddr_in *)&server_addr)->sin_family = AF_INET;
@@ -933,7 +936,9 @@ fail:
         SAM2_CLOSESOCKET(sockfd);
     }
 #ifdef _WIN32
-    WSACleanup();
+    if (wsa_status == 0) { // Only cleanup if WSAStartup was successful
+        WSACleanup();
+    }
 #endif
     return -1;
 }
