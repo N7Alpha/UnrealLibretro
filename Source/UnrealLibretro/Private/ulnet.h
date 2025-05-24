@@ -503,20 +503,38 @@ int64_t ulnet__get_unix_time_microseconds() {
 #endif
 
 uint64_t ulnet__rdtsc() {
-#if defined(__aarch64__) || defined(__arm__)
-    return 1000 * ulnet__get_unix_time_microseconds();
-#elif defined(_MSC_VER)   /* MSVC compiler */
+// Disabled because ARM64 platforms don't usually let you read the cycle counter
+#if 0 && defined(__aarch64__)                  /* === ARM64 (Broken) == */
+    unsigned long long v;
+
+    // An ISB guarantees all previous instructions retire before we sample
+    __asm__ __volatile__ (
+        "isb\n\t"                 // Finish everything already issued
+        "mrs %0, pmccntr_el0\n\t" // Read the 64-bit counter
+        : "=r" (v)                // Write to v
+        :                         // No inputs
+        : "memory"                // Prohibit compiler from hoisting loads/stores
+    );
+
+    return v;
+#elif defined(__x86_64__) || defined(__i386__) /* === x86/x86_64 ====== */
+#if defined(_MSC_VER)                          /* --- MSVC compiler --- */
+    int cpuInfo[4];
+    __cpuid(cpuInfo, 0);          // Retire previous instructions
     return __rdtsc();
-#elif defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))   /* GCC compiler on x86 platforms */
+#elif defined(__GNUC__)                        /* --- GCC compiler ---- */
     unsigned int lo, hi;
     __asm__ __volatile__ (
-      "rdtsc" : "=a" (lo), "=d" (hi)
+        "cpuid\n\t"               // Serialize execution
+        "rdtsc\n\t"               // Read timestamp counter
+        : "=a" (lo), "=d" (hi)    // write to lo and hi
+        : "a" (0)                 // Input for cpuid (eax=0)
+        : "ebx", "ecx"            // cpuid clobbers these
     );
     return ((uint64_t)hi << 32) | lo;
-#else
-    /* Fallback for other platforms/compilers */
-    return 1000 * ulnet__get_unix_time_microseconds();
 #endif
+#endif                                         /* === Unsupported ===== */
+    return 1000 * ulnet__get_unix_time_microseconds();
 }
 
 static inline int ulnet__sequence_cmp(uint16_t s1, uint16_t s2) {
@@ -1088,8 +1106,8 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
         }
     }
 
-    ImGuiIO& io = ImGui::GetIO();
-    ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
+IMH(ImGuiIO& io = ImGui::GetIO();)
+IMH(ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);)
 
 IMH(ulnet_imgui_show_session(session));
 
