@@ -726,6 +726,41 @@ int sam2__terminal_supports_ansi_colors() {
     return 1;
 }
 
+#if defined(__APPLE__)
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#endif
+static int sam2__debugger_is_attached_to_us(void){
+#if defined(_WIN32)              /* Windows ---------------- */
+    return IsDebuggerPresent();
+
+#elif defined(__APPLE__)         /* macOS / iOS ------------ */
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)getpid() };
+    struct kinfo_proc info;
+    size_t sz = sizeof(info);
+    if (sysctl(mib, 4, &info, &sz, NULL, 0) == 0 && sz == sizeof(info))
+        return (info.kp_proc.p_flag & P_TRACED) != 0;
+    return 0;
+
+#elif defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) \
+   || defined(__OpenBSD__)        /* proc-based OSes ------- */
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) return 0;
+    char line[64];
+    while (fgets(line, sizeof line, f))
+        if (strncmp(line, "TracerPid:", 10) == 0) {
+            int pid = atoi(line + 10);
+            fclose(f);
+            return pid != 0;
+        }
+    fclose(f);
+    return 0;
+
+#else                             /* Fallback -------------- */
+    return 0;
+#endif
+}
+
 //#define SAM2_LOG_WRITE(level, file, line, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0); // Ex. Use print
 #ifndef SAM2_LOG_WRITE
 #define SAM2_LOG_WRITE_DEFINITION
@@ -790,19 +825,16 @@ static void SAM2_UNUSED sam2__log_write(int level, const char *file, int line, c
     fflush(stdout);
 
     if (level >= 4) {
-#ifdef _WIN32
-        // Break into the debugger on Windows
-        if (IsDebuggerPresent()) {
-            __debugbreak(); // HIT FATAL ERROR
-        }
+        if (sam2__debugger_is_attached_to_us()) {
+#if defined(_WIN32)
+            __debugbreak();              /* break only if we _have_ a debugger */
 #elif defined(__has_builtin)
 #if __has_builtin(__builtin_trap)
-        // Break into the debugger on POSIX systems
-        if (signal(SIGTRAP, SIG_IGN) != SIG_IGN) {
-            __builtin_trap(); // HIT FATAL ERROR
+            __builtin_trap();
+#endif
+#endif
         }
-#endif
-#endif
+
         exit(EXIT_FAILURE);
     }
 }
