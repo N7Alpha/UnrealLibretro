@@ -23,7 +23,7 @@ int g_log_level = 1; // Info
 
 #define MAX_SAMPLE_SIZE ULNET_MAX_SAMPLE_SIZE
 
-#define NETIMGUI_IMPLEMENTATION
+#define IMGUI_DISABLE_OBSOLETE_FUNCTIONS
 #include "NetImgui_Api.h"
 #include "imgui.h"
 #if !defined(NETARCH_NO_SDL)
@@ -44,7 +44,6 @@ int g_log_level = 1; // Info
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_init.h>
 #include <SDL3/SDL_keyboard.h>
-#include <SDL3/SDL_keycode.h>
 #include <SDL3/SDL_loadso.h>
 #include <SDL3/SDL_video.h>
 #endif
@@ -61,6 +60,7 @@ int g_log_level = 1; // Info
 #define PATH_SEPARATOR "/"
 #endif
 
+#include <math.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -141,11 +141,6 @@ char* portable_basename(char *path)
     // If there's no separator at all, the entire input is the filename.
     return path;
 }
-
-#ifdef _WIN32
-#else
-#include <unistd.h> // for sleep
-#endif
 
 // Hide OpenGL functions SDL declares with external linkage we just load all of them dynamically to support headless operation
 #define glActiveTexture RENAMED_BY_NETARCH_CPP_glActiveTexture
@@ -411,10 +406,10 @@ static struct {
 
 #define UMETA(...)
 
-enum class ERetroDeviceID : uint8_t
+enum ERetroDeviceID
 {
     // RETRO_DEVICE_ID_JOYPAD
-    JoypadB,
+    JoypadB = 0,
     JoypadY,
     JoypadSelect,
     JoypadStart,
@@ -479,17 +474,6 @@ enum class ERetroDeviceID : uint8_t
     Size UMETA(Hidden),
 };
 
-#include <type_traits>
-// std alchemy that converts enum class variables to their integer type
-template<typename E>
-static constexpr auto to_integral(E e) -> typename std::underlying_type<E>::type
-{
-    return static_cast<typename std::underlying_type<E>::type>(e);
-}
-
-static_assert(to_integral(ERetroDeviceID::Size) < sizeof(ulnet_input_state_t) / sizeof((*(ulnet_input_state_t *) (0x0))[0]), "ulnet_input_state_t is too small");
-
-
 
 struct FLibretroContext {
 
@@ -547,18 +531,18 @@ struct keymap {
 };
 
 static struct keymap g_binds[] = {
-    { SDL_SCANCODE_X, to_integral(ERetroDeviceID::JoypadA) },
-    { SDL_SCANCODE_Z, to_integral(ERetroDeviceID::JoypadB) },
-    { SDL_SCANCODE_A, to_integral(ERetroDeviceID::JoypadY) },
-    { SDL_SCANCODE_S, to_integral(ERetroDeviceID::JoypadX) },
-    { SDL_SCANCODE_UP, to_integral(ERetroDeviceID::JoypadUp) },
-    { SDL_SCANCODE_DOWN, to_integral(ERetroDeviceID::JoypadDown) },
-    { SDL_SCANCODE_LEFT, to_integral(ERetroDeviceID::JoypadLeft) },
-    { SDL_SCANCODE_RIGHT, to_integral(ERetroDeviceID::JoypadRight) },
-    { SDL_SCANCODE_RETURN, to_integral(ERetroDeviceID::JoypadStart) },
-    { SDL_SCANCODE_BACKSPACE, to_integral(ERetroDeviceID::JoypadSelect) },
-    { SDL_SCANCODE_Q, to_integral(ERetroDeviceID::JoypadL) },
-    { SDL_SCANCODE_W, to_integral(ERetroDeviceID::JoypadR) },
+    { SDL_SCANCODE_X, JoypadA },
+    { SDL_SCANCODE_Z, JoypadB },
+    { SDL_SCANCODE_A, JoypadY },
+    { SDL_SCANCODE_S, JoypadX },
+    { SDL_SCANCODE_UP, JoypadUp },
+    { SDL_SCANCODE_DOWN, JoypadDown },
+    { SDL_SCANCODE_LEFT, JoypadLeft },
+    { SDL_SCANCODE_RIGHT, JoypadRight },
+    { SDL_SCANCODE_RETURN, JoypadStart },
+    { SDL_SCANCODE_BACKSPACE, JoypadSelect },
+    { SDL_SCANCODE_Q, JoypadL },
+    { SDL_SCANCODE_W, JoypadR },
     { 0, 0 }
 };
 
@@ -1540,7 +1524,7 @@ void draw_imgui() {
         } else {
             if (g_libretro_context.sam2_socket == SAM2_SOCKET_INVALID) {
                 char port_str[64]; // Buffer to store the input text
-                sprintf(port_str, "%d", g_sam2_port);
+                snprintf(port_str, sizeof(port_str), "%d", g_sam2_port);
                 bool connect = false;
 
                 connect |= ImGui::InputText("##input_address", g_sam2_address, sizeof(g_sam2_address), ImGuiInputTextFlags_EnterReturnsTrue); ImGui::SameLine();
@@ -1951,7 +1935,7 @@ void draw_imgui() {
 
                 // Make the row selectable and keep track of the selected room
                 char label[128];
-                sprintf(label, "%s##%05" PRIu16, g_sam2_rooms[room_index].name, g_sam2_rooms[room_index].peer_ids[SAM2_AUTHORITY_INDEX]);
+                snprintf(label, sizeof(label), "%s##%05" PRIu16, g_sam2_rooms[room_index].name, g_sam2_rooms[room_index].peer_ids[SAM2_AUTHORITY_INDEX]);
                 if (ImGui::Selectable(label, selected_room_index == room_index, ImGuiSelectableFlags_SpanAllColumns)) {
                     selected_room_index = room_index;
                 }
@@ -2160,7 +2144,7 @@ finished_drawing_sam2_interface:
             int64_t max_delay_frames = ULNET_DELAY_BUFFER_SIZE/2-1;
             if (ImGui::SliderScalar("Network Buffered Frames", ImGuiDataType_S64, &g_ulnet_session.delay_frames, &min_delay_frames, &max_delay_frames, "%lld", ImGuiSliderFlags_None)) {
                 strcpy(g_core_option_for_next_frame.key, "netplay_delay_frames");
-                sprintf(g_core_option_for_next_frame.value, "%" PRIx64, g_ulnet_session.delay_frames);
+                snprintf(g_core_option_for_next_frame.value, sizeof(g_core_option_for_next_frame.value), "%" PRIx64, g_ulnet_session.delay_frames);
             }
         }
 
@@ -2856,10 +2840,10 @@ int16_t FLibretroContext::core_input_state(unsigned port, unsigned device, unsig
     // - The RETRO_DEVICE_POINTER interface is generally preferred over the lightgun and mouse even for things like lightguns and mice although you still use some parts of the lightgun interface for handling lightgun input probably same goes for mouse
 
     switch (device) {
-    case RETRO_DEVICE_JOYPAD:   return g_libretro_context.InputState[port][to_integral(ERetroDeviceID::JoypadB)     + id];
-    case RETRO_DEVICE_LIGHTGUN: return g_libretro_context.InputState[port][to_integral(ERetroDeviceID::LightgunX)   + id];
-    case RETRO_DEVICE_ANALOG:   return g_libretro_context.InputState[port][to_integral(ERetroDeviceID::AnalogLeftX) + 2 * index + (id % RETRO_DEVICE_ID_JOYPAD_L2)]; // The indexing logic is broken and might OOBs if we're queried for something that isn't an analog trigger or stick
-    case RETRO_DEVICE_POINTER:  return g_libretro_context.InputState[port][to_integral(ERetroDeviceID::PointerX)    + 4 * index + id];
+    case RETRO_DEVICE_JOYPAD:   return g_libretro_context.InputState[port][JoypadB     + id];
+    case RETRO_DEVICE_LIGHTGUN: return g_libretro_context.InputState[port][LightgunX   + id];
+    case RETRO_DEVICE_ANALOG:   return g_libretro_context.InputState[port][AnalogLeftX + 2 * index + (id % RETRO_DEVICE_ID_JOYPAD_L2)]; // The indexing logic is broken and might OOBs if we're queried for something that isn't an analog trigger or stick
+    case RETRO_DEVICE_POINTER:  return g_libretro_context.InputState[port][PointerX    + 4 * index + id];
     case RETRO_DEVICE_MOUSE:
     case RETRO_DEVICE_KEYBOARD:
     default:                    return 0;

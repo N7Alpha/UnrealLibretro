@@ -222,11 +222,11 @@ typedef struct {
         // if ((channel_and_flags & ULNET_CHANNEL_MASK) > 0) {
         struct {
             uint16_t rx_sequence;
-            uint8_t ack_bits[/* (channel_and_flags & ULNET_RELIABLE_MASK_ACK_BYTES) */];
+            //uint8_t ack_bits[/* (channel_and_flags & ULNET_RELIABLE_MASK_ACK_BYTES) */];
             //void *payload[];
         };
         //} else {
-        uint8_t payload[];
+        //uint8_t payload[];
         //}
     };
 } ulnet_reliable_packet_t;
@@ -340,9 +340,9 @@ typedef struct ulnet_session {
 #endif
 } ulnet_session_t;
 
-#ifdef __cplusplus
+#if __cplusplus >= 201103L
 #include <type_traits>
-static_assert(std::is_trivial_v<ulnet_session_t> && std::is_standard_layout_v<ulnet_session_t>,
+static_assert(std::is_trivially_default_constructible<ulnet_session_t>::value && std::is_standard_layout<ulnet_session_t>::value,
     "ulnet_session_t must be a POD type for safe memory operations");
 #endif
 
@@ -394,10 +394,6 @@ static inline void ulnet__xor_delta(void *dest, void *src, int size) {
 #define IMH(statement) statement
 #else
 #define IMH(statement)
-#endif
-
-#ifdef __cplusplus
-extern "C"
 #endif
 
 #include "juice/juice.h"
@@ -2200,7 +2196,7 @@ ULNET_LINKAGE void ulnet_imgui_show_session(ulnet_session_t *session) {
                 session->input_packet_size[p][session->frame_counter % session->sample_size] = peer_packet ? ref.size : 0;
 
                 char label[32];
-                sprintf(label, p == SAM2_AUTHORITY_INDEX ? "Authority" : "Port %d", p);
+                snprintf(label, sizeof(label), p == SAM2_AUTHORITY_INDEX ? "Authority" : "Port %d", p);
 
                 int xs[ULNET_MAX_SAMPLE_SIZE], ys[ULNET_MAX_SAMPLE_SIZE];
                 for (int j = 0, frame = SAM2_MAX(0, session->frame_counter - session->sample_size + 1); j < session->sample_size; j++, frame++) {
