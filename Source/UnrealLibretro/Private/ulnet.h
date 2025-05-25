@@ -356,16 +356,6 @@ ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session);
 ULNET_LINKAGE void ulnet_imgui_show_session(ulnet_session_t *session);
 ULNET_LINKAGE void ulnet_imgui_show_recent_packets_table(ulnet_session_t *session, int p);
 
-static inline int ulnet_locate_spectator(sam2_room_t *room, uint64_t peer_id) {
-    for (int i = SAM2_SPECTATOR_START; i < SAM2_TOTAL_PEERS; i++) {
-        if (room->peer_ids[i] == peer_id) {
-            return i;
-        }
-    }
-
-    return -1;
-}
-
 static bool ulnet_is_authority(ulnet_session_t *session) {
     return    session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]
            || session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] == 0; // @todo I don't think this extra check should be necessary
@@ -1966,9 +1956,15 @@ int ulnet_process_message(ulnet_session_t *session, const void *response) {
             if (current_port != -1) {
                 SAM2_LOG_INFO("Peer %05" PRId16 " left", (uint16_t) room_join->peer_id);
 
-                int available_spectator_port = ulnet_locate_spectator(&futureer_room_we_are_in, SAM2_PORT_AVAILABLE);
-                futureer_room_we_are_in.peer_ids[current_port] = SAM2_PORT_AVAILABLE;
-                futureer_room_we_are_in.peer_ids[available_spectator_port] = room_join->peer_id;
+                int avail_port = SAM2_SPECTATOR_START;
+                for (; avail_port < SAM2_TOTAL_PEERS; avail_port++) if (futureer_room_we_are_in.peer_ids[avail_port] == SAM2_PORT_AVAILABLE) break;
+
+                if (avail_port == SAM2_TOTAL_PEERS) {
+                    SAM2_LOG_WARN("No available spectator port found for peer %05" PRId16 ". Request rejected", (uint16_t) room_join->peer_id);
+                } else {
+                    futureer_room_we_are_in.peer_ids[current_port] = SAM2_PORT_AVAILABLE;
+                    futureer_room_we_are_in.peer_ids[avail_port] = room_join->peer_id;
+                }
             } else {
                 SAM2_LOG_WARN("Peer %05" PRId16 " did something that doesn't look like joining or leaving", (uint16_t) room_join->peer_id);
 
@@ -2038,9 +2034,9 @@ int ulnet_process_message(ulnet_session_t *session, const void *response) {
             if (p == -1) {
                 SAM2_LOG_INFO("Received signal from unknown peer");
                 sam2_room_t future_room_we_are_in = ulnet__infer_future_room_we_are_in(session);
-                p = ulnet_locate_spectator(&future_room_we_are_in, SAM2_PORT_AVAILABLE);
+                for (p = SAM2_SPECTATOR_START; p < SAM2_TOTAL_PEERS; p++) if (future_room_we_are_in.peer_ids[p] == SAM2_PORT_AVAILABLE) break;
 
-                if (p == -1) {
+                if (p == SAM2_TOTAL_PEERS) {
                     SAM2_LOG_WARN("We can't let them in as a spectator there are too many spectators");
 
                     static sam2_error_message_t error = {
