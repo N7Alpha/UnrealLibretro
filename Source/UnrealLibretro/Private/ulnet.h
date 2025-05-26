@@ -282,6 +282,18 @@ typedef struct {
 #endif
 } savestate_transfer_payload_t;
 
+typedef struct ulnet_transport_inproc_buffer {
+    uint8_t msg[256][ULNET_PACKET_SIZE_BYTES_MAX];
+    uint16_t msg_size[256];
+    uint8_t count;  // Number of messages available
+} ulnet_inproc_buf_t;
+
+typedef struct ulnet_transport_inproc {
+    ulnet_inproc_buf_t buf1; // Smaller peer_id -> larger peer_id
+    ulnet_inproc_buf_t buf2; // Larger peer_id -> smaller peer_id
+} ulnet_transport_inproc_t;
+
+
 typedef struct ulnet_session {
     int64_t frame_counter;
     int64_t delay_frames;
@@ -301,7 +313,11 @@ typedef struct ulnet_session {
     // MARK: Peer fields
     uint64_t peer_needs_sync_bitfield;
     uint64_t peer_pending_disconnect_bitfield;
-    juice_agent_t *agent[SAM2_TOTAL_PEERS];
+    int use_inproc_transport; // "Tag" for the following union
+    union {
+        juice_agent_t *agent[SAM2_TOTAL_PEERS];
+        ulnet_transport_inproc_t *inproc[SAM2_TOTAL_PEERS];
+    };
     uint16_t       agent_peer_ids[SAM2_TOTAL_PEERS];
     int64_t peer_desynced_frame[SAM2_TOTAL_PEERS];
     ulnet_input_state_t spectator_suggested_input_state[SAM2_TOTAL_PEERS][ULNET_PORT_COUNT];
@@ -355,6 +371,7 @@ ULNET_LINKAGE sam2_room_t ulnet__infer_future_room_we_are_in(ulnet_session_t *se
 ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session);
 ULNET_LINKAGE void ulnet_imgui_show_session(ulnet_session_t *session);
 ULNET_LINKAGE void ulnet_imgui_show_recent_packets_table(ulnet_session_t *session, int p);
+static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *packet, size_t size, void *user_ptr);
 
 static bool ulnet_is_authority(ulnet_session_t *session) {
     return    session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]
@@ -753,7 +770,25 @@ static int ulnet__udp_send(ulnet_session_t *session, int port, const uint8_t *pa
     }
 
     if (rand() / ((float) RAND_MAX) < session->debug_udp_send_drop_rate) {
-        SAM2_LOG_DEBUG("Intentionally dropped a sent UDP packet");
+        SAM2_LOG_ERROR("Intentionally dropped a sent UDP packet");
+        return 0;
+    }
+
+    if (session->use_inproc_transport) {
+        ulnet_inproc_buf_t *buf;
+        if (session->our_peer_id < session->agent_peer_ids[port]) {
+            buf = &session->inproc[port]->buf1;
+        } else {
+            buf = &session->inproc[port]->buf2;
+        }
+
+        if (buf->count >= sizeof(buf->msg) / sizeof(buf->msg[0])) {
+            SAM2_LOG_FATAL("Inproc transport buffer is full, cannot send packet");
+        }
+
+        buf->msg_size[buf->count] = size;
+        memcpy(buf->msg[buf->count], packet, size);
+        buf->count++;
         return 0;
     } else {
         return juice_send(session->agent[port], (const char *)packet, size);
@@ -1011,7 +1046,24 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
     // @todo This timing code is messy I should formally model the problem and then create a solution based on that
     bool ignore_frame_pacing_so_we_can_catch_up = false;
     int64_t poll_entry_time_usec = ulnet__get_unix_time_microseconds();
-    {
+
+    if (session->use_inproc_transport) {
+        for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
+            if (!session->inproc[p]) continue;
+
+            ulnet_inproc_buf_t *buf;
+            if (session->our_peer_id < session->agent_peer_ids[p]) {
+                buf = &session->inproc[p]->buf2;
+            } else {
+                buf = &session->inproc[p]->buf1;
+            }
+
+            for (int i = 0; i < buf->count; i++) {
+                ulnet_receive_packet_callback((juice_agent_t *)session->inproc[p], (char*)buf->msg[i], buf->msg_size[i], session);
+            }
+            buf->count = 0;  // Mark all messages as delivered
+        }
+    } else {
         int debug_loop_count = 0;
         do {
             if (ulnet_is_spectator(session, session->our_peer_id)) {
