@@ -67,7 +67,12 @@ set(SOURCE_FILES
 
 # Add SDL and libuv subdirectories
 # The way I set options with set() looks janky. This was the only thing I could figure out that worked after fiddling with cmake for a half hour
-set(SDL_SHARED_ENABLED_BY_DEFAULT OFF CACHE BOOL "")
+
+# 2. Tell CMake you DO NOT want to build SDL3's shared library
+set(SDL_SHARED OFF CACHE BOOL "Disable SDL3 shared library build" FORCE)
+set(SDL_TESTS OFF CACHE BOOL "Disable building SDL3 tests" FORCE)
+set(SDL_EXAMPLES OFF CACHE BOOL "Disable building SDL3 examples" FORCE)
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "Disable SDL3_test library artifact" FORCE)
 set(SDL_UNIX_CONSOLE_BUILD ON CACHE BOOL "")
 add_subdirectory(Source/ThirdParty/SDL)
 add_subdirectory(Source/ThirdParty/libuv)
