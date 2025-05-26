@@ -1,7 +1,7 @@
 # This builds netarch as a fully standalone executable and doesn't depend on UBT
 
 cmake_minimum_required(VERSION 3.13)
-project(sdlarch)
+project(netarch)
 
 # Set C++ Standard
 set(CMAKE_CXX_STANDARD 11)
@@ -73,7 +73,21 @@ set(SDL_SHARED OFF CACHE BOOL "Disable SDL3 shared library build" FORCE)
 set(SDL_TESTS OFF CACHE BOOL "Disable building SDL3 tests" FORCE)
 set(SDL_EXAMPLES OFF CACHE BOOL "Disable building SDL3 examples" FORCE)
 set(SDL_TEST_LIBRARY OFF CACHE BOOL "Disable SDL3_test library artifact" FORCE)
-set(SDL_UNIX_CONSOLE_BUILD ON CACHE BOOL "")
+if(LINUX) # Use heuristic to figure out if we're on a linux server or desktop, this isn't perfect but less confusing than trying to remember to pass -DSDL_UNIX_CONSOLE_BUILD=ON
+          #   In theory you should be able to handle this stuff at runtime, but I don't know if SDL3 supports that
+    include(CheckIncludeFile)
+    check_include_file("GL/gl.h" HAVE_OPENGL_H)
+    check_include_file("X11/Xlib.h" HAVE_X11_H)
+
+    if(HAVE_OPENGL_H AND HAVE_X11_H AND NOT CMAKE_CROSSCOMPILING)
+        set(SDL_UNIX_CONSOLE_BUILD OFF CACHE BOOL "" FORCE)
+        message(STATUS "🎮 GUI support detected - enabling graphics")
+    else()
+        set(SDL_UNIX_CONSOLE_BUILD ON CACHE BOOL "" FORCE)
+        message(STATUS "📟 Console-only build")
+    endif()
+endif()
+
 add_subdirectory(Source/ThirdParty/SDL)
 add_subdirectory(Source/ThirdParty/libuv)
 set(NO_TESTS ON CACHE BOOL "") # libjuice defaults to building tests (which we don't have checked in)
