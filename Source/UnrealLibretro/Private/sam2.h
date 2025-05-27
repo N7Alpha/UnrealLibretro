@@ -304,6 +304,10 @@ static sam2_message_metadata_t *sam2_get_metadata(const char *message) {
     return NULL; // No matching header found
 }
 
+static SAM2_FORCEINLINE int sam2_header_matches(const char *message, const char *header) {
+    return memcmp(message, header, 4 /* Header */ + 1 /* Major version */) == 0;
+}
+
 static int sam2_format_core_version(sam2_room_t *room, const char *name, const char *vers) {
     int i = 0;
     int version_len = strlen(vers);
@@ -1104,20 +1108,20 @@ static int sam2__frame_message(sam2_message_u *message, char *buffer, int *lengt
     for (; i < SAM2_ARRAY_LENGTH(string)    ; i++) string[i] = '\0'; \
 } while (0)
 
-static void sam2__sanitize_message(void *message) {
+static void sam2__sanitize_message(const char *message) {
     if (!message) return;
 
     // Sanitize C-Strings. This will also clear extra uninitialized bytes past the null terminator
-    if (memcmp(message, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
+    if (sam2_header_matches(message, sam2_make_header)) {
         sam2_room_make_message_t *make_message = (sam2_room_make_message_t *)message;
         SAM2__SANITIZE_STRING(make_message->room.name);
-    } else if (memcmp(message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
+    } else if (sam2_header_matches(message, sam2_list_header)) {
         sam2_room_list_message_t *list_message = (sam2_room_list_message_t *)message;
         SAM2__SANITIZE_STRING(list_message->room.name);
-    } else if (memcmp(message, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
+    } else if (sam2_header_matches(message, sam2_join_header)) {
         sam2_room_join_message_t *join_message = (sam2_room_join_message_t *)message;
         SAM2__SANITIZE_STRING(join_message->room.name);
-    } else if (memcmp(message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
+    } else if (sam2_header_matches(message, sam2_sign_header)) {
         sam2_signal_message_t *signal_message = (sam2_signal_message_t *)message;
         SAM2__SANITIZE_STRING(signal_message->ice_sdp);
     } else if (memcmp(message, sam2_fail_header, 8) == 0) {
@@ -1166,7 +1170,7 @@ SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *message)
         recv(sockfd, temp_buf, consumed, 0);
         SAM2_LOG_DEBUG("Received complete message with header '%.8s'", (char *)message);
         ((char *) message)[7] = 'R';
-        sam2__sanitize_message(message);
+        sam2__sanitize_message((const char *)message);
 
         return 1;
     }
@@ -1523,7 +1527,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
         SAM2_LOG_INFO("Client %05" PRId16 " sent message with header '%.8s'", sam2__peer_id(client), (char *) &message);
 
         // Send the appropriate response
-        if (memcmp(&message, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        if (sam2_header_matches((const char*)&message, sam2_conn_header)) {
             sam2_connect_message_t *request = &message.connect_message;
             if (server->peer_id_map[request->peer_id] != SAM2__INDEX_NULL && request->peer_id != sam2__peer_id(client)) {
                 static sam2_error_message_t response = { SAM2_FAIL_HEADER, 0, "Peer id is already in use", SAM2_RESPONSE_INVALID_ARGS };
@@ -1556,7 +1560,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
                 response->peer_id = new_client_peer_id;
                 sam2__write_response(client_tcp, (sam2_message_u *) response);
             }
-        } else if (memcmp(&message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        } else if (sam2_header_matches((const char*)&message, sam2_list_header)) {
             for (int i = 0; i < SAM2_ARRAY_LENGTH(server->clients); i++) {
                 if (server->rooms[i].flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
                     sam2_room_list_message_t *response = &sam2__alloc_message(server, sam2_list_header)->room_list_response;
@@ -1570,7 +1574,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
             sam2__write_response(client_tcp, (sam2_message_u *) response);
 
             // @todo Stagger responses; Make more efficient
-        } else if (memcmp(&message, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        } else if (sam2_header_matches((const char*)&message, sam2_make_header)) {
             sam2_room_make_message_t *request = (sam2_room_make_message_t *) &message;
 
             request->room.peer_ids[SAM2_AUTHORITY_INDEX] = sam2__peer_id(client);
@@ -1581,7 +1585,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
             sam2_room_make_message_t *response = &sam2__alloc_message(server, sam2_make_header)->room_make_response;
             response->room = request->room;
             sam2__write_response(client_tcp, (sam2_message_u *) response);
-        } else if (memcmp(&message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        } else if (sam2_header_matches((const char*)&message, sam2_sign_header)) {
             // Clients forwarding sdp's between eachother
             sam2_signal_message_t *request = (sam2_signal_message_t *) &message;
 
@@ -1608,7 +1612,7 @@ static void on_read(uv_stream_t *client_tcp, ssize_t nread, const uv_buf_t *buf)
             response->peer_id = sam2__peer_id(client);
 
             sam2__write_response((uv_stream_t *) peer_tcp, (sam2_message_u *) response);
-        } else if (memcmp(&message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        } else if (sam2_header_matches((const char*)&message, sam2_fail_header)) {
             sam2_error_message_t *error_message = (sam2_error_message_t *) &message;
             uv_tcp_t *target_peer = (uv_tcp_t *) sam2__find_client(server, error_message->peer_id);
 

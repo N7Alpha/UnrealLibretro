@@ -490,7 +490,7 @@ struct FLibretroContext {
 
     int SAM2Send(char *message) {
         // Do some sanity checks on the request
-        if (memcmp(message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        if (sam2_header_matches(message, sam2_sign_header)) {
             sam2_signal_message_t *signal_message = (sam2_signal_message_t *) message;
             assert(signal_message->peer_id > SAM2_PORT_SENTINELS_MAX);
 
@@ -1225,7 +1225,7 @@ int imgui_file_picker(
     ImGui::Separator();
 
     // File list
-    if (ImGui::BeginChild(str_id, ImVec2(0, 300), true)) {
+    if (ImGui::BeginChild(str_id, ImVec2(0, 300), ImGuiWindowFlags_NoTitleBar)) {
         for (int i = 0; i < n; ++i) {
             const bool is_dir = content_flag[i] & NETARCH_CONTENT_FLAG_IS_DIRECTORY;
             const char* icon = is_dir ? "[D] " : "[F] ";
@@ -1300,15 +1300,15 @@ void draw_imgui() {
     auto show_message = [=](char *message) {
         ImGui::Text("Header: %.8s", (char *) message);
 
-        if (memcmp(message, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        if (sam2_header_matches(message, sam2_sign_header)) {
             sam2_signal_message_t *signal_message = (sam2_signal_message_t *) message;
             ImGui::Text("Peer ID: %05" PRId16, signal_message->peer_id);
             ImGui::InputTextMultiline("ICE SDP", signal_message->ice_sdp, sizeof(signal_message->ice_sdp), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 16), ImGuiInputTextFlags_ReadOnly);
-        } else if (memcmp(message, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        } else if (sam2_header_matches(message, sam2_make_header)) {
             sam2_room_make_message_t *make_message = (sam2_room_make_message_t *) message;
             ImGui::Separator();
             show_room(make_message->room);
-        } else if (memcmp(message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        } else if (sam2_header_matches(message, sam2_list_header)) {
             if (message[7] == 'r') {
                 // Request
                 ImGui::Text("Room List Request");
@@ -1318,15 +1318,15 @@ void draw_imgui() {
                 ImGui::Separator();
                 show_room(list_response->room);
             }
-        } else if (memcmp(message, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        } else if (sam2_header_matches(message, sam2_join_header)) {
             sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
             ImGui::Text("Peer ID: %05" PRId16, (uint16_t) join_message->peer_id);
             ImGui::Separator();
             show_room(join_message->room);
-        } else if (memcmp(message, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        } else if (sam2_header_matches(message, sam2_conn_header)) {
             sam2_connect_message_t *connect_message = (sam2_connect_message_t *) message;
             ImGui::Text("Peer ID: %05" PRId16, connect_message->peer_id);
-        } else if (memcmp(message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        } else if (sam2_header_matches(message, sam2_fail_header)) {
             sam2_error_message_t *error_response = (sam2_error_message_t *) message;
             ImGui::Text("Code: %" PRId64, error_response->code);
             ImGui::Text("Description: %s", error_response->description);
@@ -1817,7 +1817,7 @@ void draw_imgui() {
                 ImVec2(
                     ImGui::GetContentRegionAvail().x,
                     ImGui::GetWindowContentRegionMax().y / 4
-                    ), true);
+                    ), ImGuiWindowFlags_NoTitleBar);
 
             ImGui::SeparatorText("Spectators");
             if (ImGui::BeginTable("SpectatorsTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
@@ -1869,7 +1869,7 @@ void draw_imgui() {
                 message.room = g_ulnet_session.room_we_are_in;
                 message.room.flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
                 message.peer_id = g_ulnet_session.our_peer_id;
-                ulnet_process_message(&g_ulnet_session, &message); // *Send* a message to ourselves
+                ulnet_process_message(&g_ulnet_session, (const char *) &message); // *Send* a message to ourselves
             }
         } else if (our_port >= SAM2_SPECTATOR_START) {
             if (ImGui::Button("Exit")) {
@@ -1920,7 +1920,7 @@ void draw_imgui() {
             ImVec2(
                 500,
                 ImGui::GetWindowContentRegionMax().y/2
-            ), true);
+            ), ImGuiWindowFlags_NoTitleBar);
 
         static int selected_room_index = -1;  // Initialize as -1 to indicate no selection
         // Table
@@ -2869,7 +2869,7 @@ static size_t core_audio_sample_batch(const int16_t *data, size_t frames) {
 
 static char* resolve_absolute_path(const char* path) {
     if (!path) return NULL;
-    
+
     // Check if path is already absolute
 #ifdef _WIN32
     if ((path[0] && path[1] == ':') || (path[0] == '\\' && path[1] == '\\')) {
@@ -2882,28 +2882,28 @@ static char* resolve_absolute_path(const char* path) {
         return SDL_strdup(path);
     }
 #endif
-    
+
     // Get current working directory
     char* cwd = SDL_GetCurrentDirectory();
     if (!cwd) {
         SAM2_LOG_ERROR("Failed to get current directory: %s", SDL_GetError());
         return SDL_strdup(path); // fallback to original path
     }
-    
+
     // Construct absolute path
     size_t cwd_len = strlen(cwd);
     size_t path_len = strlen(path);
     size_t total_len = cwd_len + 1 + path_len + 1; // +1 for separator, +1 for null terminator
-    
+
     char* absolute_path = (char*)malloc(total_len);
     if (!absolute_path) {
         SDL_free(cwd);
         return SDL_strdup(path); // fallback to original path
     }
-    
+
     SDL_snprintf(absolute_path, total_len, "%s%s%s", cwd, PATH_SEPARATOR, path);
     SDL_free(cwd);
-    
+
     return absolute_path;
 }
 
@@ -2915,7 +2915,7 @@ static void core_load(const char *sofile) {
     void (*set_audio_sample)(retro_audio_sample_t) = NULL;
     void (*set_audio_sample_batch)(retro_audio_sample_batch_t) = NULL;
     memset(&g_retro, 0, sizeof(g_retro));
-    
+
     // Resolve relative paths to absolute paths
     char* absolute_sofile = resolve_absolute_path(sofile);
     g_retro.handle = SDL_LoadObject(absolute_sofile ? absolute_sofile : sofile);
@@ -2931,7 +2931,7 @@ static void core_load(const char *sofile) {
         else
             SAM2_LOG_FATAL("Failed to load core: '%s' does not exist. SDL_Error: %s", path_to_check, SDL_GetError());
     }
-    
+
     // Clean up allocated memory
     if (absolute_sofile) {
         free(absolute_sofile);
@@ -3320,9 +3320,9 @@ int main(int argc, char *argv[]) {
 
     bool no_netimgui = false;
     for (int i = 2; i < argc; i++) {
-        if (strcmp("--headless", argv[i]) == 0) {
+        if (0 == strcmp("--headless", argv[i])) {
             g_headless = true;
-        } else if (strcmp("--no-netimgui", argv[i]) == 0) {
+        } else if (0 == strcmp("--no-netimgui", argv[i])) {
             no_netimgui = true;
         } else if (argv[i][0] == '-') {
             SAM2_LOG_FATAL("Unknown option: %s", argv[i]);
@@ -3334,9 +3334,9 @@ int main(int argc, char *argv[]) {
 
     SDL_strlcpy(g_core_path, argv[1], sizeof(g_core_path));
 
-    if (   strcmp(g_sam2_address, "localhost")
-        || strcmp(g_sam2_address, "127.0.0.1")
-        || strcmp(g_sam2_address, "::1")) {
+    if (   0 == strcmp(g_sam2_address, "localhost")
+        || 0 == strcmp(g_sam2_address, "127.0.0.1")
+        || 0 == strcmp(g_sam2_address, "::1")) {
         SAM2_LOG_INFO("g_sam2_address=%s attempting to host signaling and match-making server ourselves", g_sam2_address);
 
         g_sam2_server = (sam2_server_t *) malloc(sizeof(sam2_server_t));
@@ -3634,13 +3634,13 @@ int main(int argc, char *argv[]) {
 
                     status = ulnet_process_message(
                         &g_ulnet_session,
-                        &latest_sam2_message
+                        (const char *) &latest_sam2_message
                     );
 
-                    if (memcmp(&latest_sam2_message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
+                    if (sam2_header_matches((const char*)&latest_sam2_message, sam2_fail_header)) {
                         g_last_sam2_error = latest_sam2_message.error_response;
                         SAM2_LOG_ERROR("Received error response from SAM2 (%" PRId64 "): %s", g_last_sam2_error.code, g_last_sam2_error.description);
-                    } else if (memcmp(&latest_sam2_message, sam2_list_header, SAM2_HEADER_TAG_SIZE) == 0) {
+                    } else if (sam2_header_matches((const char*)&latest_sam2_message, sam2_list_header)) {
                         sam2_room_list_message_t *room_list = (sam2_room_list_message_t *) &latest_sam2_message;
 
                         if (room_list->room.peer_ids[SAM2_AUTHORITY_INDEX] == 0) {
@@ -3650,7 +3650,7 @@ int main(int argc, char *argv[]) {
                                 g_sam2_rooms[g_sam2_room_count++] = room_list->room;
                             }
                         }
-                    } else if (memcmp(&latest_sam2_message, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
+                    } else if (sam2_header_matches((const char*)&latest_sam2_message, sam2_conn_header)) {
                         g_new_room_set_through_gui.peer_ids[SAM2_AUTHORITY_INDEX] = latest_sam2_message.connect_message.peer_id;
                     }
                 }

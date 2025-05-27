@@ -362,7 +362,7 @@ static_assert(std::is_trivially_default_constructible<ulnet_session_t>::value &&
     "ulnet_session_t must be a POD type for safe memory operations");
 #endif
 
-ULNET_LINKAGE int ulnet_process_message(ulnet_session_t *session, const void *response);
+ULNET_LINKAGE int ulnet_process_message(ulnet_session_t *session, const char *response);
 ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, void *save_state, size_t save_state_size, int64_t save_state_frame);
 ULNET_LINKAGE void ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, int p, const char *remote_description);
 ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port);
@@ -1543,8 +1543,8 @@ static void ulnet__process_udp_packet(ulnet_session_t *session, int p, arena_ref
         SAM2_LOG_INFO("Received message with header '%.*s' from peer %05" PRIu16 " on channel 0x%" PRIx8 " with %zu bytes",
             (int)SAM2_MIN(size, SAM2_HEADER_SIZE), data, session->agent_peer_ids[p], channel_and_flags & ULNET_CHANNEL_MASK, size);
 
-        if (memcmp(data, ulnet_exit_header, SAM2_HEADER_TAG_SIZE) == 0) {
-            if (p > SAM2_AUTHORITY_INDEX) {
+        if (sam2_header_matches(data, ulnet_exit_header)) {
+            if (p >= SAM2_SPECTATOR_START) {
                 session->peer_pending_disconnect_bitfield |= (1ULL << p);
 
                 if (ulnet_is_authority(session)) {
@@ -1563,12 +1563,12 @@ static void ulnet__process_udp_packet(ulnet_session_t *session, int p, arena_ref
                 session->sam2_send_callback(session->user_ptr, (char *) &error);
                 // @todo Resync broadcast
             }
-        } else if (memcmp(data, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
+        } else if (sam2_header_matches(data, sam2_join_header)) {
             // @todo This can be much simpler
             sam2_room_join_message_t join_message;
             memcpy(&join_message, data, sizeof(join_message));
             join_message.peer_id = session->agent_peer_ids[p];
-            if (ulnet_process_message(session, &join_message) != 0) {
+            if (ulnet_process_message(session, (const char *) &join_message) != 0) {
                 SAM2_LOG_ERROR("Failed to process join message");
             }
         }
@@ -1965,25 +1965,25 @@ sam2_room_t ulnet__infer_future_room_we_are_in(ulnet_session_t *session) {
     return future_room_we_are_in;
 }
 
-int ulnet_process_message(ulnet_session_t *session, const void *response) {
+int ulnet_process_message(ulnet_session_t *session, const char *response) {
 
     if (sam2_get_metadata((char *) response) == NULL) {
         return -1;
     }
 
-    if (memcmp(response, sam2_conn_header, SAM2_HEADER_TAG_SIZE) == 0) {
+    if (sam2_header_matches(response, sam2_conn_header)) {
         sam2_connect_message_t *connect_message = (sam2_connect_message_t *) response;
         SAM2_LOG_INFO("We were assigned the peer id %05" PRId16, (uint16_t) connect_message->peer_id);
 
         session->our_peer_id = connect_message->peer_id;
         session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
-    } else if (memcmp(response, sam2_make_header, SAM2_HEADER_TAG_SIZE) == 0) {
+    } else if (sam2_header_matches(response, sam2_make_header)) {
         sam2_room_make_message_t *room_make = (sam2_room_make_message_t *) response;
 
         if (!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
             session->room_we_are_in = room_make->room;
         }
-    } else if (memcmp(response, sam2_join_header, SAM2_HEADER_TAG_SIZE) == 0) {
+    } else if (sam2_header_matches(response, sam2_join_header)) {
         sam2_room_join_message_t *room_join = (sam2_room_join_message_t *) response;
         if (ulnet_is_authority(session)) {
             if (room_join->room.peer_ids[SAM2_AUTHORITY_INDEX] != session->our_peer_id) {
@@ -2070,7 +2070,7 @@ int ulnet_process_message(ulnet_session_t *session, const void *response) {
 
             session->sam2_send_callback(session->user_ptr, (char *) &make_message);
         }
-    }  else if (memcmp(response, sam2_sign_header, SAM2_HEADER_TAG_SIZE) == 0) {
+    }  else if (sam2_header_matches(response, sam2_sign_header)) {
         sam2_signal_message_t *room_signal = (sam2_signal_message_t *) response;
         SAM2_LOG_INFO("Received signal from peer %05" PRId16 "", room_signal->peer_id);
 
@@ -2483,7 +2483,7 @@ int ulnet__test_forward_messages(sam2_server_t *server, ulnet_session_t *session
             SAM2_LOG_ERROR("Error polling sam2 server: %d", status);
             return status;
         } else if (status > 0) {
-            status = ulnet_process_message(session, &message);
+            status = ulnet_process_message(session, (const char *)&message);
             if (status < 0) {
                 SAM2_LOG_ERROR("Error processing message: %d", status);
                 return status;
