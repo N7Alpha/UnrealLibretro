@@ -45,6 +45,7 @@ int g_log_level = 1; // Info
 #include <SDL3/SDL_init.h>
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_loadso.h>
+#include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_video.h>
 #endif
 #include "libretro.h"
@@ -2866,6 +2867,46 @@ static size_t core_audio_sample_batch(const int16_t *data, size_t frames) {
 }
 
 
+static char* resolve_absolute_path(const char* path) {
+    if (!path) return NULL;
+    
+    // Check if path is already absolute
+#ifdef _WIN32
+    if ((path[0] && path[1] == ':') || (path[0] == '\\' && path[1] == '\\')) {
+        // Already absolute (C:\ or \\)
+        return SDL_strdup(path);
+    }
+#else
+    if (path[0] == '/') {
+        // Already absolute
+        return SDL_strdup(path);
+    }
+#endif
+    
+    // Get current working directory
+    char* cwd = SDL_GetCurrentDirectory();
+    if (!cwd) {
+        SAM2_LOG_ERROR("Failed to get current directory: %s", SDL_GetError());
+        return SDL_strdup(path); // fallback to original path
+    }
+    
+    // Construct absolute path
+    size_t cwd_len = strlen(cwd);
+    size_t path_len = strlen(path);
+    size_t total_len = cwd_len + 1 + path_len + 1; // +1 for separator, +1 for null terminator
+    
+    char* absolute_path = (char*)malloc(total_len);
+    if (!absolute_path) {
+        SDL_free(cwd);
+        return SDL_strdup(path); // fallback to original path
+    }
+    
+    SDL_snprintf(absolute_path, total_len, "%s%s%s", cwd, PATH_SEPARATOR, path);
+    SDL_free(cwd);
+    
+    return absolute_path;
+}
+
 static void core_load(const char *sofile) {
     void (*set_environment)(retro_environment_t) = NULL;
     void (*set_video_refresh)(retro_video_refresh_t) = NULL;
@@ -2874,17 +2915,26 @@ static void core_load(const char *sofile) {
     void (*set_audio_sample)(retro_audio_sample_t) = NULL;
     void (*set_audio_sample_batch)(retro_audio_sample_batch_t) = NULL;
     memset(&g_retro, 0, sizeof(g_retro));
-    g_retro.handle = SDL_LoadObject(sofile);
+    
+    // Resolve relative paths to absolute paths
+    char* absolute_sofile = resolve_absolute_path(sofile);
+    g_retro.handle = SDL_LoadObject(absolute_sofile ? absolute_sofile : sofile);
 
     if (!g_retro.handle)
     {
         struct stat file_stat;
-        if (stat(sofile, &file_stat) == 0)
+        const char* path_to_check = absolute_sofile ? absolute_sofile : sofile;
+        if (stat(path_to_check, &file_stat) == 0)
             SAM2_LOG_FATAL("Failed to load core: '%s' exists, but could not be loaded. "
                           "This may be due to an architecture mismatch or incompatible dependencies. SDL_Error: %s",
-                          sofile, SDL_GetError());
+                          path_to_check, SDL_GetError());
         else
-            SAM2_LOG_FATAL("Failed to load core: '%s' does not exist. SDL_Error: %s", sofile, SDL_GetError());
+            SAM2_LOG_FATAL("Failed to load core: '%s' does not exist. SDL_Error: %s", path_to_check, SDL_GetError());
+    }
+    
+    // Clean up allocated memory
+    if (absolute_sofile) {
+        free(absolute_sofile);
     }
 
     load_retro_sym(retro_init);
@@ -3313,7 +3363,7 @@ int main(int argc, char *argv[]) {
     g_parameters.zParams.compressionLevel = g_zstd_compress_level;
 
     if (!SDL_Init(g_headless ? 0 : SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS)) {
-        SAM2_LOG_FATAL("Failed to initialize SDL");
+        SAM2_LOG_FATAL("Failed to initialize SDL: %s", SDL_GetError());
     }
 
     // Setup Platform/Renderer backends
