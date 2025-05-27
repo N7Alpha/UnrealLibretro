@@ -47,6 +47,7 @@ int g_log_level = 1; // Info
 #include <SDL3/SDL_loadso.h>
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_video.h>
+#include <SDL3/SDL_gamepad.h>
 #endif
 #include "libretro.h"
 
@@ -311,6 +312,8 @@ static SDL_AudioStream *g_pcm = NULL;
 static struct retro_frame_time_callback runloop_frame_time;
 static retro_usec_t runloop_frame_time_last = 0;
 static const bool *g_kbd = NULL;
+static SDL_Gamepad *g_gamepad = NULL;
+static SDL_JoystickID g_gamepad_instance_id = 0;
 struct retro_system_av_info g_av = {0};
 static struct retro_audio_callback audio_callback;
 
@@ -545,6 +548,29 @@ static struct keymap g_binds[] = {
     { SDL_SCANCODE_Q, JoypadL },
     { SDL_SCANCODE_W, JoypadR },
     { 0, 0 }
+};
+
+struct gamepad_map {
+    SDL_GamepadButton button;
+    unsigned retro_id;
+};
+
+static struct gamepad_map g_gamepad_binds[] = {
+    { SDL_GAMEPAD_BUTTON_SOUTH, JoypadA },        // A/Cross
+    { SDL_GAMEPAD_BUTTON_EAST, JoypadB },         // B/Circle
+    { SDL_GAMEPAD_BUTTON_WEST, JoypadY },         // Y/Square
+    { SDL_GAMEPAD_BUTTON_NORTH, JoypadX },        // X/Triangle
+    { SDL_GAMEPAD_BUTTON_DPAD_UP, JoypadUp },
+    { SDL_GAMEPAD_BUTTON_DPAD_DOWN, JoypadDown },
+    { SDL_GAMEPAD_BUTTON_DPAD_LEFT, JoypadLeft },
+    { SDL_GAMEPAD_BUTTON_DPAD_RIGHT, JoypadRight },
+    { SDL_GAMEPAD_BUTTON_START, JoypadStart },
+    { SDL_GAMEPAD_BUTTON_BACK, JoypadSelect },
+    { SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, JoypadL },
+    { SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, JoypadR },
+    { SDL_GAMEPAD_BUTTON_LEFT_STICK, JoypadL3 },
+    { SDL_GAMEPAD_BUTTON_RIGHT_STICK, JoypadR3 },
+    { (SDL_GamepadButton)0, 0 }
 };
 
 
@@ -3362,7 +3388,7 @@ int main(int argc, char *argv[]) {
     g_parameters.splitPoint = 0;
     g_parameters.zParams.compressionLevel = g_zstd_compress_level;
 
-    if (!SDL_Init(g_headless ? 0 : SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS)) {
+    if (!SDL_Init(g_headless ? 0 : SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS|SDL_INIT_GAMEPAD)) {
         SAM2_LOG_FATAL("Failed to initialize SDL: %s", SDL_GetError());
     }
 
@@ -3392,6 +3418,17 @@ int main(int argc, char *argv[]) {
 
     // Configure the player input devices.
     g_retro.retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
+
+    // Initialize gamepad detection for already connected controllers
+    SDL_JoystickID *gamepads = SDL_GetGamepads(NULL);
+    if (gamepads && !g_gamepad) {
+        g_gamepad = SDL_OpenGamepad(gamepads[0]);
+        if (g_gamepad) {
+            g_gamepad_instance_id = SDL_GetGamepadID(g_gamepad);
+            SAM2_LOG_INFO("Gamepad detected at startup: %s", SDL_GetGamepadName(g_gamepad));
+        }
+        SDL_free(gamepads);
+    }
 
     // GL 3.0 + GLSL 130
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
@@ -3495,6 +3532,23 @@ int main(int argc, char *argv[]) {
             case SDL_EVENT_QUIT: running = false; break;
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED: running = false; break;
             case SDL_EVENT_WINDOW_RESIZED: resize_cb(ev.window.data1, ev.window.data2); break;
+            case SDL_EVENT_GAMEPAD_ADDED:
+                if (!g_gamepad) {
+                    g_gamepad = SDL_OpenGamepad(ev.gdevice.which);
+                    if (g_gamepad) {
+                        g_gamepad_instance_id = SDL_GetGamepadID(g_gamepad);
+                        SAM2_LOG_INFO("Gamepad connected: %s", SDL_GetGamepadName(g_gamepad));
+                    }
+                }
+                break;
+            case SDL_EVENT_GAMEPAD_REMOVED:
+                if (g_gamepad && ev.gdevice.which == g_gamepad_instance_id) {
+                    SDL_CloseGamepad(g_gamepad);
+                    g_gamepad = NULL;
+                    g_gamepad_instance_id = 0;
+                    SAM2_LOG_INFO("Gamepad disconnected");
+                }
+                break;
             }
         }
 
@@ -3529,6 +3583,14 @@ int main(int argc, char *argv[]) {
                 next_input_state[0][g_binds[i].rk] |= (int16_t) g_kbd[g_binds[i].k];
             }
 
+            // Handle gamepad digital buttons
+            for (int i = 0; g_gamepad_binds[i].button || g_gamepad_binds[i].retro_id; ++i) {
+                if (SDL_GetGamepadButton(g_gamepad, g_gamepad_binds[i].button)) {
+                    next_input_state[0][g_gamepad_binds[i].retro_id] |= 1;
+                }
+            }
+
+            // Nice for testing network code I found a bug in nestopia using this
             if (g_libretro_context.fuzz_input) {
                 for (int i = 0; i < 16; ++i) {
                     next_input_state[0][i] |= rand() & 0x0001;
@@ -3682,6 +3744,12 @@ int main(int argc, char *argv[]) {
     }
 
     NetImgui::Shutdown(); //ImGui::Shutdown();
+
+    // Cleanup gamepad
+    if (g_gamepad) {
+        SDL_CloseGamepad(g_gamepad);
+        g_gamepad = NULL;
+    }
 
     SDL_Quit();
 
