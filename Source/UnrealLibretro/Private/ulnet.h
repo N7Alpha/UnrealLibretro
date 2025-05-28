@@ -285,7 +285,7 @@ typedef struct {
 typedef struct ulnet_transport_inproc_buffer {
     uint8_t msg[256][ULNET_PACKET_SIZE_BYTES_MAX];
     uint16_t msg_size[256];
-    uint8_t count;  // Number of messages available
+    int32_t count;  // Number of messages available
 } ulnet_inproc_buf_t;
 
 typedef struct ulnet_transport_inproc {
@@ -344,13 +344,16 @@ typedef struct ulnet_session {
     int (*sam2_send_callback)(void *user_ptr, char *response);
     int (*populate_core_options_callback)(void *user_ptr, ulnet_core_option_t options[ULNET_CORE_OPTIONS_MAX]);
 
+    void (*retro_run)(void *user_ptr);
+    size_t (*retro_serialize_size)(void *user_ptr);
+    bool (*retro_serialize)(void *user_ptr, void *, size_t);
     bool (*retro_unserialize)(void *user_ptr, const void *data, size_t size);
 
     float debug_udp_recv_drop_rate;
     float debug_udp_send_drop_rate;
 
 #ifdef ULNET_IMGUI
-    int sample_size; // @todo Remove. This shouldn't really be needed and its awkward to initialize
+    bool imgui_packet_table_show_most_recent_first;
     int input_packet_size[SAM2_PORT_MAX + 1][ULNET_MAX_SAMPLE_SIZE];
     int save_state_execution_time_cycles[ULNET_MAX_SAMPLE_SIZE];
 #endif
@@ -962,17 +965,12 @@ static void ulnet__check_retransmissions(ulnet_session_t *session, double curren
 #define ULNET_POLL_SESSION_TICKED      0b00000010
 // This procedure always sends an input packet if the core is ready to tick. This subsumes retransmission logic and generally makes protocol logic less strict
 ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_state_on_tick, uint8_t *save_state, size_t save_state_capacity,
-    double frame_rate, double max_sleeping_allowed_when_polling_network_seconds,
-    void (*retro_run)(void *user_ptr),
-    size_t (*retro_serialize_size)(void *user_ptr),
-    bool (*retro_serialize)(void *user_ptr, void *, size_t),
-    bool (*retro_unserialize)(void *user_ptr, const void *, size_t)) {
+    double frame_rate, double max_sleeping_allowed_when_polling_network_seconds) {
 
     int our_port = sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id);
     IMH(ImGui::Begin("P2P UDP Netplay", NULL, ImGuiWindowFlags_AlwaysAutoResize);)
     int status = 0;
 
-    session->retro_unserialize = retro_unserialize; // If used this is invoked through a callback within this function call
     if (session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED
         && our_port != -1) {
         uint8_t packet[ULNET_PACKET_SIZE_BYTES_MAX];
@@ -1215,14 +1213,14 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
         int64_t save_state_frame = session->frame_counter;
         if (force_save_state_on_tick || session->peer_needs_sync_bitfield) {
             IMH(uint64_t start = ulnet__rdtsc();)
-            save_state_size = retro_serialize_size(session->user_ptr);
+            save_state_size = session->retro_serialize_size(session->user_ptr);
             if (save_state_size > save_state_capacity) {
                 SAM2_LOG_WARN("Save state size %zu is larger than buffer size %zu", save_state_size, save_state_capacity);
                 save_state = (uint8_t *) malloc(save_state_size);
                 save_state_allocated = true;
             }
-            retro_serialize(session->user_ptr, save_state, save_state_size);
-            IMH(session->save_state_execution_time_cycles[session->frame_counter % session->sample_size] = ulnet__rdtsc() - start;)
+            session->retro_serialize(session->user_ptr, save_state, save_state_size);
+            IMH(session->save_state_execution_time_cycles[session->frame_counter % ULNET_MAX_SAMPLE_SIZE] = ulnet__rdtsc() - start;)
             status |= ULNET_POLL_SESSION_SAVED_STATE;
 
             if (session->flags & ULNET_SESSION_FLAG_TICKED) {
@@ -1241,7 +1239,7 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
         }
 
         if (!(session->flags & ULNET_SESSION_FLAG_TICKED)) {
-            retro_run(session->user_ptr);
+            session->retro_run(session->user_ptr);
         }
 
         session->core_wants_tick_at_unix_usec += 1000000 / frame_rate;
@@ -1252,24 +1250,27 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
         if (memcmp(&new_room_state, &session->room_we_are_in, sizeof(sam2_room_t)) != 0) {
             SAM2_LOG_INFO("Something about the room we're in was changed by the authority");
 
+            // When the room changes reuse existing peer connections if possible
             for (int j = 0; j < SAM2_TOTAL_PEERS; j++) {
                 for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
                     if (new_room_state.peer_ids[j] == session->agent_peer_ids[i]) {
                         if (new_room_state.peer_ids[j] <= SAM2_PORT_SENTINELS_MAX) continue;
-                        ulnet__swap_agent(session, j, i);
+                        ulnet__swap_agent(session, j, i); // Note: This mutates session->agent_peer_ids
                         break;
                     }
                 }
             }
 
-            if (our_port != -1 && our_port < SAM2_SPECTATOR_START) {
+            // Create new connections for new peers and dispose of unneeded ones
+            int our_new_port = sam2_get_port_of_peer(&new_room_state, session->our_peer_id);
+            if (our_new_port != -1 && our_new_port < SAM2_SPECTATOR_START) {
                 for (int p = 0; p < SAM2_PORT_MAX; p++) {
                     if (   new_room_state.peer_ids[p] > SAM2_PORT_SENTINELS_MAX
                         && new_room_state.peer_ids[p] != session->our_peer_id
                         && new_room_state.peer_ids[p] != session->agent_peer_ids[p]) {
-
-                        ulnet_disconnect_peer(session, p);
-                        session->agent[p] = NULL;
+                        if (session->agent[p]) {
+                            ulnet_disconnect_peer(session, p);
+                        }
 
                         // Convention: The peer with the lesser ID initiates ICE
                         if (session->our_peer_id < new_room_state.peer_ids[p]) {
@@ -2247,8 +2248,8 @@ ULNET_LINKAGE void ulnet_imgui_show_session(ulnet_session_t *session) {
     // Plot Input Packet Size vs. Frame
     // @todo The gaps in the graph can be explained by out-of-order arrival of packets I think I don't even record those to history but I should
     //       There is some other weird behavior that might be related to not checking the frame field in the packet if its too old it shouldn't be in the plot obviously
-    if (session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
-        ImPlot::SetNextAxisLimits(ImAxis_X1, session->frame_counter - session->sample_size, session->frame_counter, ImGuiCond_Always);
+    if (session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED && ImGui::CollapsingHeader("Network Activity")) {
+        ImPlot::SetNextAxisLimits(ImAxis_X1, session->frame_counter - ULNET_MAX_SAMPLE_SIZE, session->frame_counter, ImGuiCond_Always);
         ImPlot::SetNextAxisLimits(ImAxis_Y1, 0.0f, 512, ImGuiCond_Always);
         if (ImPlot::BeginPlot("State-Packet Size vs. Frame")) {
             ImPlot::SetupAxis(ImAxis_X1, "ulnet_state_t::frame");
@@ -2259,17 +2260,17 @@ ULNET_LINKAGE void ulnet_imgui_show_session(ulnet_session_t *session) {
 
                 arena_ref_t ref = session->state_packet_history[p][session->frame_counter % ULNET_STATE_PACKET_HISTORY_SIZE];
                 uint8_t *peer_packet = (uint8_t *)arena_deref(&session->arena, ref);
-                session->input_packet_size[p][session->frame_counter % session->sample_size] = peer_packet ? ref.size : 0;
+                session->input_packet_size[p][session->frame_counter % ULNET_MAX_SAMPLE_SIZE] = peer_packet ? ref.size : 0;
 
                 char label[32];
                 snprintf(label, sizeof(label), p == SAM2_AUTHORITY_INDEX ? "Authority" : "Port %d", p);
 
                 int xs[ULNET_MAX_SAMPLE_SIZE], ys[ULNET_MAX_SAMPLE_SIZE];
-                for (int j = 0, frame = SAM2_MAX(0, session->frame_counter - session->sample_size + 1); j < session->sample_size; j++, frame++) {
+                for (int j = 0, frame = SAM2_MAX(0, session->frame_counter - ULNET_MAX_SAMPLE_SIZE + 1); j < ULNET_MAX_SAMPLE_SIZE; j++, frame++) {
                     xs[j] = frame;
-                    ys[j] = session->input_packet_size[p][frame % session->sample_size];
+                    ys[j] = session->input_packet_size[p][frame % ULNET_MAX_SAMPLE_SIZE];
                 }
-                ImPlot::PlotLine(label, xs, ys, session->sample_size);
+                ImPlot::PlotLine(label, xs, ys, ULNET_MAX_SAMPLE_SIZE);
             }
             ImPlot::EndPlot();
         }
@@ -2315,7 +2316,9 @@ void ulnet_imgui_show_recent_packets_table(ulnet_session_t *session, int p) {
     const char *headers[] = {"Dir", "Type", "Reliable", "Size", "Details"};
     const float widths[] = {40.0f, 80.0f, 70.0f, 60.0f, 0.0f};
     int columns_count = sizeof(headers) / sizeof(headers[0]);
-    int packets_display_count = 16;
+    int packets_display_count = sizeof(session->packet_history[p]) / sizeof(session->packet_history[p][0]);
+
+    ImGui::Checkbox("Show Recent", &session->imgui_packet_table_show_most_recent_first);
 
     // Early return if we're not visible
     if (!ImGui::BeginTable("PacketHistory", columns_count, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
@@ -2329,7 +2332,13 @@ void ulnet_imgui_show_recent_packets_table(ulnet_session_t *session, int p) {
     ImGui::TableHeadersRow();
 
     for (int i = 0; i < packets_display_count; i++) {
-        uint8_t idx = (session->packet_history_next[p] - i - 1) & 0xFF;
+        uint8_t idx;
+        if (session->imgui_packet_table_show_most_recent_first) {
+            idx = (session->packet_history_next[p] + i) & 0xFF; // Show most recent first
+        } else {
+            idx = i;
+        }
+
         arena_ref_t ref = session->packet_history[p][idx];
         uint8_t *packet_data = (uint8_t *)arena_deref(&session->arena, ref);
         int packet_size = ref.size;
@@ -2511,16 +2520,22 @@ void ulnet__test_retro_run(void *user_ptr) {
 
 }
 
+static const char g_serialize_test_data[] = "Test data";
 size_t ulnet__test_retro_serialize_size(void *user_ptr) {
-    return 0;
+    return sizeof(g_serialize_test_data);
 }
 
 bool ulnet__test_retro_serialize(void *user_ptr, void *data, size_t size) {
+    if (size < sizeof(g_serialize_test_data) - 1) {
+        SAM2_LOG_ERROR("Buffer too small for serialization");
+        return false;
+    }
+    memcpy(data, g_serialize_test_data, sizeof(g_serialize_test_data));
     return true;
 }
 
 bool ulnet__test_retro_unserialize(void *user_ptr, const void *data, size_t size) {
-    return true;
+    return memcmp(data, g_serialize_test_data, size) == 0;
 }
 
 int ulnet__test_sync(ulnet_session_t **session_1_out, ulnet_session_t **session_2_out) {
@@ -2540,9 +2555,13 @@ int ulnet__test_sync(ulnet_session_t **session_1_out, ulnet_session_t **session_
 
     for (int i = 0; i < sizeof(sessions)/sizeof(sessions[0]); i++) {
         sessions[i] = (ulnet_session_t *)calloc(1, sizeof(ulnet_session_t));
+        ulnet_session_init_defaulted(sessions[i]);
         sessions[i]->sam2_send_callback = ulnet__test_sam2_send_callback;
         sessions[i]->user_ptr = &sockets[i];
-        ulnet_session_init_defaulted(sessions[i]);
+        sessions[i]->retro_run = ulnet__test_retro_run;
+        sessions[i]->retro_serialize_size = ulnet__test_retro_serialize_size;
+        sessions[i]->retro_serialize = ulnet__test_retro_serialize;
+        sessions[i]->retro_unserialize = ulnet__test_retro_unserialize;
 
         status = sam2_client_connect(&sockets[i], "localhost", ULNET__TEST_SAM2_PORT);
         if (status) {
@@ -2579,8 +2598,7 @@ int ulnet__test_sync(ulnet_session_t **session_1_out, ulnet_session_t **session_
 
     for (int attempt = 0; attempt < 10000; attempt++) {
         for (int i = 0; i < sizeof(sessions)/sizeof(sessions[0]); i++) {
-            status = ulnet_poll_session(sessions[i], 0, 0, 0, 60.0, 16e-3,
-                ulnet__test_retro_run, ulnet__test_retro_serialize_size, ulnet__test_retro_serialize, ulnet__test_retro_unserialize);
+            status = ulnet_poll_session(sessions[i], 0, 0, 0, 60.0, 16e-3);
             if (status < 0) {
                 SAM2_LOG_ERROR("Error polling ulnet session: %d", status);
                 goto _10;
@@ -2604,22 +2622,17 @@ int ulnet__test_sync(ulnet_session_t **session_1_out, ulnet_session_t **session_
 
     sessions[0]->debug_udp_recv_drop_rate = 1.0f;
     ulnet__reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "HELLO", sizeof("HELLO") - 1);
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3,
-        ulnet__test_retro_run, ulnet__test_retro_serialize_size, ulnet__test_retro_serialize, ulnet__test_retro_unserialize);
+    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
 
     sessions[0]->debug_udp_recv_drop_rate = 0.0f;
     ulnet__reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "WORLD", sizeof("WORLD") - 1);
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3,
-        ulnet__test_retro_run, ulnet__test_retro_serialize_size, ulnet__test_retro_serialize, ulnet__test_retro_unserialize);
+    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
 
     ulnet__reliable_send_with_acks_only(sessions[0], SAM2_SPECTATOR_START, (const uint8_t*) "ACK CARRIER", sizeof("ACK CARRIER") - 1);
-    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3,
-        ulnet__test_retro_run, ulnet__test_retro_serialize_size, ulnet__test_retro_serialize, ulnet__test_retro_unserialize);
+    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3);
     sessions[1]->reliable_next_retransmit_time = 0;
-    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3,
-        ulnet__test_retro_run, ulnet__test_retro_serialize_size, ulnet__test_retro_serialize, ulnet__test_retro_unserialize);
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3,
-        ulnet__test_retro_run, ulnet__test_retro_serialize_size, ulnet__test_retro_serialize, ulnet__test_retro_unserialize);
+    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3);
+    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
 
     msg1 = arena_deref(&sessions[1]->arena, sessions[1]->reliable_tx_packet_history[SAM2_SPECTATOR_START][0]);
     msg2 = arena_deref(&sessions[1]->arena, sessions[1]->reliable_tx_packet_history[SAM2_SPECTATOR_START][1]);
@@ -2649,5 +2662,92 @@ _10:sam2_server_begin_destroy(server);
 
     return status;
 }
+
+int ulnet_test_reliable(ulnet_session_t **session_1_out, ulnet_session_t **session_2_out) {
+    ulnet_session_t *sessions[2] = {0};
+    ulnet_transport_inproc_t transport = {0};
+    int status = 0;
+
+    // Create two sessions
+    for (int i = 0; i < 2; i++) {
+        sessions[i] = (ulnet_session_t *)calloc(1, sizeof(ulnet_session_t));
+        ulnet_session_init_defaulted(sessions[i]);
+        sessions[i]->use_inproc_transport = true;
+        sessions[i]->retro_run = ulnet__test_retro_run;
+        sessions[i]->retro_serialize_size = ulnet__test_retro_serialize_size;
+        sessions[i]->retro_serialize = ulnet__test_retro_serialize;
+        sessions[i]->retro_unserialize = ulnet__test_retro_unserialize;
+    }
+
+    // Set up peer IDs and room state
+    sessions[0]->our_peer_id = 10001;  // Authority
+    sessions[1]->our_peer_id = 30002;  // Spectator
+
+    // Configure room state for both sessions
+    sam2_room_t room = {0};
+    room.flags = SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+    room.peer_ids[SAM2_AUTHORITY_INDEX] = 10001;
+    room.peer_ids[SAM2_SPECTATOR_START] = 30002;
+
+    sessions[0]->room_we_are_in = room;
+    sessions[1]->room_we_are_in = room;
+
+    // Connect the transport
+    sessions[0]->inproc[SAM2_SPECTATOR_START] = &transport;
+    sessions[1]->inproc[SAM2_AUTHORITY_INDEX] = &transport;
+    sessions[0]->agent_peer_ids[SAM2_SPECTATOR_START] = room.peer_ids[SAM2_SPECTATOR_START];
+    sessions[1]->agent_peer_ids[SAM2_AUTHORITY_INDEX] = room.peer_ids[SAM2_AUTHORITY_INDEX];
+
+    // Prime savestate transfer
+    sessions[1]->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
+    sessions[0]->peer_needs_sync_bitfield |= (1ULL << SAM2_SPECTATOR_START);
+
+    sessions[0]->debug_udp_recv_drop_rate = 1.0f;
+    ulnet__reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "HELLO", sizeof("HELLO") - 1);
+    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
+
+    sessions[0]->debug_udp_recv_drop_rate = 0.0f;
+    ulnet__reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "WORLD", sizeof("WORLD") - 1);
+    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
+
+    ulnet__reliable_send_with_acks_only(sessions[0], SAM2_SPECTATOR_START, (const uint8_t*) "ACK CARRIER", sizeof("ACK CARRIER") - 1);
+    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3);
+    sessions[1]->reliable_next_retransmit_time = 0;
+    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3);
+    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
+
+    // Verify messages were received
+    void *msg1 = arena_deref(&sessions[0]->arena,
+        sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][1 % ULNET_RELIABLE_ACK_BUFFER_SIZE]);
+    void *msg2 = arena_deref(&sessions[0]->arena,
+        sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][2 % ULNET_RELIABLE_ACK_BUFFER_SIZE]);
+
+    if (!msg1 || !msg2) {
+        SAM2_LOG_ERROR("Failed to receive reliable messages");
+        status = 1;
+        goto cleanup;
+    }
+
+    // Check wrapped packet contents
+    int offset1 = ulnet__wrapped_header_size((uint8_t*)msg1, ULNET_PACKET_SIZE_BYTES_MAX);
+    int offset2 = ulnet__wrapped_header_size((uint8_t*)msg2, ULNET_PACKET_SIZE_BYTES_MAX);
+
+    if (memcmp((uint8_t*)msg1 + offset1, "HELLO", 5) != 0 ||
+        memcmp((uint8_t*)msg2 + offset2, "WORLD", 5) != 0) {
+        SAM2_LOG_ERROR("Message content mismatch");
+        status = 1;
+        goto cleanup;
+    }
+
+cleanup:
+    if (!session_1_out) free(sessions[0]);
+    else *session_1_out = sessions[0];
+
+    if (!session_2_out) free(sessions[1]);
+    else *session_2_out = sessions[1];
+
+    return status;
+}
+
 #endif // ULNET_TEST_C
 #endif // ULNET_TEST_IMPLEMENTATION
