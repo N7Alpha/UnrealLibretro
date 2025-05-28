@@ -994,6 +994,7 @@ static char g_sam2_address[64] = "127.0.0.1"; //"sam2.cornbass.com";
 static int g_sam2_port = SAM2_SERVER_DEFAULT_PORT;
 static sam2_socket_t &g_sam2_socket = g_libretro_context.sam2_socket;
 
+static int g_sample_size = 100;
 static int g_zstd_compress_level = 0;
 static uint64_t g_zstd_cycle_count[MAX_SAMPLE_SIZE] = {1}; // The 1 is so we don't divide by 0
 static size_t g_zstd_compress_size[MAX_SAMPLE_SIZE] = {0};
@@ -1377,7 +1378,7 @@ void draw_imgui() {
         double max_compress_size = 0;
         double avg_zstd_cycle_count = 0;
 
-        for (int i = 0; i < g_ulnet_session.sample_size; i++) {
+        for (int i = 0; i < g_sample_size; i++) {
             avg_cycle_count += g_ulnet_session.save_state_execution_time_cycles[i];
             avg_zstd_compress_size += g_zstd_compress_size[i];
             avg_zstd_cycle_count += g_zstd_cycle_count[i];
@@ -1385,9 +1386,9 @@ void draw_imgui() {
                 max_compress_size = g_zstd_compress_size[i];
             }
         }
-        avg_cycle_count        /= g_ulnet_session.sample_size;
-        avg_zstd_compress_size /= g_ulnet_session.sample_size;
-        avg_zstd_cycle_count   /= g_ulnet_session.sample_size;
+        avg_cycle_count        /= g_sample_size;
+        avg_zstd_compress_size /= g_sample_size;
+        avg_zstd_cycle_count   /= g_sample_size;
 
         strcpy(unit, "cycles");
         double display_count = format_unit_count(avg_cycle_count, unit);
@@ -1425,7 +1426,7 @@ void draw_imgui() {
             ImGui::Text("Remote Savestate hash: %016" PRIx64 "", g_remote_savestate_hash);
         }
 
-        ImGui::SliderInt("Sample size", &g_ulnet_session.sample_size, 1, MAX_SAMPLE_SIZE);
+        ImGui::SliderInt("Sample size", &g_sample_size, 1, MAX_SAMPLE_SIZE);
         if (!g_use_rle) {
             g_dictionary_is_dirty |= ImGui::SliderInt("Compression level", (int*)&g_zstd_compress_level, -22, 22);
             g_parameters.zParams.compressionLevel = g_zstd_compress_level;
@@ -1442,16 +1443,16 @@ void draw_imgui() {
 
             // Based on the selection, copy data to the temp array and draw the graph for the corresponding buffer.
             if (current_item == 0) {
-                for (int i = 0; i < g_ulnet_session.sample_size; ++i) {
-                    temp[i] = static_cast<float>(g_ulnet_session.save_state_execution_time_cycles[(i+g_ulnet_session.frame_counter)%g_ulnet_session.sample_size]);
+                for (int i = 0; i < g_sample_size; ++i) {
+                    temp[i] = static_cast<float>(g_ulnet_session.save_state_execution_time_cycles[(i+g_ulnet_session.frame_counter)%g_sample_size]);
                 }
             } else if (current_item == 1) {
-                for (int i = 0; i < g_ulnet_session.sample_size; ++i) {
-                    temp[i] = static_cast<float>(g_zstd_cycle_count[(i+g_ulnet_session.frame_counter)%g_ulnet_session.sample_size]);
+                for (int i = 0; i < g_sample_size; ++i) {
+                    temp[i] = static_cast<float>(g_zstd_cycle_count[(i+g_ulnet_session.frame_counter)%g_sample_size]);
                 }
             } else if (current_item == 2) {
-                for (int i = 0; i < g_ulnet_session.sample_size; ++i) {
-                    temp[i] = static_cast<float>(g_zstd_compress_size[(i+g_ulnet_session.frame_counter)%g_ulnet_session.sample_size]);
+                for (int i = 0; i < g_sample_size; ++i) {
+                    temp[i] = static_cast<float>(g_zstd_compress_size[(i+g_ulnet_session.frame_counter)%g_sample_size]);
                 }
             }
         }
@@ -1666,7 +1667,7 @@ void draw_imgui() {
             static ulnet_session_t *test_session2 = NULL;
             static bool show_test_sessions = false;
 
-            if (ImGui::Button("Test sync")) {
+            if (ImGui::Button("Test ICE connection")) {
                 if (ulnet__test_sync(&test_session1, &test_session2)) {
                     SAM2_LOG_ERROR("Test sync failed.");
                     show_test_sessions = true;
@@ -1675,14 +1676,23 @@ void draw_imgui() {
                 }
             }
 
-            ImGui::SameLine();
+            if (ImGui::Button("Test reliable messaging")) {
+                if (ulnet_test_reliable(&test_session1, &test_session2)) {
+                    SAM2_LOG_ERROR("Test reliable failed.");
+                    show_test_sessions = true;
+                } else {
+                    SAM2_LOG_INFO("Test reliable passed.");
+                }
+            }
+
             if (ImGui::Button("Show sessions") && (test_session1 || test_session2)) {
                 show_test_sessions = !show_test_sessions;
             }
 
             // Only show the sessions window if we have sessions and the show flag is true
             if (show_test_sessions && (test_session1 || test_session2)) {
-                ImGui::Begin("Test Sessions");
+                ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.8f, 0.1f, 0.1f, 1.0f));
+                ImGui::Begin("Failed Test");
                 if (ImGui::BeginTabBar("SessionTabs")) {
                     if (test_session1 && ImGui::BeginTabItem("Session 1")) {
                         ulnet_imgui_show_session(test_session1);
@@ -1697,6 +1707,7 @@ void draw_imgui() {
                     ImGui::EndTabBar();
                 }
                 ImGui::End();
+                ImGui::PopStyleColor();
             }
 
 
@@ -2221,7 +2232,7 @@ finished_drawing_sam2_interface:
             ImVec2 plotSize = ImVec2(ImGui::GetContentRegionAvail().x, 150);
 
             int64_t cyclic_offset[] = {
-                g_ulnet_session.frame_counter % g_ulnet_session.sample_size,
+                g_ulnet_session.frame_counter % g_sample_size,
                 g_main_loop_cyclic_offset,
             };
 
@@ -2229,14 +2240,14 @@ finished_drawing_sam2_interface:
             minVal = FLT_MAX;
             sum = 0.0f;
 
-            for (int i = 0; i < g_ulnet_session.sample_size; ++i) {
-                float value = frame_time_dataset[datasetIndex][(i + cyclic_offset[datasetIndex]) % g_ulnet_session.sample_size];
+            for (int i = 0; i < g_sample_size; ++i) {
+                float value = frame_time_dataset[datasetIndex][(i + cyclic_offset[datasetIndex]) % g_sample_size];
                 temp[i] = value;
                 maxVal = (value > maxVal) ? value : maxVal;
                 minVal = (value < minVal) ? value : minVal;
                 sum += value;
             }
-            avgVal = sum / g_ulnet_session.sample_size;
+            avgVal = sum / g_sample_size;
 
             if (datasetIndex == 0) {
                 ImGui::Text("Max: %.3f ms  Min: %.3f ms", maxVal, minVal);
@@ -2244,14 +2255,14 @@ finished_drawing_sam2_interface:
             }
 
             // Set the axis limits before beginning the plot
-            ImPlot::SetNextAxisLimits(ImAxis_X1, 0, g_ulnet_session.sample_size, ImGuiCond_Always);
+            ImPlot::SetNextAxisLimits(ImAxis_X1, 0, g_sample_size, ImGuiCond_Always);
             ImPlot::SetNextAxisLimits(ImAxis_Y1, 0.0f, SAM2_MAX(50.0f, maxVal), ImGuiCond_Always);
 
             const char* plotTitles[] = {"Frame Time Plot", "Core Wants Tick Plot"};
             if (ImPlot::BeginPlot(plotTitles[datasetIndex], plotSize)) {
                 // Plot the histogram
                 const char* barTitles[] = {"Frame Times", "Time until core wants to tick"};
-                ImPlot::PlotBars(barTitles[datasetIndex], temp, g_ulnet_session.sample_size, 0.67f, -0.5f);
+                ImPlot::PlotBars(barTitles[datasetIndex], temp, g_sample_size, 0.67f, -0.5f);
 
                 // Plot max, min, and average lines without changing their colors
                 ImPlot::PlotInfLines("Max", &maxVal, 1, ImPlotInfLinesFlags_Horizontal); // Red line for max
@@ -3176,10 +3187,10 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
     if (g_use_rle) {
         // If we're 4 byte aligned use the 4-byte wordsize rle that gives us the highest gains in 32-bit consoles (where we need it the most)
         if (g_serialize_size % 4 == 0) {
-            rle_encode32(buffer, g_serialize_size / 4, savebuffer_compressed, &g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size]);
-            g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] *= 4;
+            rle_encode32(buffer, g_serialize_size / 4, savebuffer_compressed, &g_zstd_compress_size[g_ulnet_session.frame_counter % g_sample_size]);
+            g_zstd_compress_size[g_ulnet_session.frame_counter % g_sample_size] *= 4;
         } else {
-            g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = rle8_encode_capped(buffer, g_serialize_size, savebuffer_compressed, sizeof(savebuffer_compressed)); // @todo Technically this can overflow I don't really plan to use it though and I find the odds unlikely
+            g_zstd_compress_size[g_ulnet_session.frame_counter % g_sample_size] = rle8_encode_capped(buffer, g_serialize_size, savebuffer_compressed, sizeof(savebuffer_compressed)); // @todo Technically this can overflow I don't really plan to use it though and I find the odds unlikely
         }
     } else {
         if (g_use_dictionary) {
@@ -3223,25 +3234,25 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
             //ZSTD_CCtx_setParameter(cctx, ZSTD_c_ldmHashLog, 0);
 
             if (cdict) {
-                g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = ZSTD_compress_usingCDict(cctx,
+                g_zstd_compress_size[g_ulnet_session.frame_counter % g_sample_size] = ZSTD_compress_usingCDict(cctx,
                                                                                        savebuffer_compressed, sizeof(savebuffer_compressed),
                                                                                        buffer, g_serialize_size,
                                                                                        cdict);
             }
         } else {
-            g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = ZSTD_compress(savebuffer_compressed,
+            g_zstd_compress_size[g_ulnet_session.frame_counter % g_sample_size] = ZSTD_compress(savebuffer_compressed,
                                                                         sizeof(savebuffer_compressed),
                                                                         buffer, g_serialize_size, g_zstd_compress_level);
         }
 
     }
 
-    if (ZSTD_isError(g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size])) {
-        fprintf(stderr, "Error compressing: %s\n", ZSTD_getErrorName(g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size]));
-        g_zstd_compress_size[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = 0;
+    if (ZSTD_isError(g_zstd_compress_size[g_ulnet_session.frame_counter % g_sample_size])) {
+        fprintf(stderr, "Error compressing: %s\n", ZSTD_getErrorName(g_zstd_compress_size[g_ulnet_session.frame_counter % g_sample_size]));
+        g_zstd_compress_size[g_ulnet_session.frame_counter % g_sample_size] = 0;
     }
 
-    g_zstd_cycle_count[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = ulnet__rdtsc() - start;
+    g_zstd_cycle_count[g_ulnet_session.frame_counter % g_sample_size] = ulnet__rdtsc() - start;
 
     // I'm trying to compress the save state data by finding matching blocks that are in the ROM.
     // This doesn't seem to work. Here are my theories:
@@ -3480,8 +3491,6 @@ int main(int argc, char *argv[]) {
 
     SDL_Event ev;
 
-    g_ulnet_session.sample_size = SAM2_MIN(100, ULNET_MAX_SAMPLE_SIZE);
-
     if (strcmp(g_libretro_context.system_info.library_name, "dolphin-emu") == 0) { // @todo Really we just should prevent saving before retro_run is called
         g_do_zstd_compress = false;
     }
@@ -3607,26 +3616,26 @@ int main(int argc, char *argv[]) {
         }
 
         double max_sleeping_allowed_when_polling_network_seconds = g_headless ? 1.0 : 0.0; // We just use vertical sync for frame-pacing when we have a head
+        g_ulnet_session.retro_run = [](void *user_ptr) {
+            if (g_use_shared_context) {
+                SDL_GL_MakeCurrent(g_win, g_core_ctx);
+            }
+            g_retro.retro_run();
+            if (g_use_shared_context) {
+                SDL_GL_MakeCurrent(g_win, g_ctx);
+            }
+        };
+        g_ulnet_session.retro_serialize_size = [](void *user_ptr) {
+            return g_retro.retro_serialize_size();
+        };
+        g_ulnet_session.retro_serialize = [](void *user_ptr, void *data, size_t size) {
+            return g_retro.retro_serialize(data, size);
+        };
+        g_ulnet_session.retro_unserialize = [](void *user_ptr, const void *data, size_t size) {
+            return g_retro.retro_unserialize(data, size);
+        };
         int status = ulnet_poll_session(&g_ulnet_session, g_do_zstd_compress, g_savebuffer[g_save_state_index], sizeof(g_savebuffer[g_save_state_index]),
-            g_av.timing.fps, max_sleeping_allowed_when_polling_network_seconds,
-            [](void *user_ptr) {
-                if (g_use_shared_context) {
-                    SDL_GL_MakeCurrent(g_win, g_core_ctx);
-                }
-                g_retro.retro_run();
-                if (g_use_shared_context) {
-                    SDL_GL_MakeCurrent(g_win, g_ctx);
-                }
-            },
-            [](void *user_ptr) {
-                return g_retro.retro_serialize_size();
-            },
-            [](void *user_ptr, void *data, size_t size) {
-                return g_retro.retro_serialize(data, size);
-            },
-            [](void *user_ptr, const void *data, size_t size) {
-                return g_retro.retro_unserialize(data, size);
-            });
+            g_av.timing.fps, max_sleeping_allowed_when_polling_network_seconds);
 
         if (g_do_zstd_compress && (status & ULNET_POLL_SESSION_SAVED_STATE)) {
             tick_compression_investigation((char *)g_savebuffer[g_save_state_index], g_serialize_size, (char*)rom_data, rom_size);
@@ -3639,7 +3648,7 @@ int main(int argc, char *argv[]) {
             static int64_t last_tick_usec = ulnet__get_unix_time_microseconds();
             int64_t current_time_usec = ulnet__get_unix_time_microseconds();
             int64_t elapsed_time_milliseconds = (current_time_usec - last_tick_usec) / 1000;
-            g_frame_time_milliseconds[g_ulnet_session.frame_counter % g_ulnet_session.sample_size] = elapsed_time_milliseconds;
+            g_frame_time_milliseconds[g_ulnet_session.frame_counter % g_sample_size] = elapsed_time_milliseconds;
             last_tick_usec = current_time_usec;
         }
 
