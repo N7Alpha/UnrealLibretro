@@ -1209,9 +1209,6 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
     l->netplay_session = (ulnet_session_t *) calloc(1, sizeof(ulnet_session_t));
     ulnet_session_init_defaulted(l->netplay_session);
-#if UNREALLIBRETRO_NETIMGUI
-    l->netplay_session->sample_size = ULNET_MAX_SAMPLE_SIZE;
-#endif
     l->netplay_session->delay_frames = 2; // @todo Make configurable
 
     auto LibretroSettings = GetDefault<ULibretroSettings>();
