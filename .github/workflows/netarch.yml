@@ -1,4 +1,4 @@
-name: CI Build
+name: netarch CI Build
 
 on: [push]
 
@@ -56,7 +56,7 @@ jobs:
         cmake -S . -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
           -DCMAKE_OSX_ARCHITECTURES="x86_64" \
-          -DCMAKE_OSX_DEPLOYMENT_TARGET="11.0" # Or your desired minimum
+          -DCMAKE_OSX_DEPLOYMENT_TARGET="11.0"
     - name: Build (macOS x86_64)
       run: cmake --build build --parallel
     - name: Upload macOS x86_64 Artifact
@@ -77,7 +77,7 @@ jobs:
         cmake -S . -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
           -DCMAKE_OSX_ARCHITECTURES="arm64" \
-          -DCMAKE_OSX_DEPLOYMENT_TARGET="11.0" # Keep consistent
+          -DCMAKE_OSX_DEPLOYMENT_TARGET="11.0"
     - name: Build (macOS arm64)
       run: cmake --build build --parallel
     - name: Upload macOS arm64 Artifact
@@ -86,42 +86,6 @@ jobs:
         name: netarch-macos-arm64 # Specific name for this arch
         path: build/netarch
         if-no-files-found: error
-
-  create-macos-universal:
-    runs-on: macos-latest # Any macOS runner is fine, it just needs 'lipo'
-    needs: [build-macos-x86_64, build-macos-arm64]
-    steps:
-    - name: Download x86_64 artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: netarch-macos-x86_64
-        path: build/x86_64
-    - name: Download arm64 artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: netarch-macos-arm64
-        path: build/arm64
-    - name: List downloaded files
-      run: |
-        ls -lR build/x86_64
-        ls -lR build/arm64
-    - name: Create Universal Binary
-      run: |
-        mkdir -p build/universal # Create a directory for the universal binary
-        lipo -create \
-          build/x86_64/netarch \
-          build/arm64/netarch \
-          -output build/universal/netarch
-    - name: Verify Universal Binary
-      run: |
-        echo "--- File type information (Universal) ---"
-        file build/universal/netarch
-        lipo -info build/universal/netarch
-    - name: Upload macOS Universal Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: netarch-macos-universal
-        path: build/universal/netarch
 
   build-windows:
     runs-on: windows-2025 # Fixes issue with SDL that exists as of windows-latest

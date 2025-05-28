@@ -1,4 +1,4 @@
-name: CI
+name: UnrealLibretro CI Build and Release
 
 on:
   workflow_dispatch:
