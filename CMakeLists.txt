@@ -46,7 +46,9 @@ endif()
 
 # Source Files
 set(SOURCE_FILES
-    netarch.cpp
+    Source/ThirdParty/netarch/netarch.cpp
+    Source/ThirdParty/netarch/sam2_test.c
+    Source/ThirdParty/netarch/ulnet_test.c
     Source/UnrealLibretro/Private/fec.c
     Source/ThirdParty/imgui/imgui.cpp
     Source/ThirdParty/imgui/backends/imgui_impl_sdl3.cpp

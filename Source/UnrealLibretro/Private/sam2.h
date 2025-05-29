@@ -1,25 +1,3 @@
-// MIT License
-// 
-// Copyright (c) 2024 John Rehbein
-// 
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-// 
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-// 
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
-
 // Signaling Server and a Match Maker
 #ifndef SAM2_H
 #define SAM2_H
@@ -70,26 +48,6 @@
 #define SAM2_STATIC_ASSERT(cond, _) extern int sam2__static_assertion_##__COUNTER__[(cond) ? 1 : -1]
 #endif
 
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
-    // C99 or later
-    #define SAM2_RESTRICT restrict
-#elif defined(__cplusplus) && __cplusplus >= 201103L
-    // C++11 or later
-    #define SAM2_RESTRICT __restrict
-#elif defined(__GNUC__) || defined(__clang__)
-    // GCC or Clang
-    #define SAM2_RESTRICT __restrict__
-#elif defined(_MSC_VER) && _MSC_VER >= 1400
-    // Microsoft Visual C++ (MSVC)
-    #define SAM2_RESTRICT __restrict
-#elif defined(__INTEL_COMPILER)
-    // Intel C++ Compiler (ICC)
-    #define SAM2_RESTRICT restrict
-#else
-    // restrict keyword not available
-    #define SAM2_RESTRICT
-#endif
-
 #if defined(_MSC_VER)
     // Microsoft Visual C++ (MSVC)
     #define SAM2_FORCEINLINE __forceinline
@@ -102,14 +60,6 @@
 #else
     // fallback to regular inline
     #define SAM2_FORCEINLINE inline
-#endif
-
-#if defined(_MSC_VER)
-#define SAM2_UNUSED __pragma(warning(suppress: 4505))
-#elif defined(__GNUC__) || defined(__clang__)
-#define SAM2_UNUSED __attribute__((unused))
-#else
-#define SAM2_UNUSED
 #endif
 
 #define SAM2_ARRAY_LENGTH(arr) (sizeof(arr) / sizeof((arr)[0]))
@@ -134,31 +84,15 @@
 #define SAM2_DEFAULT_BACKLOG 128
 
 // @todo move some of these into the UDP netcode file
-#define SAM2_FLAG_NO_FIXED_PORT            0b00000001ULL // Clients aren't limited to setting input on bound port
-#define SAM2_FLAG_ALLOW_SHOW_IP            0b00000010ULL
-#define SAM2_FLAG_FORCE_TURN               0b00000100ULL
-#define SAM2_FLAG_SPECTATOR                0b00001000ULL
-#define SAM2_FLAG_ROOM_NEEDS_AUTHORIZATION 0b00010000ULL
-#define SAM2_FLAG_AUTHORITY_IPv6           0b00100000ULL
 #define SAM2_FLAG_ROOM_IS_NETWORK_HOSTED   0b01000000ULL
 
 #define SAM2_FLAG_PORT0_CAN_SET_ALL_INPUTS (0b00000001ULL << 8)
-#define SAM2_FLAG_PORT1_CAN_SET_ALL_INPUTS (0b00000010ULL << 8)
-#define SAM2_FLAG_PORT2_CAN_SET_ALL_INPUTS (0b00000100ULL << 8)
-#define SAM2_FLAG_PORT3_CAN_SET_ALL_INPUTS (0b00001000ULL << 8)
-#define SAM2_FLAG_PORT4_CAN_SET_ALL_INPUTS (0b00010000ULL << 8)
-#define SAM2_FLAG_PORT5_CAN_SET_ALL_INPUTS (0b00100000ULL << 8)
-#define SAM2_FLAG_PORT6_CAN_SET_ALL_INPUTS (0b01000000ULL << 8)
-#define SAM2_FLAG_PORT7_CAN_SET_ALL_INPUTS (0b10000000ULL << 8)
+//#define SAM2_FLAG_PORT1_CAN_SET_ALL_INPUTS (0b00000010ULL << 8)
+// etc...
 
 #define SAM2_FLAG_PORT0_PEER_IS_INACTIVE (0b00000001ULL << 16)
-#define SAM2_FLAG_PORT1_PEER_IS_INACTIVE (0b00000010ULL << 16)
-#define SAM2_FLAG_PORT2_PEER_IS_INACTIVE (0b00000100ULL << 16)
-#define SAM2_FLAG_PORT3_PEER_IS_INACTIVE (0b00001000ULL << 16)
-#define SAM2_FLAG_PORT4_PEER_IS_INACTIVE (0b00010000ULL << 16)
-#define SAM2_FLAG_PORT5_PEER_IS_INACTIVE (0b00100000ULL << 16)
-#define SAM2_FLAG_PORT6_PEER_IS_INACTIVE (0b01000000ULL << 16)
-#define SAM2_FLAG_PORT7_PEER_IS_INACTIVE (0b10000000ULL << 16)
+//#define SAM2_FLAG_PORT1_PEER_IS_INACTIVE (0b00000010ULL << 16)
+// etc...
 
 #define SAM2_FLAG_AUTHORITY_IS_INACTIVE (0b00000001ULL << 24)
 
@@ -178,7 +112,6 @@
 #define SAM2_RESPONSE_PORT_NOT_AVAILABLE       -12 // Emitted by signaling server when a client tries to reserve a port that is already occupied
 #define SAM2_RESPONSE_ALREADY_IN_ROOM          -13
 #define SAM2_RESPONSE_PEER_DOES_NOT_EXIST      -14
-#define SAM2_RESPONSE_PEER_NOT_IN_ROOM         -15
 #define SAM2_RESPONSE_CANNOT_SIGNAL_SELF       -16
 #define SAM2_RESPONSE_VERSION_MISMATCH         -17
 #define SAM2_RESPONSE_INVALID_ENCODE_TYPE      -18
@@ -191,6 +124,9 @@
 #define SAM2_AUTHORITY_INDEX SAM2_PORT_MAX
 #define SAM2_TOTAL_PEERS 64
 #define SAM2_SPECTATOR_START (SAM2_PORT_MAX + 1)
+
+// sam2_test.c
+SAM2_LINKAGE int sam2_test_all(void);
 
 // All data is sent in little-endian format
 // All strings are utf-8 encoded unless stated otherwise... @todo Actually I should just add _utf8 if the field isn't ascii
@@ -216,17 +152,6 @@ static int sam2_get_port_of_peer(sam2_room_t *room, uint16_t peer_id) {
     }
 
     return -1;
-}
-
-static void sanitize_room(sam2_room_t *associated_room, sam2_room_t *room, uint16_t peer_id) {
-    room->flags &= ~SAM2_FLAG_SERVER_PERMISSION_MASK;
-    // The logic in here doesn't work for disabled flags
-    if (peer_id == room->peer_ids[SAM2_AUTHORITY_INDEX]) {
-        room->flags |= SAM2_FLAG_AUTHORITY_PERMISSION_MASK;
-    } else {
-        room->flags |= SAM2_FLAG_CLIENT_PERMISSION_MASK;
-    }
-
 }
 
 typedef struct sam2_room_make_message {
@@ -561,6 +486,20 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
 SAM2_LINKAGE int sam2_client_poll_connection(sam2_socket_t sockfd, int timeout_ms);
 
 SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message);
+
+//#define SAM2_LOG_WRITE(level, file, line, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0); // Ex. Use print
+#ifndef SAM2_LOG_WRITE
+#define SAM2_LOG_WRITE_DEFINITION
+#define SAM2_LOG_WRITE sam2_log_write
+#endif
+
+#define SAM2_LOG_DEBUG(...) SAM2_LOG_WRITE(0, __FILE__, __LINE__, __VA_ARGS__)
+#define SAM2_LOG_INFO(...)  SAM2_LOG_WRITE(1, __FILE__, __LINE__, __VA_ARGS__)
+#define SAM2_LOG_WARN(...)  SAM2_LOG_WRITE(2, __FILE__, __LINE__, __VA_ARGS__)
+#define SAM2_LOG_ERROR(...) SAM2_LOG_WRITE(3, __FILE__, __LINE__, __VA_ARGS__)
+#define SAM2_LOG_FATAL(...) SAM2_LOG_WRITE(4, __FILE__, __LINE__, __VA_ARGS__)
+SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const char *format, ...);
+
 #endif // SAM2_H
 
 #if defined(SAM2_IMPLEMENTATION)
@@ -568,12 +507,10 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message);
 #define SAM2_CLIENT_C
 
 #include <errno.h>
-#include <time.h>
 #include <stdarg.h>
 #if defined(_WIN32)
 #include <ws2tcpip.h>
 #else
-#include <unistd.h>
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -690,6 +627,12 @@ void rle8_unpack_message(uint8_t *message, int64_t message_size, void *message_r
     ((char *) message)[7] = 'R';
 }
 
+// Logging implementation
+#ifndef _WIN32
+#include <unistd.h> // isatty
+#endif
+#include <time.h>
+
 #define SAM2__GREY    "\x1B[90m"
 #define SAM2__DEFAULT "\x1B[39m"
 #define SAM2__YELLOW  "\x1B[93m"
@@ -698,7 +641,7 @@ void rle8_unpack_message(uint8_t *message, int64_t message_size, void *message_r
 #define SAM2__BG_RED  "\x1B[41m"
 #define SAM2__RESET   "\x1B[0m"
 
-int sam2__terminal_supports_ansi_colors() {
+static int sam2__terminal_supports_ansi_colors() {
 #if defined(_WIN32)
     // Windows
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -765,17 +708,6 @@ static int sam2__debugger_is_attached_to_us(void){
 #endif
 }
 
-//#define SAM2_LOG_WRITE(level, file, line, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0); // Ex. Use print
-#ifndef SAM2_LOG_WRITE
-#define SAM2_LOG_WRITE_DEFINITION
-#define SAM2_LOG_WRITE sam2__log_write
-#endif
-
-#define SAM2_LOG_DEBUG(...) SAM2_LOG_WRITE(0, __FILE__, __LINE__, __VA_ARGS__)
-#define SAM2_LOG_INFO(...)  SAM2_LOG_WRITE(1, __FILE__, __LINE__, __VA_ARGS__)
-#define SAM2_LOG_WARN(...)  SAM2_LOG_WRITE(2, __FILE__, __LINE__, __VA_ARGS__)
-#define SAM2_LOG_ERROR(...) SAM2_LOG_WRITE(3, __FILE__, __LINE__, __VA_ARGS__)
-#define SAM2_LOG_FATAL(...) SAM2_LOG_WRITE(4, __FILE__, __LINE__, __VA_ARGS__)
 
 static int sam2__get_localtime(const time_t *t, struct tm *buf) {
 #ifdef _WIN32
@@ -788,9 +720,7 @@ static int sam2__get_localtime(const time_t *t, struct tm *buf) {
 
 // @todo This is kind of weird but I needed to be able to hide this to get Unreal Build Tool to compile it
 #if defined(SAM2_LOG_WRITE_DEFINITION)
-// @todo Logging is slower than I'd like it to be. I want some simple solution to this that at least applies to non-debug builds since I think those should be fast
-// @enhancement Maybe use stb_sprintf instead to avoid malloc calls? Couple this with a platform write function instead of printf
-static void SAM2_UNUSED sam2__log_write(int level, const char *file, int line, const char *fmt, ...) {
+SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const char *fmt, ...) {
     const char *filename = file + strlen(file);
     while (filename != file && *filename != '/' && *filename != '\\') {
         --filename;
@@ -826,7 +756,9 @@ static void SAM2_UNUSED sam2__log_write(int level, const char *file, int line, c
     va_end(args);
 
     fprintf(stdout, sam2__terminal_supports_ansi_colors() ? SAM2__RESET "\n" : "\n");
-    fflush(stdout);
+    if (level >= 2) { // Flush anything that is at least as severe as WARN
+        fflush(stdout);
+    }
 
     if (level >= 4) {
         if (sam2__debugger_is_attached_to_us()) {
@@ -1689,29 +1621,6 @@ void on_new_connection(uv_stream_t *server_tcp, int status) {
     sam2__write_response((uv_stream_t*) &client->tcp, (sam2_message_u *) connect_message);
 }
 
-// Secret knowledge hidden within libuv's test folder
-#define ASSERT(expr) if (!(expr)) exit(69);
-static void close_walk_cb(uv_handle_t* handle, void* arg) {
-    if (!uv_is_closing(handle)) {
-        uv_close(handle, NULL);
-    }
-}
-
-static void close_loop(uv_loop_t* loop) {
-    uv_walk(loop, close_walk_cb, NULL);
-    uv_run(loop, UV_RUN_DEFAULT);
-}
-
-/* This macro cleans up the event loop. This is used to avoid valgrind
- * warnings about memory being "leaked" by the event loop.
- */
-#define MAKE_VALGRIND_HAPPY(loop)                   \
-  do {                                              \
-    close_loop(loop);                               \
-    ASSERT(0 == uv_loop_close(loop));               \
-    uv_library_shutdown();                          \
-  } while (0)
-
 SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     memset(server, 0, sizeof(sam2_server_t));
 
@@ -1774,41 +1683,6 @@ SAM2_LINKAGE int sam2_server_begin_destroy(sam2_server_t *server) {
 #endif // SAM2_SERVER_C
 #endif // SAM2_SERVER && SAM2_IMPLEMENTATION
 
-#if defined(SAM2_EXECUTABLE)
-#ifndef SAM2_MAIN_C
-#define SAM2_MAIN_C
-static void on_signal(uv_signal_t *handle, int signum) {
-    sam2_server_begin_destroy((sam2_server_t *) handle->data);
-    uv_close((uv_handle_t*) handle->data, NULL);
-}
-
-int main() {
-    sam2_server_t server;
-
-    int ret = sam2_server_init(&server, SAM2_SERVER_DEFAULT_PORT);
-
-    if (ret < 0) {
-        SAM2_LOG_FATAL("Error while initializing server");
-        return ret;
-    }
-
-    // Setup signal handler
-    uv_signal_t sig;
-    uv_signal_init(&server.loop, &sig);
-    sig.data = &server;
-    uv_signal_start(&sig, on_signal, SIGINT);
-
-    uv_run(&server.loop, UV_RUN_DEFAULT);
-
-    MAKE_VALGRIND_HAPPY(&server.loop);
-
-    return 0;
-}
-
-#endif
-#endif
-
-
 
 //=============================================================================
 //== The following code just guarantees the C structs we're sending over     ==
@@ -1856,7 +1730,7 @@ int main() {
 #   endif
 #endif
 
-
+// A static assert macro that works in C
 // You can't use packing pragmas portably this is the next best thing
 // If these fail then this server won't be binary compatible with the protocol and would fail horrendously
 // Resort to packing pragmas until these succeed if you run into this issue yourself
@@ -1865,198 +1739,3 @@ SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == 64 + sizeof(uint64_t) + 32 + 64*sizeof
 SAM2_STATIC_ASSERT(sizeof(sam2_room_make_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_make_message_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_list_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_list_message_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_join_message_t) == 8 + 8 + sizeof(sam2_room_t), "sam2_room_join_message_t is not packed");
-
-#if defined(SAM2_TEST)
-#ifndef SAM2_TEST_C
-#define SAM2_TEST_C
-
-#define SAM2__TEST_LIST_CAPACITY 3
-#define SAM2__TEST_LIST_SIZE (SAM2__TEST_LIST_CAPACITY+1)
-
-typedef struct sam2__test_container {
-    sam2__pool_t pool;
-    sam2__pool_node_t next[SAM2__TEST_LIST_SIZE];
-} sam2__test_container_t;
-
-// Helper macro to check a condition and print an error if it fails.
-#define TEST_ASSERT(cond, message)       \
-    do {                                 \
-        if (!(cond)) {                   \
-            fprintf(stderr, "FAIL: %s\n", message); \
-            test_failed_local = 1;       \
-        }                                \
-    } while (0)
-
-// 1) One allocation and free.
-int sam2__test_one_allocation_and_free(void) {
-    int test_failed_local = 0;
-
-    sam2__test_container_t container;
-    memset(&container, 0, sizeof(container));
-    sam2__pool_init(&container.pool, SAM2__TEST_LIST_SIZE);
-
-    // Allocate 1 element
-    uint16_t idx = sam2__pool_alloc(&container.pool);
-    TEST_ASSERT(idx != SAM2__INDEX_NULL, "Expected allocation to succeed, got LIST_NULL instead.");
-    TEST_ASSERT(container.pool.used == 1, "Used count should be 1 after first allocation.");
-
-    // Free it
-    const char *err = sam2__pool_free(&container.pool, idx);
-    TEST_ASSERT(err == NULL, "Expected free to succeed, got an error instead.");
-    TEST_ASSERT(container.pool.used == 0, "Used count should be 0 after freeing.");
-
-    return test_failed_local;
-}
-
-// 2) Out-of-memory check. We only have 3 spots. Allocate them all, then one extra.
-int sam2__test_out_of_memory(void) {
-    int test_failed_local = 0;
-
-    sam2__test_container_t container;
-    memset(&container, 0, sizeof(container));
-    sam2__pool_init(&container.pool, SAM2__TEST_LIST_SIZE);
-
-    // We have 3 total. Allocate 3 times.
-    uint16_t idx1 = sam2__pool_alloc(&container.pool);
-    uint16_t idx2 = sam2__pool_alloc(&container.pool);
-    uint16_t idx3 = sam2__pool_alloc(&container.pool);
-
-    TEST_ASSERT(idx1 != SAM2__INDEX_NULL && idx2 != SAM2__INDEX_NULL && idx3 != SAM2__INDEX_NULL,
-        "Allocations should succeed (3 total).");
-    TEST_ASSERT(container.pool.used == 3, "Used count should be 3 after allocating 3 elements.");
-
-    // Now the next allocation should return SAM2__INDEX_NULL.
-    uint16_t idx4 = sam2__pool_alloc(&container.pool);
-    TEST_ASSERT(idx4 == SAM2__INDEX_NULL, "Expected out-of-memory (LIST_NULL) for the 4th allocation.");
-
-    // Cleanup: free them all so we don't leave them allocated.
-    sam2__pool_free(&container.pool, idx1);
-    sam2__pool_free(&container.pool, idx2);
-    sam2__pool_free(&container.pool, idx3);
-    TEST_ASSERT(container.pool.used == 0, "Used count should be 0 after freeing everything.");
-
-    return test_failed_local;
-}
-
-// 3) Full allocation and full deallocation.
-//    Allocate all resources and ensure that after deallocation the allocator
-//    is restored to its initial state (thus we can re-allocate again).
-int sam2__test_full_allocation_and_deallocation(void) {
-    int test_failed_local = 0;
-
-    sam2__test_container_t container;
-    memset(&container, 0, sizeof(container));
-    sam2__pool_init(&container.pool, SAM2__TEST_LIST_SIZE);
-
-    // Allocate all (3)
-    uint16_t idx[3];
-    for (int i = 0; i < SAM2__TEST_LIST_CAPACITY; i++) {
-        idx[i] = sam2__pool_alloc(&container.pool);
-        TEST_ASSERT(idx[i] != SAM2__INDEX_NULL, "Allocation failed unexpectedly.");
-    }
-    TEST_ASSERT(container.pool.used == 3,
-        "Used count should be 3 after allocating all resources.");
-
-    // Free all
-    for (int i = 0; i < SAM2__TEST_LIST_CAPACITY; i++) {
-        const char* err = sam2__pool_free(&container.pool, idx[i]);
-        TEST_ASSERT(err == NULL, "Free returned an error unexpectedly.");
-    }
-    TEST_ASSERT(container.pool.used == 0,
-        "Used count should be 0 after freeing everything.");
-
-    // Check that we can allocate again (meaning the state was restored).
-    uint16_t idx_new = sam2__pool_alloc(&container.pool);
-    TEST_ASSERT(idx_new != SAM2__INDEX_NULL, "Allocation after full free should succeed.");
-    TEST_ASSERT(container.pool.used == 1, "Used count should be 1 after new allocation.");
-
-    // Cleanup
-    sam2__pool_free(&container.pool, idx_new);
-
-    return test_failed_local;
-}
-
-// 4) Test alloc_at_index. We have the precondition that index must be free.
-//    We'll try to allocate normally, free it, then explicitly call alloc_at_index
-//    for that index. Also try to allocate_at_index out of range.
-int sam2__test_alloc_at_index(void) {
-    int test_failed_local = 0;
-
-    sam2__test_container_t container;
-    memset(&container, 0, sizeof(container));
-    sam2__pool_init(&container.pool, SAM2__TEST_LIST_SIZE);
-
-    // Grab one normally.
-    uint16_t idx_normal = sam2__pool_alloc(&container.pool);
-    TEST_ASSERT(idx_normal != SAM2__INDEX_NULL, "Normal allocation should succeed.");
-
-    // Now free it.
-    const char *err = sam2__pool_free(&container.pool, idx_normal);
-    TEST_ASSERT(err == NULL, "Free should succeed for a valid index.");
-
-    // Now we know idx_normal is free again. Let's allocate at that exact index.
-    uint16_t idx_allocated_at = sam2__pool_alloc_at_index(&container.pool, idx_normal);
-    TEST_ASSERT(idx_allocated_at == idx_normal,
-        "Expected to re-allocate at the same index we freed, but got a different index or LIST_NULL.");
-    TEST_ASSERT(container.pool.used == 1,
-        "Used count should be 1 after alloc_at_index.");
-
-    // Cleanup
-    err = sam2__pool_free(&container.pool, idx_allocated_at);
-    TEST_ASSERT(err == NULL, "Free should succeed at the end.");
-
-    return test_failed_local;
-}
-
-// 5) Test free and re-allocate. Possibly interleaved: allocate some, free some,
-//    allocate again. The main check is that the used/freelist is consistent.
-int sam2__test_free_and_realloc(void) {
-    int test_failed_local = 0;
-
-    sam2__test_container_t container;
-    memset(&container, 0, sizeof(container));
-    sam2__pool_init(&container.pool, SAM2__TEST_LIST_SIZE);
-
-    // Allocate 2 of the 3 available.
-    uint16_t idx1 = sam2__pool_alloc(&container.pool);
-    uint16_t idx2 = sam2__pool_alloc(&container.pool);
-
-    TEST_ASSERT(idx1 != SAM2__INDEX_NULL && idx2 != SAM2__INDEX_NULL, "Expected first 2 allocations to succeed.");
-    TEST_ASSERT(container.pool.used == 2, "Used count should be 2 after 2 allocs.");
-
-    // Free the first one.
-    const char *err = sam2__pool_free(&container.pool, idx1);
-    TEST_ASSERT(err == NULL, "Freeing idx1 should succeed.");
-    TEST_ASSERT(container.pool.used == 1, "Used count should drop to 1 after free.");
-
-    // Now allocate a third one. It's possible that the newly freed index1 is reused or
-    // we get the last slot. We do not rely on the order. Only that it succeeds.
-    uint16_t idx3 = sam2__pool_alloc(&container.pool);
-    TEST_ASSERT(idx3 != SAM2__INDEX_NULL, "Expected the 3rd allocation to succeed since we freed idx1.");
-    TEST_ASSERT(container.pool.used == 2, "Used count should be 2 again after the 3rd allocation.");
-
-    // Cleanup: free the remaining.
-    sam2__pool_free(&container.pool, idx2);
-    sam2__pool_free(&container.pool, idx3);
-    TEST_ASSERT(container.pool.used == 0,
-        "Used count should be 0 after final free of idx2 and idx3.");
-
-    return test_failed_local;
-}
-
-// Top level test runner.
-void sam2_test_all(void) {
-    int tests_failed = 0;
-
-    tests_failed += sam2__test_one_allocation_and_free();
-    tests_failed += sam2__test_out_of_memory();
-    tests_failed += sam2__test_full_allocation_and_deallocation();
-    tests_failed += sam2__test_alloc_at_index();
-    tests_failed += sam2__test_free_and_realloc();
-
-    if (tests_failed != 0) {
-        SAM2_LOG_FATAL(__FILE__ ":%d: Array List Broke Total tests failed: %d\n", __LINE__, tests_failed);
-    }
-}
-#endif
-#endif
