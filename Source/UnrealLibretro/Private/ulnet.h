@@ -55,13 +55,12 @@ typedef struct juice_agent juice_agent_t;
 #define ULNET_SESSION_FLAG_TICKED                0b00000001ULL
 #define ULNET_SESSION_FLAG_CORE_OPTIONS_DIRTY    0b00000010ULL
 #define ULNET_SESSION_FLAG_READY_TO_TICK_SET     0b00000100ULL
+#define ULNET_SESSION_FLAG_DRAW_IMGUI            0b00001000ULL
 
 // @todo Remove this define once it becomes possible through normal featureset
 #define ULNET__DEBUG_EVERYONE_ON_PORT_0
 
-#ifdef ULNET_IMGUI
 #define ULNET_MAX_SAMPLE_SIZE 128
-#endif
 
 #define ULNET_RELIABLE_ACK_BUFFER_SIZE 128
 #define ULNET_RELIABLE_RETRANSMIT_INTERVAL_MS 150
@@ -106,78 +105,9 @@ typedef struct arena {
     uint8_t arena[2 * 1024 * 1024];
 } arena_t;
 
-arena_ref_t arena_alloc(arena_t *arena, uint16_t size) {
-    // Reject zero-sized and too-large allocations
-    if (size - 1  >= sizeof(arena->arena)) {
-        return arena_null;
-    }
-
-    // Check if allocation would exceed arena remaining space
-    if (arena->head + size > sizeof(arena->arena)) {
-        // Wrap around to beginning if we don't have space
-        arena->head = 0;
-        // Increment generation on wrap, preserving only lower 12 bits
-        arena->generation = (arena->generation + 1) & 0x0FFF;
-    }
-
-    arena_ref_t ref = {
-        arena->generation,
-        size,
-        arena->head
-    };
-
-    // Advance head pointer
-    arena->head += size;
-
-    return ref;
-}
-
-void *arena_deref(arena_t *arena, arena_ref_t reference) {
-    if (memcmp(&reference, &arena_null, sizeof(reference)) == 0) {
-        return NULL;
-    }
-
-    // Validate bounds
-    if (   reference.offset >= sizeof(arena->arena)
-        || reference.offset + reference.size > sizeof(arena->arena)) {
-        return NULL;
-    }
-
-    void *ptr = &arena->arena[reference.offset];
-
-    // Extract just the generation part, ignoring user flags
-    uint16_t ref_gen = reference.flags_and_generation & 0x0FFF;
-
-    // Case 1: Same generation - definitely valid
-    if (arena->generation == ref_gen) {
-        return ptr;
-    }
-
-    // Case 2: Arena has wrapped around once (generation + 1)
-    // Handle generation wraparound properly using modular arithmetic
-    if (   ((arena->generation - ref_gen) & 0x0FFF) == 1
-        && reference.offset >= arena->head) {
-        // Return the original pointer - the data is still valid
-        // This condition checks if the reference is in memory that hasn't been
-        // overwritten yet after a wraparound
-        return ptr;
-    }
-
-    // In all other cases, the memory has been overwritten
-    return NULL;
-}
-
-arena_ref_t arena_reref(arena_ref_t ref, int offset) {
-    if (offset > ref.size) {
-        return arena_null;
-    } else {
-        arena_ref_t new_ref = ref;
-        new_ref.offset += offset;
-        new_ref.size -= offset;
-        return new_ref;
-    }
-}
-
+ULNET_LINKAGE arena_ref_t arena_alloc(arena_t *arena, uint16_t size);
+ULNET_LINKAGE void *arena_deref(arena_t *arena, arena_ref_t reference);
+ULNET_LINKAGE arena_ref_t arena_reref(arena_ref_t ref, int offset);
 
 typedef struct ulnet_core_option {
     char key[128];
@@ -352,11 +282,9 @@ typedef struct ulnet_session {
     float debug_udp_recv_drop_rate;
     float debug_udp_send_drop_rate;
 
-#ifdef ULNET_IMGUI
     bool imgui_packet_table_show_most_recent_first;
     int input_packet_size[SAM2_PORT_MAX + 1][ULNET_MAX_SAMPLE_SIZE];
     int save_state_execution_time_cycles[ULNET_MAX_SAMPLE_SIZE];
-#endif
 } ulnet_session_t;
 
 #if __cplusplus >= 201103L
@@ -369,12 +297,20 @@ ULNET_LINKAGE int ulnet_process_message(ulnet_session_t *session, const char *re
 ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, void *save_state, size_t save_state_size, int64_t save_state_frame);
 ULNET_LINKAGE void ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, int p, const char *remote_description);
 ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port);
-ULNET_LINKAGE void ulnet__swap_agent(ulnet_session_t *session, int peer_existing_port, int peer_new_port);
-ULNET_LINKAGE sam2_room_t ulnet__infer_future_room_we_are_in(ulnet_session_t *session);
+ULNET_LINKAGE void ulnet_swap_agent(ulnet_session_t *session, int peer_existing_port, int peer_new_port);
 ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session);
+ULNET_LINKAGE void ulnet_receive_packet_callback(juice_agent_t *agent, const char *packet, size_t size, void *user_ptr);
+ULNET_LINKAGE int ulnet_udp_send(ulnet_session_t *session, int port, const uint8_t *packet, size_t size);
+ULNET_LINKAGE int ulnet_reliable_send_with_acks_only(ulnet_session_t *session, int port, const uint8_t *packet, int size);
+ULNET_LINKAGE int ulnet_reliable_send(ulnet_session_t *session, int port, const uint8_t *packet, int size);
+ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_state_on_tick, uint8_t *save_state, size_t save_state_capacity,
+    double frame_rate, double max_sleeping_allowed_when_polling_network_seconds);
+    ULNET_LINKAGE int ulnet_wrapped_header_size(uint8_t *packet, int size);
+
 ULNET_LINKAGE void ulnet_imgui_show_session(ulnet_session_t *session);
 ULNET_LINKAGE void ulnet_imgui_show_recent_packets_table(ulnet_session_t *session, int p);
-static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *packet, size_t size, void *user_ptr);
+ULNET_LINKAGE int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_out);
+ULNET_LINKAGE int ulnet_test_inproc(ulnet_session_t **session_1_out, ulnet_session_t **session_2_out);
 
 static bool ulnet_is_authority(ulnet_session_t *session) {
     return    session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]
@@ -401,9 +337,11 @@ static inline void ulnet__xor_delta(void *dest, void *src, int size) {
 #if defined(ULNET_IMGUI)
 #include "imgui.h"
 #include "implot.h"
-#define IMH(statement) statement
+
+#define _IMH_CAT(a,b) a##b
+#define IMH(statement) if (session->flags & ULNET_SESSION_FLAG_DRAW_IMGUI) { statement }
 #else
-#define IMH(statement)
+#define IMH(statement) do {} while (0);
 #endif
 
 #include "juice/juice.h"
@@ -471,6 +409,77 @@ static inline int ULNET__POPCNT(uint64_t x) {
     return (int)((x * 0x0101010101010101ULL) >> 56);
 }
 #endif
+
+ULNET_LINKAGE arena_ref_t arena_alloc(arena_t *arena, uint16_t size) {
+    // Reject zero-sized and too-large allocations
+    if (size - 1  >= sizeof(arena->arena)) {
+        return arena_null;
+    }
+
+    // Check if allocation would exceed arena remaining space
+    if (arena->head + size > sizeof(arena->arena)) {
+        // Wrap around to beginning if we don't have space
+        arena->head = 0;
+        // Increment generation on wrap, preserving only lower 12 bits
+        arena->generation = (arena->generation + 1) & 0x0FFF;
+    }
+
+    arena_ref_t ref = {
+        arena->generation,
+        size,
+        arena->head
+    };
+
+    arena->head += size;
+
+    return ref;
+}
+
+ULNET_LINKAGE void *arena_deref(arena_t *arena, arena_ref_t reference) {
+    if (memcmp(&reference, &arena_null, sizeof(reference)) == 0) {
+        return NULL;
+    }
+
+    // Validate bounds
+    if (   reference.offset >= sizeof(arena->arena)
+        || reference.offset + reference.size > sizeof(arena->arena)) {
+        return NULL;
+    }
+
+    void *ptr = &arena->arena[reference.offset];
+
+    // Extract just the generation part, ignoring user flags
+    uint16_t ref_gen = reference.flags_and_generation & 0x0FFF;
+
+    // Case 1: Same generation - definitely valid
+    if (arena->generation == ref_gen) {
+        return ptr;
+    }
+
+    // Case 2: Arena has wrapped around once (generation + 1)
+    // Handle generation wraparound properly using modular arithmetic
+    if (   ((arena->generation - ref_gen) & 0x0FFF) == 1
+        && reference.offset >= arena->head) {
+        // Return the original pointer - the data is still valid
+        // This condition checks if the reference is in memory that hasn't been
+        // overwritten yet after a wraparound
+        return ptr;
+    }
+
+    // In all other cases, the memory has been overwritten
+    return NULL;
+}
+
+arena_ref_t arena_reref(arena_ref_t ref, int offset) {
+    if (offset > ref.size) {
+        return arena_null;
+    } else {
+        arena_ref_t new_ref = ref;
+        new_ref.offset += offset;
+        new_ref.size -= offset;
+        return new_ref;
+    }
+}
 
 static void ulnet__sleep(unsigned int msec) {
 #if defined(_WIN32)
@@ -664,7 +673,7 @@ static void ulnet_update_state_history(ulnet_session_t *session, arena_ref_t pac
     }
 }
 
-static int ulnet__wrapped_header_size(uint8_t *packet, int size) {
+ULNET_LINKAGE int ulnet_wrapped_header_size(uint8_t *packet, int size) {
     if (size > 0 && (packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_RELIABLE) {
         int reliable_header_size = ULNET_HEADER_SIZE;
         if (!(packet[0] & ULNET_RELIABLE_FLAG_ACK_BITS_ONLY)) {
@@ -683,7 +692,7 @@ static int ulnet__wrapped_header_size(uint8_t *packet, int size) {
 }
 
 // Returns a negative number on error
-static int ulnet__udp_send(ulnet_session_t *session, int port, const uint8_t *packet, size_t size) {
+ULNET_LINKAGE int ulnet_udp_send(ulnet_session_t *session, int port, const uint8_t *packet, size_t size) {
     // Basic packet validation
     if (size - 1 >= ULNET_PACKET_SIZE_BYTES_MAX) {
         SAM2_LOG_ERROR("Attempt to send packet with invalid size: %zu bytes, max allowed: %d", size, ULNET_PACKET_SIZE_BYTES_MAX);
@@ -767,7 +776,7 @@ static int ulnet__udp_send(ulnet_session_t *session, int port, const uint8_t *pa
         session->reliable_tx_packet_history[port][sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE] = packet_ref;
     }
 
-    int offset_to_payload = ulnet__wrapped_header_size((uint8_t *)packet, size);
+    int offset_to_payload = ulnet_wrapped_header_size((uint8_t *)packet, size);
     if ((packet[offset_to_payload] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_INPUT) {
         ulnet_update_state_history(session, arena_reref(packet_ref, offset_to_payload));
     }
@@ -836,19 +845,19 @@ static int ulnet__wrap_packet(const uint8_t packet[/* size */], int size, uint16
     return offset + size;
 }
 
-static int ulnet__reliable_send_with_acks_only(ulnet_session_t *session, int port, const uint8_t *packet, int size) {
+ULNET_LINKAGE int ulnet_reliable_send_with_acks_only(ulnet_session_t *session, int port, const uint8_t *packet, int size) {
     uint8_t tmp[ULNET_PACKET_SIZE_BYTES_MAX] = { ULNET_CHANNEL_RELIABLE | ULNET_RELIABLE_FLAG_ACK_BITS_ONLY };
 
     int maybe_wrapped_size = ulnet__wrap_packet(packet, size, 0 /* ignored */, session->reliable_rx_missing[port], session->reliable_rx_greatest[port], tmp);
     if (maybe_wrapped_size < 0) {
         return -1;
     } else {
-        return ulnet__udp_send(session, port, tmp, maybe_wrapped_size);
+        return ulnet_udp_send(session, port, tmp, maybe_wrapped_size);
     }
 }
 
 // Sends message reliably by wrapping the packet in a reliable header then sending it
-static int ulnet__reliable_send(ulnet_session_t *session, int port, const uint8_t *packet, int size) {
+ULNET_LINKAGE int ulnet_reliable_send(ulnet_session_t *session, int port, const uint8_t *packet, int size) {
     uint8_t tmp[ULNET_PACKET_SIZE_BYTES_MAX] = { ULNET_CHANNEL_RELIABLE };
     int offset = ULNET_HEADER_SIZE;
 
@@ -858,7 +867,7 @@ static int ulnet__reliable_send(ulnet_session_t *session, int port, const uint8_
     if (maybe_wrapped_size < 0) {
         return -1;
     } else {
-        return ulnet__udp_send(session, port, tmp, maybe_wrapped_size);
+        return ulnet_udp_send(session, port, tmp, maybe_wrapped_size);
     }
 }
 
@@ -879,7 +888,7 @@ void ulnet_message_send(ulnet_session_t *session, int port, const uint8_t *messa
         }
     }
 
-    ulnet__reliable_send(session, port, message, metadata->message_size);
+    ulnet_reliable_send(session, port, message, metadata->message_size);
 }
 
 static SAM2_FORCEINLINE int64_t ulnet__get_frame_from_packet(const uint8_t *packet) {
@@ -897,15 +906,15 @@ int ulnet_send(ulnet_session_t *session, int port, const uint8_t *packet, size_t
             void *sent_packet = arena_deref(&session->arena, session->state_packet_history[packet_port][(packet_frame / ULNET_DELAY_BUFFER_SIZE) % ULNET_STATE_PACKET_HISTORY_SIZE]);
 
             if (sent_packet == NULL || packet_frame != ulnet__get_frame_from_packet((uint8_t *) sent_packet)) {
-                return ulnet__reliable_send(session, port, packet, size);
+                return ulnet_reliable_send(session, port, packet, size);
             }
         } else {
-            return ulnet__udp_send(session, port, packet, size);
+            return ulnet_udp_send(session, port, packet, size);
         }
     } else if ((packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_SPECTATOR_INPUT) {
-        return ulnet__reliable_send_with_acks_only(session, port, packet, size);
+        return ulnet_reliable_send_with_acks_only(session, port, packet, size);
     } else {
-        return ulnet__udp_send(session, port, packet, size);
+        return ulnet_udp_send(session, port, packet, size);
     }
 
     return 0;
@@ -945,11 +954,11 @@ static void ulnet__check_retransmissions(ulnet_session_t *session, double curren
                 // Recreate the packet with updated ack bits
                 uint8_t wrapped_packet[ULNET_PACKET_SIZE_BYTES_MAX] = { ULNET_CHANNEL_RELIABLE };
                 uint16_t sequence = ((uint16_t)packet[2] << 8) | packet[1];
-                int old_header_size = ulnet__wrapped_header_size(packet, packet_size);
+                int old_header_size = ulnet_wrapped_header_size(packet, packet_size);
                 int wrapped_size = ulnet__wrap_packet(&packet[old_header_size], packet_size - old_header_size, sequence,
                     session->reliable_rx_missing[port], session->reliable_rx_greatest[port], wrapped_packet);
 
-                if (ulnet__udp_send(session, port, wrapped_packet, wrapped_size)) {
+                if (ulnet_udp_send(session, port, wrapped_packet, wrapped_size)) {
                     SAM2_LOG_ERROR("Failed to retransmit packet with sequence %d", sequence);
                 } else {
                     session->packet_history[port][session->packet_history_next[port] - 1].flags_and_generation |= ULNET_PACKET_FLAG_TX_RELIABLE_RETRANSMIT;
@@ -968,6 +977,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
     double frame_rate, double max_sleeping_allowed_when_polling_network_seconds) {
 
     int our_port = sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id);
+
     IMH(ImGui::Begin("P2P UDP Netplay", NULL, ImGuiWindowFlags_AlwaysAutoResize);)
     int status = 0;
 
@@ -1146,10 +1156,9 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
         }
     }
 
-IMH(ImGuiIO& io = ImGui::GetIO();)
-IMH(ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);)
+IMH(ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);)
 
-IMH(ulnet_imgui_show_session(session));
+IMH(ulnet_imgui_show_session(session);)
 
 IMH(ImGui::SeparatorText("Things We are Waiting on Before we can Tick");)
 IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) { ImGui::Text("Waiting for savestate"); })
@@ -1212,7 +1221,7 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
         size_t  save_state_size;
         int64_t save_state_frame = session->frame_counter;
         if (force_save_state_on_tick || session->peer_needs_sync_bitfield) {
-            IMH(uint64_t start = ulnet__rdtsc();)
+            uint64_t start = ulnet__rdtsc();
             save_state_size = session->retro_serialize_size(session->user_ptr);
             if (save_state_size > save_state_capacity) {
                 SAM2_LOG_WARN("Save state size %zu is larger than buffer size %zu", save_state_size, save_state_capacity);
@@ -1220,7 +1229,7 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
                 save_state_allocated = true;
             }
             session->retro_serialize(session->user_ptr, save_state, save_state_size);
-            IMH(session->save_state_execution_time_cycles[session->frame_counter % ULNET_MAX_SAMPLE_SIZE] = ulnet__rdtsc() - start;)
+            session->save_state_execution_time_cycles[session->frame_counter % ULNET_MAX_SAMPLE_SIZE] = ulnet__rdtsc() - start;
             status |= ULNET_POLL_SESSION_SAVED_STATE;
 
             if (session->flags & ULNET_SESSION_FLAG_TICKED) {
@@ -1255,7 +1264,7 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
                 for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
                     if (new_room_state.peer_ids[j] == session->agent_peer_ids[i]) {
                         if (new_room_state.peer_ids[j] <= SAM2_PORT_SENTINELS_MAX) continue;
-                        ulnet__swap_agent(session, j, i); // Note: This mutates session->agent_peer_ids
+                        ulnet_swap_agent(session, j, i); // Note: This mutates session->agent_peer_ids
                         break;
                     }
                 }
@@ -1325,7 +1334,7 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
     return status;
 }
 
-ULNET_LINKAGE void ulnet__swap_agent(ulnet_session_t *session, int peer_existing_port, int peer_new_port) {
+ULNET_LINKAGE void ulnet_swap_agent(ulnet_session_t *session, int peer_existing_port, int peer_new_port) {
     if (peer_existing_port == peer_new_port) return;
 
     #define ULNET__SWAP(x, y, T) do { T temp = (x); (x) = (y); (y) = temp; } while(0)
@@ -1360,6 +1369,23 @@ ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port
     session->agent[peer_port] = NULL;
 
     ulnet_peer_init_defaulted(session, peer_port);
+}
+
+static sam2_room_t ulnet__infer_future_room_we_are_in(ulnet_session_t *session) {
+    // This looks weird but really we're just figuring out what the current state of the room
+    // looks like so we can generate deltas against it
+    sam2_room_t future_room_we_are_in = session->room_we_are_in;
+    if (session->frame_counter != ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) {
+        for (int64_t frame = session->frame_counter+1LL; frame < session->state[SAM2_AUTHORITY_INDEX].frame; frame++) {
+            ulnet__xor_delta(
+                &future_room_we_are_in,
+                &session->state[SAM2_AUTHORITY_INDEX].room_xor_delta[frame % ULNET_DELAY_BUFFER_SIZE],
+                sizeof(session->room_we_are_in)
+            );
+        }
+    }
+
+    return future_room_we_are_in;
 }
 
 static inline void ulnet__reset_save_state_bookkeeping(ulnet_session_t *session) {
@@ -1493,7 +1519,7 @@ static void ulnet__check_for_desync(ulnet_state_t *our_state, ulnet_state_t *the
 
 static void ulnet__process_udp_packet(ulnet_session_t *session, int p, arena_ref_t packet_ref);
 // MARK: UDP Packet Processing
-static void ulnet_receive_packet_callback(juice_agent_t *agent, const char *packet, size_t size, void *user_ptr) {
+ULNET_LINKAGE void ulnet_receive_packet_callback(juice_agent_t *agent, const char *packet, size_t size, void *user_ptr) {
     ulnet_session_t *session = (ulnet_session_t *) user_ptr;
 
     int p;
@@ -1621,7 +1647,7 @@ static void ulnet__process_udp_packet(ulnet_session_t *session, int p, arena_ref
                 continue;
             }
 
-            int offset_to_payload = ulnet__wrapped_header_size(rx_packet, rx_packet_ref.size);
+            int offset_to_payload = ulnet_wrapped_header_size(rx_packet, rx_packet_ref.size);
             uint8_t *rx_packet_payload = &rx_packet[offset_to_payload];
 
             if ((rx_packet[offset_to_payload] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_RELIABLE) {
@@ -1949,23 +1975,6 @@ ULNET_LINKAGE void ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t
 
 }
 
-sam2_room_t ulnet__infer_future_room_we_are_in(ulnet_session_t *session) {
-    // This looks weird but really we're just figuring out what the current state of the room
-    // looks like so we can generate deltas against it
-    sam2_room_t future_room_we_are_in = session->room_we_are_in;
-    if (session->frame_counter != ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) {
-        for (int64_t frame = session->frame_counter+1LL; frame < session->state[SAM2_AUTHORITY_INDEX].frame; frame++) {
-            ulnet__xor_delta(
-                &future_room_we_are_in,
-                &session->state[SAM2_AUTHORITY_INDEX].room_xor_delta[frame % ULNET_DELAY_BUFFER_SIZE],
-                sizeof(session->room_we_are_in)
-            );
-        }
-    }
-
-    return future_room_we_are_in;
-}
-
 int ulnet_process_message(ulnet_session_t *session, const char *response) {
 
     if (sam2_get_metadata((char *) response) == NULL) {
@@ -2095,7 +2104,7 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
                     static sam2_error_message_t error = {
                         SAM2_FAIL_HEADER, 0,
                         "Authority has reached the maximum number of spectators",
-                        SAM2_RESPONSE_AUTHORITY_ERROR
+                        SAM2_RESPONSE_ROOM_FULL
                     };
 
                     session->sam2_send_callback(session->user_ptr, (char *) &error);
@@ -2113,7 +2122,7 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
                 static sam2_error_message_t error = {
                     SAM2_FAIL_HEADER, 0,
                     "Received unknown signal when we weren't the authority",
-                    SAM2_RESPONSE_AUTHORITY_ERROR
+                    SAM2_RESPONSE_PEER_ERROR
                 };
 
                 error.peer_id = room_signal->peer_id;
@@ -2361,7 +2370,7 @@ void ulnet_imgui_show_recent_packets_table(ulnet_session_t *session, int p) {
         bool is_reliable = (packet_data[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_RELIABLE;
         bool is_reliable_ack = is_reliable && (packet_data[0] & ULNET_RELIABLE_FLAG_ACK_BITS_ONLY);
 
-        int reliable_header_size = ulnet__wrapped_header_size(packet_data, packet_size);
+        int reliable_header_size = ulnet_wrapped_header_size(packet_data, packet_size);
 
         uint8_t *payload_start = &packet_data[reliable_header_size];
         uint8_t channel = payload_start[0] & ULNET_CHANNEL_MASK;
@@ -2475,279 +2484,3 @@ void ulnet_imgui_show_recent_packets_table(ulnet_session_t *session, int p) {
 #endif
 #endif
 #endif
-
-#if defined(ULNET_TEST_IMPLEMENTATION)
-#ifndef ULNET_TEST_C
-#define ULNET_TEST_C
-#define ULNET__TEST_SAM2_PORT (SAM2_SERVER_DEFAULT_PORT + 1)
-
-int ulnet__test_forward_messages(sam2_server_t *server, ulnet_session_t *session, sam2_socket_t socket) {
-    int status;
-    sam2_message_u message;
-
-    uv_run(&server->loop, UV_RUN_NOWAIT);
-    for (;;) {
-        status = sam2_client_poll(socket, &message);
-        if (status < 0) {
-            SAM2_LOG_ERROR("Error polling sam2 server: %d", status);
-            return status;
-        } else if (status > 0) {
-            status = ulnet_process_message(session, (const char *)&message);
-            if (status < 0) {
-                SAM2_LOG_ERROR("Error processing message: %d", status);
-                return status;
-            }
-        } else {
-            break;
-        }
-    }
-
-    return 0;
-}
-
-int ulnet__test_sam2_send_callback(void *socket, char *message) {
-    sam2_socket_t sam2_socket = *((sam2_socket_t *) socket);
-    return sam2_client_send(sam2_socket, message);
-}
-
-//static int64_t ulnet__test_core_state1;
-//void (*retro_run)(void), bool (*retro_serialize)(void *, size_t), bool (*retro_unserialize)(const void *, size_t)
-//int ulnet__test_retro_run1(void *session) {
-//    return 0;
-//}
-
-void ulnet__test_retro_run(void *user_ptr) {
-
-}
-
-static const char g_serialize_test_data[] = "Test data";
-size_t ulnet__test_retro_serialize_size(void *user_ptr) {
-    return sizeof(g_serialize_test_data);
-}
-
-bool ulnet__test_retro_serialize(void *user_ptr, void *data, size_t size) {
-    if (size < sizeof(g_serialize_test_data) - 1) {
-        SAM2_LOG_ERROR("Buffer too small for serialization");
-        return false;
-    }
-    memcpy(data, g_serialize_test_data, sizeof(g_serialize_test_data));
-    return true;
-}
-
-bool ulnet__test_retro_unserialize(void *user_ptr, const void *data, size_t size) {
-    return memcmp(data, g_serialize_test_data, size) == 0;
-}
-
-int ulnet__test_sync(ulnet_session_t **session_1_out, ulnet_session_t **session_2_out) {
-    sam2_server_t *server = 0;
-    ulnet_session_t *sessions[2] = {0};
-    sam2_socket_t sockets[2] = {0};
-    void *msg1;
-    void *msg2;
-    int test_passed = 1;
-
-    server = (sam2_server_t *) malloc(sizeof(sam2_server_t));
-    int status = sam2_server_init(server, ULNET__TEST_SAM2_PORT);
-    if (status) {
-        SAM2_LOG_ERROR("Error while initializing sam2 server");
-        goto _10;
-    }
-
-    for (int i = 0; i < sizeof(sessions)/sizeof(sessions[0]); i++) {
-        sessions[i] = (ulnet_session_t *)calloc(1, sizeof(ulnet_session_t));
-        ulnet_session_init_defaulted(sessions[i]);
-        sessions[i]->sam2_send_callback = ulnet__test_sam2_send_callback;
-        sessions[i]->user_ptr = &sockets[i];
-        sessions[i]->retro_run = ulnet__test_retro_run;
-        sessions[i]->retro_serialize_size = ulnet__test_retro_serialize_size;
-        sessions[i]->retro_serialize = ulnet__test_retro_serialize;
-        sessions[i]->retro_unserialize = ulnet__test_retro_unserialize;
-
-        status = sam2_client_connect(&sockets[i], "localhost", ULNET__TEST_SAM2_PORT);
-        if (status) {
-            SAM2_LOG_ERROR("Error while starting connection to sam2 server");
-            goto _10;
-        }
-
-        int connection_established = 0;
-        for (int attempt = 0; attempt < 10; attempt++) {
-            connection_established = sam2_client_poll_connection(sockets[i], 0);
-            status = uv_run(&server->loop, UV_RUN_NOWAIT);
-            if (status < 0) {
-                SAM2_LOG_ERROR("Error running uv loop: %d", status);
-                goto _10;
-            }
-        }
-
-        if (!connection_established) {
-            SAM2_LOG_ERROR("Failed to connect to sam2 server");
-            status = 1;
-            goto _10;
-        }
-
-        status = ulnet__test_forward_messages(server, sessions[i], sockets[i]);
-        if (status < 0) {
-            SAM2_LOG_ERROR("Error forwarding messages: %d", status);
-            goto _10;
-        }
-    }
-
-    sessions[1]->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = sessions[0]->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX];
-    sessions[1]->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
-    ulnet_startup_ice_for_peer(sessions[1], sessions[0]->our_peer_id, SAM2_AUTHORITY_INDEX, NULL);
-
-    for (int attempt = 0; attempt < 10000; attempt++) {
-        for (int i = 0; i < sizeof(sessions)/sizeof(sessions[0]); i++) {
-            status = ulnet_poll_session(sessions[i], 0, 0, 0, 60.0, 16e-3);
-            if (status < 0) {
-                SAM2_LOG_ERROR("Error polling ulnet session: %d", status);
-                goto _10;
-            }
-
-            status = ulnet__test_forward_messages(server, sessions[i], sockets[i]);
-            if (status < 0) {
-                SAM2_LOG_ERROR("Error forwarding messages: %d", status);
-                goto _10;
-            }
-        }
-    }
-
-    if (!(   sessions[0]
-          && sessions[0]->agent[SAM2_SPECTATOR_START]
-          && juice_get_state(sessions[0]->agent[SAM2_SPECTATOR_START]) == JUICE_STATE_COMPLETED)) {
-        SAM2_LOG_ERROR("Failed to establish connection");
-        status = 1;
-        goto _10;
-    }
-
-    sessions[0]->debug_udp_recv_drop_rate = 1.0f;
-    ulnet__reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "HELLO", sizeof("HELLO") - 1);
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
-
-    sessions[0]->debug_udp_recv_drop_rate = 0.0f;
-    ulnet__reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "WORLD", sizeof("WORLD") - 1);
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
-
-    ulnet__reliable_send_with_acks_only(sessions[0], SAM2_SPECTATOR_START, (const uint8_t*) "ACK CARRIER", sizeof("ACK CARRIER") - 1);
-    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3);
-    sessions[1]->reliable_next_retransmit_time = 0;
-    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3);
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
-
-    msg1 = arena_deref(&sessions[1]->arena, sessions[1]->reliable_tx_packet_history[SAM2_SPECTATOR_START][0]);
-    msg2 = arena_deref(&sessions[1]->arena, sessions[1]->reliable_tx_packet_history[SAM2_SPECTATOR_START][1]);
-    if (!(   msg1 && memcmp(msg1, "HELLO", sizeof("HELLO") - 1) == 0
-          && msg2 && memcmp(msg2, "WORLD", sizeof("WORLD") - 1) == 0)) {
-        SAM2_LOG_ERROR("Failed to send reliable messages");
-        status = 1;
-        goto _10;
-    }
-
-_10:sam2_server_begin_destroy(server);
-    uv_run(&server->loop, UV_RUN_DEFAULT);
-    uv_close((uv_handle_t*)&server->tcp, NULL);
-    uv_loop_close(&server->loop);
-    free(server);
-
-    if (session_1_out) {
-        *session_1_out = sessions[0];
-    } else {
-        free(sessions[0]);
-    }
-    if (session_2_out) {
-        *session_2_out = sessions[1];
-    } else {
-        free(sessions[1]);
-    }
-
-    return status;
-}
-
-int ulnet_test_reliable(ulnet_session_t **session_1_out, ulnet_session_t **session_2_out) {
-    ulnet_session_t *sessions[2] = {0};
-    ulnet_transport_inproc_t transport = {0};
-    int status = 0;
-
-    // Create two sessions
-    for (int i = 0; i < 2; i++) {
-        sessions[i] = (ulnet_session_t *)calloc(1, sizeof(ulnet_session_t));
-        ulnet_session_init_defaulted(sessions[i]);
-        sessions[i]->use_inproc_transport = true;
-        sessions[i]->retro_run = ulnet__test_retro_run;
-        sessions[i]->retro_serialize_size = ulnet__test_retro_serialize_size;
-        sessions[i]->retro_serialize = ulnet__test_retro_serialize;
-        sessions[i]->retro_unserialize = ulnet__test_retro_unserialize;
-    }
-
-    // Set up peer IDs and room state
-    sessions[0]->our_peer_id = 10001;  // Authority
-    sessions[1]->our_peer_id = 30002;  // Spectator
-
-    // Configure room state for both sessions
-    sam2_room_t room = {0};
-    room.flags = SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
-    room.peer_ids[SAM2_AUTHORITY_INDEX] = 10001;
-    room.peer_ids[SAM2_SPECTATOR_START] = 30002;
-
-    sessions[0]->room_we_are_in = room;
-    sessions[1]->room_we_are_in = room;
-
-    // Connect the transport
-    sessions[0]->inproc[SAM2_SPECTATOR_START] = &transport;
-    sessions[1]->inproc[SAM2_AUTHORITY_INDEX] = &transport;
-    sessions[0]->agent_peer_ids[SAM2_SPECTATOR_START] = room.peer_ids[SAM2_SPECTATOR_START];
-    sessions[1]->agent_peer_ids[SAM2_AUTHORITY_INDEX] = room.peer_ids[SAM2_AUTHORITY_INDEX];
-
-    // Prime savestate transfer
-    sessions[1]->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
-    sessions[0]->peer_needs_sync_bitfield |= (1ULL << SAM2_SPECTATOR_START);
-
-    sessions[0]->debug_udp_recv_drop_rate = 1.0f;
-    ulnet__reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "HELLO", sizeof("HELLO") - 1);
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
-
-    sessions[0]->debug_udp_recv_drop_rate = 0.0f;
-    ulnet__reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "WORLD", sizeof("WORLD") - 1);
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
-
-    ulnet__reliable_send_with_acks_only(sessions[0], SAM2_SPECTATOR_START, (const uint8_t*) "ACK CARRIER", sizeof("ACK CARRIER") - 1);
-    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3);
-    sessions[1]->reliable_next_retransmit_time = 0;
-    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3);
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
-
-    // Verify messages were received
-    void *msg1 = arena_deref(&sessions[0]->arena,
-        sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][1 % ULNET_RELIABLE_ACK_BUFFER_SIZE]);
-    void *msg2 = arena_deref(&sessions[0]->arena,
-        sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][2 % ULNET_RELIABLE_ACK_BUFFER_SIZE]);
-
-    if (!msg1 || !msg2) {
-        SAM2_LOG_ERROR("Failed to receive reliable messages");
-        status = 1;
-        goto cleanup;
-    }
-
-    // Check wrapped packet contents
-    int offset1 = ulnet__wrapped_header_size((uint8_t*)msg1, ULNET_PACKET_SIZE_BYTES_MAX);
-    int offset2 = ulnet__wrapped_header_size((uint8_t*)msg2, ULNET_PACKET_SIZE_BYTES_MAX);
-
-    if (memcmp((uint8_t*)msg1 + offset1, "HELLO", 5) != 0 ||
-        memcmp((uint8_t*)msg2 + offset2, "WORLD", 5) != 0) {
-        SAM2_LOG_ERROR("Message content mismatch");
-        status = 1;
-        goto cleanup;
-    }
-
-cleanup:
-    if (!session_1_out) free(sessions[0]);
-    else *session_1_out = sessions[0];
-
-    if (!session_2_out) free(sessions[1]);
-    else *session_2_out = sessions[1];
-
-    return status;
-}
-
-#endif // ULNET_TEST_C
-#endif // ULNET_TEST_IMPLEMENTATION

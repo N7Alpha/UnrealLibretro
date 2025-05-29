@@ -12,7 +12,7 @@
 #define SAM2_TEST
 //#define SAM2_LOG_WRITE(level, file, line, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0); // Ex. Use print
 #define SAM2_LOG_WRITE_DEFINITION
-#define SAM2_LOG_WRITE(level, file, line, ...) do { if (level >= g_log_level) { sam2__log_write(level, __FILE__, __LINE__, __VA_ARGS__); } } while (0)
+#define SAM2_LOG_WRITE(level, file, line, ...) do { if (level >= g_log_level) { sam2_log_write(level, __FILE__, __LINE__, __VA_ARGS__); } } while (0)
 int g_log_level = 1; // Info
 
 #define ULNET_IMPLEMENTATION
@@ -1667,21 +1667,21 @@ void draw_imgui() {
             static ulnet_session_t *test_session2 = NULL;
             static bool show_test_sessions = false;
 
-            if (ImGui::Button("Test ICE connection")) {
-                if (ulnet__test_sync(&test_session1, &test_session2)) {
-                    SAM2_LOG_ERROR("Test sync failed.");
+            if (ImGui::Button("Run ICE connection tests")) {
+                if (ulnet_test_ice(&test_session1, &test_session2)) {
+                    SAM2_LOG_ERROR("Ice tests failed");
                     show_test_sessions = true;
                 } else {
-                    SAM2_LOG_INFO("Test sync passed.");
+                    SAM2_LOG_INFO("Ice tests passed");
                 }
             }
 
-            if (ImGui::Button("Test reliable messaging")) {
-                if (ulnet_test_reliable(&test_session1, &test_session2)) {
-                    SAM2_LOG_ERROR("Test reliable failed.");
+            if (ImGui::Button("Run ulnet in-process tests")) {
+                if (ulnet_test_inproc(&test_session1, &test_session2)) {
+                    SAM2_LOG_ERROR("In process tests failed");
                     show_test_sessions = true;
                 } else {
-                    SAM2_LOG_INFO("Test reliable passed.");
+                    SAM2_LOG_INFO("In process tests passed");
                 }
             }
 
@@ -1973,7 +1973,7 @@ void draw_imgui() {
 
                 // Make the row selectable and keep track of the selected room
                 char label[128];
-                snprintf(label, sizeof(label), "%s##%05" PRIu16, g_sam2_rooms[room_index].name, g_sam2_rooms[room_index].peer_ids[SAM2_AUTHORITY_INDEX]);
+                snprintf(label, sizeof(label), "%.80s##%05" PRIu16, g_sam2_rooms[room_index].name, g_sam2_rooms[room_index].peer_ids[SAM2_AUTHORITY_INDEX]);
                 if (ImGui::Selectable(label, selected_room_index == room_index, ImGuiSelectableFlags_SpanAllColumns)) {
                     selected_room_index = room_index;
                 }
@@ -3353,14 +3353,25 @@ int main(int argc, char *argv[]) {
     g_argc = argc;
     g_argv = argv;
 
-    sam2_test_all();
-
     bool no_netimgui = false;
     for (int i = 2; i < argc; i++) {
         if (0 == strcmp("--headless", argv[i])) {
             g_headless = true;
         } else if (0 == strcmp("--no-netimgui", argv[i])) {
             no_netimgui = true;
+        } else if (0 == strcmp("--test", argv[i])) {
+            int num_failed_tests = 0;
+
+            SAM2_LOG_INFO("Running tests...");
+            num_failed_tests += sam2_test_all();
+            num_failed_tests += ulnet_test_inproc(NULL, NULL);
+            if (num_failed_tests > 0) {
+                SAM2_LOG_ERROR("Failed to run all inproc tests, please fix them before running the core");
+            } else {
+                SAM2_LOG_INFO("Tests passed");
+            }
+
+            return num_failed_tests > 0;
         } else if (argv[i][0] == '-') {
             SAM2_LOG_FATAL("Unknown option: %s", argv[i]);
         }
