@@ -28,13 +28,33 @@ The setup script downloads RetroArch binaries, creates directory structure (MyRO
 
 ### Standalone CMake Build
 ```bash
-# Build standalone netplay tools
+# Build standalone netplay executable
 mkdir build && cd build
 cmake ..
 make netarch
 ```
 
 Used for debugging and standalone netplay functionality without UE dependencies. **`ulnet.h`,`sam2.h`,`netarch.cpp`** make up the netplay implementation
+
+### Preferred method when testing `ulnet.h` and `sam2.h` header libraries
+```bash
+tcc -DSAM2_IMPLEMENTATION \
+    -DSAM2_TEST_MAIN \
+    -ISource/UnrealLibretro/Private \
+    -ISource/ThirdParty/libuv/include \
+    -run Source/ThirdParty/netarch/sam2_test.c
+
+# Only build is going to work right now
+tcc -c Source/ThirdParty/netarch/ulnet_test.c \
+    -DSAM2_IMPLEMENTATION \
+    -DULNET_IMPLEMENTATION \
+    -DULNET_TEST_MAIN \
+    -ISource/UnrealLibretro/Private \
+    -ISource/ThirdParty/zstd/lib \
+    -ISource/ThirdParty/libjuice/include \
+    -ISource/ThirdParty/libuv/include
+
+```
 
 ## Core Architecture
 
@@ -79,9 +99,9 @@ The main user interface for the UnrealLibretro plugin is exposed to Blueprint th
 
 ## Coding Standard
 
-- No tabs except for `.cs` files
-- No trailing whitespace
-- No C++ exceptions
+- Always use spaces and LF except for `.cs` files
+- **NEVER USE TRAILING WHITESPACE**
+- Never use C++ exceptions
 - Acceptable stdlib headers <atomic>, <type_traits>, <initializer_list>, <regex>, <limits>, <cmath>, <cstring>
 - Depend on as few internal Unreal Engine API's as reasonable to maintain compatibility across many engine versions
 
