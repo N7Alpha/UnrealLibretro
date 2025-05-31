@@ -149,7 +149,7 @@ void FUnrealLibretroModule::ShutdownModule()
 
 #include "Logging/LogMacros.h"
 extern "C"
-void LibretroSam2LogWrite(int level, const char* file, int line, const char* fmt, ...) {
+void sam2_log_write(int level, const char* file, int line, const char* fmt, ...) {
     char buffer[1536];
 
     va_list args;
@@ -162,11 +162,11 @@ void LibretroSam2LogWrite(int level, const char* file, int line, const char* fmt
     // Log the message
     switch (level) {
     default:
-    case 4: UE_LOG(Libretro, Fatal  , TEXT("%s"), *formattedMessage); break;
-    case 0: UE_LOG(Libretro, Verbose, TEXT("%s"), *formattedMessage); break;
-    case 1: UE_LOG(Libretro, Log    , TEXT("%s"), *formattedMessage); break;
-    case 2: UE_LOG(Libretro, Warning, TEXT("%s"), *formattedMessage); break;
-    case 3: UE_LOG(Libretro, Error  , TEXT("%s"), *formattedMessage); break;
+    case 4: UE_LOG(Libretro, Fatal  , TEXT("Netplay: %s"), *formattedMessage); break;
+    case 0: UE_LOG(Libretro, Verbose, TEXT("Netplay: %s"), *formattedMessage); break;
+    case 1: UE_LOG(Libretro, Log    , TEXT("Netplay: %s"), *formattedMessage); break;
+    case 2: UE_LOG(Libretro, Warning, TEXT("Netplay: %s"), *formattedMessage); break;
+    case 3: UE_LOG(Libretro, Error  , TEXT("Netplay: %s"), *formattedMessage); break;
     }
 }
 

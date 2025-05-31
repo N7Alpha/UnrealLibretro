@@ -2,7 +2,6 @@
 extern "C"
 {
 #include "gfx/scaler/pixconv.h"
-extern void LibretroSam2LogWrite(int level, const char* file, int line, const char* fmt, ...);
 }
 
 #include "UnrealLibretro.h" // For Libretro debug log category
@@ -12,7 +11,6 @@ extern void LibretroSam2LogWrite(int level, const char* file, int line, const ch
 #endif
 #define SAM2_IMPLEMENTATION
 
-#define SAM2_LOG_WRITE(level, file, line, ...) LibretroSam2LogWrite(level, file, line, "Netplay: " __VA_ARGS__)
 THIRD_PARTY_INCLUDES_START
 #include "sam2.h"
 #include "ulnet.h"

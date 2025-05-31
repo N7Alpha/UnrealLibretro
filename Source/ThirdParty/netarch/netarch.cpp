@@ -10,9 +10,6 @@
 #define SAM2_IMPLEMENTATION
 #define SAM2_SERVER
 #define SAM2_TEST
-//#define SAM2_LOG_WRITE(level, file, line, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0); // Ex. Use print
-#define SAM2_LOG_WRITE_DEFINITION
-#define SAM2_LOG_WRITE(level, file, line, ...) do { if (level >= g_log_level) { sam2_log_write(level, __FILE__, __LINE__, __VA_ARGS__); } } while (0)
 int g_log_level = 1; // Info
 
 #define ULNET_IMPLEMENTATION
@@ -2530,6 +2527,147 @@ static size_t audio_write(const int16_t *buf, unsigned frames) {
     return frames;
 }
 
+// MARK: Logging
+#ifndef _WIN32
+#include <unistd.h> // isatty
+#endif
+#include <time.h>
+
+static int sam2__terminal_supports_ansi_colors() {
+#if defined(_WIN32)
+    // Windows
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+
+    DWORD dwMode = 0;
+    if (!GetConsoleMode(hOut, &dwMode)) {
+        return 0;
+    }
+
+    dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+    if (!SetConsoleMode(hOut, dwMode)) {
+        return 0;
+    }
+#else
+    // POSIX
+    if (!isatty(STDOUT_FILENO)) {
+        return 0;
+    }
+
+    const char *term = getenv("TERM");
+    if (term == NULL || strcmp(term, "dumb") == 0) {
+        return 0;
+    }
+#endif
+
+    return 1;
+}
+
+#if defined(__APPLE__)
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#endif
+static int sam2__debugger_is_attached_to_us(void){
+#if defined(_WIN32)              /* Windows ---------------- */
+    return IsDebuggerPresent();
+
+#elif defined(__APPLE__)         /* macOS / iOS ------------ */
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)getpid() };
+    struct kinfo_proc info;
+    size_t sz = sizeof(info);
+    if (sysctl(mib, 4, &info, &sz, NULL, 0) == 0 && sz == sizeof(info))
+        return (info.kp_proc.p_flag & P_TRACED) != 0;
+    return 0;
+
+#elif defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) \
+   || defined(__OpenBSD__)        /* proc-based OSes ------- */
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) return 0;
+    char line[64];
+    while (fgets(line, sizeof line, f))
+        if (strncmp(line, "TracerPid:", 10) == 0) {
+            int pid = atoi(line + 10);
+            fclose(f);
+            return pid != 0;
+        }
+    fclose(f);
+    return 0;
+
+#else                             /* Fallback -------------- */
+    return 0;
+#endif
+}
+
+static int sam2__get_localtime(const time_t *t, struct tm *buf) {
+#ifdef _WIN32
+    // Windows does not have POSIX localtime_r...
+    return localtime_s(buf, t) == 0 ? 0 : -1;
+#else // POSIX
+    return localtime_r(t, buf) != NULL ? 0 : -1;
+#endif
+}
+
+// This function is resolved via external linkage
+SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const char *format, ...) {
+    if (level < g_log_level) {
+        return;
+    }
+
+    const char *filename = file + strlen(file);
+    while (filename != file && *filename != '/' && *filename != '\\') {
+        --filename;
+    }
+    if (filename != file) {
+        ++filename;
+    }
+
+    time_t t = time(NULL);
+    struct tm lt;
+    char timestamp[16];
+    if (sam2__get_localtime(&t, &lt) != 0 || strftime(timestamp, 16, "%H:%M:%S", &lt) == 0) {
+        timestamp[0] = '\0';
+    }
+
+    const char *prefix_fmt;
+    switch (level) {
+    default: //          ANSI-color-escape-codes  HH:MM:SS level  filename:line     |
+    case 4: prefix_fmt = "\x1B[97m" "\x1B[41m"    "%s "    "FATAL "  "%11s:%-5d"   "| "; break;
+    case 0: prefix_fmt = "\x1B[90m"               "%s "    "DEBUG "  "%11s:%-5d"   "| "; break;
+    case 1: prefix_fmt = "\x1B[39m"               "%s "    "INFO  "  "%11s:%-5d"   "| "; break;
+    case 2: prefix_fmt = "\x1B[93m"               "%s "    "WARN  "  "%11s:%-5d"   "| "; break;
+    case 3: prefix_fmt = "\x1B[91m"               "%s "    "ERROR "  "%11s:%-5d"   "| "; break;
+    }
+
+    if (!sam2__terminal_supports_ansi_colors()) while (*prefix_fmt == '\x1B') prefix_fmt += 5; // Skip ANSI-color-escape-codes
+
+    fprintf(stdout, prefix_fmt, timestamp, filename, line);
+
+    va_list args;
+    va_start(args, format);
+    vfprintf(stdout, format, args);
+    va_end(args);
+
+    fprintf(stdout, sam2__terminal_supports_ansi_colors() ? "\x1B[0m" "\n" : "\n");
+    if (level >= 2) { // Flush anything that is at least as severe as WARN
+        fflush(stdout);
+    }
+
+    if (level >= 4) {
+        if (sam2__debugger_is_attached_to_us()) {
+#if defined(_WIN32)
+            __debugbreak();              /* break only if we _have_ a debugger */
+#elif defined(__has_builtin)
+#if __has_builtin(__builtin_trap)
+            __builtin_trap();
+#endif
+#endif
+        }
+
+        exit(1);
+    }
+}
 
 static void core_log(enum retro_log_level level, const char *fmt, ...) {
     char buffer[4096] = {0};
@@ -2551,9 +2689,9 @@ static void core_log(enum retro_log_level level, const char *fmt, ...) {
     }
     switch (level) {
     default:
-    case 0: fprintf(stdout, SAM2__GREY    "%s "    "DEBUG "  "%16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
-    case 1: fprintf(stdout, SAM2__DEFAULT "%s "    "INFO  "  "%16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
-    case 2: fprintf(stdout, SAM2__YELLOW  "%s "    "WARN  "  "%16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
+    case 0: fprintf(stdout, "\x1B[90m%s DEBUG %16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
+    case 1: fprintf(stdout, "\x1B[39m%s INFO  %16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
+    case 2: fprintf(stdout, "\x1B[93m%s WARN  %16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
     case 3: SAM2_LOG_WRITE(4, __FILE__, __LINE__, fmt, va); // calls exit(1)
     }
 }
