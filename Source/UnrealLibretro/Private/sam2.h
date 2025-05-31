@@ -3,9 +3,7 @@
 #define SAM2_H
 #include <stdint.h>
 #include <inttypes.h>
-#include <stdlib.h> // @todo Remove when I remove malloc and free stuff
 #include <string.h>
-#include <stdio.h>
 
 #define SAM2__STR(s) _SAM2__STR(s)
 #define _SAM2__STR(s) #s
@@ -493,6 +491,7 @@ SAM2_LINKAGE int sam2_client_poll_connection(sam2_socket_t sockfd, int timeout_m
 
 SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message);
 
+//#include <stdio.h>
 //#define SAM2_LOG_WRITE(level, file, line, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0); // Ex. Use print
 #ifndef SAM2_LOG_WRITE
 #define SAM2_LOG_WRITE_DEFINITION
@@ -504,8 +503,14 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message);
 #define SAM2_LOG_WARN(...)  SAM2_LOG_WRITE(2, __FILE__, __LINE__, __VA_ARGS__)
 #define SAM2_LOG_ERROR(...) SAM2_LOG_WRITE(3, __FILE__, __LINE__, __VA_ARGS__)
 #define SAM2_LOG_FATAL(...) SAM2_LOG_WRITE(4, __FILE__, __LINE__, __VA_ARGS__)
-SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const char *format, ...);
 
+#if defined(__GNUC__) || defined(__clang__)
+    #define SAM2_FORMAT_ATTRIBUTE(format_idx, arg_idx) __attribute__((format(printf, format_idx, arg_idx)))
+#else
+    #define SAM2_FORMAT_ATTRIBUTE(format_idx, arg_idx)
+#endif
+
+SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const char *format, ...) SAM2_FORMAT_ATTRIBUTE(4, 5);
 #endif // SAM2_H
 
 #if defined(SAM2_IMPLEMENTATION)
@@ -632,155 +637,6 @@ void rle8_unpack_message(uint8_t *message, int64_t message_size, void *message_r
 
     ((char *) message)[7] = 'R';
 }
-
-// Logging implementation
-#ifndef _WIN32
-#include <unistd.h> // isatty
-#endif
-#include <time.h>
-
-#define SAM2__GREY    "\x1B[90m"
-#define SAM2__DEFAULT "\x1B[39m"
-#define SAM2__YELLOW  "\x1B[93m"
-#define SAM2__RED     "\x1B[91m"
-#define SAM2__WHITE   "\x1B[97m"
-#define SAM2__BG_RED  "\x1B[41m"
-#define SAM2__RESET   "\x1B[0m"
-
-static int sam2__terminal_supports_ansi_colors() {
-#if defined(_WIN32)
-    // Windows
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hOut == INVALID_HANDLE_VALUE) {
-        return 0;
-    }
-
-    DWORD dwMode = 0;
-    if (!GetConsoleMode(hOut, &dwMode)) {
-        return 0;
-    }
-
-    dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-    if (!SetConsoleMode(hOut, dwMode)) {
-        return 0;
-    }
-#else
-    // POSIX
-    if (!isatty(STDOUT_FILENO)) {
-        return 0;
-    }
-
-    const char *term = getenv("TERM");
-    if (term == NULL || strcmp(term, "dumb") == 0) {
-        return 0;
-    }
-#endif
-
-    return 1;
-}
-
-#if defined(__APPLE__)
-#include <sys/types.h>
-#include <sys/sysctl.h>
-#endif
-static int sam2__debugger_is_attached_to_us(void){
-#if defined(_WIN32)              /* Windows ---------------- */
-    return IsDebuggerPresent();
-
-#elif defined(__APPLE__)         /* macOS / iOS ------------ */
-    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)getpid() };
-    struct kinfo_proc info;
-    size_t sz = sizeof(info);
-    if (sysctl(mib, 4, &info, &sz, NULL, 0) == 0 && sz == sizeof(info))
-        return (info.kp_proc.p_flag & P_TRACED) != 0;
-    return 0;
-
-#elif defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) \
-   || defined(__OpenBSD__)        /* proc-based OSes ------- */
-    FILE *f = fopen("/proc/self/status", "r");
-    if (!f) return 0;
-    char line[64];
-    while (fgets(line, sizeof line, f))
-        if (strncmp(line, "TracerPid:", 10) == 0) {
-            int pid = atoi(line + 10);
-            fclose(f);
-            return pid != 0;
-        }
-    fclose(f);
-    return 0;
-
-#else                             /* Fallback -------------- */
-    return 0;
-#endif
-}
-
-
-static int sam2__get_localtime(const time_t *t, struct tm *buf) {
-#ifdef _WIN32
-    // Windows does not have POSIX localtime_r...
-    return localtime_s(buf, t) == 0 ? 0 : -1;
-#else // POSIX
-    return localtime_r(t, buf) != NULL ? 0 : -1;
-#endif
-}
-
-// @todo This is kind of weird but I needed to be able to hide this to get Unreal Build Tool to compile it
-#if defined(SAM2_LOG_WRITE_DEFINITION)
-SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const char *fmt, ...) {
-    const char *filename = file + strlen(file);
-    while (filename != file && *filename != '/' && *filename != '\\') {
-        --filename;
-    }
-    if (filename != file) {
-        ++filename;
-    }
-
-    time_t t = time(NULL);
-    struct tm lt;
-    char timestamp[16];
-    if (sam2__get_localtime(&t, &lt) != 0 || strftime(timestamp, 16, "%H:%M:%S", &lt) == 0) {
-        timestamp[0] = '\0';
-    }
-
-    const char *prefix_fmt;
-    switch (level) {
-    default: //          ANSI color escape-codes  HH:MM:SS level  filename:line     |
-    case 4: prefix_fmt = SAM2__WHITE SAM2__BG_RED "%s "    "FATAL "  "%11s:%-5d"   "| "; break;
-    case 0: prefix_fmt = SAM2__GREY               "%s "    "DEBUG "  "%11s:%-5d"   "| "; break;
-    case 1: prefix_fmt = SAM2__DEFAULT            "%s "    "INFO  "  "%11s:%-5d"   "| "; break;
-    case 2: prefix_fmt = SAM2__YELLOW             "%s "    "WARN  "  "%11s:%-5d"   "| "; break;
-    case 3: prefix_fmt = SAM2__RED                "%s "    "ERROR "  "%11s:%-5d"   "| "; break;
-    }
-
-    if (!sam2__terminal_supports_ansi_colors()) while (*prefix_fmt == '\x1B') prefix_fmt += 5; // Skip ANSI color-escape codes
-
-    printf(prefix_fmt, timestamp, filename, line);
-
-    va_list args;
-    va_start(args, fmt);
-    vfprintf(stdout, fmt, args);
-    va_end(args);
-
-    fprintf(stdout, sam2__terminal_supports_ansi_colors() ? SAM2__RESET "\n" : "\n");
-    if (level >= 2) { // Flush anything that is at least as severe as WARN
-        fflush(stdout);
-    }
-
-    if (level >= 4) {
-        if (sam2__debugger_is_attached_to_us()) {
-#if defined(_WIN32)
-            __debugbreak();              /* break only if we _have_ a debugger */
-#elif defined(__has_builtin)
-#if __has_builtin(__builtin_trap)
-            __builtin_trap();
-#endif
-#endif
-        }
-
-        exit(EXIT_FAILURE);
-    }
-}
-#endif
 
 #ifdef _WIN32
     #define SAM2_SOCKET_ERROR (SOCKET_ERROR)
