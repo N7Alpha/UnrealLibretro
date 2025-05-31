@@ -1,5 +1,6 @@
 #define SAM2_SERVER
 #include "sam2.h"
+#include <stdio.h>
 
 #define SAM2__TEST_LIST_CAPACITY 3
 #define SAM2__TEST_LIST_SIZE (SAM2__TEST_LIST_CAPACITY+1)
