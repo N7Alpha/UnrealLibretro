@@ -370,6 +370,79 @@ void ULibretroCoreInstance::SetInputAnalog(int Port, int _16BitSignedInteger, ER
     });
 }
 
+void ULibretroCoreInstance::ReadMemory(ERetroMemoryType MemoryType, int64 Address, int64 Size)
+{
+    NOT_LAUNCHED_GUARD
+
+    if (Size <= 0)
+    {
+        UE_LOG(Libretro, Warning, TEXT("ReadMemory: Invalid Size (%lld)"), Size);
+        return;
+    }
+
+    CoreInstance.GetValue()->EnqueueTask([=, weakThis = MakeWeakObjectPtr(this)](libretro_api_t libretro_api)
+    {
+        void*  memory_data = libretro_api.get_memory_data(MemoryType);
+        size_t memory_size = libretro_api.get_memory_size(MemoryType);
+
+        if (memory_data == nullptr)
+        {
+            UE_LOG(Libretro, Warning, TEXT("ReadMemory: Memory data is null for MemoryType %d"), MemoryType);
+            return;
+        }
+
+        if (static_cast<uint64>(Address) + static_cast<uint64>(Size) > memory_size)
+        {
+            UE_LOG(Libretro, Warning, TEXT("ReadMemory: Address + Size (%lld + %lld) exceeds memory size (%zu) for MemoryType %d"), Address, Size, memory_size, MemoryType);
+            return;
+        }
+
+        TArray<uint8> Data;
+        Data.SetNumUninitialized(Size);
+        FMemory::Memcpy(Data.GetData(), (uint8*)memory_data + static_cast<uint64>(Address), Size);
+
+        FFunctionGraphTask::CreateAndDispatchWhenReady(
+            [=]()
+            {
+                if (weakThis.IsValid()) {
+                    weakThis->OnCoreReadMemoryComplete.Broadcast(weakThis.Get(), 0, MemoryType, Address, Data);
+                }
+            }, TStatId(), nullptr, ENamedThreads::GameThread);
+    });
+}
+
+void ULibretroCoreInstance::WriteMemory(ERetroMemoryType MemoryType, int64 Address, const TArray<uint8>& Data)
+{
+    NOT_LAUNCHED_GUARD
+
+    if (Data.Num() <= 0)
+    {
+        UE_LOG(Libretro, Warning, TEXT("WriteMemory: Data array is empty"));
+        return;
+    }
+
+    CoreInstance.GetValue()->EnqueueTask([=, weakThis = MakeWeakObjectPtr(this)](libretro_api_t libretro_api)
+    {
+        void* memory_data = libretro_api.get_memory_data(MemoryType);
+        size_t memory_size = libretro_api.get_memory_size(MemoryType);
+
+        if (memory_data == nullptr)
+        {
+            UE_LOG(Libretro, Warning, TEXT("WriteMemory: Memory data is null for MemoryType %d"), MemoryType);
+            return;
+        }
+
+        if (static_cast<uint64>(Address) + static_cast<uint64>(Data.Num()) > memory_size)
+        {
+            UE_LOG(Libretro, Warning, TEXT("WriteMemory: Address + Data.Num() (%lld + %d) exceeds memory size (%zu) for MemoryType %d"), Address, Data.Num(), memory_size, MemoryType);
+            return;
+        }
+
+        FMemory::Memcpy(static_cast<uint8*>(memory_data) + static_cast<uint64>(Address), Data.GetData(), Data.Num());
+    });
+}
+
+
 void ULibretroCoreInstance::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
     if (   CoreInstance.IsSet()

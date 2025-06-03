@@ -15,6 +15,22 @@
 
 #include "LibretroInputDefinitions.generated.h"
 
+UENUM(BlueprintType, meta = (Default = "SystemRAM"))
+enum ERetroMemoryType
+{
+    /** Memory type is system RAM. */
+    SystemRAM = 2,
+
+    /** Memory type is save RAM. */
+    SaveRAM = 0,
+
+    /** Memory type is RTC (Real Time Clock). */
+    RTC = 1,
+
+    /** Memory type is video RAM. */
+    VideoRAM = 3,
+};
+
 USTRUCT(BlueprintType)
 struct FLibretroOptionDescription
 {
