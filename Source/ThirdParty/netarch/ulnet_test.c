@@ -1,4 +1,4 @@
-#define SAM2_SERVER
+#define SAM2_ENABLE_LOGGING
 #include "ulnet.h"
 #include "sam2.h"
 #include "juice/juice.h"
@@ -9,7 +9,7 @@ int ulnet__test_forward_messages(sam2_server_t *server, ulnet_session_t *session
     int status;
     sam2_message_u message;
 
-    uv_run(&server->loop, UV_RUN_NOWAIT);
+    sam2_server_poll(server);
     for (;;) {
         status = sam2_client_poll(socket, &message);
         if (status < 0) {
@@ -90,7 +90,7 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
         int connection_established = 0;
         for (int attempt = 0; attempt < 10; attempt++) {
             connection_established = sam2_client_poll_connection(sockets[i], 0);
-            status = uv_run(&server->loop, UV_RUN_NOWAIT);
+            status = sam2_server_poll(server);
             if (status < 0) {
                 SAM2_LOG_ERROR("Error running uv loop: %d", status);
                 goto _10;
@@ -161,10 +161,7 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
         goto _10;
     }
 
-_10:sam2_server_begin_destroy(server);
-    uv_run(&server->loop, UV_RUN_DEFAULT);
-    uv_close((uv_handle_t*)&server->tcp, NULL);
-    uv_loop_close(&server->loop);
+_10:sam2_server_destroy(server);
     free(server);
 
     if (session_1_out) {
