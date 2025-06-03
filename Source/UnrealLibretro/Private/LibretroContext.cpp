@@ -1342,30 +1342,29 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                         if (state) {
                             memor(state, l->NextInputState, sizeof(*state));
                         }
-
-                        ulnet_poll_session(l->netplay_session, false, NULL, 0, l->core.av.timing.fps, 1.0,
-                            [](void *user_ptr) {
-                                FLibretroContext *l = (FLibretroContext*)user_ptr;
-                                if (l->core.gl.shared_context) {
-                                    verify(0 == l->SwitchOpenGLContext(UNREALLIBRETRO_SHARED_CONTEXT));
-                                }
-                                l->libretro_api.run();
-                                if (l->core.gl.shared_context) {
-                                    verify(0 == l->SwitchOpenGLContext(UNREALLIBRETRO_FRONTEND_CONTEXT));
-                                }
-                            },
-                            [](void* user_ptr) {
-                                FLibretroContext* l = (FLibretroContext*)user_ptr;
-                                return l->libretro_api.serialize_size();
-                            },
-                            [](void *user_ptr, void *data, size_t size) {
-                                FLibretroContext *l = (FLibretroContext*)user_ptr;
-                                return l->libretro_api.serialize(data, size);
-                            },
-                            [](void *user_ptr, const void *data, size_t size) {
-                                FLibretroContext *l = (FLibretroContext*)user_ptr;
-                                return l->libretro_api.unserialize(data, size);
-                            });
+                        l->netplay_session->retro_run = [](void* user_ptr) {
+                            FLibretroContext* l = (FLibretroContext*)user_ptr;
+                            if (l->core.gl.shared_context) {
+                                verify(0 == l->SwitchOpenGLContext(UNREALLIBRETRO_SHARED_CONTEXT));
+                            }
+                            l->libretro_api.run();
+                            if (l->core.gl.shared_context) {
+                                verify(0 == l->SwitchOpenGLContext(UNREALLIBRETRO_FRONTEND_CONTEXT));
+                            }
+                        };
+                        l->netplay_session->retro_serialize_size = [](void* user_ptr) {
+                            FLibretroContext* l = (FLibretroContext*)user_ptr;
+                            return l->libretro_api.serialize_size();
+                        };
+                        l->netplay_session->retro_serialize = [](void* user_ptr, void* data, size_t size) {
+                            FLibretroContext* l = (FLibretroContext*)user_ptr;
+                            return l->libretro_api.serialize(data, size);
+                        };
+                        l->netplay_session->retro_unserialize = [](void* user_ptr, const void* data, size_t size) {
+                            FLibretroContext* l = (FLibretroContext*)user_ptr;
+                            return l->libretro_api.unserialize(data, size);
+                        };
+                        ulnet_poll_session(l->netplay_session, false, NULL, 0, l->core.av.timing.fps, 1.0);
 
                         if (!l->connected_to_sam2 && l->sam_socket != SAM2_SOCKET_INVALID) {
                             l->connected_to_sam2 = static_cast<bool>(sam2_client_poll_connection(l->sam_socket, 0));
@@ -1419,11 +1418,11 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                                 else {
                                     status = ulnet_process_message(
                                         l->netplay_session,
-                                        &l->latest_sam2_message
+                                        (char *)&l->latest_sam2_message
                                     );
 
                                     if (memcmp(&l->latest_sam2_message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
-                                        FFunctionGraphTask::CreateAndDispatchWhenReady([WeakLibretroCoreInstance, ErrorMessage = l->latest_sam2_message.error_response]
+                                        FFunctionGraphTask::CreateAndDispatchWhenReady([WeakLibretroCoreInstance, ErrorMessage = l->latest_sam2_message.error_message]
                                             {
                                                 if (WeakLibretroCoreInstance.IsValid())
                                                 {

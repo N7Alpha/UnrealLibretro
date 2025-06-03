@@ -40,16 +40,9 @@ typedef struct conn_mode_entry {
 #define MODE_ENTRIES_SIZE 4
 
 static conn_mode_entry_t mode_entries[MODE_ENTRIES_SIZE] = {
-    {conn_poll_registry_init, conn_poll_registry_cleanup, conn_poll_init, conn_poll_cleanup,
-     conn_poll_lock, conn_poll_unlock, conn_poll_interrupt, conn_poll_send, conn_poll_get_addrs,
-     MUTEX_INITIALIZER, NULL},
-    {conn_mux_registry_init, conn_mux_registry_cleanup, conn_mux_init, conn_mux_cleanup,
-     conn_mux_lock, conn_mux_unlock, conn_mux_interrupt, conn_mux_send, conn_mux_get_addrs,
-     MUTEX_INITIALIZER, NULL},
-    {NULL, NULL, conn_thread_init, conn_thread_cleanup, conn_thread_lock, conn_thread_unlock,
-     conn_thread_interrupt, conn_thread_send, conn_thread_get_addrs, MUTEX_INITIALIZER, NULL},
-    {NULL, NULL, conn_user_init, conn_user_cleanup, conn_user_lock, conn_user_unlock,
-     conn_user_interrupt, conn_user_send, conn_user_get_addrs, MUTEX_INITIALIZER, NULL},
+	{0}, {0}, {0},
+	{NULL, NULL, conn_user_init, conn_user_cleanup, conn_user_lock, conn_user_unlock,
+	 conn_user_interrupt, conn_user_send, conn_user_get_addrs, MUTEX_INITIALIZER, NULL},
 };
 
 static conn_mode_entry_t *get_mode_entry(juice_agent_t *agent) {

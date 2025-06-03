@@ -1,6 +1,3 @@
-
-
-
 // Macro to suppress compiler-specific warnings
 //THIRD_PARTY_INCLUDES_START
 // Microsoft Visual C++ Compiler
@@ -36,7 +33,6 @@
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 // Add other relevant warning suppressions for GCC/Clang here
 
-// Add specific options for Clang if needed
 #ifdef __clang__
 #pragma clang diagnostic ignored "-Wmismatched-tags"
 #endif
@@ -70,12 +66,12 @@
 #define alloc_string_copy alloc_string_copy2
 #include "../../ThirdParty/libjuice/src/base64.c"
 #include "../../ThirdParty/libjuice/src/conn.c"
+#include "../../ThirdParty/libjuice/src/conn_user.c"
 // The following contain conflicting static definitions so they have dedicated translation units
 #if 0
 #include "../../ThirdParty/libjuice/src/conn_mux.c"
 #include "../../ThirdParty/libjuice/src/conn_poll.c"
 #include "../../ThirdParty/libjuice/src/conn_thread.c"
-#include "../../ThirdParty/libjuice/src/conn_user.c"
 #endif
 #include "../../ThirdParty/libjuice/src/const_time.c"
 #include "../../ThirdParty/libjuice/src/crc32.c"
@@ -91,13 +87,6 @@
 #include "../../ThirdParty/libjuice/src/turn.c"
 #include "../../ThirdParty/libjuice/src/udp.c"
 #pragma pop
-
-// MARK: reliable
-#pragma push
-#define log_level unreallibretro_renamed_this_identifier__log_level
-#include "../../ThirdParty/reliable/reliable.c"
-#pragma pop
-
 // MARK: zstd
 #pragma push
 #define ZSTD_LEGACY_SUPPORT 0
@@ -139,142 +128,6 @@
 #include "../../ThirdParty/zstd/lib/dictBuilder/fastcover.c"
 #include "../../ThirdParty/zstd/lib/dictBuilder/zdict.c"
 #endif
-#pragma pop
-
-// MARK: libuv
-#pragma push 
-// Non platform-specific files
-#include "../../ThirdParty/libuv/src/fs-poll.c"
-#include "../../ThirdParty/libuv/src/idna.c"
-#include "../../ThirdParty/libuv/src/inet.c"
-#include "../../ThirdParty/libuv/src/random.c"
-#include "../../ThirdParty/libuv/src/strscpy.c"
-#include "../../ThirdParty/libuv/src/strtok.c"
-#include "../../ThirdParty/libuv/src/thread-common.c"
-#include "../../ThirdParty/libuv/src/timer.c"
-#include "../../ThirdParty/libuv/src/uv-common.c"
-#include "../../ThirdParty/libuv/src/uv-data-getter-setters.c"
-#include "../../ThirdParty/libuv/src/version.c"
-
-// Windows-specific files
-#ifdef _WIN32
-#pragma comment(lib, "Userenv.lib")
-#include "../../ThirdParty/libuv/src/win/async.c"
-#include "../../ThirdParty/libuv/src/win/core.c"
-#include "../../ThirdParty/libuv/src/win/detect-wakeup.c"
-#include "../../ThirdParty/libuv/src/win/dl.c"
-#include "../../ThirdParty/libuv/src/win/error.c"
-#include "../../ThirdParty/libuv/src/win/fs.c"
-#include "../../ThirdParty/libuv/src/win/fs-event.c"
-#include "../../ThirdParty/libuv/src/win/getaddrinfo.c"
-#include "../../ThirdParty/libuv/src/win/getnameinfo.c"
-#include "../../ThirdParty/libuv/src/win/handle.c"
-#include "../../ThirdParty/libuv/src/win/loop-watcher.c"
-#include "../../ThirdParty/libuv/src/win/pipe.c"
-#include "../../ThirdParty/libuv/src/win/poll.c"
-#include "../../ThirdParty/libuv/src/win/process.c"
-#include "../../ThirdParty/libuv/src/win/process-stdio.c"
-#include "../../ThirdParty/libuv/src/win/signal.c"
-#include "../../ThirdParty/libuv/src/win/snprintf.c"
-#include "../../ThirdParty/libuv/src/win/stream.c"
-#define uv_zero_ uv_zero_2
-#include "../../ThirdParty/libuv/src/win/tcp.c"
-#include "../../ThirdParty/libuv/src/win/thread.c"
-#define uv_null_buf_ uv_null_buf_2
-#include "../../ThirdParty/libuv/src/win/tty.c"
-#define uv_zero_ uv_zero_3
-#include "../../ThirdParty/libuv/src/win/udp.c"
-#include "../../ThirdParty/libuv/src/win/util.c"
-#include "../../ThirdParty/libuv/src/win/winapi.c"
-#include "../../ThirdParty/libuv/src/win/winsock.c"
-#endif
-
-// Unix-specific files common to Linux, macOS, and BSD
-#if defined(__unix__) || defined(__APPLE__)
-#include "../../ThirdParty/libuv/src/unix/async.c"
-#include "../../ThirdParty/libuv/src/unix/core.c"
-#include "../../ThirdParty/libuv/src/unix/dl.c"
-#include "../../ThirdParty/libuv/src/unix/fs.c"
-#include "../../ThirdParty/libuv/src/unix/getaddrinfo.c"
-#include "../../ThirdParty/libuv/src/unix/getnameinfo.c"
-#include "../../ThirdParty/libuv/src/unix/loop-watcher.c"
-#include "../../ThirdParty/libuv/src/unix/loop.c"
-#include "../../ThirdParty/libuv/src/unix/pipe.c"
-#include "../../ThirdParty/libuv/src/unix/poll.c"
-#include "../../ThirdParty/libuv/src/unix/process.c"
-#include "../../ThirdParty/libuv/src/unix/signal.c"
-#include "../../ThirdParty/libuv/src/unix/stream.c"
-#include "../../ThirdParty/libuv/src/unix/tcp.c"
-#include "../../ThirdParty/libuv/src/unix/thread.c"
-#include "../../ThirdParty/libuv/src/unix/tty.c"
-#include "../../ThirdParty/libuv/src/unix/udp.c"
-#endif
-
-// Additional files specific to macOS (Darwin)
-#ifdef __APPLE__
-#include "../../ThirdParty/libuv/src/unix/darwin.c"
-#include "../../ThirdParty/libuv/src/unix/darwin-proctitle.c"
-#include "../../ThirdParty/libuv/src/unix/fsevents.c"
-#endif
-
-// Additional files specific to Linux (Including Android)
-#ifdef __linux__
-#include "../../ThirdParty/libuv/src/unix/linux.c"
-#include "../../ThirdParty/libuv/src/unix/procfs-exepath.c"
-#include "../../ThirdParty/libuv/src/unix/random-getrandom.c"
-#include "../../ThirdParty/libuv/src/unix/random-sysctl-linux.c"
-#endif
-
-// Additional files specific to Android
-#if defined(__ANDROID__)
-#include "../../ThirdParty/libuv/src/unix/random-getentropy.c"
-#include "../../ThirdParty/libuv/src/unix/proctitle.c"
-#endif
-
-// Additional files specific to FreeBSD
-#ifdef __FreeBSD__
-#include "../../ThirdParty/libuv/src/unix/freebsd.c"
-#endif
-
-// Additional files specific to OpenBSD
-#ifdef __OpenBSD__
-#include "../../ThirdParty/libuv/src/unix/openbsd.c"
-#endif
-
-// Additional files specific to NetBSD
-#ifdef __NetBSD__
-#include "../../ThirdParty/libuv/src/unix/netbsd.c"
-#endif
-
-// Additional files specific to BSDs
-#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
-#include "../../ThirdParty/libuv/src/unix/bsd-ifaddrs.c"
-#include "../../ThirdParty/libuv/src/unix/kqueue.c"
-#endif
-
-// Generic Unix files not specific to any above category
-#if defined(__unix__) || defined(__APPLE__)
-#include "../../ThirdParty/libuv/src/unix/posix-hrtime.c"
-#include "../../ThirdParty/libuv/src/unix/posix-poll.c"
-#endif
-
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable: 4459)
-#endif
-
-#include <stdlib.h>
-static char *getenv_hijack(const char *name) {
-    if (strcmp(name, "UV_THREADPOOL_SIZE") == 0) {
-        return "1"; // Only allow libuv to spawn 1 background thread... ideally this would be 0 but they don't allow that
-    } else {
-        return getenv(name);
-    }
-}
-#define getenv getenv_hijack
-// This source file defines static variables with names like mutex and cond which are very
-// likely to conflict with local definitions so I stuck it at the bottom here
-#include "../../ThirdParty/libuv/src/threadpool.c"
 #pragma pop
 
 // This is good practice but also necessary considering Unreal allows unity builds

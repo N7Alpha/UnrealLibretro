@@ -6,6 +6,15 @@
 #include "Misc/Paths.h"
 #include "UObject/NameTypes.h"
 
+#include "Containers/Ticker.h"
+#if ENGINE_MAJOR_VERSION >= 5
+typedef FTSTicker FThreadSafeTicker;
+typedef FTSTicker::FDelegateHandle FThreadSafeDelegateHandle;
+#else
+typedef FTicker FThreadSafeTicker;
+typedef FDelegateHandle FThreadSafeDelegateHandle;
+#endif
+
 UNREALLIBRETRO_API DECLARE_LOG_CATEGORY_EXTERN(Libretro, Log, All);
 
 extern char UnrealLibretroVersionAnsi[];
@@ -178,8 +187,11 @@ public:
     }
 
 private:
-    class FSam2ServerRunnable* Sam2ServerRunnable = nullptr;
-    FRunnableThread* Sam2ServerThread = nullptr;
+    // The function that will be called on gamethread tick
+    bool GameThread_Tick(float DeltaTime);
+
+    struct sam2_server* Sam2ServerInstance;
+    FThreadSafeDelegateHandle TickDelegateHandle;
 
 #ifdef PLATFORM_WINDOWS
     FString RedistDirectory;

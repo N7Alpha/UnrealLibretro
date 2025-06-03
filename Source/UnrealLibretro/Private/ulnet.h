@@ -8,8 +8,10 @@ typedef struct juice_agent juice_agent_t;
 #include "common/xxhash.h"
 #include "fec.h"
 
+#include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 #ifndef ULNET_LINKAGE
 #ifdef __cplusplus
@@ -305,7 +307,8 @@ ULNET_LINKAGE int ulnet_reliable_send_with_acks_only(ulnet_session_t *session, i
 ULNET_LINKAGE int ulnet_reliable_send(ulnet_session_t *session, int port, const uint8_t *packet, int size);
 ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_state_on_tick, uint8_t *save_state, size_t save_state_capacity,
     double frame_rate, double max_sleeping_allowed_when_polling_network_seconds);
-    ULNET_LINKAGE int ulnet_wrapped_header_size(uint8_t *packet, int size);
+ULNET_LINKAGE int ulnet_wrapped_header_size(uint8_t *packet, int size);
+ULNET_LINKAGE void ulnet_session_tear_down(ulnet_session_t *session);
 
 ULNET_LINKAGE void ulnet_imgui_show_session(ulnet_session_t *session);
 ULNET_LINKAGE void ulnet_imgui_show_recent_packets_table(ulnet_session_t *session, int p);
@@ -883,7 +886,7 @@ void ulnet_message_send(ulnet_session_t *session, int port, const uint8_t *messa
     sam2_message_metadata_t *metadata = sam2_get_metadata((const char *) message);
 
     for (int i = 0; i < SAM2_ARRAY_LENGTH(ulnet__message_metadata); i++) {
-        if (memcmp(message, ulnet__message_metadata[i].header, SAM2_HEADER_TAG_SIZE) == 0) {
+        if (sam2_header_matches((char *)message, ulnet__message_metadata[i].header) == 0) {
             metadata = &ulnet__message_metadata[i];
         }
     }
@@ -1983,7 +1986,7 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
 
     if (sam2_header_matches(response, sam2_conn_header)) {
         sam2_connect_message_t *connect_message = (sam2_connect_message_t *) response;
-        SAM2_LOG_INFO("We were assigned the peer id %05" PRId16, (uint16_t) connect_message->peer_id);
+        SAM2_LOG_INFO("We were assigned the peer id %05" PRIu16, (uint16_t) connect_message->peer_id);
 
         session->our_peer_id = connect_message->peer_id;
         session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;

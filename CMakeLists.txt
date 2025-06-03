@@ -67,10 +67,7 @@ set(SOURCE_FILES
     Source/ThirdParty/netImgui/Code/Client/Private/NetImgui_NetworkWin32.cpp
 )
 
-# Add SDL and libuv subdirectories
 # The way I set options with set() looks janky. This was the only thing I could figure out that worked after fiddling with cmake for a half hour
-
-# 2. Tell CMake you DO NOT want to build SDL3's shared library
 set(SDL_SHARED OFF CACHE BOOL "Disable SDL3 shared library build" FORCE)
 set(SDL_TESTS OFF CACHE BOOL "Disable building SDL3 tests" FORCE)
 set(SDL_EXAMPLES OFF CACHE BOOL "Disable building SDL3 examples" FORCE)
@@ -91,7 +88,6 @@ if(LINUX) # Use heuristic to figure out if we're on a linux server or desktop, t
 endif()
 
 add_subdirectory(Source/ThirdParty/SDL)
-add_subdirectory(Source/ThirdParty/libuv)
 set(NO_TESTS ON CACHE BOOL "") # libjuice defaults to building tests (which we don't have checked in)
 add_subdirectory(Source/ThirdParty/libjuice)
 set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "")
@@ -117,4 +113,4 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 # Static link everything so we don't have to deal with dll hell
-target_link_libraries(${PROJECT_NAME} uv_a juice-static libzstd_static SDL3::SDL3-static)
+target_link_libraries(${PROJECT_NAME} juice-static libzstd_static SDL3::SDL3-static)

@@ -69,6 +69,11 @@ public class UnrealLibretro : ModuleRules
 			PrivateDependencyModuleNames.Add("AudioExtensions");
 		}
 
+		// MARK: ThirdParty Libraries
+		// netarch
+		PrivateDefinitions.Add("SAM2_ENABLE_LOGGING");
+		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/netarch");
+
 		// NetImgui
 		PrivateDependencyModuleNames.AddRange(new string[] { "Sockets", "Networking" });
 		//PrivateIncludePaths.Add(PluginDirectory + "/Source/UnrealLibretro/netImgui");
@@ -84,10 +89,6 @@ public class UnrealLibretro : ModuleRules
 		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/libjuice/include");
 		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/libjuice/include/juice"); // We #include libjuice implementation files which expect this
 
-		// libuv stuff
-		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/libuv/include");
-		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/libuv/src");
-
 		// imgui stuff
 		PrivateDefinitions.Add("IMGUI_DEFINE_MATH_OPERATORS");  // We get unity build issues/packaging issues if this isn't defined
 		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/imgui");
@@ -96,8 +97,5 @@ public class UnrealLibretro : ModuleRules
 
 		// zstd stuff
 		PublicIncludePaths.Add("$(PluginDir)/Source/ThirdParty/zstd/lib");
-
-		// reliable stuff
-		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/reliable");
 	}
 }

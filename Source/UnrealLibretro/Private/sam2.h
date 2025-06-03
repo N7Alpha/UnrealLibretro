@@ -130,7 +130,7 @@ SAM2_LINKAGE int sam2_test_all(void);
 // All strings are utf-8 encoded unless stated otherwise... @todo Actually I should just add _utf8 if the field isn't ascii
 // Packing of structs is asserted at compile time since packing directives are compiler specific
 typedef struct sam2_room {
-    char name[64]; // Unique name that identifies the room
+    char name[64];
     uint64_t flags;
     char core_and_version[32];
     uint64_t rom_hash_xxh64;
@@ -245,12 +245,7 @@ static int sam2_format_core_version(sam2_room_t *room, const char *name, const c
 }
 
 #ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <winsock2.h>
-//#pragma comment(lib, "ws2_32.lib")
-typedef SOCKET sam2_socket_t;
+typedef uintptr_t sam2_socket_t;
 #else
 typedef int sam2_socket_t;
 #endif
@@ -378,6 +373,13 @@ static const char *sam2__pool_free(sam2__pool_t *pool, uint16_t idx) {
 #elif defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/event.h>
 #include <sys/time.h>
+#elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#else
+#include <poll.h>
 #endif
 
 typedef struct sam2_client {
@@ -448,27 +450,24 @@ static sam2_room_t* sam2__find_hosted_room(sam2_server_t *server, sam2_room_t *r
     }
 }
 
+
+SAM2_LINKAGE int sam2_socket_buffer_size_client_to_server;
+SAM2_LINKAGE int sam2_socket_buffer_size_server_to_client;
+
 // ===============================================
-// == Server interface - Depends on libuv       ==
+// == Server interface                          ==
 // ===============================================
 
 // Note: You must allocate the memory for `server`
 // ```c
 // // Init server
-// sam2_server_t server;
+// sam2_server_t *server = malloc(sizeof(sam2_server_t));
 // sam2_server_init(&server, SAM2_SERVER_DEFAULT_PORT);
 //
-// // Wait for some events
-// for (int i = 0; i < 10; i++) {
-//     sam2_server_poll(&server.loop);
-// }
+// // Process all pending events
+// sam2_server_poll(server);
 //
-// // Start asynchronous destruction
-// sam2_server_begin_destroy(server);
-//
-// // Do the needful
-// uv_run(&server.loop, UV_RUN_DEFAULT);
-// uv_loop_close(&server.loop);
+// sam2_server_destroy(server);
 // ```
 SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port);
 SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server);
@@ -478,31 +477,12 @@ SAM2_LINKAGE void sam2_server_destroy(sam2_server_t *server);
 // == Client interface                          ==
 // ===============================================
 
-// Non-blocking trys to read a response sent by the server
-// Returns negative on error, positive if there are more messages to read, and zero when you've processed the last message
-// Errors can't be recovered from you must call sam2_client_disconnect and then sam2_client_connect again
-SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *message);
-
 // Connects to host which is either an IPv4/IPv6 Address or domain name
 // Will bias IPv6 if connecting via domain name and also block
 SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host, int port);
-
 SAM2_LINKAGE int sam2_client_poll_connection(sam2_socket_t sockfd, int timeout_ms);
-
+SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *message);
 SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message);
-
-//#include <stdio.h>
-//#define SAM2_LOG_WRITE(level, file, line, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0); // Ex. Use print
-#ifndef SAM2_LOG_WRITE
-#define SAM2_LOG_WRITE_DEFINITION
-#define SAM2_LOG_WRITE sam2_log_write
-#endif
-
-#define SAM2_LOG_DEBUG(...) SAM2_LOG_WRITE(0, __FILE__, __LINE__, __VA_ARGS__)
-#define SAM2_LOG_INFO(...)  SAM2_LOG_WRITE(1, __FILE__, __LINE__, __VA_ARGS__)
-#define SAM2_LOG_WARN(...)  SAM2_LOG_WRITE(2, __FILE__, __LINE__, __VA_ARGS__)
-#define SAM2_LOG_ERROR(...) SAM2_LOG_WRITE(3, __FILE__, __LINE__, __VA_ARGS__)
-#define SAM2_LOG_FATAL(...) SAM2_LOG_WRITE(4, __FILE__, __LINE__, __VA_ARGS__)
 
 #if defined(__GNUC__) || defined(__clang__)
     #define SAM2_FORMAT_ATTRIBUTE(format_idx, arg_idx) __attribute__((format(printf, format_idx, arg_idx)))
@@ -510,7 +490,43 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message);
     #define SAM2_FORMAT_ATTRIBUTE(format_idx, arg_idx)
 #endif
 
+// ===============================================
+// == Logging                                   ==
+// ===============================================
+
+// Logging is optional and can be enabled by defining `SAM2_ENABLE_LOGGING` before including this header.
+// `sam2_log_write` is resolved via external linkage, so you must implement it in your own codebase.
+//
+// Example implementation:
+// ```c
+// // Inside your_source_file.c
+// #define SAM2_ENABLE_LOGGING
+// #define SAM2_IMPLEMENTATION
+// #include "sam2.h"
+// void sam2_log_write(int level, const char *file, int line, const char *format, ...) {
+//     va_list args;
+//     va_start(args, format);
+//     vfprintf(stdout, format, args);
+//     va_end(args);
+//     fprintf(stdout, "\n");
+// }
+// ```
 SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const char *format, ...) SAM2_FORMAT_ATTRIBUTE(4, 5);
+
+#if defined(SAM2_ENABLE_LOGGING)
+#define SAM2_LOG_DEBUG(...) sam2_log_write(0, __FILE__, __LINE__, __VA_ARGS__)
+#define SAM2_LOG_INFO(...)  sam2_log_write(1, __FILE__, __LINE__, __VA_ARGS__)
+#define SAM2_LOG_WARN(...)  sam2_log_write(2, __FILE__, __LINE__, __VA_ARGS__)
+#define SAM2_LOG_ERROR(...) sam2_log_write(3, __FILE__, __LINE__, __VA_ARGS__)
+#define SAM2_LOG_FATAL(...) sam2_log_write(4, __FILE__, __LINE__, __VA_ARGS__)
+#else
+#define SAM2_LOG_DEBUG(...)
+#define SAM2_LOG_INFO(...)
+#define SAM2_LOG_WARN(...)
+#define SAM2_LOG_ERROR(...)
+#define SAM2_LOG_FATAL(...)
+#endif
+
 #endif // SAM2_H
 
 #if defined(SAM2_IMPLEMENTATION)
@@ -520,6 +536,9 @@ SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const ch
 #include <errno.h>
 #include <stdarg.h>
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <ws2tcpip.h>
 #else
 #include <sys/time.h>
@@ -529,6 +548,9 @@ SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const ch
 #include <netdb.h>
 #include <fcntl.h>
 #endif
+
+int sam2_socket_buffer_size_client_to_server = 8192;
+int sam2_socket_buffer_size_server_to_client = 8192;
 
 #define RLE8_ENCODE_UPPER_BOUND(N) (3 * ((N+1) / 2) + (N) / 2)
 
@@ -701,7 +723,7 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
     int wsa_status = WSAStartup(MAKEWORD(2, 2), &wsaData);
     if (wsa_status != 0) {
         SAM2_LOG_ERROR("WSAStartup failed!");
-        goto fail;
+        return -1;
     }
 #endif
 
@@ -733,6 +755,13 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
         goto fail;
     }
 #endif
+    }
+
+    if (setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, (const char*)&sam2_socket_buffer_size_client_to_server, sizeof(int)) < 0) {
+        SAM2_LOG_WARN("Failed to set socket send buffer size");
+    }
+    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, (const char*)&sam2_socket_buffer_size_server_to_client, sizeof(int)) < 0) {
+        SAM2_LOG_WARN("Failed to set socket recv buffer size");
     }
 
     if (family == AF_INET) {
@@ -1014,6 +1043,14 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message) {
 #ifndef SAM2_SERVER_C
 #define SAM2_SERVER_C
 
+#include <time.h>
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#include <WinSock2.h>
+#endif
+#endif
+
 static int sam2__set_nonblocking(sam2_socket_t sock) {
 #ifdef _WIN32
     u_long mode = 1;
@@ -1023,17 +1060,6 @@ static int sam2__set_nonblocking(sam2_socket_t sock) {
     if (flags == -1) return -1;
     return fcntl(sock, F_SETFL, flags | O_NONBLOCK);
 #endif
-}
-
-static int sam2__set_socket_buffer_size(sam2_socket_t sock) {
-    int size = 16384; // 16 KiB
-    if (setsockopt(sock, SOL_SOCKET, SO_SNDBUF, (const char*)&size, sizeof(size)) < 0) {
-        SAM2_LOG_WARN("Failed to set send buffer size");
-    }
-    if (setsockopt(sock, SOL_SOCKET, SO_RCVBUF, (const char*)&size, sizeof(size)) < 0) {
-        SAM2_LOG_WARN("Failed to set recv buffer size");
-    }
-    return 0;
 }
 
 static void sam2__close_socket(sam2_socket_t sock) {
@@ -1066,13 +1092,14 @@ static int64_t sam2__get_time_ms() {
 }
 
 static void sam2__client_destroy(sam2_server_t *server, sam2_client_t *client) {
-    if (!client || client->socket == SAM2_SOCKET_INVALID) return;
-
     uint16_t client_index = (uint16_t)(client - server->clients);
     uint16_t peer_id = client->peer_id;
 
     if (peer_id <= SAM2_PORT_SENTINELS_MAX) {
         SAM2_LOG_ERROR("Tried to free sentinel peer id %05d", peer_id);
+        return;
+    } else if (sam2__pool_is_free(&server->client_pool, client->peer_id)) {
+        SAM2_LOG_ERROR("Tried to free already freed client %05" PRIu16, client->peer_id);
         return;
     }
 
@@ -1117,17 +1144,17 @@ static int sam2__write_message(sam2_server_t *server, sam2_client_t *client, cha
         return 0;
     } else if (n < 0 && sam2__would_block()) {
         // OS buffer is full - log and drop message or close connection
-        SAM2_LOG_WARN("Client %05d send buffer full, dropping message", client->peer_id);
+        SAM2_LOG_WARN("Client %05" PRIu16 " send buffer full, dropping message", client->peer_id);
         // @todo: Handle this more gracefully, the best thing is to peek and always leave space for an error along the lines of "server overload" or something
         return -1;
     } else if (n < 0) {
         // Real error
-        SAM2_LOG_ERROR("Send error for client %05d: %d", client->peer_id, SAM2_SOCKERRNO);
+        SAM2_LOG_ERROR("Send error for client %05" PRIu16 ": %d", client->peer_id, SAM2_SOCKERRNO);
         sam2__client_destroy(server, client);
         return -1;
     } else {
         // Partial send - this shouldn't happen with small messages and proper buffer sizes
-        SAM2_LOG_ERROR("Partial send for client %05d: %d/%d bytes", client->peer_id, n, message_size);
+        SAM2_LOG_ERROR("Partial send for client %05" PRIu16 ": %d/%d bytes", client->peer_id, n, message_size);
         sam2__client_destroy(server, client);
         return -1;
     }
@@ -1221,11 +1248,12 @@ static void sam2__process_message(sam2_server_t *server, sam2_client_t *client, 
         }
 
         SAM2_LOG_INFO("Forwarding signal from %05d to %05d", client->peer_id, request.peer_id);
+        request.peer_id = client->peer_id;
         sam2__write_message(server, peer, (char *)&request);
     }
 }
 
-// Socket I/O
+// @todo The AI slopped this one a little too hard it should consolidate code with sam2_client_poll I think
 static void sam2__process_client_read(sam2_server_t *server, sam2_client_t *client) {
     while (1) {
         int space = sizeof(client->buffer) - client->length;
@@ -1246,12 +1274,12 @@ static void sam2__process_client_read(sam2_server_t *server, sam2_client_t *clie
                 if (status == 0) {
                     break; // Need more data
                 } else if (status < 0) {
-                    SAM2_LOG_ERROR("Client %05d framing error: %d", client->peer_id, status);
+                    SAM2_LOG_ERROR("Client %05" PRIu16 " framing error: %d", client->peer_id, status);
                     sam2__write_error(client, "Invalid message format", SAM2_RESPONSE_INVALID_ARGS);
                     sam2__client_destroy(server, client);
                     return;
                 } else {
-                    SAM2_LOG_INFO("Client %05d sent '%.8s'", client->peer_id, (char*)&message);
+                    SAM2_LOG_INFO("Client %05" PRIu16 " sent '%.8s'", client->peer_id, (char*)&message);
                     sam2__process_message(server, client, &message);
                 }
             }
@@ -1261,7 +1289,7 @@ static void sam2__process_client_read(sam2_server_t *server, sam2_client_t *clie
             return;
         } else {
             if (!sam2__would_block()) {
-                SAM2_LOG_ERROR("Client %05d recv error: %d", client->peer_id, SAM2_SOCKERRNO);
+                SAM2_LOG_ERROR("Client %05" PRIu16 " recv error: %d", client->peer_id, SAM2_SOCKERRNO);
                 sam2__client_destroy(server, client);
             }
             return;
@@ -1269,15 +1297,14 @@ static void sam2__process_client_read(sam2_server_t *server, sam2_client_t *clie
     }
 }
 
-// Accept new connections
 static void sam2__accept_connections(sam2_server_t *server) {
     while (1) {
         struct sockaddr_in6 addr;
         socklen_t addrlen = sizeof(addr);
 
-        sam2_socket_t client_sock = accept(server->listen_socket, (struct sockaddr*)&addr, &addrlen);
+        sam2_socket_t client_socket = accept(server->listen_socket, (struct sockaddr*)&addr, &addrlen);
 
-        if (client_sock == SAM2_SOCKET_INVALID) {
+        if (client_socket == SAM2_SOCKET_INVALID) {
             if (!sam2__would_block()) {
                 SAM2_LOG_ERROR("Accept error: %d", SAM2_SOCKERRNO);
             }
@@ -1288,7 +1315,7 @@ static void sam2__accept_connections(sam2_server_t *server) {
         uint16_t client_index = sam2__pool_alloc(&server->client_pool);
         if (client_index == SAM2__INDEX_NULL) {
             SAM2_LOG_WARN("No client slots available");
-            sam2__close_socket(client_sock);
+            sam2__close_socket(client_socket);
             continue;
         }
 
@@ -1297,36 +1324,42 @@ static void sam2__accept_connections(sam2_server_t *server) {
         if (peer_id == SAM2__INDEX_NULL) {
             SAM2_LOG_ERROR("No peer IDs available");
             sam2__pool_free(&server->client_pool, client_index);
-            sam2__close_socket(client_sock);
+            sam2__close_socket(client_socket);
             continue;
         }
 
         // Initialize client
         sam2_client_t *client = &server->clients[client_index];
         memset(client, 0, sizeof(*client));
-        client->socket = client_sock;
+        client->socket = client_socket;
         client->peer_id = peer_id;
         client->last_activity = server->current_time;
         server->peer_id_map[peer_id] = client_index;
 
         // Configure socket
-        sam2__set_nonblocking(client_sock);
-        sam2__set_socket_buffer_size(client_sock);
+        sam2__set_nonblocking(client_socket);
+
+        if (setsockopt(client_socket, SOL_SOCKET, SO_SNDBUF, (const char*)&sam2_socket_buffer_size_server_to_client, sizeof(int)) < 0) {
+            SAM2_LOG_WARN("Failed to set socket send buffer size");
+        }
+        if (setsockopt(client_socket, SOL_SOCKET, SO_RCVBUF, (const char*)&sam2_socket_buffer_size_client_to_server, sizeof(int)) < 0) {
+            SAM2_LOG_WARN("Failed to set socket recv buffer size");
+        }
 
         // Add to polling
 #if defined(__linux__) || defined(__ANDROID__)
         struct epoll_event ev = {0};
         ev.events = EPOLLIN | EPOLLET;
         ev.data.ptr = client;
-        epoll_ctl(server->epoll_fd, EPOLL_CTL_ADD, client_sock, &ev);
+        epoll_ctl(server->epoll_fd, EPOLL_CTL_ADD, client_socket, &ev);
 #elif defined(__APPLE__) || defined(__FreeBSD__)
         struct kevent ev[2];
-        EV_SET(&ev[0], client_sock, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, client);
-        EV_SET(&ev[1], client_sock, EVFILT_WRITE, EV_ADD | EV_DISABLE, 0, 0, client); // Disabled until needed
+        EV_SET(&ev[0], client_socket, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, client);
+        EV_SET(&ev[1], client_socket, EVFILT_WRITE, EV_ADD | EV_DISABLE, 0, 0, client); // Disabled until needed
         kevent(server->kqueue_fd, ev, 2, NULL, 0, NULL);
 #endif
 
-        SAM2_LOG_INFO("Client %05d connected", peer_id);
+        SAM2_LOG_INFO("Client %05" PRIu16 " connected", client->peer_id);
 
         // Send connect message
         sam2_connect_message_t connect_msg = { SAM2_CONN_HEADER, peer_id, 0 };
@@ -1450,26 +1483,9 @@ SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
     }
 #endif
 
-    // Handle timeouts
-    const int64_t TIMEOUT_MS = 30000; // 30 seconds
-    for (uint16_t i = server->client_pool.used_list; i != SAM2__INDEX_NULL; ) {
-        sam2__pool_node_t *node = sam2__pool_node(&server->client_pool);
-        sam2_client_t *client = &server->clients[i];
-        uint16_t next = node[i].next;
-
-        if (client->socket != SAM2_SOCKET_INVALID &&
-            server->current_time - client->last_activity > TIMEOUT_MS) {
-            SAM2_LOG_INFO("Client %05d timed out", client->peer_id);
-            sam2__client_destroy(server, client);
-        }
-
-        i = next;
-    }
-
     return 0;
 }
 
-// Initialize server
 SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     memset(server, 0, sizeof(*server));
 
@@ -1491,37 +1507,39 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     server->listen_socket = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
     if (server->listen_socket == SAM2_SOCKET_INVALID) {
         SAM2_LOG_ERROR("Failed to create socket: %d", SAM2_SOCKERRNO);
-        return -1;
+        goto err;
     }
 
-    // Allow address reuse
-    int reuse = 1;
-    setsockopt(server->listen_socket, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
-
     // Disable IPv6-only to allow IPv4 connections on the same socket
-    int v6only = 0;
-    setsockopt(server->listen_socket, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&v6only, sizeof(v6only));
+    int v6only;
+    v6only = 0;
+    if (setsockopt(server->listen_socket, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&v6only, sizeof(v6only)) == SAM2_SOCKET_ERROR) {
+        SAM2_LOG_ERROR("Failed to set IPV6_V6ONLY: %d", SAM2_SOCKERRNO);
+        goto err;
+    }
 
     // Set non-blocking
-    sam2__set_nonblocking(server->listen_socket);
+    if (sam2__set_nonblocking(server->listen_socket) != 0) {
+        SAM2_LOG_ERROR("Failed to set non-blocking");
+        goto err;
+    }
 
     // Bind to all interfaces (IPv6 and IPv4)
-    struct sockaddr_in6 addr = {0};
+    struct sockaddr_in6 addr;
+    memset(&addr, 0, sizeof(addr));
     addr.sin6_family = AF_INET6;
     addr.sin6_port = htons(port);
     addr.sin6_addr = in6addr_any;
 
     if (bind(server->listen_socket, (struct sockaddr*)&addr, sizeof(addr)) == SAM2_SOCKET_ERROR) {
-        SAM2_LOG_ERROR("Bind failed: %d", SAM2_SOCKERRNO);
-        sam2__close_socket(server->listen_socket);
-        return -1;
+        SAM2_LOG_ERROR("Bind failed on port %d: %d", port, SAM2_SOCKERRNO);
+        goto err;
     }
 
     // Listen
     if (listen(server->listen_socket, SAM2_DEFAULT_BACKLOG) == SAM2_SOCKET_ERROR) {
         SAM2_LOG_ERROR("Listen failed: %d", SAM2_SOCKERRNO);
-        sam2__close_socket(server->listen_socket);
-        return -1;
+        goto err;
     }
 
     // Initialize platform-specific polling
@@ -1529,29 +1547,50 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     server->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (server->epoll_fd == -1) {
         SAM2_LOG_ERROR("epoll_create1 failed: %d", errno);
-        sam2__close_socket(server->listen_socket);
-        return -1;
+        goto err;
     }
 
-    struct epoll_event ev = {0};
+    struct epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.ptr = NULL; // NULL means listen socket
-    epoll_ctl(server->epoll_fd, EPOLL_CTL_ADD, server->listen_socket, &ev);
+    if (epoll_ctl(server->epoll_fd, EPOLL_CTL_ADD, server->listen_socket, &ev) == -1) {
+        SAM2_LOG_ERROR("epoll_ctl failed: %d", errno);
+        goto err;
+    }
 #elif defined(__APPLE__) || defined(__FreeBSD__)
     server->kqueue_fd = kqueue();
     if (server->kqueue_fd == -1) {
         SAM2_LOG_ERROR("kqueue failed: %d", errno);
-        sam2__close_socket(server->listen_socket);
-        return -1;
+        goto err;
     }
 
     struct kevent ev;
     EV_SET(&ev, server->listen_socket, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, NULL);
-    kevent(server->kqueue_fd, &ev, 1, NULL, 0, NULL);
+    if (kevent(server->kqueue_fd, &ev, 1, NULL, 0, NULL) == -1) {
+        SAM2_LOG_ERROR("kevent failed: %d", errno);
+        goto err;
+    }
 #endif
 
     SAM2_LOG_INFO("Server listening on port %d (IPv4 and IPv6)", port);
     return 0;
+
+err:if (server->listen_socket != SAM2_SOCKET_INVALID) {
+        sam2__close_socket(server->listen_socket);
+    }
+#if defined(__linux__) || defined(__ANDROID__)
+    if (server->epoll_fd != -1) {
+        close(server->epoll_fd);
+    }
+#elif defined(__APPLE__) || defined(__FreeBSD__)
+    if (server->kqueue_fd != -1) {
+        close(server->kqueue_fd);
+    }
+#endif
+#ifdef _WIN32
+    WSACleanup();
+#endif
+    return -1;
 }
 
 // Destroy server
