@@ -8,7 +8,7 @@
 #endif
 
 #define SAM2_IMPLEMENTATION
-#define SAM2_SERVER
+#define SAM2_ENABLE_LOGGING
 #define SAM2_TEST
 int g_log_level = 1; // Info
 
@@ -1466,7 +1466,7 @@ void draw_imgui() {
 
         if (g_sam2_server) {
             ImGui::SeparatorText("Server");
-            ImGui::TextColored(ImVec4(0, 1, 0, 1), "We're listening on [::]:%d (IPv4 tunneling is OS dependent)", g_sam2_port);
+            ImGui::TextColored(ImVec4(0, 1, 0, 1), "We're listening on %s:%d (IPv4 tunneling is OS dependent)", g_sam2_address, g_sam2_port);
 
             int room_count = 0;
             bool room_header_is_open = ImGui::CollapsingHeader("Rooms");
@@ -1481,16 +1481,6 @@ void draw_imgui() {
 
             ImGui::Text("Clients connected: %d", g_sam2_server->client_pool.used);
             ImGui::Text("Rooms Hosted: %d", room_count);
-
-            if (g_sam2_server->response_pool.used) {
-                char label[64];
-                snprintf(label, sizeof(label), "Unsent responses buffered: %d", (int) g_sam2_server->response_pool.used);
-                if (ImGui::CollapsingHeader(label)) {
-                    for (uint16_t r = g_sam2_server->response_pool.used_list; r != SAM2__INDEX_NULL; r = g_sam2_server->response_pool_node[r].next) {
-                        show_message((char *) &g_sam2_server->responses[r]);
-                    }
-                }
-            }
 
 
             ImGui::SeparatorText("Client");
@@ -2640,7 +2630,8 @@ SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const ch
     case 3: prefix_fmt = "\x1B[91m"               "%s "    "ERROR "  "%11s:%-5d"   "| "; break;
     }
 
-    if (!sam2__terminal_supports_ansi_colors()) while (*prefix_fmt == '\x1B') prefix_fmt += 5; // Skip ANSI-color-escape-codes
+    bool print_color = sam2__terminal_supports_ansi_colors();
+    if (!print_color) while (*prefix_fmt == '\x1B') prefix_fmt += 5; // Skip ANSI-color-escape-codes
 
     fprintf(stdout, prefix_fmt, timestamp, filename, line);
 
@@ -2649,7 +2640,7 @@ SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const ch
     vfprintf(stdout, format, args);
     va_end(args);
 
-    fprintf(stdout, sam2__terminal_supports_ansi_colors() ? "\x1B[0m" "\n" : "\n");
+    fprintf(stdout, print_color ? "\x1B[0m\n" : "\n");
     if (level >= 2) { // Flush anything that is at least as severe as WARN
         fflush(stdout);
     }
@@ -2657,10 +2648,10 @@ SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const ch
     if (level >= 4) {
         if (sam2__debugger_is_attached_to_us()) {
 #if defined(_WIN32)
-            __debugbreak();              /* break only if we _have_ a debugger */
+            __debugbreak();   // FATAL ERROR OCURRED
 #elif defined(__has_builtin)
 #if __has_builtin(__builtin_trap)
-            __builtin_trap();
+            __builtin_trap(); // FATAL ERROR OCURRED
 #endif
 #endif
         }
@@ -2689,10 +2680,24 @@ static void core_log(enum retro_log_level level, const char *fmt, ...) {
     }
     switch (level) {
     default:
-    case 0: fprintf(stdout, "\x1B[90m%s DEBUG %16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
-    case 1: fprintf(stdout, "\x1B[39m%s INFO  %16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
-    case 2: fprintf(stdout, "\x1B[93m%s WARN  %16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
-    case 3: SAM2_LOG_WRITE(4, __FILE__, __LINE__, fmt, va); // calls exit(1)
+    case 0x0: fprintf(stdout, "\x1B[90m%s DEBUG %16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
+    case 0x1: fprintf(stdout, "\x1B[39m%s INFO  %16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
+    case 0x2: fprintf(stdout, "\x1B[93m%s WARN  %16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
+    case 0x3: fprintf(stdout, "\x1B[93m%s FATAL %16s | %s", timestamp, g_libretro_context.system_info.library_name, buffer); break;
+    }
+
+    if (level >= 3) {
+        if (sam2__debugger_is_attached_to_us()) {
+#if defined(_WIN32)
+            __debugbreak();   // FATAL ERROR OCURRED
+#elif defined(__has_builtin)
+#if __has_builtin(__builtin_trap)
+            __builtin_trap(); // FATAL ERROR OCURRED
+#endif
+#endif
+        }
+
+        exit(1);
     }
 }
 
@@ -3099,12 +3104,13 @@ static void core_load(const char *sofile) {
     {
         struct stat file_stat;
         const char* path_to_check = absolute_sofile ? absolute_sofile : sofile;
-        if (stat(path_to_check, &file_stat) == 0)
+        if (stat(path_to_check, &file_stat) == 0) {
             SAM2_LOG_FATAL("Failed to load core: '%s' exists, but could not be loaded. "
                           "This may be due to an architecture mismatch or incompatible dependencies. SDL_Error: %s",
                           path_to_check, SDL_GetError());
-        else
+        } else {
             SAM2_LOG_FATAL("Failed to load core: '%s' does not exist. SDL_Error: %s", path_to_check, SDL_GetError());
+        }
     }
 
     // Clean up allocated memory
@@ -3823,7 +3829,7 @@ int main(int argc, char *argv[]) {
 
         if (g_sam2_server) {
             for (int i = 0; i < 128; i++) {
-                if (uv_run(&g_sam2_server->loop, UV_RUN_NOWAIT) == 0) break;
+                if (sam2_server_poll(g_sam2_server) == 0) break;
             }
         }
 
@@ -3858,7 +3864,7 @@ int main(int argc, char *argv[]) {
                     );
 
                     if (sam2_header_matches((const char*)&latest_sam2_message, sam2_fail_header)) {
-                        g_last_sam2_error = latest_sam2_message.error_response;
+                        g_last_sam2_error = latest_sam2_message.error_message;
                         SAM2_LOG_ERROR("Received error response from SAM2 (%" PRId64 "): %s", g_last_sam2_error.code, g_last_sam2_error.description);
                     } else if (sam2_header_matches((const char*)&latest_sam2_message, sam2_list_header)) {
                         sam2_room_list_message_t *room_list = (sam2_room_list_message_t *) &latest_sam2_message;
