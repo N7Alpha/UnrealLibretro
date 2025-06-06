@@ -21,7 +21,7 @@ struct FLibretroControllerDescriptions
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnLaunchComplete, const class UTextureRenderTarget2D*, LibretroFramebuffer, const class USoundWave*, AudioBuffer, const bool, bSuccess);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCoreFramebufferResize);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_FiveParams(FOnCoreReadMemoryComplete, ULibretroCoreInstance*, CoreInstance, int64, TheFrameMemoryWasRead, ERetroMemoryType, MemoryType, int64, Offset, const TArray<uint8>&, Memory);
+DECLARE_DYNAMIC_DELEGATE_ThreeParams(FOnReadMemoryComplete, int64, TheFrameMemoryWasRead, int64, Address, const TArray<uint8>&, Memory);
 
 
 UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent) )
@@ -52,10 +52,6 @@ public:
      */
     UPROPERTY(BlueprintAssignable)
     FOnCoreFramebufferResize OnCoreFrameBufferResize;
-
-    UPROPERTY(BlueprintAssignable)
-    FOnCoreReadMemoryComplete OnCoreReadMemoryComplete;
-
                                   
     /** Blueprint Callable Functions */
     /**
@@ -159,7 +155,7 @@ public:
      * Reads from the memory of the Libretro Core and calls FOnCoreReadMemoryComplete when finished
      */
     UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
-    void ReadMemory(ERetroMemoryType MemoryType, int64 Address, int64 Size);
+    void ReadMemory(ERetroMemoryType MemoryType, int64 Address, int64 Size, const FOnReadMemoryComplete& OnReadMemoryComplete);
 
     /**
      * @brief Writes to the memory of the Libretro Core

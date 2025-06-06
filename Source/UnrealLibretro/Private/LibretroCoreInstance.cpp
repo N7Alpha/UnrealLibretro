@@ -370,7 +370,7 @@ void ULibretroCoreInstance::SetInputAnalog(int Port, int _16BitSignedInteger, ER
     });
 }
 
-void ULibretroCoreInstance::ReadMemory(ERetroMemoryType MemoryType, int64 Address, int64 Size)
+void ULibretroCoreInstance::ReadMemory(ERetroMemoryType MemoryType, int64 Address, int64 Size, const FOnReadMemoryComplete& OnReadMemoryComplete)
 {
     NOT_LAUNCHED_GUARD
 
@@ -404,9 +404,7 @@ void ULibretroCoreInstance::ReadMemory(ERetroMemoryType MemoryType, int64 Addres
         FFunctionGraphTask::CreateAndDispatchWhenReady(
             [=]()
             {
-                if (weakThis.IsValid()) {
-                    weakThis->OnCoreReadMemoryComplete.Broadcast(weakThis.Get(), 0, MemoryType, Address, Data);
-                }
+                OnReadMemoryComplete.ExecuteIfBound(0, Address, Data);
             }, TStatId(), nullptr, ENamedThreads::GameThread);
     });
 }
