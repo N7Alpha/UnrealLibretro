@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run Setup Script
-        run: setup.cmd
+        run: .\setup.cmd
 
       - name: Package for Unreal Engine
         run: python package.py "$env:UE_${{ matrix.version.major }}_${{ matrix.version.minor }}" "$env:RUNNER_TEMP"
