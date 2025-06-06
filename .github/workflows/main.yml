@@ -3,19 +3,18 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [ master, github-workflow-test ]
-    tags:
-      - 'v*.*.*'
+    branches: [master, github-workflow-test]
+    tags: ['v*.*.*']
 
 jobs:
   create-release:
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
       - name: Create Release
         id: create_release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: actions/create-release@v1
         with:
           draft: false
@@ -23,123 +22,67 @@ jobs:
           release_name: ${{ github.ref }}
           tag_name: ${{ github.ref }}
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build:
-    runs-on: windows-2022
-    needs: create-release
+    runs-on: windows-latest
+    needs: ${{ startsWith(github.ref, 'refs/tags/') && 'create-release' || '' }}
     strategy:
+      fail-fast: false
       matrix:
-        version:
-          - {major: 5, minor: 3, branch: "5.3"}
-          - {major: 5, minor: 4, branch: "5.4"}
-          - {major: 5, minor: 5, branch: "5.5"}
-      # Limit parallel jobs to avoid resource exhaustion
-      max-parallel: 1
+        version: ${{ contains(github.ref, 'refs/tags/') && fromJSON('[[4,24],[4,25],[4,26],[4,27],[5,0],[5,1],[5,2],[5,3],[5,4],[5,5]]') || [[5,5]] }}
     steps:
-      - name: Checkout Plugin
+      - name: Checkout plugin
         uses: actions/checkout@v4
-        with:
-          path: UnrealLibretro
 
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v1.1
-
-      - name: Configure Git
+      - name: Configure Git for UE clone
         run: |
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git config --global user.name "github-actions[bot]"
+          git config --global user.name "CI Builder"
+          git config --global user.email "ci@example.com"
+          git config --global credential.helper store
+          echo "https://x-access-token:${{ secrets.UE_ACCESS_TOKEN }}@github.com" > "$HOME/.git-credentials"
 
-      - name: Cache Unreal Engine
-        id: cache-ue
-        uses: actions/cache@v3
-        with:
-          path: UnrealEngine
-          key: ue-${{ matrix.version.major }}.${{ matrix.version.minor }}-${{ runner.os }}-${{ hashFiles('**/Setup.bat', '**/GenerateProjectFiles.bat') }}
-          restore-keys: |
-            ue-${{ matrix.version.major }}.${{ matrix.version.minor }}-${{ runner.os }}-
-
-      - name: Checkout Unreal Engine
-        if: steps.cache-ue.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
-        with:
-          repository: EpicGames/UnrealEngine
-          ref: ${{ matrix.version.branch }}-release
-          path: UnrealEngine
-          token: ${{ secrets.GITHUB_TOKEN }}
-          submodules: false
-
-      - name: Setup Unreal Engine Dependencies
-        if: steps.cache-ue.outputs.cache-hit != 'true'
-        working-directory: UnrealEngine
+      - name: Clone Unreal Engine
         run: |
-          # Run setup script with minimal options to save space/time
-          .\Setup.bat --exclude=Mac --exclude=macOS --exclude=Linux --exclude=linux-x64 --exclude=Android --exclude=IOS --exclude=TVOS --exclude=HoloLens --exclude=PS4 --exclude=PS5 --exclude=XboxOne --exclude=Switch --exclude=Documentation --exclude=Samples --exclude=Templates --exclude=FeaturePacks --exclude=Debug --exclude=DebugGame
-        shell: cmd
+          git clone --depth 1 --no-checkout --filter=blob:none "https://github.com/EpicGames/UnrealEngine.git" UE
+          cd UE
+          git checkout ${{ matrix.version[0] }}.${{ matrix.version[1] }}
 
-      - name: Generate Project Files
-        if: steps.cache-ue.outputs.cache-hit != 'true'
-        working-directory: UnrealEngine
-        run: .\GenerateProjectFiles.bat
-        shell: cmd
-
-      - name: Build Unreal Engine (Minimal)
-        if: steps.cache-ue.outputs.cache-hit != 'true'
-        working-directory: UnrealEngine
+      - name: Build Unreal Engine
         run: |
-          # Build only essential tools needed for plugin packaging
-          msbuild Engine\Source\Programs\UnrealBuildTool\UnrealBuildTool.csproj /p:Configuration=Development /p:Platform=AnyCPU
-          msbuild Engine\Source\Programs\AutomationTool\AutomationTool.csproj /p:Configuration=Development /p:Platform=AnyCPU
-        shell: pwsh
-
-      - name: Free Disk Space
-        run: |
-          # Clean up unnecessary files to free space
-          if (Test-Path "UnrealEngine\Engine\Binaries\ThirdParty") { 
-            Remove-Item -Recurse -Force "UnrealEngine\Engine\Binaries\ThirdParty" -ErrorAction SilentlyContinue
-          }
-          if (Test-Path "UnrealEngine\Engine\Documentation") {
-            Remove-Item -Recurse -Force "UnrealEngine\Engine\Documentation" -ErrorAction SilentlyContinue
-          }
-          if (Test-Path "UnrealEngine\Engine\Extras") {
-            Remove-Item -Recurse -Force "UnrealEngine\Engine\Extras" -ErrorAction SilentlyContinue
-          }
-        shell: pwsh
-
-      - name: Build Plugin
-        run: |
-          $enginePath = "${{ github.workspace }}\UnrealEngine"
-          $pluginPath = "${{ github.workspace }}\UnrealLibretro"
-          $outputPath = "${{ runner.temp }}\UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}"
+          cd UE
+          .\Setup.bat
+          .\GenerateProjectFiles.bat -waitmutex
           
-          # Create output directory
-          New-Item -ItemType Directory -Force -Path $outputPath
-          
-          # Use RunUAT to package the plugin
-          & "$enginePath\Engine\Build\BatchFiles\RunUAT.bat" BuildPlugin -Plugin="$pluginPath\UnrealLibretro.uplugin" -Package="$outputPath" -Rocket -TargetPlatforms=Win64
-        shell: pwsh
+          $solution = if (${{ matrix.version[0] }} -ge 5) { "UE5.sln" } else { "UE4.sln" }
+          $target = if (${{ matrix.version[0] }} -ge 5) { "UnrealEditor" } else { "UE4Editor" }
+          msbuild $solution -t:$target -p:Configuration=Development -p:Platform=Win64 -m:2 -p:BuildInParallel=true
 
-      - name: Create Archive
+      - name: Set up UE environment
         run: |
-          $outputPath = "${{ runner.temp }}\UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}"
-          Compress-Archive -Path $outputPath -DestinationPath "$outputPath.zip"
-        shell: pwsh
+          $uePath = (Get-Item -Path ".\UE").FullName
+          $varName = "UE_${{ matrix.version[0] }}_${{ matrix.version[1] }}"
+          echo "$varName=$uePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Upload Build-Artifact
+      - name: Build plugin
+        run: |
+          python package.py "$env:UE_${{ matrix.version[0] }}_${{ matrix.version[1] }}" "$env:RUNNER_TEMP"
+
+      - name: Upload Artifact
         if: startsWith(github.ref, 'refs/heads/')
         uses: actions/upload-artifact@v4
         with:
-          name: UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}
-          path: ${{ runner.temp }}/UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}
+          name: UnrealLibretro-${{ matrix.version[0] }}.${{ matrix.version[1] }}
+          path: ${{ runner.temp }}/UnrealLibretro-${{ matrix.version[0] }}.${{ matrix.version[1] }}.zip
           if-no-files-found: error
 
       - name: Upload Release Asset
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-release-asset@v1
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ runner.temp }}/UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}.zip
-          asset_name: UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}.zip
+          asset_path: ${{ runner.temp }}/UnrealLibretro-${{ matrix.version[0] }}.${{ matrix.version[1] }}.zip
+          asset_name: UnrealLibretro-${{ matrix.version[0] }}.${{ matrix.version[1] }}.zip
           asset_content_type: application/zip
