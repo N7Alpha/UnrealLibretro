@@ -15,45 +15,103 @@ jobs:
     steps:
       - name: Create Release
         id: create_release
-        if: startsWith(github.ref, 'refs/tags/') # Only release when a tag is pushed
+        if: startsWith(github.ref, 'refs/tags/')
         uses: actions/create-release@v1
         with:
           draft: false
           prerelease: false
           release_name: ${{ github.ref }}
           tag_name: ${{ github.ref }}
-#          body: This is an automated release for ${{ github.ref }}`.
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
   build:
-    runs-on: self-hosted
+    runs-on: windows-2019
     needs: create-release
     strategy:
       matrix:
         version:
-          - {major: 4, minor: 24}
-          - {major: 4, minor: 25}
-          - {major: 4, minor: 26}
-          - {major: 4, minor: 27}
-          - {major: 5, minor: 0}
-          - {major: 5, minor: 1}
-          - {major: 5, minor: 2}
-          - {major: 5, minor: 3}
-          - {major: 5, minor: 4}
-          - {major: 5, minor: 5}
+          - {major: 4, minor: 24, patch: 3}
+          - {major: 4, minor: 25, patch: 4}
+          - {major: 4, minor: 26, patch: 2}
+          - {major: 4, minor: 27, patch: 2}
+          - {major: 5, minor: 0, patch: 3}
+          - {major: 5, minor: 1, patch: 1}
+          - {major: 5, minor: 2, patch: 1}
+          - {major: 5, minor: 3, patch: 2}
+          - {major: 5, minor: 4, patch: 2}
+          - {major: 5, minor: 5, patch: 0}
 
     steps:
       - uses: actions/checkout@v4
 
+      # Cache engine source to speed up builds
+      - name: Cache Unreal Engine Source
+        id: cache-ue-source
+        uses: actions/cache@v3
+        with:
+          path: C:/UnrealEngine-${{ matrix.version.major }}.${{ matrix.version.minor }}.${{ matrix.version.patch }}
+          key: ue-source-${{ matrix.version.major }}.${{ matrix.version.minor }}.${{ matrix.version.patch }}-${{ runner.os }}-v2
+
+      # Clone minimal engine source if not cached
+      - name: Clone Unreal Engine Source
+        if: steps.cache-ue-source.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ matrix.version.major }}.${{ matrix.version.minor }}.${{ matrix.version.patch }}-release"
+          Write-Host "Cloning Unreal Engine tag: $tag"
+          
+          # Configure git to use the token for authentication
+          git config --global url."https://x-access-token:${env:GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          
+          # Clone with the authenticated URL
+          git clone --depth 1 --branch $tag `
+            https://github.com/EpicGames/UnrealEngine.git `
+            C:/UnrealEngine-${{ matrix.version.major }}.${{ matrix.version.minor }}.${{ matrix.version.patch }}
+          
+          # Check if clone was successful
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to clone Unreal Engine. Make sure your GitHub account is linked to Epic Games and you have accepted the UE EULA at https://www.unrealengine.com/en-US/ue4-on-github"
+            exit 1
+          }
+
+      # Setup dependencies
+      - name: Setup Engine Dependencies
+        if: steps.cache-ue-source.outputs.cache-hit != 'true'
+        working-directory: C:/UnrealEngine-${{ matrix.version.major }}.${{ matrix.version.minor }}.${{ matrix.version.patch }}
+        run: |
+          Write-Host "Running Setup.bat..."
+          ./Setup.bat --force
+          
+          Write-Host "Generating project files..."
+          ./GenerateProjectFiles.bat
+
+      # Build minimal engine tools needed for plugin packaging
+      - name: Build Required Engine Tools
+        working-directory: C:/UnrealEngine-${{ matrix.version.major }}.${{ matrix.version.minor }}.${{ matrix.version.patch }}
+        run: |
+          # Build only the tools we need for plugin packaging
+          & "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\MSBuild\Current\Bin\MSBuild.exe" `
+            Engine\Source\Programs\UnrealBuildTool\UnrealBuildTool.csproj `
+            /p:Configuration=Development /p:Platform=AnyCPU
+          
+          & "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\MSBuild\Current\Bin\MSBuild.exe" `
+            Engine\Source\Programs\AutomationTool\AutomationTool.csproj `
+            /p:Configuration=Development /p:Platform=AnyCPU /p:AutomationToolProjectOnly=true
+
       - name: Run Setup Script
-        run: C:\msys64\msys2_shell.cmd -defterm -here -no-start -mingw64 -shell bash setup.sh
+        run: |
+          ./setup.cmd
 
       - name: Package for Unreal Engine
-        run: python package.py "$env:UE_${{ matrix.version.major }}_${{ matrix.version.minor }}" "$env:RUNNER_TEMP"
+        env:
+          UE_PATH: C:/UnrealEngine-${{ matrix.version.major }}.${{ matrix.version.minor }}.${{ matrix.version.patch }}
+        run: |
+          python package.py "$env:UE_PATH" "$env:RUNNER_TEMP"
 
       - name: Upload Build-Artifact
-        if: startsWith(github.ref, 'refs/heads/') # Upload artifacts when commits (not tags) are pushed
+        if: startsWith(github.ref, 'refs/heads/')
         uses: actions/upload-artifact@v4
         with:
           name: UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}
@@ -62,12 +120,12 @@ jobs:
 
       - name: Upload Release Asset
         id: upload-release-asset 
-        if: startsWith(github.ref, 'refs/tags/') # Only release when a tag is pushed
+        if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }} # Reference the output from create-release job
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
           asset_path: ${{ runner.temp }}/UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}.zip
           asset_name: UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}.zip
           asset_content_type: application/zip
