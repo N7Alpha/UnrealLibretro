@@ -56,7 +56,7 @@ jobs:
         repository: ${{ env.ENGINE_REPO }}
         ref: ${{ matrix.ue_version }}
         # The PAT stored in the secret must be able to see the EpicGames org
-        token: ${{ secrets.EPIC_GH_TOKEN }}
+        token: ${{ secrets.GITHUB_TOKEN }}
         lfs: true
         submodules: recursive
         fetch-depth: 1
