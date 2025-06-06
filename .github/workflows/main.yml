@@ -4,7 +4,7 @@ name: Build & Release UnrealLibretro
 on:
   workflow_dispatch:
   push:
-    branches: [ master ]
+    branches: [ master, github-workflow-test ]
     tags:
       - 'v*.*.*'
 
