@@ -1,152 +1,140 @@
 # .github/workflows/ci.yml
-
-name: CI
+name: Build & Release UnrealLibretro
 
 on:
   workflow_dispatch:
   push:
-    branches: [ master, github-workflow-test ]
+    branches: [ master ]
     tags:
       - 'v*.*.*'
 
-# Cancel in-progress runs on new pushes to the same branch
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+################################################################################
+# Global settings
+################################################################################
+env:
+  PLUGIN_NAME: UnrealLibretro
+  ENGINE_REPO: EpicGames/UnrealEngine       # do not fork – keep the original
+  CACHE_VERSION: v1                        # bump to invalidate all caches
 
+permissions:
+  contents: write          # needed for create-release / upload-asset
+  id-token: write          # required for OIDC token-exchange (built-in auth)
+
+################################################################################
+# Build & package job
+################################################################################
 jobs:
-  create-release:
-    # This job only runs when a new tag is pushed
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-    steps:
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        with:
-          draft: false
-          prerelease: false
-          release_name: Release ${{ github.ref_name }} # e.g., "Release v1.2.3"
-          tag_name: ${{ github.ref_name }}
-          # You can use a file for the body, e.g., body_path: CHANGELOG.md
-          # body: "Automated release for ${{ github.ref_name }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-plugin:
-    runs-on: ubuntu-latest
-    # If this is a tag push, wait for the release to be created first
-    needs: [create-release]
-    # Use the full 6-hour timeout for jobs
-    timeout-minutes: 360
+  build:
+    runs-on: windows-2022                     # public Windows runner
+    timeout-minutes: 360                     # GH hosted limit
     strategy:
-      fail-fast: false # Don't cancel other jobs in the matrix if one fails
       matrix:
-        version:
-          - {major: 4, minor: 27}
-          - {major: 5, minor: 0}
-          - {major: 5, minor: 1}
-          - {major: 5, minor: 2}
-          - {major: 5, minor: 3}
-          - {major: 5, minor: 4}
-          # Note: 5.5 might not be a valid branch. Verify branch names in the UE repo.
-
-    env:
-      # !! IMPORTANT !!
-      # Assumes your plugin's root folder is named "UnrealLibretro" and the .uplugin file is "UnrealLibretro.uplugin"
-      # Change this to your actual plugin name if it's different.
-      PLUGIN_NAME: UnrealLibretro
+        ue_version: [ "4.27", "5.1", "5.2", "5.3" ]  # extend as needed
 
     steps:
-      - name: Configure Git for private repository access
-        env:
-          # Use the PAT you created and stored as a secret
-          GITHUB_PAT: ${{ secrets.UE_PAT }}
-        run: |
-          git config --global url."https://x-access-token:${GITHUB_PAT}@github.com/".insteadOf "https://github.com/"
-          # Disable git prompt for credentials
-          git config --global credential.helper store
+    #---------------------------------------------------------------------------
+    # 0. Get plugin source
+    #---------------------------------------------------------------------------
+    - name: Checkout plugin
+      uses: actions/checkout@v4
 
-      - name: Checkout Plugin Source Code
-        uses: actions/checkout@v4
-        with:
-          # Checkout source code into a sub-directory to keep the root clean
-          path: ${{ env.PLUGIN_NAME }}
+    #---------------------------------------------------------------------------
+    # 1. Pull (or restore) the Engine source
+    #    We cache the *built* engine folder so that subsequent runs are cheap.
+    #---------------------------------------------------------------------------
+    - name: Restore cached Engine
+      id: cache-engine
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.workspace }}/UE_${{ matrix.ue_version }}
+        key: UE${{ matrix.ue_version }}-${{ runner.os }}-${{ env.CACHE_VERSION }}
 
-      - name: Cache Unreal Engine
-        id: cache-ue
-        uses: actions/cache@v4
-        with:
-          # The path to cache is the entire cloned UE directory
-          path: UnrealEngine
-          # The key is unique to the OS and engine version.
-          # The first time this runs, it will be a "cache miss". After a successful run,
-          # subsequent runs for the same UE version will be a "cache hit" and restore the engine instantly.
-          key: ue-${{ runner.os }}-${{ matrix.version.major }}.${{ matrix.version.minor }}
+    - name: Checkout Unreal Engine
+      if: steps.cache-engine.outputs.cache-hit != 'true'
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ env.ENGINE_REPO }}
+        ref: ${{ matrix.ue_version }}
+        # The PAT stored in the secret must be able to see the EpicGames org
+        token: ${{ secrets.EPIC_GH_TOKEN }}
+        lfs: true
+        submodules: recursive
+        fetch-depth: 1
+        path: UE_${{ matrix.ue_version }}
 
-      - name: Build Unreal Engine
-        # This step only runs on a cache miss
-        if: steps.cache-ue.outputs.cache-hit != 'true'
-        run: |
-          UE_VERSION_BRANCH="${{ matrix.version.major }}.${{ matrix.version.minor }}"
-          
-          echo "Cloning Unreal Engine branch ${UE_VERSION_BRANCH}..."
-          git clone --depth 1 --branch ${UE_VERSION_BRANCH} https://github.com/EpicGames/UnrealEngine.git UnrealEngine
-          
-          cd UnrealEngine
+    #---------------------------------------------------------------------------
+    # 2. Run the normal Unreal Engine bootstrap the *first* time
+    #---------------------------------------------------------------------------
+    - name: Run Setup.bat (dependencies download)
+      if: steps.cache-engine.outputs.cache-hit != 'true'
+      working-directory: UE_${{ matrix.ue_version }}
+      shell: powershell
+      run: .\Setup.bat --include-optional
 
-          echo "Running Setup.sh..."
-          ./Setup.sh
+    - name: GenerateProjectFiles
+      if: steps.cache-engine.outputs.cache-hit != 'true'
+      working-directory: UE_${{ matrix.ue_version }}
+      shell: powershell
+      run: .\GenerateProjectFiles.bat -game -engine
 
-          echo "Generating project files..."
-          ./GenerateProjectFiles.sh
-          
-          echo "Building UnrealEditor..."
-          make UnrealEditor-Linux-Shipping
+    #---------------------------------------------------------------------------
+    # 3. Build *only what is strictly necessary* for building plugins
+    #    We compile the "ShaderCompileWorker" and a stub editor target once.
+    #---------------------------------------------------------------------------
+    - name: Minimal Engine build
+      if: steps.cache-engine.outputs.cache-hit != 'true'
+      working-directory: UE_${{ matrix.ue_version }}
+      shell: powershell
+      run: >
+        .\Engine\Build\BatchFiles\Build.bat
+        ShaderCompileWorker Win64 Development ^
+        -project="$(pwd)\Engine\Engine.uproject"
 
-      - name: Package Plugin
-        run: |
-          UE_ROOT=$PWD/UnrealEngine
-          PLUGIN_SOURCE_DIR=$PWD/${{ env.PLUGIN_NAME }}
-          
-          # The standard location for marketplace plugins
-          PLUGIN_INSTALL_DIR="$UE_ROOT/Engine/Plugins/Marketplace/${{ env.PLUGIN_NAME }}"
-          PLUGIN_UPLUGIN_FILE="$PLUGIN_INSTALL_DIR/${{ env.PLUGIN_NAME }}.uplugin"
-          
-          # This is where the packaged plugin will be placed
-          PACKAGE_OUTPUT_DIR="${{ runner.temp }}/packaged-plugin"
-          
-          echo "Installing plugin to $PLUGIN_INSTALL_DIR"
-          mkdir -p "$PLUGIN_INSTALL_DIR"
-          rsync -a --delete "$PLUGIN_SOURCE_DIR/" "$PLUGIN_INSTALL_DIR/"
-          
-          echo "Packaging plugin using RunUAT..."
-          $UE_ROOT/Engine/Build/BatchFiles/RunUAT.sh BuildPlugin -Plugin="$PLUGIN_UPLUGIN_FILE" -Package="$PACKAGE_OUTPUT_DIR" -CreateSubFolder
+    #---------------------------------------------------------------------------
+    # 4. Build and package the plugin
+    #---------------------------------------------------------------------------
+    - name: Build plugin (UAT BuildPlugin)
+      working-directory: UE_${{ matrix.ue_version }}
+      shell: powershell
+      run: >
+        .\Engine\Build\BatchFiles\RunUAT.bat BuildPlugin
+        -Plugin="$env:GITHUB_WORKSPACE\${{ env.PLUGIN_NAME }}.uplugin"
+        -Package="$env:RUNNER_TEMP\${{ env.PLUGIN_NAME }}-${{ matrix.ue_version }}"
+        -TargetPlatforms=Win64
+        -Rocket -Clean
 
-      - name: Zip Packaged Plugin
-        run: |
-          cd ${{ runner.temp }}/packaged-plugin
-          zip -r ../UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}.zip .
+    #---------------------------------------------------------------------------
+    # 5. Upload artefact when building branches (CI)
+    #---------------------------------------------------------------------------
+    - name: Upload build artefact
+      if: startsWith(github.ref, 'refs/heads/')
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.PLUGIN_NAME }}-${{ matrix.ue_version }}
+        path: ${{ runner.temp }}/${{ env.PLUGIN_NAME }}-${{ matrix.ue_version }}
 
-      - name: Upload Build Artifact
-        # This runs for all pushes (tags and branches) for easy download and inspection
-        uses: actions/upload-artifact@v4
-        with:
-          name: UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}
-          path: ${{ runner.temp }}/UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}.zip
-          if-no-files-found: error
+    #---------------------------------------------------------------------------
+    # 6. Release section (only when a tag vX.Y.Z is pushed)
+    #---------------------------------------------------------------------------
+    - name: Create GitHub release
+      if: startsWith(github.ref, 'refs/tags/')
+      id: create_release
+      uses: actions/create-release@v1
+      with:
+        tag_name: ${{ github.ref_name }}
+        release_name: ${{ github.ref_name }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
 
-      - name: Upload Release Asset
-        id: upload-release-asset
-        # This step only runs when a tag is pushed
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ runner.temp }}/UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}.zip
-          asset_name: UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}.zip
-          asset_content_type: application/zip
+    - name: Upload release asset
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ${{ runner.temp }}\${{ env.PLUGIN_NAME }}-${{ matrix.ue_version }}.zip
+        asset_name: ${{ env.PLUGIN_NAME }}-${{ matrix.ue_version }}.zip
+        asset_content_type: application/zip
