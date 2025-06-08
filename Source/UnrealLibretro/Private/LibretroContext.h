@@ -8,6 +8,7 @@
 THIRD_PARTY_INCLUDES_START
 #include "sam2.h"
 THIRD_PARTY_INCLUDES_END
+#include "Runtime/Launch/Resources/Version.h"
 
 // Libretro API
 #include "libretro/libretro.h"
@@ -116,7 +117,7 @@ public:
      * @brief analogous to new except asynchronous
      * @post The LoadedCallback is always called
      */
-    static FLibretroContext* Launch(class ULibretroCoreInstance* LibretroCoreInstance, FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TUniqueFunction<void(FLibretroContext*, libretro_api_t&)> LoadedCallback);
+    static FLibretroContext* Launch(class ULibretroCoreInstance* LibretroCoreInstance, FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundEmitter, TUniqueFunction<void(FLibretroContext*, libretro_api_t&, const FString&)> LoadedCallback);
     
     /**
      * @brief analogous to delete except asynchronous
@@ -209,7 +210,11 @@ protected:
     struct
     {
         // These are all ThreadSafe shared pointers that are the main bridge between and unreal
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 1
+        FTextureRHIRef TextureRHI;
+#else
         FTexture2DRHIRef TextureRHI;
+#endif
         TSharedPtr<TCircularQueue<int32>, ESPMode::ThreadSafe> AudioQueue;
         
         struct
@@ -292,10 +297,11 @@ protected:
     ENUM_GL_WIN32_INTEROP_PROCEDURES(DEFINE_GL_PROCEDURES)
     bool gl_win32_interop_supported_by_driver{false};
     
-    void create_window();
-    void video_configure(const struct retro_game_geometry* geom);
+    FString ErrorMessage{};
+    int create_window();
+    int video_configure(const struct retro_game_geometry* geom);
 
-    void load(const char* sofile);
-    void load_game(const char* filename);
     int SwitchOpenGLContext(int context_type);
+    int load(const char* sofile);
+    int load_game(const char* filename);
 };

@@ -7,7 +7,13 @@ public class UnrealLibretroEditor : ModuleRules
     public UnrealLibretroEditor(ReadOnlyTargetRules Target) : base(Target)
     {
         PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
+        
+        // Handle bEnforceIWYU deprecation in UE 5.2+
+        #if UE_5_2_OR_LATER
+        IWYUSupport = IWYUSupport.Full;
+        #else
         bEnforceIWYU = true;
+        #endif
 
         PrivateIncludePaths.AddRange(
         new string[]

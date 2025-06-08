@@ -27,7 +27,14 @@
 #include "HAL/FileManager.h"
 #include "HAL/PlatformTime.h"  // For FPlatformTime
 #include "Misc/FileHelper.h"
+#include "Templates/UnrealTemplate.h"
+#if ENGINE_MAJOR_VERSION * 100 + ENGINE_MINOR_VERSION >= 501
+#include "Styling/AppStyle.h"
+typedef FAppStyle FStyleAlias;
+#else
 #include "EditorStyleSet.h"
+typedef FEditorStyle FStyleAlias;
+#endif
 #include "ISettingsModule.h"
 
 TSharedRef<IDetailCustomization> FLibretroCoreInstanceDetails::MakeInstance()
@@ -66,6 +73,7 @@ void FLibretroCoreInstanceDetails::RefreshCoreListViews()
 void FLibretroCoreInstanceDetails::StartBuildbotBatchDownload(TSharedPtr<FText> CoreIdentifierText, ESelectInfo::Type)
 {
     if (!CoreIdentifierText.IsValid()) return;
+    auto WeakCoreDetails = TWeakPtr<FLibretroCoreInstanceDetails>(TSharedRef<FLibretroCoreInstanceDetails>(AsShared(), this));
 
     FString CoreIdentifier = CoreIdentifierText->ToString();
     auto& CoreListViewDataSource = FModuleManager::GetModuleChecked<FUnrealLibretroEditorModule>("UnrealLibretroEditor").CoreListViewDataSource;
@@ -82,14 +90,14 @@ void FLibretroCoreInstanceDetails::StartBuildbotBatchDownload(TSharedPtr<FText> 
         BuildbotCoreDownloadRequest->SetURL(CoreLibMetadata[PlatformIndex].BuildbotPath + CoreBuildbotFilename);
 
         BuildbotCoreDownloadRequest->OnProcessRequestComplete().BindLambda(
-            [this, PlatformIndex, CoreIdentifier](FHttpRequestPtr HttpRequest, FHttpResponsePtr HttpResponse, bool bSucceeded)
+            [WeakCoreDetails, PlatformIndex, CoreIdentifier](FHttpRequestPtr HttpRequest, FHttpResponsePtr HttpResponse, bool bSucceeded)
             {
                 if (bSucceeded)
                 {
                     uint8* UnzippedData;
                     size_t UnzippedDataSize;
                     const char* ErrorString = FUnrealLibretroEditorModule::UnzipArchive(HttpResponse->GetContent(),
-                        &UnzippedData, &UnzippedDataSize);
+                        &UnzippedData, &UnzippedDataSize); // @todo This can block the gamethread for really big cores
 
                     if (ErrorString)
                     {
@@ -114,7 +122,11 @@ void FLibretroCoreInstanceDetails::StartBuildbotBatchDownload(TSharedPtr<FText> 
 
                         if (--CoreListViewDataSource[CoreIdentifier].DownloadsPending == 0)
                         {
-                            RefreshCoreListViews();
+                            auto CoreDetails = WeakCoreDetails.Pin();
+                            if (CoreDetails.IsValid())
+                            {
+                                CoreDetails->RefreshCoreListViews();
+                            }
                         }
                     }
                 }
@@ -156,7 +168,10 @@ static bool core_environment(unsigned cmd, void* data)
 void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 {
     check(IsInGameThread()); // We access some static data, but as long as we're single threaded theres no data race here
-    
+
+    // This is how you get a weak pointer to this... In newer Unreal versions you can call AsSharedSubobject(this) if you want a cleaner look
+    auto WeakCoreDetails = TWeakPtr<FLibretroCoreInstanceDetails>(TSharedRef<FLibretroCoreInstanceDetails>(AsShared(), this));
+
     // This represents a hook to the Libretro Panel and let's us customize the UI elements within it
     IDetailCategoryBuilder& LibretroCategory = DetailBuilder.EditCategory("Libretro");
 
@@ -285,34 +300,38 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
             ]
             .ValueContent()
             [
-                SNew(SComboButton).IsEnabled_Lambda([this]() { return CoreLibraryName == SelectedLibraryName;  })
-                .OnGetMenuContent_Lambda([this, Port]() 
+                SNew(SComboButton).IsEnabled_Lambda([this, WeakCoreDetails]() { return CoreLibraryName == SelectedLibraryName;  })
+                .OnGetMenuContent_Lambda([this, WeakCoreDetails, Port]()
                     {
                         FMenuBuilder MenuBuilder(true, nullptr);
 
                         for (int32 j = 0; j < ControllerDescriptions[Port].Num(); j++)
                         {
-                            FUIAction ItemAction(FExecuteAction::CreateLambda([this, RowPort = Port, j] 
+                            FUIAction ItemAction(FExecuteAction::CreateLambda([WeakCoreDetails, RowPort = Port, j] 
                                 {
+                                    auto CoreDetails = WeakCoreDetails.Pin();
+
                                     // Early return if we're not actually changing selected controllers for a port
-                                    if (   !LibretroCoreInstance.IsValid()
-                                        || !LibretroCoreInstance->EditorPresetControllers.Contains(SelectedLibraryName)
-                                        && ControllerDescriptions[RowPort][j].ID == RETRO_DEVICE_DEFAULT
-                                        || LibretroCoreInstance->EditorPresetControllers.Contains(SelectedLibraryName)
-                                        && ControllerDescriptions[RowPort][j].ID == LibretroCoreInstance->EditorPresetControllers[SelectedLibraryName][RowPort].ID)
+                                    if (   !CoreDetails.IsValid()
+                                        || !CoreDetails->LibretroCoreInstance.IsValid()
+                                        || !CoreDetails->LibretroCoreInstance->EditorPresetControllers.Contains(CoreDetails->SelectedLibraryName)
+                                        && CoreDetails->ControllerDescriptions[RowPort][j].ID == RETRO_DEVICE_DEFAULT
+                                        || CoreDetails->LibretroCoreInstance->EditorPresetControllers.Contains(CoreDetails->SelectedLibraryName)
+                                        && CoreDetails->ControllerDescriptions[RowPort][j].ID == CoreDetails->LibretroCoreInstance->EditorPresetControllers[CoreDetails->SelectedLibraryName][RowPort].ID)
                                     {
                                         return;
                                     }
 
-                                    FLibretroControllerDescriptions &EditorPresetControllersForCore = LibretroCoreInstance->EditorPresetControllers.FindOrAdd(SelectedLibraryName);
+                                    FLibretroControllerDescriptions &EditorPresetControllersForCore = 
+                                        CoreDetails->LibretroCoreInstance->EditorPresetControllers.FindOrAdd(CoreDetails->SelectedLibraryName);
 
-                                    EditorPresetControllersForCore[RowPort] = ControllerDescriptions[RowPort][j];
+                                    EditorPresetControllersForCore[RowPort] = CoreDetails->ControllerDescriptions[RowPort][j];
 
                                     // Copy over whatever special names the Core uses for the default
                                     for (int Port = 0; Port < PortCount; Port++)
                                     {
                                         if (EditorPresetControllersForCore[Port].ID != RETRO_DEVICE_DEFAULT) continue;
-                                        for (auto& ControllerDescription : ControllerDescriptions[Port])
+                                        for (auto& ControllerDescription : CoreDetails->ControllerDescriptions[Port])
                                         {
                                             if (ControllerDescription.ID == RETRO_DEVICE_DEFAULT)
                                             {
@@ -321,9 +340,8 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                                         }
                                     }
 
-                                    RemoveEditorPresetControllersForSelectedCoreIfAllAreDefault();
-
-                                    MarkEditorNeedsSave();
+                                    CoreDetails->RemoveEditorPresetControllersForSelectedCoreIfAllAreDefault();
+                                    CoreDetails->MarkEditorNeedsSave();
                                 }));
                             MenuBuilder.AddMenuEntry(FText::FromString(ControllerDescriptions[Port][j].Description), TAttribute<FText>(), FSlateIcon(), ItemAction);
                         }
@@ -426,31 +444,32 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                 [
                     SNew(SComboButton)
                     // The following is fired when the user clicks an option to modify it this callback fills the drop down with options
-                    .OnGetMenuContent_Lambda([&Option, this]()
+                    .OnGetMenuContent_Lambda([&Option, WeakCoreDetails, this]()
                         {
                             FMenuBuilder MenuBuilder(true, nullptr);
 
                             for (int32 i = 0; i < Option.Values.Num(); i++)
                             {
                                 // This is fired when the user clicks one of the possible options from the drop down
-                                FUIAction ItemAction(FExecuteAction::CreateLambda([&Option, i, this] 
+                                FUIAction ItemAction(FExecuteAction::CreateLambda([WeakCoreDetails, &Option, i] 
                                     {
-                                        if (this->LibretroCoreInstance.IsValid())
+                                        auto CoreDetails = WeakCoreDetails.Pin();
+                                        if (CoreDetails.IsValid() && CoreDetails->LibretroCoreInstance.IsValid())
                                         {
                                             // If default is selected remove the key from core options since no key is implicit default
                                             if (i == FLibretroOptionDescription::DefaultOptionIndex)
                                             {
-                                                if (this->LibretroCoreInstance->EditorPresetOptions.Contains(Option.Key))
+                                                if (CoreDetails->LibretroCoreInstance->EditorPresetOptions.Contains(Option.Key))
                                                 {
-                                                    this->LibretroCoreInstance->EditorPresetOptions.Remove(Option.Key);
-                                                    this->MarkEditorNeedsSave();
+                                                    CoreDetails->LibretroCoreInstance->EditorPresetOptions.Remove(Option.Key);
+                                                    CoreDetails->MarkEditorNeedsSave();
                                                 }
                                             }
                                             // Otherwise add the selected option
                                             else
                                             {
-                                                this->LibretroCoreInstance->EditorPresetOptions.Add(Option.Key) = Option.Values[i];
-                                                this->MarkEditorNeedsSave();
+                                                CoreDetails->LibretroCoreInstance->EditorPresetOptions.Add(Option.Key) = Option.Values[i];
+                                                CoreDetails->MarkEditorNeedsSave();
                                             }
                                         }
                                     }));
@@ -468,21 +487,22 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                                 return IsOptionOverriddenByGlobalSetting(Option.Key, LibretroCoreInstance) ?
                                     FSlateColor::UseSubduedForeground() : FSlateColor::UseForeground();
                             })
-                        .Text_Lambda([&Option, this]()
+                        .Text_Lambda([WeakCoreDetails, &Option]()
                             {
-                                if (!LibretroCoreInstance.IsValid())
+                                auto CoreDetails = WeakCoreDetails.Pin();
+                                if (CoreDetails.IsValid() && CoreDetails->LibretroCoreInstance.IsValid())
                                 {
-                                    return FText::FromString(TEXT("Error"));
+                                    FString* SelectedOptionString = CoreDetails->LibretroCoreInstance->EditorPresetOptions.Find(Option.Key);
+                                    if (SelectedOptionString == nullptr)
+                                    {
+                                        return FText::FromString(Option.Values[FLibretroOptionDescription::DefaultOptionIndex]);
+                                    }
+                                    else
+                                    {
+                                        return FText::FromString(*SelectedOptionString);
+                                    }
                                 }
-                                else if (LibretroCoreInstance->EditorPresetOptions.Contains(Option.Key))
-                                {
-                                    // If we we have set a non-default option
-                                    return FText::FromString(LibretroCoreInstance->EditorPresetOptions[Option.Key]);
-                                }
-                                else
-                                {
-                                    return FText::FromString(Option.Values[FLibretroOptionDescription::DefaultOptionIndex]);
-                                }
+                                return FText::FromString(TEXT("Error"));
                             })
                         .Font(IDetailLayoutBuilder::GetDetailFont())
                     ]
@@ -493,7 +513,7 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                 .VAlign(VAlign_Center)
                     [
                         SNew(SButton)
-                        .ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+                        .ButtonStyle(FStyleAlias::Get(), "HoverHintOnly")
                         .Visibility_Lambda([this, &Option, IsOptionOverriddenByGlobalSetting]()
                         {
                             return IsOptionOverriddenByGlobalSetting(Option.Key, LibretroCoreInstance) ?
@@ -519,7 +539,7 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                         })
                         [
                             SNew(SImage)
-                            .Image(FEditorStyle::GetBrush("SceneOutliner.World"))
+                            .Image(FStyleAlias::GetBrush("SceneOutliner.World"))
                         ]
                     ]
                 ];
@@ -533,12 +553,13 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
         .NameContent()
         [
             SNew(STextBlock)
-            .Text_Lambda([this]()
+            .Text_Lambda([WeakCoreDetails]()
                 {
                     FString CorePath;
-                    verify(FPropertyAccess::Result::Success == CorePathProperty->GetValueAsFormattedString(CorePath));
-
-                    if (FUnrealLibretroModule::IsCoreName(CorePath))
+                    
+                    if (   WeakCoreDetails.IsValid()
+                        && FPropertyAccess::Result::Success == WeakCoreDetails.Pin()->CorePathProperty->GetValueAsFormattedString(CorePath)
+                        && FUnrealLibretroModule::IsCoreName(CorePath))
                     {
                         return FText::FromString(TEXT("Core Name"));
                     }
@@ -553,8 +574,10 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
         [  
             SAssignNew(PresentBuildbotDropdownButton, SComboButton)
             //.ToolTipText(FText::FromString(TEXT("Select a Core")))
-            .OnGetMenuContent_Lambda([this]()
+            .OnGetMenuContent_Lambda([this, WeakCoreDetails]()
             {
+                if (!WeakCoreDetails.IsValid()) return SNullWidget::NullWidget;
+
                 FMenuBuilder MenuBuilder(true, nullptr, TSharedPtr<FExtender>(), false, &FCoreStyle::Get(), true);
 
                 // Add a search box to the top of the dropdown
@@ -585,7 +608,7 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                             .MaxWidth(SupportedPlatformImageWidthAndHeight)
                             [
                                 SNew(SImage)
-                                .Image(FEditorStyle::GetBrush(CoreLibMetadata[PlatformIndex].ImageName))
+                                .Image(FStyleAlias::GetBrush(CoreLibMetadata[PlatformIndex].ImageName))
                                 .ToolTipText(FText::FromString(bForBuildbot ?              CoreLibMetadata[PlatformIndex].BuildbotPath 
                                                                             : "MyCores/" + CoreLibMetadata[PlatformIndex].DistributionPath))
                             ];
@@ -626,17 +649,26 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                         .ListItemsSource(&this->CoreAlreadyDownloadedListViewRows)
                         .SelectionMode(ESelectionMode::Single)
                         .OnGenerateRow_Lambda(GenerateTableViewRow)
-                        .OnSelectionChanged_Lambda([this](TSharedPtr<FText> NewValue, ESelectInfo::Type)
+                        .OnSelectionChanged_Lambda([WeakCoreDetails](TSharedPtr<FText> NewValue, ESelectInfo::Type)
                         {
+                            if (!NewValue.IsValid())
+                            {
+                                UE_LOG(Libretro, Warning, TEXT("Invalid core selected. It is null. It is unknown why this occurs"));
+                                return;
+                            }
+
                             auto& CoreListViewDataSource = FModuleManager::GetModuleChecked<FUnrealLibretroEditorModule>("UnrealLibretroEditor").CoreListViewDataSource;
                             auto& RowDataSource = CoreListViewDataSource[NewValue->ToString()];
 
                             if (RowDataSource.DownloadsPending == 0)
                             {
-                                CorePathProperty->SetValueFromFormattedString(NewValue->ToString());
-                                this->PresentBuildbotDropdownButton->SetIsOpen(false); // Close presented dropdown
+                                auto CoreDetails = WeakCoreDetails.Pin();
+                                if (CoreDetails.IsValid())
+                                {
+                                    CoreDetails->CorePathProperty->SetValueFromFormattedString(NewValue->ToString());
+                                    CoreDetails->PresentBuildbotDropdownButton->SetIsOpen(false); // Close presented dropdown
+                                }
                             }
-                            
                         })
                     ], FText(), false);
                 
@@ -651,9 +683,15 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                     SAssignNew(CoreAvailableOnBuildbotListView, SListView<TSharedRef<FText>>)
                         .ListItemsSource(&this->CoreAvailableOnBuildbotListViewRows)
                         .SelectionMode(ESelectionMode::Single)
-                        .ItemHeight(30.f)
                         .OnGenerateRow_Lambda(GenerateTableViewRow)
-                        .OnSelectionChanged(this, &FLibretroCoreInstanceDetails::StartBuildbotBatchDownload)
+                        .OnSelectionChanged_Lambda([WeakCoreDetails](auto&&... Args)
+                            {
+                                auto CoreDetails = WeakCoreDetails.Pin();
+                                if (CoreDetails.IsValid())
+                                {
+                                    CoreDetails->StartBuildbotBatchDownload(Forward<decltype(Args)>(Args)...);
+                                }
+                            })
                     ],
                     FText(), false
                 );
@@ -666,19 +704,26 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
 
                 // Copied boilerplate that focuses the keyboard on the search box when the drop down is presented
                 TSharedRef<SWidget> CoreBuildbotDropdownWidget = MenuBuilder.MakeWidget();
-                CoreBuildbotDropdownWidget->RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateLambda([this](double InCurrentTime, float InDeltaTime)
+                CoreBuildbotDropdownWidget->RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateLambda([WeakCoreDetails](double InCurrentTime, float InDeltaTime)
                     {
-                        if (SearchBox.IsValid())
+                        auto CoreDetails = WeakCoreDetails.Pin();
+                        if (!CoreDetails.IsValid())
+                        {
+                            return EActiveTimerReturnType::Stop;
+                        }
+                        else if (CoreDetails->SearchBox.IsValid())
                         {
                             FWidgetPath WidgetToFocusPath;
-                            FSlateApplication::Get().GeneratePathToWidgetUnchecked(SearchBox.ToSharedRef(), WidgetToFocusPath);
+                            FSlateApplication::Get().GeneratePathToWidgetUnchecked(CoreDetails->SearchBox.ToSharedRef(), WidgetToFocusPath);
                             FSlateApplication::Get().SetKeyboardFocus(WidgetToFocusPath, EFocusCause::SetDirectly);
-                            WidgetToFocusPath.GetWindow()->SetWidgetToFocusOnActivate(SearchBox);
+                            WidgetToFocusPath.GetWindow()->SetWidgetToFocusOnActivate(CoreDetails->SearchBox);
 
                             return EActiveTimerReturnType::Stop;
                         }
-
-                        return EActiveTimerReturnType::Continue;
+                        else
+                        {
+                            return EActiveTimerReturnType::Continue;
+                        }
                     }));
 
 
@@ -691,11 +736,13 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                //.MinDesiredWidth(InArgs._MinDesiredValueWidth)
                .RevertTextOnEscape(true)
                .SelectAllTextWhenFocused(true)
-               .Text_Lambda([this]() 
+               .Text_Lambda([WeakCoreDetails]()
                    { 
                        //return FText::FromString(this->LibretroCoreInstance->CorePath); // This causes a segfault not sure why exactly
                        FText CorePath;
-                       if (FPropertyAccess::Result::Success == CorePathProperty->GetValueAsDisplayText(CorePath))
+                       auto CoreDetails = WeakCoreDetails.Pin();
+                       if (   CoreDetails.IsValid()
+                           && FPropertyAccess::Result::Success == CoreDetails->CorePathProperty->GetValueAsDisplayText(CorePath))
                        {
                            return CorePath;
                        }
@@ -712,9 +759,13 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                    }
                    return FText::GetEmpty();
                })
-               .OnTextCommitted_Lambda([this](const FText& NewValue, ETextCommit::Type) 
-                   { 
-                       CorePathProperty->SetValueFromFormattedString(NewValue.ToString()); 
+               .OnTextCommitted_Lambda([WeakCoreDetails](const FText& NewValue, ETextCommit::Type)
+                   {
+                       auto CoreDetails = WeakCoreDetails.Pin();
+                       if (CoreDetails.IsValid() && CoreDetails->CorePathProperty->IsValidHandle())
+                       {
+                           CoreDetails->CorePathProperty->SetValueFromFormattedString(NewValue.ToString());
+                       }
                    })
            ]
         ];
@@ -741,7 +792,7 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
         .ValueContent()
         [
             SAssignNew(PresentRomListDropdownButton, SComboButton)
-            .OnGetMenuContent_Lambda([this, RomPathValidExtensions, RomPathProperty]()
+            .OnGetMenuContent_Lambda([this, WeakCoreDetails, RomPathValidExtensions, RomPathProperty]()
                 {
                     FMenuBuilder MenuBuilder(true, nullptr, TSharedPtr<FExtender>(), false, &FCoreStyle::Get(), true);
 
@@ -769,7 +820,19 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                     // Make paths relative instead of absolute
                     for (int i = 0; i < RomPaths.Num(); i++)
                     {
-                        FString RomRelativePath = FPaths::GetPath(RomPaths[i]).RightChop(MyROMsPath.Len()) + TEXT("/") + FPaths::GetCleanFilename(RomPaths[i]);
+                        FString PathPart = FPaths::GetPath(RomPaths[i]).RightChop(MyROMsPath.Len());
+                        FString RomRelativePath;
+                        
+                        // If PathPart is empty, the ROM is at the root level
+                        if (PathPart.IsEmpty())
+                        {
+                            RomRelativePath = FPaths::GetCleanFilename(RomPaths[i]);
+                        }
+                        else
+                        {
+                            RomRelativePath = PathPart + TEXT("/") + FPaths::GetCleanFilename(RomPaths[i]);
+                        }
+                        
                         RomPaths[i] = MoveTemp(RomRelativePath);
                         continue;
                     }
@@ -834,28 +897,45 @@ void FLibretroCoreInstanceDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
                                                ]
                                            ];
                                 })
-                            .OnSelectionChanged_Lambda([this, RomPathProperty](TSharedPtr<FText> NewValue, ESelectInfo::Type)
+                            .OnSelectionChanged_Lambda([WeakCoreDetails, RomPathProperty](TSharedPtr<FText> RomSelectedPath, ESelectInfo::Type)
                                 {
-                                    RomPathProperty->SetValueFromFormattedString(NewValue.Get()->ToString());
-                                    this->PresentRomListDropdownButton->SetIsOpen(false); // Close presented dropdown
+                                    if (!RomSelectedPath.IsValid())
+                                    {
+                                        UE_LOG(Libretro, Warning, TEXT("Invalid ROM selected. It is null. It is unknown why this occurs"));
+                                        return;
+                                    }
+
+                                    RomPathProperty->SetValueFromFormattedString(RomSelectedPath.Get()->ToString());
+                                    auto CoreDetails = WeakCoreDetails.Pin();
+                                    if (CoreDetails.IsValid())
+                                    {
+                                        CoreDetails->PresentRomListDropdownButton->SetIsOpen(false); // Close presented Rom dropdown
+                                    }
                                 })
                         ], FText(), false);
 
                     // Copied boilerplate that focuses the keyboard on the search box when the drop down is presented
                     TSharedRef<SWidget> RomDropdownWidget = MenuBuilder.MakeWidget();
-                    RomDropdownWidget->RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateLambda([this](double InCurrentTime, float InDeltaTime)
+                    RomDropdownWidget->RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateLambda([WeakCoreDetails](double InCurrentTime, float InDeltaTime)
                         {
-                            if (SearchBox.IsValid())
+                            auto CoreDetails = WeakCoreDetails.Pin();
+                            if (!CoreDetails.IsValid())
+                            {
+                                return EActiveTimerReturnType::Stop;
+                            }
+                            else if (CoreDetails->SearchBox.IsValid())
                             {
                                 FWidgetPath WidgetToFocusPath;
-                                FSlateApplication::Get().GeneratePathToWidgetUnchecked(SearchBox.ToSharedRef(), WidgetToFocusPath);
+                                FSlateApplication::Get().GeneratePathToWidgetUnchecked(CoreDetails->SearchBox.ToSharedRef(), WidgetToFocusPath);
                                 FSlateApplication::Get().SetKeyboardFocus(WidgetToFocusPath, EFocusCause::SetDirectly);
-                                WidgetToFocusPath.GetWindow()->SetWidgetToFocusOnActivate(SearchBox);
+                                WidgetToFocusPath.GetWindow()->SetWidgetToFocusOnActivate(CoreDetails->SearchBox);
 
                                 return EActiveTimerReturnType::Stop;
                             }
-
-                            return EActiveTimerReturnType::Continue;
+                            else
+                            {
+                                return EActiveTimerReturnType::Continue;
+                            }
                         }));
 
                     return RomDropdownWidget;

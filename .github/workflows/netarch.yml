@@ -1,4 +1,4 @@
-name: netarch CI Build
+name: netarch
 
 on: [push]
 
@@ -36,14 +36,13 @@ jobs:
         name: netarch-linux-amd64
         path: build/netarch
 
-    - name: Build with TCC (Portability Check)
+    - name: Build and Test with TCC
       run: |
-        tcc -c Source/ThirdParty/netarch/sam2.c \
-        -ISource/UnrealLibretro/Private \
-        -ISource/ThirdParty/zstd/lib \
-        -ISource/ThirdParty/libjuice/include \
-        -ISource/ThirdParty/libuv/include \
-        -ISource/ThirdParty/reliable
+        tcc -DSAM2_IMPLEMENTATION \
+          -DSAM2_TEST_MAIN \
+          -ISource/UnrealLibretro/Private \
+          -ISource/ThirdParty/libuv/include \
+          -run Source/ThirdParty/netarch/sam2_test.c
 
   build-macos-x86_64:
     runs-on: macos-13 # Intel runner

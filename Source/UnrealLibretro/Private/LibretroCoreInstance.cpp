@@ -1,8 +1,14 @@
 
 #include "LibretroCoreInstance.h"
 
+#if PLATFORM_WINDOWS
+#include "Windows/WindowsHWrapper.h"
+#endif
+
+THIRD_PARTY_INCLUDES_START
 #include "ulnet.h"
 #include "libretro/libretro.h"
+THIRD_PARTY_INCLUDES_END
 
 #include "Misc/FileHelper.h"
 #include "Components/AudioComponent.h"
@@ -10,6 +16,7 @@
 #include "SocketSubsystem.h"
 #include "Engine/NetDriver.h"
 #include "Engine/NetConnection.h"
+#include "Engine/World.h"
 
 #include "UnrealLibretro.h"
 #include "LibretroInputDefinitions.h"
@@ -228,6 +235,9 @@ void ULibretroCoreInstance::Launch()
 {
     Shutdown();
     
+    // Clear any previous error message
+    LastErrorMessage.Empty();
+    
     FString _CorePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::ResolveCorePath(this->CorePath));
     FString _RomPath = "";
 
@@ -237,19 +247,34 @@ void ULibretroCoreInstance::Launch()
         _RomPath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FUnrealLibretroModule::ResolveROMPath(this->RomPath));
     }
     
-
 #if PLATFORM_WINDOWS
     _RomPath.ReplaceCharInline('/', '\\');
 #endif
 
     if (!IPlatformFile::GetPlatformPhysical().FileExists(*_CorePath))
     {
-        UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Couldn't find core at path '%s'"), *_CorePath, *_CorePath);
+        LastErrorMessage = FString::Printf(TEXT("Failed to launch Libretro core '%s'. Couldn't find core at path '%s'"), *_CorePath, *_CorePath);
+        UE_LOG(Libretro, Warning, TEXT("%s"), *LastErrorMessage);
+        
+        // Notify of failure
+        FFunctionGraphTask::CreateAndDispatchWhenReady(
+            [this]()
+            {
+                OnLaunchComplete.Broadcast(nullptr, nullptr, false);
+            }, TStatId(), nullptr, ENamedThreads::GameThread);
         return;
     }
-    else if (!IPlatformFile::GetPlatformPhysical().FileExists(*_RomPath) && !IPlatformFile::GetPlatformPhysical().DirectoryExists(*_RomPath))
+    else if (!_RomPath.IsEmpty() && !IPlatformFile::GetPlatformPhysical().FileExists(*_RomPath) && !IPlatformFile::GetPlatformPhysical().DirectoryExists(*_RomPath))
     {
-        UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Couldn't find ROM at path '%s'"), *_CorePath, *_RomPath);
+        LastErrorMessage = FString::Printf(TEXT("Failed to launch Libretro core '%s'. Couldn't find ROM at path '%s'"), *_CorePath, *_RomPath);
+        UE_LOG(Libretro, Warning, TEXT("%s"), *LastErrorMessage);
+        
+        // Notify of failure
+        FFunctionGraphTask::CreateAndDispatchWhenReady(
+            [this]()
+            {
+                OnLaunchComplete.Broadcast(nullptr, nullptr, false);
+            }, TStatId(), nullptr, ENamedThreads::GameThread);
         return;
     }
 
@@ -273,18 +298,19 @@ void ULibretroCoreInstance::Launch()
     Sam2ServerAddress = ULibretroCoreInstance::GetAuthorityIP();
     this->CoreInstance = FLibretroContext::Launch(this, _CorePath, _RomPath, RenderTarget, static_cast<URawAudioSoundWave*>(AudioBuffer),
         [weakThis = MakeWeakObjectPtr(this), SRAMPath = FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath)]
-        (FLibretroContext *_CoreInstance, libretro_api_t &libretro_api) 
+        (FLibretroContext *_CoreInstance, libretro_api_t &libretro_api, const FString& ErrorMessage)
         {
             bool bCoreLaunchSucceeded = _CoreInstance->CoreState.load(std::memory_order_relaxed) != FLibretroContext::ECoreState::StartFailed;
 
             FFunctionGraphTask::CreateAndDispatchWhenReady(
-                [weakThis, bCoreLaunchSucceeded]()
+                [weakThis, bCoreLaunchSucceeded, ErrorMessage]()
             {
                 if (weakThis.IsValid())
                 {
                     if (!bCoreLaunchSucceeded)
                     {
-                        weakThis->Shutdown();
+                        weakThis->LastErrorMessage = ErrorMessage;
+                        weakThis->CoreInstance.Reset();
                     }
 
                     weakThis->OnLaunchComplete.Broadcast(weakThis->RenderTarget,
@@ -481,6 +507,77 @@ void ULibretroCoreInstance::SetInputAnalog(int Port, int _16BitSignedInteger, ER
         CoreInstance->NextInputState[Port][Input] = _16BitSignedInteger;
     });
 }
+
+void ULibretroCoreInstance::ReadMemory(ERetroMemoryType MemoryType, int64 Address, int64 Size, const FOnReadMemoryComplete& OnReadMemoryComplete)
+{
+    NOT_LAUNCHED_GUARD
+
+    if (Size <= 0)
+    {
+        UE_LOG(Libretro, Warning, TEXT("ReadMemory: Invalid Size (%lld)"), Size);
+        return;
+    }
+
+    CoreInstance.GetValue()->EnqueueTask([=, weakThis = MakeWeakObjectPtr(this)](libretro_api_t libretro_api)
+    {
+        void*  memory_data = libretro_api.get_memory_data(MemoryType);
+        size_t memory_size = libretro_api.get_memory_size(MemoryType);
+
+        if (memory_data == nullptr)
+        {
+            UE_LOG(Libretro, Warning, TEXT("ReadMemory: Memory data is null for MemoryType %d"), MemoryType);
+            return;
+        }
+
+        if (static_cast<uint64>(Address) + static_cast<uint64>(Size) > memory_size)
+        {
+            UE_LOG(Libretro, Warning, TEXT("ReadMemory: Address + Size (%lld + %lld) exceeds memory size (%zu) for MemoryType %d"), Address, Size, memory_size, MemoryType);
+            return;
+        }
+
+        TArray<uint8> Data;
+        Data.SetNumUninitialized(Size);
+        FMemory::Memcpy(Data.GetData(), (uint8*)memory_data + static_cast<uint64>(Address), Size);
+
+        FFunctionGraphTask::CreateAndDispatchWhenReady(
+            [=]()
+            {
+                OnReadMemoryComplete.ExecuteIfBound(0, Address, Data);
+            }, TStatId(), nullptr, ENamedThreads::GameThread);
+    });
+}
+
+void ULibretroCoreInstance::WriteMemory(ERetroMemoryType MemoryType, int64 Address, const TArray<uint8>& Data)
+{
+    NOT_LAUNCHED_GUARD
+
+    if (Data.Num() <= 0)
+    {
+        UE_LOG(Libretro, Warning, TEXT("WriteMemory: Data array is empty"));
+        return;
+    }
+
+    CoreInstance.GetValue()->EnqueueTask([=, weakThis = MakeWeakObjectPtr(this)](libretro_api_t libretro_api)
+    {
+        void* memory_data = libretro_api.get_memory_data(MemoryType);
+        size_t memory_size = libretro_api.get_memory_size(MemoryType);
+
+        if (memory_data == nullptr)
+        {
+            UE_LOG(Libretro, Warning, TEXT("WriteMemory: Memory data is null for MemoryType %d"), MemoryType);
+            return;
+        }
+
+        if (static_cast<uint64>(Address) + static_cast<uint64>(Data.Num()) > memory_size)
+        {
+            UE_LOG(Libretro, Warning, TEXT("WriteMemory: Address + Data.Num() (%lld + %d) exceeds memory size (%zu) for MemoryType %d"), Address, Data.Num(), memory_size, MemoryType);
+            return;
+        }
+
+        FMemory::Memcpy(static_cast<uint8*>(memory_data) + static_cast<uint64>(Address), Data.GetData(), Data.Num());
+    });
+}
+
 
 void ULibretroCoreInstance::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
