@@ -263,3 +263,41 @@ cleanup:
 
     return status;
 }
+
+#if defined(ULNET_TEST_MAIN)
+void sam2_log_write(int level, const char *file, int line, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vprintf(format, args);
+    va_end(args);
+    printf("\n");
+}
+
+int main () {
+    ulnet_session_t *session_1 = NULL;
+    ulnet_session_t *session_2 = NULL;
+
+    int status = ulnet_test_inproc(&session_1, &session_2);
+    if (status != 0) {
+        printf("Inproc test failed with status: %d\n", status);
+        return status;
+    }
+    free(session_1);
+    free(session_2);
+    session_1 = NULL;
+    session_2 = NULL;
+
+    status = ulnet_test_ice(&session_1, &session_2);
+    if (status != 0) {
+        printf("ICE test failed with status: %d\n", status);
+        return status;
+    }
+    free(session_1);
+    free(session_2);
+    session_1 = NULL;
+    session_2 = NULL;
+
+    printf("All tests passed successfully!\n");
+    return 0;
+}
+#endif

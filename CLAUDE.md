@@ -44,15 +44,16 @@ tcc -DSAM2_IMPLEMENTATION \
     -ISource/ThirdParty/libuv/include \
     -run Source/ThirdParty/netarch/sam2_test.c
 
-# Only build is going to work right now
-tcc -c Source/ThirdParty/netarch/ulnet_test.c \
-    -DSAM2_IMPLEMENTATION \
+tcc -DSAM2_IMPLEMENTATION \
     -DULNET_IMPLEMENTATION \
     -DULNET_TEST_MAIN \
     -ISource/UnrealLibretro/Private \
     -ISource/ThirdParty/zstd/lib \
     -ISource/ThirdParty/libjuice/include \
-    -ISource/ThirdParty/libuv/include
+    -ISource/ThirdParty/libjuice/include/juice \
+    Source/UnrealLibretro/Private/LibretroThirdPartyImplementation.c \
+    Source/UnrealLibretro/Private/fec.c \
+    -run Source/ThirdParty/netarch/ulnet_test.c
 
 ```
 
