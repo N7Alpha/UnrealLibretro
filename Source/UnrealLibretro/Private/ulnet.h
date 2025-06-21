@@ -1640,7 +1640,6 @@ static void ulnet__process_udp_packet(ulnet_session_t *session, int p, arena_ref
 
         // Process packets as permitted by sliding window logic
         uint16_t sequence_end = (*greatest + ULNET__CLZ(*missing) - 63) & 0xFFFF;
-        SAM2_LOG_WARN("Processing packets %d to %d", sequence_start, sequence_end);
         for (uint16_t seq = sequence_start; ulnet__sequence_less_than(seq, sequence_end); seq++) {
             arena_ref_t rx_packet_ref = session->reliable_rx_packet_history[p][seq % ULNET_RELIABLE_ACK_BUFFER_SIZE];
             uint8_t *rx_packet = (uint8_t *)arena_deref(&session->arena, rx_packet_ref);
@@ -1936,6 +1935,14 @@ cleanup:
 
 
 ULNET_LINKAGE void ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, int p, const char *remote_description) {
+    if (p < 0 || p >= SAM2_TOTAL_PEERS) {
+        SAM2_LOG_FATAL("Invalid peer port %d", p);
+    }
+
+    if (peer_id <= SAM2_PORT_SENTINELS_MAX) {
+        SAM2_LOG_FATAL("Peer ID cannot be zero");
+    }
+
     SAM2_LOG_INFO("Starting Interactive-Connectivity-Establishment for peer %05" PRId64, peer_id);
 
     juice_config_t config;

@@ -2640,7 +2640,7 @@ SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const ch
     vfprintf(stdout, format, args);
     va_end(args);
 
-    fprintf(stdout, print_color ? "\x1B[0m\n" : "\n");
+    fprintf(stdout, print_color ? "\033[K\x1B[0m\n" : "\n");
     if (level >= 2) { // Flush anything that is at least as severe as WARN
         fflush(stdout);
     }

@@ -9,8 +9,8 @@ int ulnet__test_forward_messages(sam2_server_t *server, ulnet_session_t *session
     int status;
     sam2_message_u message;
 
-    sam2_server_poll(server);
     for (;;) {
+        sam2_server_poll(server);
         status = sam2_client_poll(socket, &message);
         if (status < 0) {
             SAM2_LOG_ERROR("Error polling sam2 server: %d", status);
@@ -60,8 +60,8 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
     sam2_server_t *server = 0;
     ulnet_session_t *sessions[2] = {0};
     sam2_socket_t sockets[2] = {0};
-    void *msg1;
-    void *msg2;
+    uint8_t *msg1;
+    uint8_t *msg2;
     int test_passed = 1;
 
     server = (sam2_server_t *) malloc(sizeof(sam2_server_t));
@@ -81,7 +81,7 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
         sessions[i]->retro_serialize = ulnet__test_retro_serialize;
         sessions[i]->retro_unserialize = ulnet__test_retro_unserialize;
 
-        status = sam2_client_connect(&sockets[i], "localhost", ULNET__TEST_SAM2_PORT);
+        status = sam2_client_connect(&sockets[i], "127.0.0.1", ULNET__TEST_SAM2_PORT);
         if (status) {
             SAM2_LOG_ERROR("Error while starting connection to sam2 server");
             goto _10;
@@ -92,7 +92,7 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
             connection_established = sam2_client_poll_connection(sockets[i], 0);
             status = sam2_server_poll(server);
             if (status < 0) {
-                SAM2_LOG_ERROR("Error running uv loop: %d", status);
+                SAM2_LOG_ERROR("Error polling server: %d", status);
                 goto _10;
             }
         }
@@ -114,9 +114,9 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
     sessions[1]->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
     ulnet_startup_ice_for_peer(sessions[1], sessions[0]->our_peer_id, SAM2_AUTHORITY_INDEX, NULL);
 
-    for (int attempt = 0; attempt < 10000; attempt++) {
+    for (int attempt = 0; attempt < 20000; attempt++) {
         for (int i = 0; i < sizeof(sessions)/sizeof(sessions[0]); i++) {
-            status = ulnet_poll_session(sessions[i], 0, 0, 0, 60.0, 16e-3);
+            status = ulnet_poll_session(sessions[i], 0, 0, 0, 1.0, 16e-3);
             if (status < 0) {
                 SAM2_LOG_ERROR("Error polling ulnet session: %d", status);
                 goto _10;
@@ -152,10 +152,14 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
     ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3);
     ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
 
-    msg1 = arena_deref(&sessions[1]->arena, sessions[1]->reliable_tx_packet_history[SAM2_SPECTATOR_START][0]);
-    msg2 = arena_deref(&sessions[1]->arena, sessions[1]->reliable_tx_packet_history[SAM2_SPECTATOR_START][1]);
-    if (!(   msg1 && memcmp(msg1, "HELLO", sizeof("HELLO") - 1) == 0
-          && msg2 && memcmp(msg2, "WORLD", sizeof("WORLD") - 1) == 0)) {
+    msg1 = arena_deref(&sessions[0]->arena, sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][1]);
+    msg2 = arena_deref(&sessions[0]->arena, sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][2]);
+
+    // Check wrapped packet contents
+    int offset1 = ulnet_wrapped_header_size(msg1, ULNET_PACKET_SIZE_BYTES_MAX);
+    int offset2 = ulnet_wrapped_header_size(msg2, ULNET_PACKET_SIZE_BYTES_MAX);
+    if (!(   msg1 && memcmp(&msg1[offset1], "HELLO", sizeof("HELLO") - 1) == 0
+          && msg2 && memcmp(&msg2[offset2], "WORLD", sizeof("WORLD") - 1) == 0)) {
         SAM2_LOG_ERROR("Failed to send reliable messages");
         status = 1;
         goto _10;
@@ -232,10 +236,8 @@ int ulnet_test_inproc(ulnet_session_t **session_1_out, ulnet_session_t **session
     ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
 
     // Verify messages were received
-    void *msg1 = arena_deref(&sessions[0]->arena,
-        sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][1 % ULNET_RELIABLE_ACK_BUFFER_SIZE]);
-    void *msg2 = arena_deref(&sessions[0]->arena,
-        sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][2 % ULNET_RELIABLE_ACK_BUFFER_SIZE]);
+    void *msg1 = arena_deref(&sessions[0]->arena, sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][1 % ULNET_RELIABLE_ACK_BUFFER_SIZE]);
+    void *msg2 = arena_deref(&sessions[0]->arena, sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][2 % ULNET_RELIABLE_ACK_BUFFER_SIZE]);
 
     if (!msg1 || !msg2) {
         SAM2_LOG_ERROR("Failed to receive reliable messages");

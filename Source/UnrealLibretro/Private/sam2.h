@@ -228,7 +228,7 @@ static sam2_message_metadata_t *sam2_get_metadata(const char *message) {
 }
 
 static SAM2_FORCEINLINE int sam2_header_matches(const char *message, const char *header) {
-    return memcmp(message, header, 4 /* Header */ + 1 /* Major version */) == 0;
+    return memcmp(message, header, 4 /* Tag */ + 1 /* Major version */) == 0;
 }
 
 static int sam2_format_core_version(sam2_room_t *room, const char *name, const char *vers) {
@@ -1098,7 +1098,7 @@ static void sam2__client_destroy(sam2_server_t *server, sam2_client_t *client) {
     if (peer_id <= SAM2_PORT_SENTINELS_MAX) {
         SAM2_LOG_ERROR("Tried to free sentinel peer id %05d", peer_id);
         return;
-    } else if (sam2__pool_is_free(&server->client_pool, client->peer_id)) {
+    } else if (sam2__pool_is_free(&server->peer_id_pool, client->peer_id)) {
         SAM2_LOG_ERROR("Tried to free already freed client %05" PRIu16, client->peer_id);
         return;
     }
@@ -1299,7 +1299,7 @@ static void sam2__process_client_read(sam2_server_t *server, sam2_client_t *clie
 
 static void sam2__accept_connections(sam2_server_t *server) {
     while (1) {
-        struct sockaddr_in6 addr;
+        struct sockaddr_storage addr;
         socklen_t addrlen = sizeof(addr);
 
         sam2_socket_t client_socket = accept(server->listen_socket, (struct sockaddr*)&addr, &addrlen);
@@ -1417,19 +1417,23 @@ SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
 #if defined(__linux__) || defined(__ANDROID__)
     int n_events = sam2__poll_sockets(server);
 
-    // Process events on listening socket first
-    sam2__accept_connections(server);
-
     for (int i = 0; i < n_events; i++) {
-        sam2_client_t *client = (sam2_client_t*)server->events[i].data.ptr;
+        // Check if the event is for the listening socket
+        if (server->events[i].data.ptr == NULL) {
+            // This is a new incoming connection. Accept it.
+            sam2__accept_connections(server);
+        } else {
+            // This is an event for an existing client
+            sam2_client_t *client = (sam2_client_t*)server->events[i].data.ptr;
 
-        if (server->events[i].events & (EPOLLERR | EPOLLHUP)) {
-            sam2__client_destroy(server, client);
-            continue;
-        }
+            if (server->events[i].events & (EPOLLERR | EPOLLHUP)) {
+                sam2__client_destroy(server, client);
+                continue;
+            }
 
-        if (server->events[i].events & EPOLLIN) {
-            sam2__process_client_read(server, client);
+            if (server->events[i].events & EPOLLIN) {
+                sam2__process_client_read(server, client);
+            }
         }
     }
 
@@ -1517,6 +1521,19 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
         SAM2_LOG_ERROR("Failed to set IPV6_V6ONLY: %d", SAM2_SOCKERRNO);
         goto err;
     }
+
+#if !defined(_WIN32)
+    // Set socket options for reusability
+    int optval = 1;
+    if (setsockopt(server->listen_socket, SOL_SOCKET, SO_REUSEADDR, (const char*)&optval, sizeof(optval)) == SAM2_SOCKET_ERROR) {
+        SAM2_LOG_ERROR("Failed to set SO_REUSEADDR: %d", SAM2_SOCKERRNO);
+        goto err;
+    }
+    if (setsockopt(server->listen_socket, SOL_SOCKET, SO_REUSEPORT, (const char*)&optval, sizeof(optval)) == SAM2_SOCKET_ERROR) {
+        SAM2_LOG_ERROR("Failed to set SO_REUSEPORT: %d", SAM2_SOCKERRNO);
+        goto err;
+    }
+#endif
 
     // Set non-blocking
     if (sam2__set_nonblocking(server->listen_socket) != 0) {

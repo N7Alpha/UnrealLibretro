@@ -36,13 +36,27 @@ jobs:
         name: netarch-linux-amd64
         path: build/netarch
 
-    - name: Build and Test with TCC
+    - name: Run sam2_test.c
       run: |
         tcc -DSAM2_IMPLEMENTATION \
-          -DSAM2_TEST_MAIN \
-          -ISource/UnrealLibretro/Private \
-          -ISource/ThirdParty/libuv/include \
-          -run Source/ThirdParty/netarch/sam2_test.c
+        -DSAM2_TEST_MAIN \
+        -ISource/UnrealLibretro/Private \
+        -ISource/ThirdParty/libuv/include \
+        -run Source/ThirdParty/netarch/sam2_test.c
+
+    - name: Run ulnet_test.c
+      run: |
+        tcc -DSAM2_IMPLEMENTATION \
+        -DULNET_IMPLEMENTATION \
+        -DULNET_TEST_MAIN \
+        -ISource/UnrealLibretro/Private \
+        -ISource/ThirdParty/zstd/lib \
+        -ISource/ThirdParty/libjuice/include \
+        -ISource/ThirdParty/libjuice/include/juice \
+        Source/UnrealLibretro/Private/LibretroThirdPartyImplementation.c \
+        Source/UnrealLibretro/Private/fec.c \
+        Source/ThirdParty/zstd/lib/decompress/huf_decompress_amd64.S \
+        -run Source/ThirdParty/netarch/ulnet_test.c
 
   build-macos-x86_64:
     runs-on: macos-13 # Intel runner
