@@ -886,7 +886,7 @@ void ulnet_message_send(ulnet_session_t *session, int port, const uint8_t *messa
     sam2_message_metadata_t *metadata = sam2_get_metadata((const char *) message);
 
     for (int i = 0; i < SAM2_ARRAY_LENGTH(ulnet__message_metadata); i++) {
-        if (sam2_header_matches((char *)message, ulnet__message_metadata[i].header) == 0) {
+        if (sam2_header_matches((char *)message, ulnet__message_metadata[i].header)) {
             metadata = &ulnet__message_metadata[i];
         }
     }
