@@ -50,7 +50,7 @@ JUICE_EXPORT int juice_user_poll(juice_agent_t **agents, int agents_count, int t
 	} u;
 	struct pollfd *pfds = u.pfds;
 
-	uint32_t has_packets_pending[(MAX_AGENT-1)/32+1];
+	uint32_t has_packets_pending[(MAX_AGENT-1)/32+1] = {0};
 
 	int status = JUICE_ERR_SUCCESS;
 	for(int i = 0; i < agents_count; ++i) {

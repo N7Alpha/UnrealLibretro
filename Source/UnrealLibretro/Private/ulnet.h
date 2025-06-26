@@ -124,8 +124,8 @@ typedef struct {
     ulnet_core_option_t core_option[ULNET_DELAY_BUFFER_SIZE]; // Max 1 option per frame provided by the authority
 
     int64_t save_state_frame; // This is the current frame the peer is on the essentially
-    int64_t save_state_hash[ULNET_DELAY_BUFFER_SIZE];
-    int64_t input_state_hash[ULNET_DELAY_BUFFER_SIZE];
+    uint32_t save_state_hash[ULNET_DELAY_BUFFER_SIZE];
+    uint32_t input_state_hash[ULNET_DELAY_BUFFER_SIZE];
 } ulnet_state_t;
 SAM2_STATIC_ASSERT(
     sizeof(ulnet_state_t) ==
@@ -200,12 +200,11 @@ typedef struct {
     int64_t total_size_bytes;
     int64_t frame_counter;
     sam2_room_t room;
-    uint64_t encoding_chain; // @todo probably won't use this
-    uint64_t xxhash;
 
-    int64_t compressed_options_size;
-    int64_t compressed_savestate_size;
-    int64_t decompressed_savestate_size;
+    uint32_t xxhash;
+    int32_t compressed_options_size;
+    int32_t compressed_savestate_size;
+    int32_t decompressed_savestate_size;
 #if 0
     uint8_t compressed_savestate_data[compressed_savestate_size];
     uint8_t compressed_options_data[compressed_options_size];
@@ -309,6 +308,8 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
     double frame_rate, double max_sleeping_allowed_when_polling_network_seconds);
 ULNET_LINKAGE int ulnet_wrapped_header_size(uint8_t *packet, int size);
 ULNET_LINKAGE void ulnet_session_tear_down(ulnet_session_t *session);
+ULNET_LINKAGE int64_t ulnet__get_unix_time_microseconds();
+ULNET_LINKAGE uint32_t ulnet_xxh32(const void* data, size_t len, uint32_t seed);
 
 ULNET_LINKAGE void ulnet_imgui_show_session(ulnet_session_t *session);
 ULNET_LINKAGE void ulnet_imgui_show_recent_packets_table(ulnet_session_t *session, int p);
@@ -413,6 +414,70 @@ static inline int ULNET__POPCNT(uint64_t x) {
 }
 #endif
 
+#define XXH_PRIME32_1 2654435761u
+#define XXH_PRIME32_2 2246822519u
+#define XXH_PRIME32_3 3266489917u
+#define XXH_PRIME32_4  668265263u
+#define XXH_PRIME32_5  374761393u
+
+static inline uint32_t read_unaligned_u32(const void* p) {
+    uint32_t val;
+    memcpy(&val, p, sizeof(val));
+    return val;
+}
+
+static inline uint32_t xxh32_rotl(uint32_t x, int r) {
+    return (x << r) | (x >> (32 - r));
+}
+
+ULNET_LINKAGE uint32_t ulnet_xxh32(const void* data, size_t len, uint32_t seed) {
+    const uint8_t* p = (const uint8_t*)data;
+    const uint8_t* end = p + len;
+    uint32_t h32;
+
+    if (len >= 16) {
+        const uint8_t* limit = end - 16;
+        uint32_t v1 = seed + XXH_PRIME32_1 + XXH_PRIME32_2;
+        uint32_t v2 = seed + XXH_PRIME32_2;
+        uint32_t v3 = seed + 0;
+        uint32_t v4 = seed - XXH_PRIME32_1;
+
+        do {
+            v1 = xxh32_rotl(v1 + read_unaligned_u32(p)      * XXH_PRIME32_2, 13) * XXH_PRIME32_1;
+            v2 = xxh32_rotl(v2 + read_unaligned_u32(p + 4)  * XXH_PRIME32_2, 13) * XXH_PRIME32_1;
+            v3 = xxh32_rotl(v3 + read_unaligned_u32(p + 8)  * XXH_PRIME32_2, 13) * XXH_PRIME32_1;
+            v4 = xxh32_rotl(v4 + read_unaligned_u32(p + 12) * XXH_PRIME32_2, 13) * XXH_PRIME32_1;
+            p += 16;
+        } while (p <= limit);
+
+        h32 = xxh32_rotl(v1, 1) + xxh32_rotl(v2, 7) + xxh32_rotl(v3, 12) + xxh32_rotl(v4, 18);
+    } else {
+        h32 = seed + XXH_PRIME32_5;
+    }
+
+    h32 += (uint32_t)len;
+
+    while (p + 4 <= end) {
+        h32 += read_unaligned_u32(p) * XXH_PRIME32_3;
+        h32 = xxh32_rotl(h32, 17) * XXH_PRIME32_4;
+        p += 4;
+    }
+
+    while (p < end) {
+        h32 += (*p) * XXH_PRIME32_5;
+        h32 = xxh32_rotl(h32, 11) * XXH_PRIME32_1;
+        p++;
+    }
+
+    h32 ^= h32 >> 15;
+    h32 *= XXH_PRIME32_2;
+    h32 ^= h32 >> 13;
+    h32 *= XXH_PRIME32_3;
+    h32 ^= h32 >> 16;
+
+    return h32;
+}
+
 ULNET_LINKAGE arena_ref_t arena_alloc(arena_t *arena, uint16_t size) {
     // Reject zero-sized and too-large allocations
     if (size - 1  >= sizeof(arena->arena)) {
@@ -504,7 +569,7 @@ static void ulnet__sleep(unsigned int msec) {
 }
 
 #ifdef _WIN32
-int64_t ulnet__get_unix_time_microseconds() {
+ULNET_LINKAGE int64_t ulnet__get_unix_time_microseconds() {
     FILETIME ft;
     GetSystemTimeAsFileTime(&ft);
 
@@ -517,7 +582,7 @@ int64_t ulnet__get_unix_time_microseconds() {
     return unix_time;
 }
 #else
-int64_t ulnet__get_unix_time_microseconds() {
+ULNET_LINKAGE int64_t ulnet__get_unix_time_microseconds() {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
@@ -1321,8 +1386,8 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
             && our_port != -1
             && our_port < SAM2_SPECTATOR_START) {
             session->state[our_port].save_state_frame = save_state_frame;
-            session->state[our_port].save_state_hash[save_state_frame % ULNET_DELAY_BUFFER_SIZE] = ZSTD_XXH64(save_state, save_state_size, 0);
-            //session->desync_debug_packet.input_state_hash[save_state_frame % ULNET_DELAY_BUFFER_SIZE] = ZSTD_XXH64(g_libretro_context.InputState, sizeof(g_libretro_context.InputState));
+            session->state[our_port].save_state_hash[save_state_frame % ULNET_DELAY_BUFFER_SIZE] = ulnet_xxh32(save_state, save_state_size, 0);
+            session->state[our_port].input_state_hash[save_state_frame % ULNET_DELAY_BUFFER_SIZE] = ulnet_xxh32(session->state[our_port].input_state, sizeof(session->state[our_port].input_state), 0);
         }
 
         if (save_state_allocated) {
@@ -1398,7 +1463,9 @@ static inline void ulnet__reset_save_state_bookkeeping(ulnet_session_t *session)
 }
 
 ULNET_LINKAGE void ulnet_session_tear_down(ulnet_session_t *session) {
-    ulnet_message_send(session, SAM2_AUTHORITY_INDEX, (const uint8_t *) ulnet_exit_header);
+    if (session->agent[SAM2_AUTHORITY_INDEX]) {
+        ulnet_message_send(session, SAM2_AUTHORITY_INDEX, (const uint8_t *) ulnet_exit_header);
+    }
 
     for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
         if (session->agent[i]) {
@@ -1501,12 +1568,12 @@ static void ulnet__check_for_desync(ulnet_state_t *our_state, ulnet_state_t *the
         int64_t frame_index = frame % ULNET_DELAY_BUFFER_SIZE;
 
         if (our_state->input_state_hash[frame_index] != their_state->input_state_hash[frame_index]) {
-            SAM2_LOG_ERROR("Input state hash mismatch for frame %" PRId64 " Our hash: %" PRIx64 " Their hash: %" PRIx64 "",
+            SAM2_LOG_ERROR("Input state hash mismatch for frame %" PRId64 " Our hash: %" PRIx32 " Their hash: %" PRIx32 "",
                 frame, our_state->input_state_hash[frame_index], their_state->input_state_hash[frame_index]);
         } else if (   our_state->save_state_hash[frame_index] != 0
                    && their_state->save_state_hash[frame_index] != 0
                    && our_state->save_state_hash[frame_index] != their_state->save_state_hash[frame_index]) {
-            SAM2_LOG_ERROR("Save state hash mismatch for frame %" PRId64 " Our hash: %016" PRIx64 " Their hash: %016" PRIx64,
+            SAM2_LOG_ERROR("Save state hash mismatch for frame %" PRId64 " Our hash: %016" PRIx32 " Their hash: %016" PRIx32,
                 frame, our_state->save_state_hash[frame_index], their_state->save_state_hash[frame_index]);
             desync_frame = frame;
             break;
@@ -1847,12 +1914,12 @@ static void ulnet__process_udp_packet(ulnet_session_t *session, int p, arena_ref
 
             if (all_data_decoded) {
                 size_t ret = 0;
-                uint64_t their_savestate_transfer_payload_xxhash = 0;
-                uint64_t   our_savestate_transfer_payload_xxhash = 0;
+                uint32_t their_savestate_transfer_payload_xxhash = 0;
+                uint32_t   our_savestate_transfer_payload_xxhash = 0;
                 unsigned char *save_state_data = NULL;
                 savestate_transfer_payload_t *savestate_transfer_payload = (savestate_transfer_payload_t *) malloc(sizeof(savestate_transfer_payload_t) /* Fixed size header */ + k * session->remote_packet_groups * rs_block_size);
 
-                int64_t remote_payload_size = 0;
+                int32_t remote_payload_size = 0;
                 for (int i = 0; i < k; i++) {
                     for (int j = 0; j < session->remote_packet_groups; j++) {
                         void *decoded_packet = arena_deref(&session->arena, session->packet_reference[j][i]);
@@ -1874,11 +1941,11 @@ static void ulnet__process_udp_packet(ulnet_session_t *session, int p, arena_ref
                 }
 
                 their_savestate_transfer_payload_xxhash = savestate_transfer_payload->xxhash;
-                savestate_transfer_payload->xxhash = 0;
-                our_savestate_transfer_payload_xxhash = ZSTD_XXH64(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes, 0);
+                savestate_transfer_payload->xxhash = 0; // Needed to recompute the hash correctly
+                our_savestate_transfer_payload_xxhash = ulnet_xxh32(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes, 0);
 
                 if (their_savestate_transfer_payload_xxhash != our_savestate_transfer_payload_xxhash) {
-                    SAM2_LOG_ERROR("Savestate transfer payload hash mismatch: %" PRIx64 " != %" PRIx64 "", their_savestate_transfer_payload_xxhash, our_savestate_transfer_payload_xxhash);
+                    SAM2_LOG_ERROR("Savestate transfer payload hash mismatch: %" PRIx32 " != %" PRIx32 "", savestate_transfer_payload->xxhash, our_savestate_transfer_payload_xxhash);
                     goto cleanup;
                 }
 
@@ -2213,7 +2280,7 @@ ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, voi
     savestate_transfer_payload->total_size_bytes = sizeof(savestate_transfer_payload_t) + savestate_transfer_payload->compressed_savestate_size + savestate_transfer_payload->compressed_options_size;
 
     savestate_transfer_payload->xxhash = 0;
-    savestate_transfer_payload->xxhash = ZSTD_XXH64(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes, 0);
+    savestate_transfer_payload->xxhash = ulnet_xxh32(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes, 0);
     // Create parity blocks for Reed-Solomon. n - k in total for each packet group
     // We have "packet grouping" because pretty much every implementation of Reed-Solomon doesn't support more than 255 blocks
     // and unfragmented UDP packets over ethernet are limited to ULNET_PACKET_SIZE_BYTES_MAX

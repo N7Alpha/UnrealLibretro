@@ -10,10 +10,15 @@ int ulnet__test_forward_messages(sam2_server_t *server, ulnet_session_t *session
     sam2_message_u message;
 
     for (;;) {
-        sam2_server_poll(server);
-        status = sam2_client_poll(socket, &message);
+        status = sam2_server_poll(server);
         if (status < 0) {
             SAM2_LOG_ERROR("Error polling sam2 server: %d", status);
+            return status;
+        }
+
+        status = sam2_client_poll(socket, &message);
+        if (status < 0) {
+            SAM2_LOG_ERROR("Error polling sam2 client: %d", status);
             return status;
         } else if (status > 0) {
             status = ulnet_process_message(session, (const char *)&message);
@@ -38,13 +43,13 @@ void ulnet__test_retro_run(void *user_ptr) {
 
 }
 
-static const char g_serialize_test_data[] = "Test data";
+static const char g_serialize_test_data[] = {'T', 'E', 'S', 'T'};
 size_t ulnet__test_retro_serialize_size(void *user_ptr) {
     return sizeof(g_serialize_test_data);
 }
 
 bool ulnet__test_retro_serialize(void *user_ptr, void *data, size_t size) {
-    if (size < sizeof(g_serialize_test_data) - 1) {
+    if (size < sizeof(g_serialize_test_data)) {
         SAM2_LOG_ERROR("Buffer too small for serialization");
         return false;
     }
@@ -88,12 +93,16 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
         }
 
         int connection_established = 0;
-        for (int attempt = 0; attempt < 10; attempt++) {
+        for (int64_t start_time = ulnet__get_unix_time_microseconds(); ulnet__get_unix_time_microseconds() - start_time < 2000000;) {
             connection_established = sam2_client_poll_connection(sockets[i], 0);
-            status = sam2_server_poll(server);
+            status = ulnet__test_forward_messages(server, sessions[i], sockets[i]);
             if (status < 0) {
-                SAM2_LOG_ERROR("Error polling server: %d", status);
+                SAM2_LOG_ERROR("Error forwarding messages: %d", status);
                 goto _10;
+            }
+
+            if (sessions[i]->our_peer_id) {
+                break;
             }
         }
 
@@ -102,19 +111,16 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
             status = 1;
             goto _10;
         }
-
-        status = ulnet__test_forward_messages(server, sessions[i], sockets[i]);
-        if (status < 0) {
-            SAM2_LOG_ERROR("Error forwarding messages: %d", status);
-            goto _10;
-        }
     }
 
     sessions[1]->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = sessions[0]->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX];
     sessions[1]->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
     ulnet_startup_ice_for_peer(sessions[1], sessions[0]->our_peer_id, SAM2_AUTHORITY_INDEX, NULL);
 
-    for (int attempt = 0; attempt < 20000; attempt++) {
+    // Give at least 2 seconds for ICE connection establishment
+    int connection_established = 0;
+
+    for (int64_t start_time = ulnet__get_unix_time_microseconds(); ulnet__get_unix_time_microseconds() - start_time < 2000000;) {
         for (int i = 0; i < sizeof(sessions)/sizeof(sessions[0]); i++) {
             status = ulnet_poll_session(sessions[i], 0, 0, 0, 1.0, 16e-3);
             if (status < 0) {
@@ -128,12 +134,17 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
                 goto _10;
             }
         }
+
+        if (   sessions[0]
+            && sessions[0]->agent[SAM2_SPECTATOR_START]
+            && juice_get_state(sessions[0]->agent[SAM2_SPECTATOR_START]) == JUICE_STATE_COMPLETED) {
+            connection_established = 1;
+            break;
+        }
     }
 
-    if (!(   sessions[0]
-          && sessions[0]->agent[SAM2_SPECTATOR_START]
-          && juice_get_state(sessions[0]->agent[SAM2_SPECTATOR_START]) == JUICE_STATE_COMPLETED)) {
-        SAM2_LOG_ERROR("Failed to establish connection");
+    if (!connection_established) {
+        SAM2_LOG_ERROR("Failed to establish connection within 2 seconds");
         status = 1;
         goto _10;
     }
@@ -168,16 +179,17 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
 _10:sam2_server_destroy(server);
     free(server);
 
-    if (session_1_out) {
-        *session_1_out = sessions[0];
-    } else {
-        free(sessions[0]);
+    if (sessions[0]) {
+        ulnet_session_tear_down(sessions[0]);
     }
-    if (session_2_out) {
-        *session_2_out = sessions[1];
-    } else {
-        free(sessions[1]);
+    if (sessions[1]) {
+        ulnet_session_tear_down(sessions[1]);
     }
+    if (!session_1_out) free(sessions[0]);
+    else *session_1_out = sessions[0];
+
+    if (!session_2_out) free(sessions[1]);
+    else *session_2_out = sessions[1];
 
     return status;
 }
@@ -257,6 +269,10 @@ int ulnet_test_inproc(ulnet_session_t **session_1_out, ulnet_session_t **session
     }
 
 cleanup:
+    sessions[0]->inproc[SAM2_SPECTATOR_START] = NULL;
+    sessions[1]->inproc[SAM2_AUTHORITY_INDEX] = NULL;
+    ulnet_session_tear_down(sessions[0]);
+    ulnet_session_tear_down(sessions[1]);
     if (!session_1_out) free(sessions[0]);
     else *session_1_out = sessions[0];
 
@@ -266,6 +282,50 @@ cleanup:
     return status;
 }
 
+void ulnet__bench_xxh32() {
+    const size_t test_size = 64 * 1024 * 1024;
+    const int iterations = 30;
+
+    uint8_t* test_data = malloc(test_size);
+    if (!test_data) {
+        printf("Failed to allocate test buffer\n");
+        return;
+    }
+
+    for (size_t i = 0; i < test_size; i++) {
+        test_data[i] = (uint8_t)(i * 0x9E3779B1);
+    }
+
+    // Warm up
+    volatile uint32_t dummy = 0;
+    for (int i = 0; i < 5; i++) {
+        dummy ^= ulnet_xxh32(test_data, test_size, 0);
+    }
+
+    uint64_t start_unix_us = ulnet__get_unix_time_microseconds();
+    uint32_t result = 0;
+
+    for (int i = 0; i < iterations; i++) {
+        test_data[0] = (uint8_t)i; // Prevent compiler optimization
+        result ^= ulnet_xxh32(test_data, test_size, 0);
+    }
+
+    double total_bytes = (double)test_size * iterations;
+    uint64_t elapsed_us = ulnet__get_unix_time_microseconds() - start_unix_us;
+
+    double elapsed_seconds = elapsed_us / 1e6;
+
+    double bytes_per_second = total_bytes / elapsed_seconds;
+    double gigabytes_per_second = bytes_per_second / (1024.0 * 1024.0 * 1024.0);
+
+    printf("xxh32 Throughput: %.3f GB/s\n", gigabytes_per_second);
+
+    free(test_data);
+}
+
+
+#include <zstd.h>
+
 #if defined(ULNET_TEST_MAIN)
 void sam2_log_write(int level, const char *file, int line, const char *format, ...) {
     va_list args;
@@ -273,33 +333,50 @@ void sam2_log_write(int level, const char *file, int line, const char *format, .
     vprintf(format, args);
     va_end(args);
     printf("\n");
+    if (level == 4) {
+        printf("Fatal error in %s:%d\n", file, line);
+        abort();
+    }
 }
 
 int main () {
     ulnet_session_t *session_1 = NULL;
     ulnet_session_t *session_2 = NULL;
 
-    int status = ulnet_test_inproc(&session_1, &session_2);
+    juice_set_log_level(JUICE_LOG_LEVEL_DEBUG);
+
+    int status = ulnet_test_inproc(NULL, NULL);
     if (status != 0) {
         printf("Inproc test failed with status: %d\n", status);
         return status;
     }
+
+    status = ulnet_test_ice(&session_1, &session_2);
+    //ulnet_session_tear_down(session_1);
+    //ulnet_session_tear_down(session_2);
     free(session_1);
     free(session_2);
     session_1 = NULL;
     session_2 = NULL;
-
-    status = ulnet_test_ice(&session_1, &session_2);
     if (status != 0) {
         printf("ICE test failed with status: %d\n", status);
         return status;
     }
-    free(session_1);
-    free(session_2);
-    session_1 = NULL;
-    session_2 = NULL;
+
+    uint8_t numbers_one_to_thirty[30];
+    for (int i = 0; i < 30; i++) {
+        numbers_one_to_thirty[i] = i + 1;
+    }
+
+    if (ulnet_xxh32(numbers_one_to_thirty, sizeof(numbers_one_to_thirty), 0) != 0xa4b09c4b) {
+        printf("XXH32 hash test failed\n");
+        return 1;
+    }
+
+    ulnet__bench_xxh32();
 
     printf("All tests passed successfully!\n");
     return 0;
 }
 #endif
+

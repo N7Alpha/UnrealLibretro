@@ -368,9 +368,7 @@ static const char *sam2__pool_free(sam2__pool_t *pool, uint16_t idx) {
     return NULL;
 }
 
-#ifdef __linux__
-#include <sys/epoll.h>
-#elif defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/event.h>
 #include <sys/time.h>
 #elif defined(_WIN32)
@@ -412,17 +410,13 @@ typedef struct sam2_server {
     };
 
     // Platform-specific polling
-#ifdef _WIN32
-    struct pollfd pollfds[SAM2__LARGE_POOL_SIZE];
-#elif defined(__linux__) || defined(__ANDROID__)
-    int epoll_fd;
-    struct epoll_event events[SAM2__LARGE_POOL_SIZE];
-#elif defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__APPLE__) || defined(__FreeBSD__)
     int kqueue_fd;
     struct kevent events[SAM2__LARGE_POOL_SIZE];
     struct kevent changelist[SAM2__LARGE_POOL_SIZE];
     int changelist_count;
 #else
+    // Use poll for Windows, Linux, Android, and others
     struct pollfd pollfds[SAM2__LARGE_POOL_SIZE];
 #endif
 
@@ -1049,6 +1043,8 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message) {
 #define WIN32_LEAN_AND_MEAN
 #include <WinSock2.h>
 #endif
+#else
+#include <poll.h>
 #endif
 
 static int sam2__set_nonblocking(sam2_socket_t sock) {
@@ -1104,9 +1100,7 @@ static void sam2__client_destroy(sam2_server_t *server, sam2_client_t *client) {
     }
 
     // Remove from polling
-#if defined(__linux__) || defined(__ANDROID__)
-    epoll_ctl(server->epoll_fd, EPOLL_CTL_DEL, client->socket, NULL);
-#elif defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__APPLE__) || defined(__FreeBSD__)
     struct kevent ev;
     EV_SET(&ev, client->socket, EVFILT_READ, EV_DELETE, 0, 0, NULL);
     kevent(server->kqueue_fd, &ev, 1, NULL, 0, NULL);
@@ -1347,12 +1341,7 @@ static void sam2__accept_connections(sam2_server_t *server) {
         }
 
         // Add to polling
-#if defined(__linux__) || defined(__ANDROID__)
-        struct epoll_event ev = {0};
-        ev.events = EPOLLIN | EPOLLET;
-        ev.data.ptr = client;
-        epoll_ctl(server->epoll_fd, EPOLL_CTL_ADD, client_socket, &ev);
-#elif defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__APPLE__) || defined(__FreeBSD__)
         struct kevent ev[2];
         EV_SET(&ev[0], client_socket, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, client);
         EV_SET(&ev[1], client_socket, EVFILT_WRITE, EV_ADD | EV_DISABLE, 0, 0, client); // Disabled until needed
@@ -1368,11 +1357,7 @@ static void sam2__accept_connections(sam2_server_t *server) {
 }
 
 // Platform-specific polling
-#if defined(__linux__) || defined(__ANDROID__)
-static int sam2__poll_sockets(sam2_server_t *server) {
-    return epoll_wait(server->epoll_fd, server->events, SAM2__LARGE_POOL_SIZE, 0);
-}
-#elif defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__APPLE__) || defined(__FreeBSD__)
 static int sam2__poll_sockets(sam2_server_t *server) {
     struct timespec ts = {0, 0};
     return kevent(server->kqueue_fd, NULL, 0, server->events, SAM2__LARGE_POOL_SIZE, &ts);
@@ -1414,30 +1399,7 @@ static int sam2__poll_sockets(sam2_server_t *server) {
 SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
     server->current_time = sam2__get_time_ms();
 
-#if defined(__linux__) || defined(__ANDROID__)
-    int n_events = sam2__poll_sockets(server);
-
-    for (int i = 0; i < n_events; i++) {
-        // Check if the event is for the listening socket
-        if (server->events[i].data.ptr == NULL) {
-            // This is a new incoming connection. Accept it.
-            sam2__accept_connections(server);
-        } else {
-            // This is an event for an existing client
-            sam2_client_t *client = (sam2_client_t*)server->events[i].data.ptr;
-
-            if (server->events[i].events & (EPOLLERR | EPOLLHUP)) {
-                sam2__client_destroy(server, client);
-                continue;
-            }
-
-            if (server->events[i].events & EPOLLIN) {
-                sam2__process_client_read(server, client);
-            }
-        }
-    }
-
-#elif defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__APPLE__) || defined(__FreeBSD__)
     int n_events = sam2__poll_sockets(server);
 
     for (int i = 0; i < n_events; i++) {
@@ -1524,7 +1486,8 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
 
 #if !defined(_WIN32)
     // Set socket options for reusability
-    int optval = 1;
+    int optval;
+    optval = 1;
     if (setsockopt(server->listen_socket, SOL_SOCKET, SO_REUSEADDR, (const char*)&optval, sizeof(optval)) == SAM2_SOCKET_ERROR) {
         SAM2_LOG_ERROR("Failed to set SO_REUSEADDR: %d", SAM2_SOCKERRNO);
         goto err;
@@ -1560,21 +1523,7 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     }
 
     // Initialize platform-specific polling
-#if defined(__linux__) || defined(__ANDROID__)
-    server->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    if (server->epoll_fd == -1) {
-        SAM2_LOG_ERROR("epoll_create1 failed: %d", errno);
-        goto err;
-    }
-
-    struct epoll_event ev;
-    ev.events = EPOLLIN;
-    ev.data.ptr = NULL; // NULL means listen socket
-    if (epoll_ctl(server->epoll_fd, EPOLL_CTL_ADD, server->listen_socket, &ev) == -1) {
-        SAM2_LOG_ERROR("epoll_ctl failed: %d", errno);
-        goto err;
-    }
-#elif defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__APPLE__) || defined(__FreeBSD__)
     server->kqueue_fd = kqueue();
     if (server->kqueue_fd == -1) {
         SAM2_LOG_ERROR("kqueue failed: %d", errno);
@@ -1595,11 +1544,7 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
 err:if (server->listen_socket != SAM2_SOCKET_INVALID) {
         sam2__close_socket(server->listen_socket);
     }
-#if defined(__linux__) || defined(__ANDROID__)
-    if (server->epoll_fd != -1) {
-        close(server->epoll_fd);
-    }
-#elif defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__APPLE__) || defined(__FreeBSD__)
     if (server->kqueue_fd != -1) {
         close(server->kqueue_fd);
     }
@@ -1626,11 +1571,7 @@ SAM2_LINKAGE void sam2_server_destroy(sam2_server_t *server) {
     }
 
     // Close platform-specific resources
-#if defined(__linux__) || defined(__ANDROID__)
-    if (server->epoll_fd != -1) {
-        close(server->epoll_fd);
-    }
-#elif defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__APPLE__) || defined(__FreeBSD__)
     if (server->kqueue_fd != -1) {
         close(server->kqueue_fd);
     }
