@@ -17,6 +17,7 @@ int g_log_level = 1; // Info
 #define ULNET_TEST_IMPLEMENTATION
 #include "ulnet.h"
 #include "sam2.h"
+#include "miniz.h"
 
 #define MAX_SAMPLE_SIZE ULNET_MAX_SAMPLE_SIZE
 
@@ -947,8 +948,8 @@ double format_unit_count(double count, char *unit)
     // Choose the correct set of prefixes and scaling factor based on the postfix
     const char** prefix_to_use = prefixes;
     double scale_factor = 1000.0;
-    if (   strcmp(postfix, "bits") == 0
-        || strcmp(postfix, "bytes") == 0) {
+    if (   memcmp(postfix, "bits", 4) == 0
+        || memcmp(postfix, "bytes", 5) == 0) {
         prefix_to_use = binary_prefixes;
         scale_factor = 1024.0;
     }
@@ -1457,6 +1458,151 @@ void draw_imgui() {
         // Slider to select the current save state index
         ImGui::SliderInt("Save State Index (saved every frame)", &g_save_state_index, 0, MAX_SAVE_STATES-1);
         ImGui::SliderInt("Delta compression frame offset", &g_save_state_used_for_delta_index_offset, 0, MAX_SAVE_STATES-1);
+
+        // Compression comparison plot
+        static bool show_compression_plot = false;
+        ImGui::Checkbox("Show Compression Comparison Plot", &show_compression_plot);
+
+        if (show_compression_plot && ImPlot::BeginPlot("Compression Throughput vs Size", ImVec2(-1, 400), ImPlotFlags_None)) {
+            ImPlot::SetupAxis(ImAxis_X1, "Compressed Size (KB)");
+            ImPlot::SetupAxis(ImAxis_Y1, "Throughput", ImPlotAxisFlags_None);
+            ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+
+            // Test different compression levels for both algorithms
+            int miniz_levels[] = { 1, 2, 3, MZ_DEFAULT_LEVEL /* 6 */, /* MZ_UBER_COMPRESSION  10 */ };
+            int zstd_levels[] = { -1, 0, ZSTD_CLEVEL_DEFAULT, 6, 9, 12, /* ZSTD_maxCLevel() 22 (currently) */ };
+            constexpr int miniz_levels_count = sizeof(miniz_levels) / sizeof(miniz_levels[0]);
+            constexpr int zstd_levels_count = sizeof(zstd_levels) / sizeof(zstd_levels[0]);
+
+            double miniz_sizes[miniz_levels_count] = {0};
+            double miniz_throughputs[miniz_levels_count] = {0};
+            double zstd_sizes[zstd_levels_count] = {0};
+            double zstd_throughputs[zstd_levels_count] = {0};
+
+            // Track min/max values for setting plot limits
+            double min_throughput = DBL_MAX;
+            double max_throughput = 0.0;
+            double min_size = DBL_MAX;
+            double max_size = 0.0;
+
+            // Test miniz at different compression levels (level 0 is no compression)
+            uint8_t* compressed_buffer = NULL;
+            for (int i = 0; i < miniz_levels_count; i++) {
+                // Compress with miniz
+                uLongf compressed_size = compressBound(g_serialize_size);
+                compressed_buffer = (uint8_t*)realloc(compressed_buffer, compressed_size);
+
+                if (compressed_buffer) {
+                    uint64_t start_cycles = ulnet__rdtsc();
+                    int result = compress2(compressed_buffer, &compressed_size,
+                                        (const Bytef*)g_savebuffer[g_save_state_index],
+                                        g_serialize_size, miniz_levels[i]);
+                    uint64_t end_cycles = ulnet__rdtsc();
+
+                    if (result == Z_OK) {
+                        double compression_time_cycles = end_cycles - start_cycles;
+                        double throughput_bytes_per_cycle = g_serialize_size / compression_time_cycles;
+
+                        miniz_sizes[i] = compressed_size / 1024.0;
+                        miniz_throughputs[i] = throughput_bytes_per_cycle;
+
+                        // Update bounds
+                        min_throughput = fmin(min_throughput, throughput_bytes_per_cycle);
+                        max_throughput = fmax(max_throughput, throughput_bytes_per_cycle);
+                        min_size = fmin(min_size, miniz_sizes[i]);
+                        max_size = fmax(max_size, miniz_sizes[i]);
+                    }
+                }
+            }
+
+            for (int i = 0; i < zstd_levels_count; i++) {
+                size_t compressed_size = ZSTD_compressBound(g_serialize_size);
+                compressed_buffer = (uint8_t*)realloc(compressed_buffer, compressed_size);
+
+                if (compressed_buffer) {
+                    uint64_t start_cycles = ulnet__rdtsc();
+                    compressed_size = ZSTD_compress(compressed_buffer, compressed_size,
+                                                g_savebuffer[g_save_state_index], g_serialize_size,
+                                                zstd_levels[i]);
+                    uint64_t end_cycles = ulnet__rdtsc();
+
+                    if (!ZSTD_isError(compressed_size)) {
+                        double compression_time_cycles = end_cycles - start_cycles;
+                        double throughput_bytes_per_cycle = g_serialize_size / compression_time_cycles;
+
+                        zstd_sizes[i] = compressed_size / 1024.0;
+                        zstd_throughputs[i] = throughput_bytes_per_cycle;
+
+                        // Update bounds
+                        min_throughput = fmin(min_throughput, throughput_bytes_per_cycle);
+                        max_throughput = fmax(max_throughput, throughput_bytes_per_cycle);
+                        min_size = fmin(min_size, zstd_sizes[i]);
+                        max_size = fmax(max_size, zstd_sizes[i]);
+                    }
+                }
+            }
+            free(compressed_buffer);
+
+            // Set plot limits with some padding
+            if (min_throughput < DBL_MAX && max_throughput > 0) {
+                // For log scale, expand the range slightly in log space
+                double log_min = log10(min_throughput);
+                double log_max = log10(max_throughput);
+                double log_padding = (log_max - log_min) * 0.1;
+                ImPlot::SetupAxisLimits(ImAxis_Y1, pow(10, log_min - log_padding), pow(10, log_max + log_padding), ImPlotCond_Always);
+            }
+            if (min_size < DBL_MAX && max_size > 0) {
+                double size_padding = (max_size - min_size) * 0.1;
+                ImPlot::SetupAxisLimits(ImAxis_X1, min_size - size_padding, max_size + size_padding, ImPlotCond_Always);
+            }
+
+            ImPlot::SetupAxisFormat(ImAxis_Y1, [](double value, char* buff, int size, void* user_data) -> int {
+                char unit[FORMAT_UNIT_COUNT_SIZE] = {0};
+                double display_value = format_unit_count(value, strcpy(unit, "bytes/cycle"));
+                return snprintf(buff, size, "%.2f %s", display_value, unit);
+            }, nullptr);
+
+            ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle);
+
+            const char *miniz_label = "miniz " MZ_VERSION;
+            ImPlot::PlotScatter(miniz_label, miniz_sizes, miniz_throughputs, miniz_levels_count);
+            ImPlot::PlotLine(miniz_label, miniz_sizes, miniz_throughputs, miniz_levels_count);
+
+            const char *zstd_label = "zstd " ZSTD_VERSION_STRING;
+            ImPlot::SetNextMarkerStyle(ImPlotMarker_Square);
+            ImPlot::PlotScatter(zstd_label, zstd_sizes, zstd_throughputs, zstd_levels_count);
+            ImPlot::PlotLine(zstd_label, zstd_sizes, zstd_throughputs, zstd_levels_count);
+
+            for (int i = 0; i < miniz_levels_count; i++) {
+                if (miniz_levels[i] == MZ_DEFAULT_LEVEL) {
+                    // Plot a larger marker at the default level
+                    ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, 5);
+                    ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, -1);
+                    ImPlot::PlotScatter("##miniz_default", &miniz_sizes[i], &miniz_throughputs[i], 1);
+                    ImPlot::PopStyleVar();
+
+                    // Add text annotation
+                    ImPlot::Annotation(miniz_sizes[i], miniz_throughputs[i],
+                                    ImVec4(1,1,1,1), ImVec2(10, -10), true, "level=MZ_DEFAULT_LEVEL");
+                }
+            }
+
+            for (int i = 0; i < zstd_levels_count; i++) {
+                if (zstd_levels[i] == 0) {
+                    // Plot a larger marker at the default level
+                    ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, 10);
+                    ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, -1, ImVec4(0,0,1,1), 2); // Blue outline
+                    ImPlot::PlotScatter("##zstd_default", &zstd_sizes[i], &zstd_throughputs[i], 1);
+                    ImPlot::PopStyleVar();
+
+                    // Add text annotation
+                    ImPlot::Annotation(zstd_sizes[i], zstd_throughputs[i],
+                                    ImVec4(1,1,1,1), ImVec2(10, 10), true, "level=%d", zstd_levels[i]);
+                }
+            }
+
+            ImPlot::EndPlot();
+        }
 
         ImGui::End();
     }
@@ -2705,7 +2851,6 @@ static uintptr_t core_get_current_framebuffer() {
     return g_video.fbo_id;
 }
 
-int64_t ulnet__get_unix_time_microseconds();
 /**
  * cpu_features_get_time_usec:
  *

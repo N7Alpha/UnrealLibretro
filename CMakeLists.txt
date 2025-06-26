@@ -49,6 +49,7 @@ set(SOURCE_FILES
     Source/ThirdParty/netarch/netarch.cpp
     Source/ThirdParty/netarch/sam2_test.c
     Source/ThirdParty/netarch/ulnet_test.c
+    Source/UnrealLibretroEditor/miniz/miniz.c
     Source/UnrealLibretro/Private/fec.c
     Source/ThirdParty/imgui/imgui.cpp
     Source/ThirdParty/imgui/backends/imgui_impl_sdl3.cpp
@@ -103,6 +104,7 @@ add_executable(${PROJECT_NAME} ${SOURCE_FILES})
 target_include_directories(${PROJECT_NAME} PRIVATE
     Source/UnrealLibretro/Private
     Source/UnrealLibretro/Public/libretro
+    Source/UnrealLibretroEditor/miniz
     Source/ThirdParty/libjuice/include
     Source/ThirdParty/zstd/lib
     Source/ThirdParty/imgui
