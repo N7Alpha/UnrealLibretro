@@ -7,7 +7,7 @@
 # in the COPYING file in the root directory of this source tree).
 # ################################################################
 
-cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
 
 # As of 2018-12-26 ZSTD has been validated to build with cmake version 3.13.2 new policies.
 # Set and use the newest cmake policies that are validated to work
@@ -30,8 +30,11 @@ set(LIBRARY_DIR ${ZSTD_SOURCE_DIR}/lib)
 include(GetZstdLibraryVersion)
 GetZstdLibraryVersion(${LIBRARY_DIR}/zstd.h zstd_VERSION_MAJOR zstd_VERSION_MINOR zstd_VERSION_PATCH)
 
+set(ZSTD_SHORT_VERSION "${zstd_VERSION_MAJOR}.${zstd_VERSION_MINOR}")
+set(ZSTD_FULL_VERSION "${zstd_VERSION_MAJOR}.${zstd_VERSION_MINOR}.${zstd_VERSION_PATCH}")
+
 project(zstd
-  VERSION "${zstd_VERSION_MAJOR}.${zstd_VERSION_MINOR}.${zstd_VERSION_PATCH}"
+  VERSION "${ZSTD_FULL_VERSION}"
   LANGUAGES C   # Main library is in C
             ASM # And ASM
             CXX # Testing contributed code also utilizes CXX
@@ -82,8 +85,17 @@ else ()
     add_definitions(-DZSTD_LEGACY_SUPPORT=0)
 endif ()
 
+if (APPLE)
+    option(ZSTD_FRAMEWORK "Build as Apple Frameworks" OFF)
+endif ()
+
 if (ANDROID)
     set(ZSTD_MULTITHREAD_SUPPORT_DEFAULT OFF)
+    # Old versions of bionic libc don't have fseeko/ftello
+    if ((NOT ${ANDROID_PLATFORM_LEVEL}) OR ${ANDROID_PLATFORM_LEVEL} VERSION_LESS 24)
+        message(STATUS "Setting compile definitions for old Android API")
+        add_compile_definitions(LIBC_NO_FSEEKO)
+    endif ()
 else()
     set(ZSTD_MULTITHREAD_SUPPORT_DEFAULT ON)
 endif()
@@ -114,10 +126,26 @@ endif ()
 #-----------------------------------------------------------------------------
 # External dependencies
 #-----------------------------------------------------------------------------
+# Define a function to handle special thread settings for HP-UX
+# See https://github.com/facebook/zstd/pull/3862 for details.
+function(setup_hpux_threads)
+    find_package(Threads)
+    if (NOT Threads_FOUND)
+        set(CMAKE_USE_PTHREADS_INIT 1 PARENT_SCOPE)
+        set(CMAKE_THREAD_LIBS_INIT -lpthread PARENT_SCOPE)
+        set(CMAKE_HAVE_THREADS_LIBRARY 1 PARENT_SCOPE)
+        set(Threads_FOUND TRUE PARENT_SCOPE)
+    endif()
+endfunction()
+
 if (ZSTD_MULTITHREAD_SUPPORT AND UNIX)
-    set(THREADS_PREFER_PTHREAD_FLAG ON)
-    find_package(Threads REQUIRED)
-    if(CMAKE_USE_PTHREADS_INIT)
+    if (CMAKE_SYSTEM_NAME MATCHES "HP-UX")
+        setup_hpux_threads()
+    else()
+        set(THREADS_PREFER_PTHREAD_FLAG ON)
+        find_package(Threads REQUIRED)
+    endif()
+    if (CMAKE_USE_PTHREADS_INIT)
         set(THREADS_LIBS "${CMAKE_THREAD_LIBS_INIT}")
     else()
         message(SEND_ERROR "ZSTD currently does not support thread libraries other than pthreads")
@@ -180,10 +208,6 @@ export(EXPORT zstdExports
     FILE "${CMAKE_CURRENT_BINARY_DIR}/zstdTargets.cmake"
     NAMESPACE zstd::
     )
-configure_file(zstdConfig.cmake
-    "${CMAKE_CURRENT_BINARY_DIR}/zstdConfig.cmake"
-    COPYONLY
-    )
 
 # A Package Config file that works from the installation directory
 set(ConfigPackageLocation ${CMAKE_INSTALL_LIBDIR}/cmake/zstd)
@@ -192,8 +216,13 @@ install(EXPORT zstdExports
     NAMESPACE zstd::
     DESTINATION ${ConfigPackageLocation}
     )
+configure_package_config_file(
+    zstdConfig.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/zstdConfig.cmake"
+    INSTALL_DESTINATION ${ConfigPackageLocation}
+)
 install(FILES
-    zstdConfig.cmake
+    "${CMAKE_CURRENT_BINARY_DIR}/zstdConfig.cmake"
     "${CMAKE_CURRENT_BINARY_DIR}/zstdConfigVersion.cmake"
     DESTINATION ${ConfigPackageLocation}
     )

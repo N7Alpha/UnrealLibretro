@@ -139,7 +139,7 @@ static size_t ZSTD_decodeLiteralsBlock(ZSTD_DCtx* dctx,
     RETURN_ERROR_IF(srcSize < MIN_CBLOCK_SIZE, corruption_detected, "");
 
     {   const BYTE* const istart = (const BYTE*) src;
-        symbolEncodingType_e const litEncType = (symbolEncodingType_e)(istart[0] & 3);
+        SymbolEncodingType_e const litEncType = (SymbolEncodingType_e)(istart[0] & 3);
         size_t const blockSizeMax = ZSTD_blockSizeMax(dctx);
 
         switch(litEncType)
@@ -358,7 +358,7 @@ size_t ZSTD_decodeLiteralsBlock_wrapper(ZSTD_DCtx* dctx,
  * - start from default distributions, present in /lib/common/zstd_internal.h
  * - generate tables normally, using ZSTD_buildFSETable()
  * - printout the content of tables
- * - pretify output, report below, test with fuzzer to ensure it's correct */
+ * - prettify output, report below, test with fuzzer to ensure it's correct */
 
 /* Default FSE distribution table for Literal Lengths */
 static const ZSTD_seqSymbol LL_defaultDTable[(1<<LL_DEFAULTNORMLOG)+1] = {
@@ -645,7 +645,7 @@ void ZSTD_buildFSETable(ZSTD_seqSymbol* dt,
  * @return : nb bytes read from src,
  *           or an error code if it fails */
 static size_t ZSTD_buildSeqTable(ZSTD_seqSymbol* DTableSpace, const ZSTD_seqSymbol** DTablePtr,
-                                 symbolEncodingType_e type, unsigned max, U32 maxLog,
+                                 SymbolEncodingType_e type, unsigned max, U32 maxLog,
                                  const void* src, size_t srcSize,
                                  const U32* baseValue, const U8* nbAdditionalBits,
                                  const ZSTD_seqSymbol* defaultTable, U32 flagRepeatTable,
@@ -727,9 +727,10 @@ size_t ZSTD_decodeSeqHeaders(ZSTD_DCtx* dctx, int* nbSeqPtr,
 
     /* FSE table descriptors */
     RETURN_ERROR_IF(ip+1 > iend, srcSize_wrong, ""); /* minimum possible size: 1 byte for symbol encoding types */
-    {   symbolEncodingType_e const LLtype = (symbolEncodingType_e)(*ip >> 6);
-        symbolEncodingType_e const OFtype = (symbolEncodingType_e)((*ip >> 4) & 3);
-        symbolEncodingType_e const MLtype = (symbolEncodingType_e)((*ip >> 2) & 3);
+    RETURN_ERROR_IF(*ip & 3, corruption_detected, ""); /* The last field, Reserved, must be all-zeroes. */
+    {   SymbolEncodingType_e const LLtype = (SymbolEncodingType_e)(*ip >> 6);
+        SymbolEncodingType_e const OFtype = (SymbolEncodingType_e)((*ip >> 4) & 3);
+        SymbolEncodingType_e const MLtype = (SymbolEncodingType_e)((*ip >> 2) & 3);
         ip++;
 
         /* Build DTables */
@@ -1304,7 +1305,7 @@ ZSTD_decodeSequence(seqState_t* seqState, const ZSTD_longOffset_e longOffsets, c
                 } else {
                     offset = ofBase + ll0 + BIT_readBitsFast(&seqState->DStream, 1);
                     {   size_t temp = (offset==3) ? seqState->prevOffset[0] - 1 : seqState->prevOffset[offset];
-                        temp += !temp;   /* 0 is not valid; input is corrupted; force offset to 1 */
+                        temp -= !temp; /* 0 is not valid: input corrupted => force offset to -1 => corruption detected at execSequence */
                         if (offset != 1) seqState->prevOffset[2] = seqState->prevOffset[1];
                         seqState->prevOffset[1] = seqState->prevOffset[0];
                         seqState->prevOffset[0] = offset = temp;
@@ -1934,12 +1935,6 @@ ZSTD_decompressSequencesLong_bmi2(ZSTD_DCtx* dctx,
 
 #endif /* DYNAMIC_BMI2 */
 
-typedef size_t (*ZSTD_decompressSequences_t)(
-                            ZSTD_DCtx* dctx,
-                            void* dst, size_t maxDstSize,
-                            const void* seqStart, size_t seqSize, int nbSeq,
-                            const ZSTD_longOffset_e isLongOffset);
-
 #ifndef ZSTD_FORCE_DECOMPRESS_SEQUENCES_LONG
 static size_t
 ZSTD_decompressSequences(ZSTD_DCtx* dctx, void* dst, size_t maxDstSize,
@@ -2073,7 +2068,7 @@ ZSTD_decompressBlock_internal(ZSTD_DCtx* dctx,
                         const void* src, size_t srcSize, const streaming_operation streaming)
 {   /* blockType == blockCompressed */
     const BYTE* ip = (const BYTE*)src;
-    DEBUGLOG(5, "ZSTD_decompressBlock_internal (size : %u)", (U32)srcSize);
+    DEBUGLOG(5, "ZSTD_decompressBlock_internal (cSize : %u)", (unsigned)srcSize);
 
     /* Note : the wording of the specification
      * allows compressed block to be sized exactly ZSTD_blockSizeMax(dctx).

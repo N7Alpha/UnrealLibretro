@@ -32,10 +32,6 @@
 #ifndef DEBUG_H_12987983217
 #define DEBUG_H_12987983217
 
-#if defined (__cplusplus)
-extern "C" {
-#endif
-
 
 /* static assert is triggered at compile time, leaving no runtime artefact.
  * static assert only works with compile-time constants.
@@ -92,21 +88,20 @@ extern int g_debuglevel; /* the variable is only declared,
         }                                  \
     } while (0)
 
+#define STRINGIFY(x) #x
+#define TOSTRING(x) STRINGIFY(x)
+#define LINE_AS_STRING TOSTRING(__LINE__)
+
 #  define DEBUGLOG(l, ...)                               \
     do {                                                 \
         if (l<=g_debuglevel) {                           \
-            ZSTD_DEBUG_PRINT(__FILE__ ": " __VA_ARGS__); \
+            ZSTD_DEBUG_PRINT(__FILE__ ":" LINE_AS_STRING ": " __VA_ARGS__); \
             ZSTD_DEBUG_PRINT(" \n");                     \
         }                                                \
     } while (0)
 #else
 #  define RAWLOG(l, ...)   do { } while (0)    /* disabled */
 #  define DEBUGLOG(l, ...) do { } while (0)    /* disabled */
-#endif
-
-
-#if defined (__cplusplus)
-}
 #endif
 
 #endif /* DEBUG_H_12987983217 */
