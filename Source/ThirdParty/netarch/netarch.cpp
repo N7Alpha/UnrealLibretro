@@ -2802,7 +2802,7 @@ SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const ch
 #endif
         }
 
-        exit(1);
+        abort();
     }
 }
 
@@ -3782,6 +3782,8 @@ int main(int argc, char *argv[]) {
             }
         }
     }
+
+    g_ulnet_session.flags |= ULNET_SESSION_FLAG_DRAW_IMGUI;
 
     if (!g_headless) {
         // Setup Platform/Renderer backends

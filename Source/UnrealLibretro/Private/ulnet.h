@@ -589,6 +589,10 @@ ULNET_LINKAGE int64_t ulnet__get_unix_time_microseconds() {
 }
 #endif
 
+
+#ifdef _WIN32
+#include <intrin.h> // For __rdtsc, __cpuid
+#endif
 uint64_t ulnet__rdtsc() {
 // Disabled because ARM64 platforms don't usually let you read the cycle counter
 #if 0 && defined(__aarch64__)                  /* === ARM64 (Broken) == */
@@ -604,12 +608,13 @@ uint64_t ulnet__rdtsc() {
     );
 
     return v;
-#elif defined(__x86_64__) || defined(__i386__) /* === x86/x86_64 ====== */
+                                               /* === x86/x86_64 ====== */
+#elif defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 #if defined(_MSC_VER)                          /* --- MSVC compiler --- */
     int cpuInfo[4];
     __cpuid(cpuInfo, 0);          // Retire previous instructions
     return __rdtsc();
-#elif defined(__GNUC__)                        /* --- GCC compiler ---- */
+#elif defined(__GNUC__)                        /* clang/GCC compiler -- */
     unsigned int lo, hi;
     __asm__ __volatile__ (
         "cpuid\n\t"               // Serialize execution
