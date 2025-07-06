@@ -3980,8 +3980,8 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        g_connected_to_sam2 &= g_sam2_socket != SAM2_SOCKET_INVALID;
-        if (g_connected_to_sam2 || (g_connected_to_sam2 = sam2_client_poll_connection(g_sam2_socket, 0))) {
+        if (   (g_sam2_socket != SAM2_SOCKET_INVALID)
+            && (g_connected_to_sam2 || (g_connected_to_sam2 = sam2_client_poll_connection(g_sam2_socket, 0)))) {
             for (int _prevent_infinite_loop_counter = 0; _prevent_infinite_loop_counter < 64; _prevent_infinite_loop_counter++) {
                 static sam2_message_u latest_sam2_message; // This is gradually buffered so it has to be static
 
@@ -3989,6 +3989,9 @@ int main(int argc, char *argv[]) {
 
                 if (status < 0) {
                     SAM2_LOG_ERROR("Error polling sam2 server: %d", status);
+                    sam2_client_disconnect(g_sam2_socket);
+                    g_sam2_socket = SAM2_SOCKET_INVALID;
+                    g_connected_to_sam2 = false;
                     break;
                 } else if (status == 0) {
                     break;
