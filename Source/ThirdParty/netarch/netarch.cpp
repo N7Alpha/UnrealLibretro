@@ -520,8 +520,6 @@ struct FLibretroContext {
     void core_input_poll();
 };
 
-ulnet_core_option_t g_core_option_for_next_frame = {0};
-
 static struct FLibretroContext g_libretro_context;
 auto &g_ulnet_session = g_libretro_context.ulnet_session;
 static bool g_headless = 0;
@@ -1297,30 +1295,6 @@ void draw_imgui() {
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     static bool show_demo_window = false;
 
-    auto show_room = [=](const sam2_room_t& room) {
-        ImGui::Text("Room: %s", room.name);
-        ImGui::Text("Flags: %016" PRIx64, room.flags);
-        ImGui::Text("Core: %s", room.core_and_version);
-        ImGui::Text("ROM Hash: %016" PRIx64, room.rom_hash_xxh64);
-
-        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-            ImVec4 color = g_ulnet_session.our_peer_id == room.peer_ids[p] ? GOLD : WHITE;
-            if (p == SAM2_AUTHORITY_INDEX) {
-                ImGui::Text("Authority Peer ID: ");
-            } else {
-                ImGui::Text("Port %d Peer ID: ", p);
-            }
-
-            ImGui::SameLine();
-            if (room.peer_ids[p] == SAM2_PORT_AVAILABLE) {
-                ImGui::Text("Available");
-            } else if (room.peer_ids[p] == SAM2_PORT_UNAVAILABLE) {
-                ImGui::Text("Unavailable");
-            } else {
-                ImGui::TextColored(color, "%05" PRId16, room.peer_ids[p]);
-            }
-        }
-    };
 
     auto show_message = [=](char *message) {
         ImGui::Text("Header: %.8s", (char *) message);
@@ -1332,7 +1306,7 @@ void draw_imgui() {
         } else if (sam2_header_matches(message, sam2_make_header)) {
             sam2_room_make_message_t *make_message = (sam2_room_make_message_t *) message;
             ImGui::Separator();
-            show_room(make_message->room);
+            ulnet_imgui_show_room(make_message->room, g_ulnet_session.our_peer_id);
         } else if (sam2_header_matches(message, sam2_list_header)) {
             if (message[7] == 'r') {
                 // Request
@@ -1341,13 +1315,13 @@ void draw_imgui() {
                 // Response
                 sam2_room_list_message_t *list_response = (sam2_room_list_message_t *) message;
                 ImGui::Separator();
-                show_room(list_response->room);
+                ulnet_imgui_show_room(list_response->room, g_ulnet_session.our_peer_id);
             }
         } else if (sam2_header_matches(message, sam2_join_header)) {
             sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
             ImGui::Text("Peer ID: %05" PRId16, (uint16_t) join_message->peer_id);
             ImGui::Separator();
-            show_room(join_message->room);
+            ulnet_imgui_show_room(join_message->room, g_ulnet_session.our_peer_id);
         } else if (sam2_header_matches(message, sam2_conn_header)) {
             sam2_connect_message_t *connect_message = (sam2_connect_message_t *) message;
             ImGui::Text("Peer ID: %05" PRId16, connect_message->peer_id);
@@ -1619,7 +1593,7 @@ void draw_imgui() {
             for (uint16_t peer_id = g_sam2_server->peer_id_pool.used_list; peer_id != SAM2__INDEX_NULL; peer_id = g_sam2_server->peer_id_pool_node[peer_id].next) {
                 if (g_sam2_server->rooms[peer_id].flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
                     if (room_header_is_open) {
-                        show_room(g_sam2_server->rooms[peer_id]);
+                        ulnet_imgui_show_room(g_sam2_server->rooms[peer_id], g_ulnet_session.our_peer_id);
                     }
                     room_count++;
                 }
@@ -1801,15 +1775,22 @@ void draw_imgui() {
             static bool show_test_sessions = false;
 
             if (ImGui::Button("Run ICE connection tests")) {
+                SAM2_LOG_INFO("\033[1;32m=========================================");
+                SAM2_LOG_INFO("\033[1;32m====== Running ulnet ICE tests ==========");
+                SAM2_LOG_INFO("\033[1;32m=========================================");
                 if (ulnet_test_ice(&test_session1, &test_session2)) {
-                    SAM2_LOG_ERROR("Ice tests failed");
+                    SAM2_LOG_ERROR("ICE tests failed");
                     show_test_sessions = true;
                 } else {
-                    SAM2_LOG_INFO("Ice tests passed");
+                    SAM2_LOG_INFO("ICE tests passed");
+                    show_test_sessions = true;
                 }
             }
 
             if (ImGui::Button("Run ulnet in-process tests")) {
+                SAM2_LOG_INFO("\033[1;32m=========================================");
+                SAM2_LOG_INFO("\033[1;32m====== Running ulnet in-process tests ===");
+                SAM2_LOG_INFO("\033[1;32m=========================================");
                 if (ulnet_test_inproc(&test_session1, &test_session2)) {
                     SAM2_LOG_ERROR("In process tests failed");
                     show_test_sessions = true;
@@ -2137,7 +2118,7 @@ void draw_imgui() {
                         // We are already in a room, so we need to leave it first
                         SAM2_LOG_INFO("We are already in a room, leaving it first");
                     } else {
-                                            ulnet_session_init_defaulted(&g_ulnet_session);
+                        ulnet_session_init_defaulted(&g_ulnet_session);
                         // Both of these methods should work
 #if 0
                         g_ulnet_session.room_we_are_in = g_sam2_rooms[selected_room_index];
@@ -2302,10 +2283,9 @@ finished_drawing_sam2_interface:
                     // @todo There are weird race conditions if you rapidly modify options using this gui since the authority is directly modifying the values in the buffer
                     //       This really just shouldn't matter unless we hook up a programmatic tester or something to this gui. Ideally the authority should modify it when it
                     //       hits the frame the option was modified on.
-                    g_core_option_for_next_frame = g_ulnet_session.core_options[option_modified_at_index];
+                    g_ulnet_session.next_core_option = g_ulnet_session.core_options[option_modified_at_index];
 
                     option_modified_at_index = -1;
-                    g_ulnet_session.flags |= ULNET_SESSION_FLAG_CORE_OPTIONS_DIRTY;
                 }
             }
         }
@@ -2314,8 +2294,8 @@ finished_drawing_sam2_interface:
             int64_t min_delay_frames = 0;
             int64_t max_delay_frames = ULNET_DELAY_BUFFER_SIZE/2-1;
             if (ImGui::SliderScalar("Network Buffered Frames", ImGuiDataType_S64, &g_ulnet_session.delay_frames, &min_delay_frames, &max_delay_frames, "%lld", ImGuiSliderFlags_None)) {
-                strcpy(g_core_option_for_next_frame.key, "netplay_delay_frames");
-                snprintf(g_core_option_for_next_frame.value, sizeof(g_core_option_for_next_frame.value), "%" PRIx64, g_ulnet_session.delay_frames);
+                strcpy(g_ulnet_session.next_core_option.key, "netplay_delay_frames");
+                snprintf(g_ulnet_session.next_core_option.value, sizeof(g_ulnet_session.next_core_option.value), "%" PRIx64, g_ulnet_session.delay_frames);
             }
         }
 
@@ -3883,29 +3863,25 @@ int main(int argc, char *argv[]) {
 
         g_kbd = SDL_GetKeyboardState(NULL);
 
-        if (g_kbd[SDL_SCANCODE_ESCAPE])
+        if (g_kbd[SDL_SCANCODE_ESCAPE]) {
             running = false;
+        }
 
-        auto &next_input_state = *ulnet_query_generate_next_input(&g_ulnet_session, &g_core_option_for_next_frame);
+        for (int i = 0; g_binds[i].k || g_binds[i].rk; ++i) {
+            g_ulnet_session.next_input_state[0][g_binds[i].rk] = (int16_t) g_kbd[g_binds[i].k];
+        }
 
-        if (next_input_state) {
-
-            for (int i = 0; g_binds[i].k || g_binds[i].rk; ++i) {
-                next_input_state[0][g_binds[i].rk] |= (int16_t) g_kbd[g_binds[i].k];
+        // Handle gamepad digital buttons
+        for (int i = 0; g_gamepad_binds[i].button || g_gamepad_binds[i].retro_id; ++i) {
+            if (g_gamepad && SDL_GetGamepadButton(g_gamepad, g_gamepad_binds[i].button)) {
+                g_ulnet_session.next_input_state[0][g_gamepad_binds[i].retro_id] = 1;
             }
+        }
 
-            // Handle gamepad digital buttons
-            for (int i = 0; g_gamepad_binds[i].button || g_gamepad_binds[i].retro_id; ++i) {
-                if (SDL_GetGamepadButton(g_gamepad, g_gamepad_binds[i].button)) {
-                    next_input_state[0][g_gamepad_binds[i].retro_id] |= 1;
-                }
-            }
-
-            // Nice for testing network code I found a bug in nestopia using this
-            if (g_libretro_context.fuzz_input) {
-                for (int i = 0; i < 16; ++i) {
-                    next_input_state[0][i] |= rand() & 0x0001;
-                }
+        // Nice for testing network code I found a bug in nestopia using this
+        if (g_libretro_context.fuzz_input) {
+            for (int i = 0; i < 16; ++i) {
+                g_ulnet_session.next_input_state[0][i] = rand() & 0x0001;
             }
         }
 
@@ -3938,6 +3914,10 @@ int main(int argc, char *argv[]) {
         };
         int status = ulnet_poll_session(&g_ulnet_session, g_do_zstd_compress, g_savebuffer[g_save_state_index], sizeof(g_savebuffer[g_save_state_index]),
             g_av.timing.fps, max_sleeping_allowed_when_polling_network_seconds);
+
+        if (status & ULNET_POLL_SESSION_BUFFERED_INPUT) {
+            memset(&g_ulnet_session.next_core_option, 0, sizeof(g_ulnet_session.next_core_option));
+        }
 
         if (g_do_zstd_compress && (status & ULNET_POLL_SESSION_SAVED_STATE)) {
             tick_compression_investigation((char *)g_savebuffer[g_save_state_index], g_serialize_size, (char*)rom_data, rom_size);

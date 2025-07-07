@@ -841,6 +841,7 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
         return true;
     }
     case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE: {
+        // @todo Integrate with netarch
         bool* core_should_query_for_options = (bool*)data;
 
         // atomic<>::exchange is necessary otherwise we could miss newly set options because of a race condition

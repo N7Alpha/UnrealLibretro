@@ -65,8 +65,6 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
     sam2_server_t *server = 0;
     ulnet_session_t *sessions[2] = {0};
     sam2_socket_t sockets[2] = {0};
-    uint8_t *msg1;
-    uint8_t *msg2;
     int test_passed = 1;
 
     server = (sam2_server_t *) malloc(sizeof(sam2_server_t));
@@ -79,6 +77,7 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
     for (int i = 0; i < sizeof(sessions)/sizeof(sessions[0]); i++) {
         sessions[i] = (ulnet_session_t *)calloc(1, sizeof(ulnet_session_t));
         ulnet_session_init_defaulted(sessions[i]);
+        sessions[i]->reliable_retransmit_delay_microseconds = 0;
         sessions[i]->sam2_send_callback = ulnet__test_sam2_send_callback;
         sessions[i]->user_ptr = &sockets[i];
         sessions[i]->retro_run = ulnet__test_retro_run;
@@ -113,6 +112,19 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
         }
     }
 
+    sam2_room_t room = {0};
+    room.flags = SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+    room.peer_ids[SAM2_AUTHORITY_INDEX] = 10001;
+    room.peer_ids[SAM2_SPECTATOR_START] = 30002;
+
+    // @todo The behavior right now sucks if you don't first make the room before having the person try to join it. It should just reply with a reasonable error
+    // Have session 0 make the room
+    sam2_room_make_message_t request = { SAM2_MAKE_HEADER };
+    request.room = room;
+    request.room.flags |= SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+    sam2_client_send(sockets[0], (char *)&request);
+
+    // Have session 1 join the room
     sessions[1]->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = sessions[0]->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX];
     sessions[1]->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
     ulnet_startup_ice_for_peer(sessions[1], sessions[0]->our_peer_id, SAM2_AUTHORITY_INDEX, NULL);
@@ -122,7 +134,7 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
 
     for (int64_t start_time = ulnet__get_unix_time_microseconds(); ulnet__get_unix_time_microseconds() - start_time < 2000000;) {
         for (int i = 0; i < sizeof(sessions)/sizeof(sessions[0]); i++) {
-            status = ulnet_poll_session(sessions[i], 0, 0, 0, 1.0, 16e-3);
+            status = ulnet_poll_session(sessions[i], 0, 0, 0, 60.0, 50e-3);
             if (status < 0) {
                 SAM2_LOG_ERROR("Error polling ulnet session: %d", status);
                 goto _10;
@@ -150,30 +162,29 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
     }
 
     sessions[0]->debug_udp_recv_drop_rate = 1.0f;
-    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "HELLO", sizeof("HELLO") - 1);
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
-
+    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "HELLO", sizeof("HELLO") - 1); // DROP
     sessions[0]->debug_udp_recv_drop_rate = 0.0f;
-    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "WORLD", sizeof("WORLD") - 1);
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
-
+    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "WORLD", sizeof("WORLD") - 1); // (NOT SENT) ADDED TO OUTGOING BUFFER
+    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3); // RETRANSMIT "HELLO"
+    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3); // RECEIVE "HELLO"
     ulnet_reliable_send_with_acks_only(sessions[0], SAM2_SPECTATOR_START, (const uint8_t*) "ACK CARRIER", sizeof("ACK CARRIER") - 1);
-    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3);
-    sessions[1]->reliable_next_retransmit_time = 0;
-    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3);
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
+    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3); // RETRANSMIT "WORLD"
+    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3); // RECEIVE "WORLD"
 
-    msg1 = arena_deref(&sessions[0]->arena, sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][1]);
-    msg2 = arena_deref(&sessions[0]->arena, sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][2]);
+#if 0
+    ulnet_reliable_send_with_acks_only(sessions[0], SAM2_SPECTATOR_START, (const uint8_t*) "ACK CARRIER", sizeof("ACK CARRIER") - 1); // ACK "WORLD"
+    for (int i = 0; i < 5; i++) {
+        ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3);
+        ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
+    }
+#endif
+    ulnet_reliable_packet_t *msg1 = (ulnet_reliable_packet_t *) arena_deref(&sessions[0]->arena, sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][0]);
+    ulnet_reliable_packet_t *msg2 = (ulnet_reliable_packet_t *) arena_deref(&sessions[0]->arena, sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][1]);
 
-    // Check wrapped packet contents
-    int offset1 = ulnet_wrapped_header_size(msg1, ULNET_PACKET_SIZE_BYTES_MAX);
-    int offset2 = ulnet_wrapped_header_size(msg2, ULNET_PACKET_SIZE_BYTES_MAX);
-    if (!(   msg1 && memcmp(&msg1[offset1], "HELLO", sizeof("HELLO") - 1) == 0
-          && msg2 && memcmp(&msg2[offset2], "WORLD", sizeof("WORLD") - 1) == 0)) {
+    if (!(   msg1 && memcmp(msg1->payload, "HELLO", sizeof("HELLO") - 1) == 0
+          && msg2 && memcmp(msg2->payload, "WORLD", sizeof("WORLD") - 1) == 0)) {
         SAM2_LOG_ERROR("Failed to send reliable messages");
         status = 1;
-        goto _10;
     }
 
 _10:sam2_server_destroy(server);
@@ -203,6 +214,7 @@ int ulnet_test_inproc(ulnet_session_t **session_1_out, ulnet_session_t **session
     for (int i = 0; i < 2; i++) {
         sessions[i] = (ulnet_session_t *)calloc(1, sizeof(ulnet_session_t));
         ulnet_session_init_defaulted(sessions[i]);
+        sessions[i]->reliable_retransmit_delay_microseconds = 0;
         sessions[i]->use_inproc_transport = true;
         sessions[i]->retro_run = ulnet__test_retro_run;
         sessions[i]->retro_serialize_size = ulnet__test_retro_serialize_size;
@@ -234,41 +246,24 @@ int ulnet_test_inproc(ulnet_session_t **session_1_out, ulnet_session_t **session
     sessions[0]->peer_needs_sync_bitfield |= (1ULL << SAM2_SPECTATOR_START);
 
     sessions[0]->debug_udp_recv_drop_rate = 1.0f;
-    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "HELLO", sizeof("HELLO") - 1);
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
-
+    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "HELLO", sizeof("HELLO") - 1); // DROP
     sessions[0]->debug_udp_recv_drop_rate = 0.0f;
-    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "WORLD", sizeof("WORLD") - 1);
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
+    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "WORLD", sizeof("WORLD") - 1); // (NOT SENT) added to reliable_tx_packet_history
+    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3); // RETRANSMIT "HELLO"
+    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3); // RECEIVE "HELLO"
+    ulnet_reliable_send_with_acks_only(sessions[0], SAM2_SPECTATOR_START, (const uint8_t*) "ACK CARRIER", sizeof("ACK CARRIER") - 1); // ACK "HELLO"
+    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3); // RETRANSMIT "WORLD"
+    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3); // RECEIVE "WORLD"
 
-    ulnet_reliable_send_with_acks_only(sessions[0], SAM2_SPECTATOR_START, (const uint8_t*) "ACK CARRIER", sizeof("ACK CARRIER") - 1);
-    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3);
-    sessions[1]->reliable_next_retransmit_time = 0;
-    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3);
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
+    ulnet_reliable_packet_t *msg1 = (ulnet_reliable_packet_t *) arena_deref(&sessions[0]->arena, sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][0]);
+    ulnet_reliable_packet_t *msg2 = (ulnet_reliable_packet_t *) arena_deref(&sessions[0]->arena, sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][1]);
 
-    // Verify messages were received
-    void *msg1 = arena_deref(&sessions[0]->arena, sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][1 % ULNET_RELIABLE_ACK_BUFFER_SIZE]);
-    void *msg2 = arena_deref(&sessions[0]->arena, sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][2 % ULNET_RELIABLE_ACK_BUFFER_SIZE]);
-
-    if (!msg1 || !msg2) {
-        SAM2_LOG_ERROR("Failed to receive reliable messages");
+    if (!(   msg1 && memcmp(msg1->payload, "HELLO", sizeof("HELLO") - 1) == 0
+          && msg2 && memcmp(msg2->payload, "WORLD", sizeof("WORLD") - 1) == 0)) {
+        SAM2_LOG_ERROR("Failed to send reliable messages");
         status = 1;
-        goto cleanup;
     }
 
-    // Check wrapped packet contents
-    int offset1 = ulnet_wrapped_header_size((uint8_t*)msg1, ULNET_PACKET_SIZE_BYTES_MAX);
-    int offset2 = ulnet_wrapped_header_size((uint8_t*)msg2, ULNET_PACKET_SIZE_BYTES_MAX);
-
-    if (memcmp((uint8_t*)msg1 + offset1, "HELLO", 5) != 0 ||
-        memcmp((uint8_t*)msg2 + offset2, "WORLD", 5) != 0) {
-        SAM2_LOG_ERROR("Message content mismatch");
-        status = 1;
-        goto cleanup;
-    }
-
-cleanup:
     sessions[0]->inproc[SAM2_SPECTATOR_START] = NULL;
     sessions[1]->inproc[SAM2_AUTHORITY_INDEX] = NULL;
     ulnet_session_tear_down(sessions[0]);
@@ -328,6 +323,12 @@ void ulnet__bench_xxh32() {
 
 #if defined(ULNET_TEST_MAIN)
 void sam2_log_write(int level, const char *file, int line, const char *format, ...) {
+    if (level == 2) {
+        printf("WARN %s:%d | ", file, line);
+    } else if (level > 2) {
+        printf("ERROR %s:%d | ", file, line);
+    }
+
     va_list args;
     va_start(args, format);
     vprintf(format, args);
