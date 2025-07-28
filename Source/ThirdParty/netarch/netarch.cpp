@@ -1834,7 +1834,6 @@ void draw_imgui() {
                     show_test_sessions = true;
                 } else {
                     SAM2_LOG_INFO("ICE tests passed");
-                    show_test_sessions = true;
                 }
             }
 
