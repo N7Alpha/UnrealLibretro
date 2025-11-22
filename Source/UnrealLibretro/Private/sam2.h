@@ -252,122 +252,6 @@ typedef int sam2_socket_t;
 
 #define SAM2__INDEX_NULL ((uint16_t) 0x0000U)
 
-#define SAM2__MEDIUM_POOL_SIZE 2048
-#define SAM2__LARGE_POOL_SIZE 65536
-typedef struct sam2__pool_node {
-    uint16_t next;
-    uint16_t prev;
-} sam2__pool_node_t;
-
-typedef struct sam2__pool {
-    uint16_t free_list;
-    uint16_t free_list_tail;
-    uint16_t used_list;
-    uint16_t used;
-    uint16_t capacity;
-    //sam2__pool_node_t node[n]; // capacity == n - 1 because 0-index reserved for null
-} sam2__pool_t;
-
-static SAM2_FORCEINLINE sam2__pool_node_t *sam2__pool_node(sam2__pool_t *pool) {
-    char *node = ((char *) pool) + sizeof(pool[0]);
-    return (sam2__pool_node_t *) node;
-}
-
-static SAM2_FORCEINLINE int sam2__pool_is_free(sam2__pool_t *pool, uint16_t idx) {
-    sam2__pool_node_t *node = sam2__pool_node(pool);
-
-    return idx == pool->free_list || node[idx].prev != SAM2__INDEX_NULL;
-}
-
-static void sam2__pool_init(sam2__pool_t *pool, int n) {
-    sam2__pool_node_t *node = sam2__pool_node(pool);
-
-    for (int i = 1; i < n; i++) {
-        node[i].next = i + 1;
-        node[i].prev = i - 1;
-    }
-
-    node[0].prev = SAM2__INDEX_NULL;
-    node[n - 1].next = SAM2__INDEX_NULL;
-    pool->free_list = 1;
-    pool->free_list_tail = n - 1;
-    pool->used_list = SAM2__INDEX_NULL;
-    pool->used = 0;
-    pool->capacity = n - 1;
-}
-
-static uint16_t sam2__pool_alloc_at_index(sam2__pool_t *pool, uint16_t idx) {
-    sam2__pool_node_t *node = sam2__pool_node(pool);
-
-    if ((uint16_t)(idx-1) >= pool->capacity) {
-        return SAM2__INDEX_NULL; // Invalid index
-    }
-
-    if (!sam2__pool_is_free(pool, idx)) {
-        return SAM2__INDEX_NULL; // Already allocated
-    }
-
-    // Remove from free list
-    if (idx == pool->free_list) {
-        pool->free_list = node[idx].next;
-        if (pool->free_list != SAM2__INDEX_NULL) {
-            node[pool->free_list].prev = SAM2__INDEX_NULL;
-        } else {
-            pool->free_list_tail = SAM2__INDEX_NULL; // Freelist becomes empty
-        }
-    } else if (idx == pool->free_list_tail) {
-        pool->free_list_tail = node[idx].prev;
-        node[node[idx].prev].next = SAM2__INDEX_NULL;
-    } else {
-        node[node[idx].prev].next = node[idx].next;
-        node[node[idx].next].prev = node[idx].prev;
-    }
-
-    // Add to used list
-    node[idx].next = pool->used_list;
-    node[idx].prev = SAM2__INDEX_NULL;
-    pool->used_list = idx;
-    pool->used++;
-
-    return idx;
-}
-
-static SAM2_FORCEINLINE uint16_t sam2__pool_alloc(sam2__pool_t *pool) {
-    return sam2__pool_alloc_at_index(pool, pool->free_list);
-}
-
-static const char *sam2__pool_free(sam2__pool_t *pool, uint16_t idx) {
-    sam2__pool_node_t *node = sam2__pool_node(pool);
-
-    if ((uint16_t)(idx-1) >= pool->capacity) {
-        return "Invalid index";
-    }
-
-    if (sam2__pool_is_free(pool, idx)) {
-        return "Already free";
-    }
-
-    // Remove from used list
-    if (idx == pool->used_list) {
-        pool->used_list = node[idx].next;
-    } else {
-        node[node[idx].prev].next = node[idx].next;
-    }
-
-    // Add to free list at tail
-    node[idx].next = SAM2__INDEX_NULL;
-    node[idx].prev = pool->free_list_tail;
-    if (pool->free_list_tail != SAM2__INDEX_NULL) {
-        node[pool->free_list_tail].next = idx;
-    } else {
-        pool->free_list = idx; // List was empty, set head
-    }
-    pool->free_list_tail = idx;
-    pool->used--;
-
-    return NULL;
-}
-
 #if defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/event.h>
 #include <sys/time.h>
@@ -395,29 +279,22 @@ typedef struct sam2_server {
     sam2_socket_t listen_socket;
 
     // Client management
-    sam2_client_t clients[SAM2__LARGE_POOL_SIZE];
-    sam2_room_t rooms[SAM2__LARGE_POOL_SIZE];
-    uint16_t peer_id_map[SAM2__LARGE_POOL_SIZE];
-
-    struct {
-        sam2__pool_t client_pool;
-        sam2__pool_node_t client_pool_node[SAM2__LARGE_POOL_SIZE];
-    };
-
-    struct {
-        sam2__pool_t peer_id_pool;
-        sam2__pool_node_t peer_id_pool_node[SAM2__LARGE_POOL_SIZE];
-    };
+    sam2_client_t clients[65536];
+    sam2_room_t rooms[65536];
+    uint16_t peer_id_map[65536]; // Maps peer_id to clients[] index
+    uint16_t active_clients[65536]; // Indices into clients[] of active clients
+    uint16_t active_client_count;
+    uint16_t client_free_list;
 
     // Platform-specific polling
 #if defined(__APPLE__) || defined(__FreeBSD__)
     int kqueue_fd;
-    struct kevent events[SAM2__LARGE_POOL_SIZE];
-    struct kevent changelist[SAM2__LARGE_POOL_SIZE];
+    struct kevent events[65536];
+    struct kevent changelist[65536];
     int changelist_count;
 #else
     // Use poll for Windows, Linux, Android, and others
-    struct pollfd pollfds[SAM2__LARGE_POOL_SIZE];
+    struct pollfd pollfds[65536];
 #endif
 
     int poll_count;
@@ -429,16 +306,6 @@ static sam2_client_t* sam2__find_client(sam2_server_t *server, uint16_t peer_id)
 
     if (client_index != SAM2__INDEX_NULL) {
         return &server->clients[client_index];
-    } else {
-        return NULL;
-    }
-}
-
-static sam2_room_t* sam2__find_hosted_room(sam2_server_t *server, sam2_room_t *room) {
-    sam2_room_t *hosted_room = &server->rooms[room->peer_ids[SAM2_AUTHORITY_INDEX]];
-
-    if (hosted_room->flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
-        return hosted_room;
     } else {
         return NULL;
     }
@@ -1087,6 +954,23 @@ static int64_t sam2__get_time_ms() {
 #endif
 }
 
+static void sam2__client_close_socket(sam2_server_t *server, sam2_client_t *client) {
+    if (client->socket != SAM2_SOCKET_INVALID) {
+        // Remove from polling
+#if defined(__APPLE__) || defined(__FreeBSD__)
+        struct kevent ev;
+        EV_SET(&ev, client->socket, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+        kevent(server->kqueue_fd, &ev, 1, NULL, 0, NULL);
+        EV_SET(&ev, client->socket, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+        kevent(server->kqueue_fd, &ev, 1, NULL, 0, NULL);
+#endif
+        sam2__close_socket(client->socket);
+        client->socket = SAM2_SOCKET_INVALID;
+    }
+
+    SAM2_LOG_INFO("Client %05" PRIu16 " disconnected", client->peer_id);
+}
+
 static void sam2__client_destroy(sam2_server_t *server, sam2_client_t *client) {
     uint16_t client_index = (uint16_t)(client - server->clients);
     uint16_t peer_id = client->peer_id;
@@ -1094,33 +978,22 @@ static void sam2__client_destroy(sam2_server_t *server, sam2_client_t *client) {
     if (peer_id <= SAM2_PORT_SENTINELS_MAX) {
         SAM2_LOG_ERROR("Tried to free sentinel peer id %05d", peer_id);
         return;
-    } else if (sam2__pool_is_free(&server->peer_id_pool, client->peer_id)) {
+    } else if (server->peer_id_map[peer_id] == SAM2__INDEX_NULL) {
         SAM2_LOG_ERROR("Tried to free already freed client %05" PRIu16, client->peer_id);
         return;
     }
 
-    // Remove from polling
-#if defined(__APPLE__) || defined(__FreeBSD__)
-    struct kevent ev;
-    EV_SET(&ev, client->socket, EVFILT_READ, EV_DELETE, 0, 0, NULL);
-    kevent(server->kqueue_fd, &ev, 1, NULL, 0, NULL);
-    EV_SET(&ev, client->socket, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
-    kevent(server->kqueue_fd, &ev, 1, NULL, 0, NULL);
-#endif
-
-    sam2__close_socket(client->socket);
-    client->socket = SAM2_SOCKET_INVALID;
+    if (client->socket != SAM2_SOCKET_INVALID) {
+        sam2__client_close_socket(server, client);
+    }
 
     server->peer_id_map[peer_id] = SAM2__INDEX_NULL;
-    sam2__pool_free(&server->peer_id_pool, peer_id);
-    sam2__pool_free(&server->client_pool, client_index);
+    memcpy(client, &server->client_free_list, sizeof(uint16_t));
+    server->client_free_list = client_index;
 
     server->rooms[peer_id].flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
-
-    SAM2_LOG_INFO("Client %05d disconnected", peer_id);
 }
 
-// Message sending - let OS handle buffering
 static int sam2__write_message(sam2_server_t *server, sam2_client_t *client, char *message) {
     sam2_message_metadata_t *metadata = sam2_get_metadata((char*)message);
     if (!metadata) {
@@ -1144,12 +1017,12 @@ static int sam2__write_message(sam2_server_t *server, sam2_client_t *client, cha
     } else if (n < 0) {
         // Real error
         SAM2_LOG_ERROR("Send error for client %05" PRIu16 ": %d", client->peer_id, SAM2_SOCKERRNO);
-        sam2__client_destroy(server, client);
+        sam2__client_close_socket(server, client);
         return -1;
     } else {
         // Partial send - this shouldn't happen with small messages and proper buffer sizes
         SAM2_LOG_ERROR("Partial send for client %05" PRIu16 ": %d/%d bytes", client->peer_id, n, message_size);
-        sam2__client_destroy(server, client);
+        sam2__client_close_socket(server, client);
         return -1;
     }
 }
@@ -1186,9 +1059,10 @@ static void sam2__process_message(sam2_server_t *server, sam2_client_t *client, 
         }
 
         // Change peer ID
+        uint16_t new_peer_id = request->peer_id;
         uint16_t old_peer_id = client->peer_id;
-        sam2__pool_free(&server->peer_id_pool, old_peer_id);
-        uint16_t new_peer_id = sam2__pool_alloc_at_index(&server->peer_id_pool, request->peer_id);
+        server->peer_id_map[new_peer_id] = server->peer_id_map[old_peer_id];
+        server->peer_id_map[old_peer_id] = SAM2__INDEX_NULL;
 
         if (new_peer_id == SAM2__INDEX_NULL) {
             sam2__write_error(client, "Requested invalid peer id", SAM2_RESPONSE_INVALID_ARGS);
@@ -1270,7 +1144,7 @@ static void sam2__process_client_read(sam2_server_t *server, sam2_client_t *clie
                 } else if (status < 0) {
                     SAM2_LOG_ERROR("Client %05" PRIu16 " framing error: %d", client->peer_id, status);
                     sam2__write_error(client, "Invalid message format", SAM2_RESPONSE_INVALID_ARGS);
-                    sam2__client_destroy(server, client);
+                    sam2__client_close_socket(server, client);
                     return;
                 } else {
                     SAM2_LOG_INFO("Client %05" PRIu16 " sent '%.8s'", client->peer_id, (char*)&message);
@@ -1279,12 +1153,12 @@ static void sam2__process_client_read(sam2_server_t *server, sam2_client_t *clie
             }
         } else if (n == 0) {
             // Connection closed
-            sam2__client_destroy(server, client);
+            sam2__client_close_socket(server, client);
             return;
         } else {
             if (!sam2__would_block()) {
                 SAM2_LOG_ERROR("Client %05" PRIu16 " recv error: %d", client->peer_id, SAM2_SOCKERRNO);
-                sam2__client_destroy(server, client);
+                sam2__client_close_socket(server, client);
             }
             return;
         }
@@ -1305,22 +1179,27 @@ static void sam2__accept_connections(sam2_server_t *server) {
             break;
         }
 
+        int peer_id = SAM2_PORT_SENTINELS_MAX + 1;
+        for (; peer_id < SAM2_ARRAY_LENGTH(server->peer_id_map); peer_id++) {
+            if (server->peer_id_map[peer_id] == SAM2__INDEX_NULL) {
+                break;
+            }
+        }
+
+        if (peer_id == SAM2_ARRAY_LENGTH(server->peer_id_map)) {
+            SAM2_LOG_WARN("No peer IDs available");
+            sam2__close_socket(client_socket);
+            continue;
+        }
+
         // Allocate client slot
-        uint16_t client_index = sam2__pool_alloc(&server->client_pool);
+        uint16_t client_index = server->client_free_list;
         if (client_index == SAM2__INDEX_NULL) {
             SAM2_LOG_WARN("No client slots available");
             sam2__close_socket(client_socket);
             continue;
         }
-
-        // Allocate peer ID
-        uint16_t peer_id = sam2__pool_alloc(&server->peer_id_pool);
-        if (peer_id == SAM2__INDEX_NULL) {
-            SAM2_LOG_ERROR("No peer IDs available");
-            sam2__pool_free(&server->client_pool, client_index);
-            sam2__close_socket(client_socket);
-            continue;
-        }
+        memcpy(&server->client_free_list, &server->clients[client_index], sizeof(uint16_t)); // Update free list
 
         // Initialize client
         sam2_client_t *client = &server->clients[client_index];
@@ -1329,6 +1208,7 @@ static void sam2__accept_connections(sam2_server_t *server) {
         client->peer_id = peer_id;
         client->last_activity = server->current_time;
         server->peer_id_map[peer_id] = client_index;
+        server->active_clients[server->active_client_count++] = client_index;
 
         // Configure socket
         sam2__set_nonblocking(client_socket);
@@ -1351,7 +1231,7 @@ static void sam2__accept_connections(sam2_server_t *server) {
         SAM2_LOG_INFO("Client %05" PRIu16 " connected", client->peer_id);
 
         // Send connect message
-        sam2_connect_message_t connect_msg = { SAM2_CONN_HEADER, peer_id, 0 };
+        sam2_connect_message_t connect_msg = { SAM2_CONN_HEADER, client->peer_id, 0 };
         sam2__write_message(server, client, (char *)&connect_msg);
     }
 }
@@ -1371,9 +1251,8 @@ static int sam2__poll_sockets(sam2_server_t *server) {
     server->pollfds[nfds].revents = 0;
     nfds++;
 
-    for (uint16_t i = server->client_pool.used_list; i != SAM2__INDEX_NULL; ) {
-        sam2__pool_node_t *node = sam2__pool_node(&server->client_pool);
-        sam2_client_t *client = &server->clients[i];
+    for (uint16_t i = 0; i < server->active_client_count; i++) {
+        sam2_client_t *client = &server->clients[server->active_clients[i]];
 
         if (client->socket != SAM2_SOCKET_INVALID) {
             server->pollfds[nfds].fd = client->socket;
@@ -1381,8 +1260,6 @@ static int sam2__poll_sockets(sam2_server_t *server) {
             server->pollfds[nfds].revents = 0;
             nfds++;
         }
-
-        i = node[i].next;
     }
 
     server->poll_count = nfds;
@@ -1409,7 +1286,7 @@ SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
             sam2_client_t *client = (sam2_client_t*)server->events[i].udata;
 
             if (server->events[i].flags & EV_EOF) {
-                sam2__client_destroy(server, client);
+                sam2__client_close_socket(server, client);
                 continue;
             }
 
@@ -1430,24 +1307,32 @@ SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
 
         // Check client sockets
         int poll_idx = 1;
-        for (uint16_t i = server->client_pool.used_list; i != SAM2__INDEX_NULL; ) {
-            sam2__pool_node_t *node = sam2__pool_node(&server->client_pool);
-            sam2_client_t *client = &server->clients[i];
-            uint16_t next = node[i].next;
+        for (int i = 0; i < server->active_client_count; i++) {
+            sam2_client_t *client = &server->clients[server->active_clients[i]];
 
             if (poll_idx < server->poll_count && client->socket != SAM2_SOCKET_INVALID) {
                 if (server->pollfds[poll_idx].revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                    sam2__client_destroy(server, client);
+                    sam2__client_close_socket(server, client);
                 } else if (server->pollfds[poll_idx].revents & POLLIN) {
                     sam2__process_client_read(server, client);
                 }
                 poll_idx++;
             }
-
-            i = next;
         }
     }
 #endif
+
+    // Sweep dead clients
+    for (int i = 0; i < server->active_client_count; i++) {
+        sam2_client_t *client = &server->clients[server->active_clients[i]];
+
+        if (client->socket == SAM2_SOCKET_INVALID) {
+            sam2__client_destroy(server, client);
+            server->active_clients[i] = server->active_clients[server->active_client_count - 1];
+            server->active_client_count--;
+            i--;
+        }
+    }
 
     return 0;
 }
@@ -1455,10 +1340,11 @@ SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
 SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     memset(server, 0, sizeof(*server));
 
-    // Initialize pools
-    sam2__pool_init(&server->client_pool, SAM2_ARRAY_LENGTH(server->clients));
-    sam2__pool_init(&server->peer_id_pool, SAM2_ARRAY_LENGTH(server->peer_id_pool_node));
-    server->peer_id_pool.free_list = SAM2_PORT_SENTINELS_MAX + 1;
+    // Init client free list
+    for (int i = 1; i < SAM2_ARRAY_LENGTH(server->clients); i++) {
+        memcpy(&server->clients[i], &server->client_free_list, sizeof(uint16_t));
+        server->client_free_list = (uint16_t) i;
+    }
 
     // Initialize sockets on Windows
 #ifdef _WIN32
@@ -1558,11 +1444,8 @@ err:if (server->listen_socket != SAM2_SOCKET_INVALID) {
 // Destroy server
 SAM2_LINKAGE void sam2_server_destroy(sam2_server_t *server) {
     // Close all clients
-    for (uint16_t i = server->client_pool.used_list; i != SAM2__INDEX_NULL; ) {
-        sam2__pool_node_t *node = sam2__pool_node(&server->client_pool);
-        uint16_t next = node[i].next;
-        sam2__client_destroy(server, &server->clients[i]);
-        i = next;
+    for (int i = 0; i < server->active_client_count; i++) {
+        sam2__client_destroy(server, &server->clients[server->active_clients[i]]);
     }
 
     // Close listen socket
@@ -1637,7 +1520,7 @@ SAM2_LINKAGE void sam2_server_destroy(sam2_server_t *server) {
 // If these fail then this server won't be binary compatible with the protocol and would fail horrendously
 // Resort to packing pragmas until these succeed if you run into this issue yourself
 SAM2_STATIC_ASSERT(SAM2_BYTEORDER_ENDIAN == SAM2_BYTEORDER_LITTLE_ENDIAN, "Platform is big-endian which is unsupported");
-SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == 64 + sizeof(uint64_t) + 32 + 64*sizeof(uint16_t) + sizeof(uint64_t), "sam2_room_t is not packed");
+SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == sizeof(char[64]) + sizeof(uint64_t) + sizeof(char[32]) + sizeof(uint64_t) + sizeof(uint16_t[SAM2_TOTAL_PEERS]), "sam2_room_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_make_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_make_message_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_list_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_list_message_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_join_message_t) == 8 + 8 + sizeof(sam2_room_t), "sam2_room_join_message_t is not packed");
