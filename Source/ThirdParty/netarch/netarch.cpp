@@ -24,6 +24,7 @@ int g_log_level = 1; // Info
 #define MAX_SAMPLE_SIZE ULNET_MAX_SAMPLE_SIZE
 
 #define IMGUI_DISABLE_OBSOLETE_FUNCTIONS
+#include "fractur_moderne_imgui_style.h"
 #include "NetImgui_Api.h"
 #include "imgui.h"
 #if !defined(NETARCH_NO_SDL)
@@ -1030,6 +1031,8 @@ static bool g_vsync_enabled = true;
 static ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 static bool g_connected_to_sam2 = false;
 static sam2_error_message_t g_last_sam2_error = { SAM2_RESPONSE_SUCCESS };
+
+ImFont *moderne_fraktur_font = NULL;
 
 static void peer_ids_to_string(uint16_t peer_ids[], char *output) {
     for (int i = 0; i < SAM2_PORT_MAX; i++) {
@@ -2451,6 +2454,16 @@ finished_drawing_sam2_interface:
         ImGui::Text("Ctrl+Shift+A: Toggle collapse/expand");
         ImGui::Text("Ctrl+Shift+D: Toggle input fuzzing"); g_libretro_context.fuzz_input ^= ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_D);
         ImGui::Text("Ctrl+Shift+P: Demo Window"); show_demo_window ^= ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P);
+        ImGui::Text("Ctrl+Shift+T:"); ImGui::PushFont(moderne_fraktur_font); ImGui::SameLine(); ImGui::Text("Ehre sei Gott"); ImGui::PopFont();
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_T)) {
+            if (io.FontDefault != moderne_fraktur_font) {
+                StyleModerneFraktur();
+                io.FontDefault = moderne_fraktur_font;
+            } else {
+                ImGui::StyleColorsDark();
+                io.FontDefault = io.Fonts->Fonts[0];
+            }
+        }
         ImGui::End();
     }
 
@@ -3767,6 +3780,7 @@ int main(int argc, char *argv[]) {
         // Confusingly, you don't manually set the null backend see imgui/examples/example_null/main.cpp for details
         // You'll hit a variety of asserts if you don't execute the following boilerplate
         io.Fonts->AddFontDefault();
+        moderne_fraktur_font = io.Fonts->AddFontFromMemoryCompressedBase85TTF(moderne_fraktur_compressed_data_base85, 18.0f);
         io.Fonts->Build();
         io.Fonts->SetTexID(0);
         io.DisplaySize = ImVec2(8, 8);
