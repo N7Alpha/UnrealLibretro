@@ -105,6 +105,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     Source/UnrealLibretro/Private
     Source/UnrealLibretro/Public/libretro
     Source/UnrealLibretroEditor/miniz
+    Source/ThirdParty/netarch
     Source/ThirdParty/libjuice/include
     Source/ThirdParty/zstd/lib
     Source/ThirdParty/imgui
