@@ -1078,25 +1078,6 @@ static int read_whole_file(const char *filename, void **data, size_t *size) {
     return 0;
 }
 
-// I feel like switching here shouldn't be necessary but I'm on bleeding edge code and this is needed @todo
-namespace ImGuiJank {
-    void NewFrame() {
-        if (g_netimgui_port) {
-            NetImgui::NewFrame();
-        } else {
-            ImGui::NewFrame();
-        }
-    }
-
-    void EndFrame() {
-        if (g_netimgui_port) {
-            NetImgui::EndFrame();
-        } else {
-            ImGui::Render();
-        }
-    }
-}
-
 static void strip_last_path_component(char *path) {
     if (!path || !*path) return;
 
@@ -2490,7 +2471,7 @@ finished_drawing_sam2_interface:
         }
     }
 
-    ImGuiJank::EndFrame();
+    ImGui::Render();
 
     if (!g_headless && !NetImgui::IsConnected() && render_imgui_windows_locally) {
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -3901,7 +3882,7 @@ int main(int argc, char *argv[]) {
             ImGui_ImplSDL3_NewFrame();
         }
 
-        ImGuiJank::NewFrame();
+        ImGui::NewFrame();
 
         g_kbd = SDL_GetKeyboardState(NULL);
 
@@ -3986,7 +3967,7 @@ int main(int argc, char *argv[]) {
         if (!g_headless || NetImgui::IsConnected()) {
             draw_imgui();
         } else {
-            ImGuiJank::EndFrame();
+            ImGui::Render();
         }
 
         if (!g_headless) {
