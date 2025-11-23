@@ -252,15 +252,13 @@ typedef int sam2_socket_t;
 
 #define SAM2__INDEX_NULL ((uint16_t) 0x0000U)
 
-#if defined(__APPLE__) || defined(__FreeBSD__)
-#include <sys/event.h>
-#include <sys/time.h>
-#elif defined(_WIN32)
+#if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <winsock2.h>
 #else
+#include <sys/time.h>
 #include <poll.h>
 #endif
 
@@ -287,31 +285,11 @@ typedef struct sam2_server {
     uint16_t active_client_count;
     uint16_t client_free_list;
 
-    // Platform-specific polling
-#if defined(__APPLE__) || defined(__FreeBSD__)
-    int kqueue_fd;
-    struct kevent events[65536];
-    struct kevent changelist[65536];
-    int changelist_count;
-#else
-    // Use poll for Windows, Linux, Android, and others
+    // Polling
     struct pollfd pollfds[65536];
-#endif
-
     int poll_count;
     int64_t current_time;
 } sam2_server_t;
-
-static sam2_client_t* sam2__find_client(sam2_server_t *server, uint16_t peer_id) {
-    uint16_t client_index = server->peer_id_map[peer_id];
-
-    if (client_index != SAM2__INDEX_NULL) {
-        return &server->clients[client_index];
-    } else {
-        return NULL;
-    }
-}
-
 
 SAM2_LINKAGE int sam2_socket_buffer_size_client_to_server;
 SAM2_LINKAGE int sam2_socket_buffer_size_server_to_client;
@@ -345,6 +323,11 @@ SAM2_LINKAGE int sam2_client_connect(sam2_socket_t *sockfd_ptr, const char *host
 SAM2_LINKAGE int sam2_client_poll_connection(sam2_socket_t sockfd, int timeout_ms);
 SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *message);
 SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message);
+
+SAM2_LINKAGE int64_t rle8_encode_capped(const uint8_t *input, int64_t input_size, uint8_t *output, int64_t output_capacity);
+SAM2_LINKAGE int64_t rle8_decode_extra(const uint8_t* input, int64_t input_size, int64_t *input_consumed, uint8_t* output, int64_t output_capacity);
+SAM2_LINKAGE int64_t rle8_decode(const uint8_t* input, int64_t input_size, uint8_t* output, int64_t output_capacity);
+SAM2_LINKAGE int64_t rle8_decode_size(const uint8_t* input, int64_t input_size);
 
 #if defined(__GNUC__) || defined(__clang__)
     #define SAM2_FORMAT_ATTRIBUTE(format_idx, arg_idx) __attribute__((format(printf, format_idx, arg_idx)))
@@ -909,10 +892,8 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message) {
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
-#include <WinSock2.h>
 #endif
-#else
-#include <poll.h>
+#include <WinSock2.h>
 #endif
 
 static int sam2__set_nonblocking(sam2_socket_t sock) {
@@ -1050,14 +1031,6 @@ static int64_t sam2__get_time_ms() {
 
 static void sam2__client_close_socket(sam2_server_t *server, sam2_client_t *client) {
     if (client->socket != SAM2_SOCKET_INVALID) {
-        // Remove from polling
-#if defined(__APPLE__) || defined(__FreeBSD__)
-        struct kevent ev;
-        EV_SET(&ev, client->socket, EVFILT_READ, EV_DELETE, 0, 0, NULL);
-        kevent(server->kqueue_fd, &ev, 1, NULL, 0, NULL);
-        EV_SET(&ev, client->socket, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
-        kevent(server->kqueue_fd, &ev, 1, NULL, 0, NULL);
-#endif
         sam2__close_socket(client->socket);
         client->socket = SAM2_SOCKET_INVALID;
     }
@@ -1203,7 +1176,9 @@ static void sam2__process_message(sam2_server_t *server, sam2_client_t *client, 
             return;
         }
 
-        sam2_client_t *peer = sam2__find_client(server, request.peer_id);
+        uint16_t client_index = server->peer_id_map[request.peer_id];
+        sam2_client_t *peer = (client_index != SAM2__INDEX_NULL) ? &server->clients[client_index] : NULL;
+
         if (!peer) {
             sam2__write_error(client, "Peer not found", SAM2_RESPONSE_PEER_DOES_NOT_EXIST);
             return;
@@ -1230,7 +1205,6 @@ static void sam2__process_client_read(sam2_server_t *server, sam2_client_t *clie
             // Process complete messages
             while (1) {
                 sam2_message_u message;
-                int old_length = client->length;
                 int status = sam2__frame_message(&message, client->buffer, &client->length);
 
                 if (status == 0) {
@@ -1314,14 +1288,6 @@ static void sam2__accept_connections(sam2_server_t *server) {
             SAM2_LOG_WARN("Failed to set socket recv buffer size");
         }
 
-        // Add to polling
-#if defined(__APPLE__) || defined(__FreeBSD__)
-        struct kevent ev[2];
-        EV_SET(&ev[0], client_socket, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, client);
-        EV_SET(&ev[1], client_socket, EVFILT_WRITE, EV_ADD | EV_DISABLE, 0, 0, client); // Disabled until needed
-        kevent(server->kqueue_fd, ev, 2, NULL, 0, NULL);
-#endif
-
         SAM2_LOG_INFO("Client %05" PRIu16 " connected", client->peer_id);
 
         // Send connect message
@@ -1330,14 +1296,11 @@ static void sam2__accept_connections(sam2_server_t *server) {
     }
 }
 
-// Platform-specific polling
-#if defined(__APPLE__) || defined(__FreeBSD__)
-static int sam2__poll_sockets(sam2_server_t *server) {
-    struct timespec ts = {0, 0};
-    return kevent(server->kqueue_fd, NULL, 0, server->events, SAM2__LARGE_POOL_SIZE, &ts);
-}
-#else
-static int sam2__poll_sockets(sam2_server_t *server) {
+// Main poll function
+SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
+    server->current_time = sam2__get_time_ms();
+    sam2__poll_stun(server);
+
     // Build pollfd array
     int nfds = 0;
     server->pollfds[nfds].fd = server->listen_socket;
@@ -1358,41 +1321,12 @@ static int sam2__poll_sockets(sam2_server_t *server) {
 
     server->poll_count = nfds;
 
+    int n_events;
 #ifdef _WIN32
-    return WSAPoll(server->pollfds, nfds, 0);
+    n_events = WSAPoll(server->pollfds, nfds, 0);
 #else
-    return poll(server->pollfds, nfds, 0);
+    n_events = poll(server->pollfds, nfds, 0);
 #endif
-}
-#endif
-
-// Main poll function
-SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
-    server->current_time = sam2__get_time_ms();
-    sam2__poll_stun(server);
-
-#if defined(__APPLE__) || defined(__FreeBSD__)
-    int n_events = sam2__poll_sockets(server);
-
-    for (int i = 0; i < n_events; i++) {
-        if (server->events[i].ident == (uintptr_t)server->listen_socket) {
-            sam2__accept_connections(server);
-        } else {
-            sam2_client_t *client = (sam2_client_t*)server->events[i].udata;
-
-            if (server->events[i].flags & EV_EOF) {
-                sam2__client_close_socket(server, client);
-                continue;
-            }
-
-            if (server->events[i].filter == EVFILT_READ) {
-                sam2__process_client_read(server, client);
-            }
-        }
-    }
-
-#else
-    int n_events = sam2__poll_sockets(server);
 
     if (n_events > 0) {
         // Check listen socket
@@ -1415,7 +1349,6 @@ SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
             }
         }
     }
-#endif
 
     // Sweep dead clients
     for (int i = 0; i < server->active_client_count; i++) {
@@ -1523,22 +1456,6 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
         SAM2_LOG_WARN("Failed to create STUN UDP socket: %d", SAM2_SOCKERRNO);
     }
 
-    // Initialize platform-specific polling
-#if defined(__APPLE__) || defined(__FreeBSD__)
-    server->kqueue_fd = kqueue();
-    if (server->kqueue_fd == -1) {
-        SAM2_LOG_ERROR("kqueue failed: %d", errno);
-        goto err;
-    }
-
-    struct kevent ev;
-    EV_SET(&ev, server->listen_socket, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, NULL);
-    if (kevent(server->kqueue_fd, &ev, 1, NULL, 0, NULL) == -1) {
-        SAM2_LOG_ERROR("kevent failed: %d", errno);
-        goto err;
-    }
-#endif
-
     SAM2_LOG_INFO("Server listening on port %d (IPv4 and IPv6)", port);
     return 0;
 
@@ -1548,11 +1465,6 @@ err:if (server->listen_socket != SAM2_SOCKET_INVALID) {
     if (server->stun_socket != SAM2_SOCKET_INVALID) {
         sam2__close_socket(server->stun_socket);
     }
-#if defined(__APPLE__) || defined(__FreeBSD__)
-    if (server->kqueue_fd != -1) {
-        close(server->kqueue_fd);
-    }
-#endif
 #ifdef _WIN32
     WSACleanup();
 #endif
@@ -1574,13 +1486,6 @@ SAM2_LINKAGE void sam2_server_destroy(sam2_server_t *server) {
     if (server->stun_socket != SAM2_SOCKET_INVALID) {
         sam2__close_socket(server->stun_socket);
     }
-
-    // Close platform-specific resources
-#if defined(__APPLE__) || defined(__FreeBSD__)
-    if (server->kqueue_fd != -1) {
-        close(server->kqueue_fd);
-    }
-#endif
 
 #ifdef _WIN32
     WSACleanup();
