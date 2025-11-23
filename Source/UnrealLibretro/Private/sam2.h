@@ -266,9 +266,6 @@ typedef struct sam2_client {
     sam2_socket_t socket;
     uint16_t peer_id;
 
-    char buffer[sizeof(sam2_message_u)];
-    int length;
-
     uint16_t rooms_sent;
     int64_t last_activity;
 } sam2_client_t;
@@ -812,7 +809,7 @@ SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *message)
             return -1;
         }
     } else if (peeked == 0) {
-        SAM2_LOG_WARN("Server closed connection");
+        SAM2_LOG_WARN("Connection closed");
         return -1;
     }
 
@@ -1190,45 +1187,21 @@ static void sam2__process_message(sam2_server_t *server, sam2_client_t *client, 
     }
 }
 
-// @todo The AI slopped this one a little too hard it should consolidate code with sam2_client_poll I think
 static void sam2__process_client_read(sam2_server_t *server, sam2_client_t *client) {
-    while (1) {
-        int space = sizeof(client->buffer) - client->length;
-        if (space <= 0) break;
+    for (int _prevent_infinite_loop_counter = 0; _prevent_infinite_loop_counter < 64; _prevent_infinite_loop_counter++) {
+        sam2_message_u message;
+        int status = sam2_client_poll(client->socket, &message);
 
-        int n = recv(client->socket, client->buffer + client->length, space, 0);
-
-        if (n > 0) {
-            client->length += n;
-            client->last_activity = server->current_time;
-
-            // Process complete messages
-            while (1) {
-                sam2_message_u message;
-                int status = sam2__frame_message(&message, client->buffer, &client->length);
-
-                if (status == 0) {
-                    break; // Need more data
-                } else if (status < 0) {
-                    SAM2_LOG_ERROR("Client %05" PRIu16 " framing error: %d", client->peer_id, status);
-                    sam2__write_error(client, "Invalid message format", SAM2_RESPONSE_INVALID_ARGS);
-                    sam2__client_close_socket(server, client);
-                    return;
-                } else {
-                    SAM2_LOG_INFO("Client %05" PRIu16 " sent '%.8s'", client->peer_id, (char*)&message);
-                    sam2__process_message(server, client, &message);
-                }
-            }
-        } else if (n == 0) {
-            // Connection closed
+        if (status < 0) {
+            SAM2_LOG_ERROR("Client %05" PRIu16 " error: %d", client->peer_id, status);
             sam2__client_close_socket(server, client);
             return;
+        } else if (status == 0) {
+            break;
         } else {
-            if (!sam2__would_block()) {
-                SAM2_LOG_ERROR("Client %05" PRIu16 " recv error: %d", client->peer_id, SAM2_SOCKERRNO);
-                sam2__client_close_socket(server, client);
-            }
-            return;
+            client->last_activity = server->current_time;
+            SAM2_LOG_INFO("Client %05" PRIu16 " sent '%.8s'", client->peer_id, (char*)&message);
+            sam2__process_message(server, client, &message);
         }
     }
 }
