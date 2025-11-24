@@ -264,7 +264,6 @@ typedef int sam2_socket_t;
 
 typedef struct sam2_client {
     sam2_socket_t socket;
-    uint16_t peer_id;
 
     uint16_t rooms_sent;
     int64_t last_activity;
@@ -277,14 +276,10 @@ typedef struct sam2_server {
     // Client management
     sam2_client_t clients[65536];
     sam2_room_t rooms[65536];
-    uint16_t peer_id_map[65536]; // Maps peer_id to clients[] index
-    uint16_t active_clients[65536]; // Indices into clients[] of active clients
     uint16_t active_client_count;
-    uint16_t client_free_list;
 
     // Polling
     struct pollfd pollfds[65536];
-    int poll_count;
     int64_t current_time;
 } sam2_server_t;
 
@@ -1026,36 +1021,29 @@ static int64_t sam2__get_time_ms() {
 #endif
 }
 
-static void sam2__client_close_socket(sam2_server_t *server, sam2_client_t *client) {
-    if (client->socket != SAM2_SOCKET_INVALID) {
-        sam2__close_socket(client->socket);
-        client->socket = SAM2_SOCKET_INVALID;
-    }
-
-    SAM2_LOG_INFO("Client %05" PRIu16 " disconnected", client->peer_id);
+static uint16_t sam2__client_get_peer_id(sam2_server_t *server, sam2_client_t *client) {
+    uint16_t peer_id = client - server->clients;
+    return peer_id;
 }
 
 static void sam2__client_destroy(sam2_server_t *server, sam2_client_t *client) {
-    uint16_t client_index = (uint16_t)(client - server->clients);
-    uint16_t peer_id = client->peer_id;
+    uint16_t peer_id = sam2__client_get_peer_id(server, client);
 
     if (peer_id <= SAM2_PORT_SENTINELS_MAX) {
         SAM2_LOG_ERROR("Tried to free sentinel peer id %05d", peer_id);
         return;
-    } else if (server->peer_id_map[peer_id] == SAM2__INDEX_NULL) {
-        SAM2_LOG_ERROR("Tried to free already freed client %05" PRIu16, client->peer_id);
+    } else if (client->socket == SAM2_SOCKET_INVALID) {
+        SAM2_LOG_ERROR("Tried to free already freed client %05d", peer_id);
         return;
     }
 
-    if (client->socket != SAM2_SOCKET_INVALID) {
-        sam2__client_close_socket(server, client);
-    }
+    sam2__close_socket(client->socket);
+    client->socket = SAM2_SOCKET_INVALID;
 
-    server->peer_id_map[peer_id] = SAM2__INDEX_NULL;
-    memcpy(client, &server->client_free_list, sizeof(uint16_t));
-    server->client_free_list = client_index;
+    memset(&server->rooms[peer_id], 0, sizeof(sam2_room_t));
 
-    server->rooms[peer_id].flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+    server->active_client_count--;
+    SAM2_LOG_INFO("Client %05" PRIu16 " disconnected", sam2__client_get_peer_id(server, client));
 }
 
 static int sam2__write_message(sam2_server_t *server, sam2_client_t *client, char *message) {
@@ -1075,18 +1063,18 @@ static int sam2__write_message(sam2_server_t *server, sam2_client_t *client, cha
         return 0;
     } else if (n < 0 && sam2__would_block()) {
         // OS buffer is full - log and drop message or close connection
-        SAM2_LOG_WARN("Client %05" PRIu16 " send buffer full, dropping message", client->peer_id);
+        SAM2_LOG_WARN("Client %05" PRIu16 " send buffer full, dropping message", sam2__client_get_peer_id(server, client));
         // @todo: Handle this more gracefully, the best thing is to peek and always leave space for an error along the lines of "server overload" or something
         return -1;
     } else if (n < 0) {
         // Real error
-        SAM2_LOG_ERROR("Send error for client %05" PRIu16 ": %d", client->peer_id, SAM2_SOCKERRNO);
-        sam2__client_close_socket(server, client);
+        SAM2_LOG_ERROR("Send error for client %05" PRIu16 ": %d", sam2__client_get_peer_id(server, client), SAM2_SOCKERRNO);
+        sam2__client_destroy(server, client);
         return -1;
     } else {
         // Partial send - this shouldn't happen with small messages and proper buffer sizes
-        SAM2_LOG_ERROR("Partial send for client %05" PRIu16 ": %d/%d bytes", client->peer_id, n, message_size);
-        sam2__client_close_socket(server, client);
+        SAM2_LOG_ERROR("Partial send for client %05" PRIu16 ": %d/%d bytes", sam2__client_get_peer_id(server, client), n, message_size);
+        sam2__client_destroy(server, client);
         return -1;
     }
 }
@@ -1103,41 +1091,40 @@ static void sam2__write_error(sam2_client_t *client, const char *error_text, int
 }
 
 // Process client messages
-static void sam2__process_message(sam2_server_t *server, sam2_client_t *client, sam2_message_u *message) {
+static sam2_client_t *sam2__process_message(sam2_server_t *server, sam2_client_t *client, sam2_message_u *message) {
     if (sam2_header_matches((const char*)message, sam2_conn_header)) {
         sam2_connect_message_t *request = &message->connect_message;
 
-        if (server->peer_id_map[request->peer_id] != SAM2__INDEX_NULL && request->peer_id != client->peer_id) {
+        if (server->clients[request->peer_id].socket != SAM2_SOCKET_INVALID && request->peer_id != sam2__client_get_peer_id(server, client)) {
             sam2__write_error(client, "Peer id is already in use", SAM2_RESPONSE_INVALID_ARGS);
-            return;
+            return client;
         }
 
-        if (server->rooms[client->peer_id].flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+        if (server->rooms[sam2__client_get_peer_id(server, client)].flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
             sam2__write_error(client, "Can't change peer id while hosting a room", SAM2_RESPONSE_ALREADY_IN_ROOM);
-            return;
+            return client;
         }
 
         if (request->peer_id <= SAM2_PORT_SENTINELS_MAX) {
             sam2__write_error(client, "Can't change peer id to port sentinels", SAM2_RESPONSE_INVALID_ARGS);
-            return;
+            return client;
         }
 
         // Change peer ID
         uint16_t new_peer_id = request->peer_id;
-        uint16_t old_peer_id = client->peer_id;
-        server->peer_id_map[new_peer_id] = server->peer_id_map[old_peer_id];
-        server->peer_id_map[old_peer_id] = SAM2__INDEX_NULL;
+        uint16_t old_peer_id = sam2__client_get_peer_id(server, client);
 
         if (new_peer_id == SAM2__INDEX_NULL) {
             sam2__write_error(client, "Requested invalid peer id", SAM2_RESPONSE_INVALID_ARGS);
-            return;
+            return client;
         }
 
         SAM2_LOG_INFO("Changing peer id from %05d to %05d", old_peer_id, new_peer_id);
 
-        server->peer_id_map[new_peer_id] = server->peer_id_map[old_peer_id];
-        server->peer_id_map[old_peer_id] = SAM2__INDEX_NULL;
-        client->peer_id = new_peer_id;
+        server->clients[new_peer_id] = server->clients[old_peer_id];
+        server->clients[old_peer_id].socket = SAM2_SOCKET_INVALID;
+
+        client = &server->clients[new_peer_id];
 
         sam2_connect_message_t response = { SAM2_CONN_HEADER, new_peer_id, 0 };
         sam2__write_message(server, client, (char *)&response);
@@ -1157,10 +1144,10 @@ static void sam2__process_message(sam2_server_t *server, sam2_client_t *client, 
 
     } else if (sam2_header_matches((const char*)message, sam2_make_header)) {
         sam2_room_make_message_t *request = &message->room_make_response;
-        request->room.peer_ids[SAM2_AUTHORITY_INDEX] = client->peer_id;
-        server->rooms[client->peer_id] = request->room;
+        request->room.peer_ids[SAM2_AUTHORITY_INDEX] = sam2__client_get_peer_id(server, client);
+        server->rooms[sam2__client_get_peer_id(server, client)] = request->room;
 
-        SAM2_LOG_INFO("Client %05d updated room '%s'", client->peer_id, request->room.name);
+        SAM2_LOG_INFO("Client %05d updated room '%s'", sam2__client_get_peer_id(server, client), request->room.name);
 
         sam2_room_make_message_t response = { SAM2_MAKE_HEADER, request->room };
         sam2__write_message(server, client, (char *)&response);
@@ -1168,23 +1155,27 @@ static void sam2__process_message(sam2_server_t *server, sam2_client_t *client, 
     } else if (sam2_header_matches((const char*)message, sam2_sign_header)) {
         sam2_signal_message_t request = message->signal_message;
 
-        if (request.peer_id == client->peer_id) {
+        if (request.peer_id == sam2__client_get_peer_id(server, client)) {
             sam2__write_error(client, "Cannot signal self", SAM2_RESPONSE_CANNOT_SIGNAL_SELF);
-            return;
+            return client;
         }
 
-        uint16_t client_index = server->peer_id_map[request.peer_id];
-        sam2_client_t *peer = (client_index != SAM2__INDEX_NULL) ? &server->clients[client_index] : NULL;
+        sam2_client_t *peer = NULL;
+        if (request.peer_id < SAM2_ARRAY_LENGTH(server->clients) && server->clients[request.peer_id].socket != SAM2_SOCKET_INVALID) {
+            peer = &server->clients[request.peer_id];
+        }
 
         if (!peer) {
             sam2__write_error(client, "Peer not found", SAM2_RESPONSE_PEER_DOES_NOT_EXIST);
-            return;
+            return client;
         }
 
-        SAM2_LOG_INFO("Forwarding signal from %05d to %05d", client->peer_id, request.peer_id);
-        request.peer_id = client->peer_id;
+        SAM2_LOG_INFO("Forwarding signal from %05d to %05d", sam2__client_get_peer_id(server, client), request.peer_id);
+        request.peer_id = sam2__client_get_peer_id(server, client);
         sam2__write_message(server, peer, (char *)&request);
     }
+
+    return client;
 }
 
 static void sam2__process_client_read(sam2_server_t *server, sam2_client_t *client) {
@@ -1193,83 +1184,19 @@ static void sam2__process_client_read(sam2_server_t *server, sam2_client_t *clie
         int status = sam2_client_poll(client->socket, &message);
 
         if (status < 0) {
-            SAM2_LOG_ERROR("Client %05" PRIu16 " error: %d", client->peer_id, status);
-            sam2__client_close_socket(server, client);
+            SAM2_LOG_ERROR("Client %05" PRIu16 " error: %d", sam2__client_get_peer_id(server, client), status);
+            sam2__client_destroy(server, client);
             return;
         } else if (status == 0) {
             break;
         } else {
             client->last_activity = server->current_time;
-            SAM2_LOG_INFO("Client %05" PRIu16 " sent '%.8s'", client->peer_id, (char*)&message);
-            sam2__process_message(server, client, &message);
+            SAM2_LOG_INFO("Client %05" PRIu16 " sent '%.8s'", sam2__client_get_peer_id(server, client), (char*)&message);
+            client = sam2__process_message(server, client, &message);
         }
     }
 }
 
-static void sam2__accept_connections(sam2_server_t *server) {
-    while (1) {
-        struct sockaddr_storage addr;
-        socklen_t addrlen = sizeof(addr);
-
-        sam2_socket_t client_socket = accept(server->listen_socket, (struct sockaddr*)&addr, &addrlen);
-
-        if (client_socket == SAM2_SOCKET_INVALID) {
-            if (!sam2__would_block()) {
-                SAM2_LOG_ERROR("Accept error: %d", SAM2_SOCKERRNO);
-            }
-            break;
-        }
-
-        int peer_id = SAM2_PORT_SENTINELS_MAX + 1;
-        for (; peer_id < SAM2_ARRAY_LENGTH(server->peer_id_map); peer_id++) {
-            if (server->peer_id_map[peer_id] == SAM2__INDEX_NULL) {
-                break;
-            }
-        }
-
-        if (peer_id == SAM2_ARRAY_LENGTH(server->peer_id_map)) {
-            SAM2_LOG_WARN("No peer IDs available");
-            sam2__close_socket(client_socket);
-            continue;
-        }
-
-        // Allocate client slot
-        uint16_t client_index = server->client_free_list;
-        if (client_index == SAM2__INDEX_NULL) {
-            SAM2_LOG_WARN("No client slots available");
-            sam2__close_socket(client_socket);
-            continue;
-        }
-        memcpy(&server->client_free_list, &server->clients[client_index], sizeof(uint16_t)); // Update free list
-
-        // Initialize client
-        sam2_client_t *client = &server->clients[client_index];
-        memset(client, 0, sizeof(*client));
-        client->socket = client_socket;
-        client->peer_id = peer_id;
-        client->last_activity = server->current_time;
-        server->peer_id_map[peer_id] = client_index;
-        server->active_clients[server->active_client_count++] = client_index;
-
-        // Configure socket
-        sam2__set_nonblocking(client_socket);
-
-        if (setsockopt(client_socket, SOL_SOCKET, SO_SNDBUF, (const char*)&sam2_socket_buffer_size_server_to_client, sizeof(int)) < 0) {
-            SAM2_LOG_WARN("Failed to set socket send buffer size");
-        }
-        if (setsockopt(client_socket, SOL_SOCKET, SO_RCVBUF, (const char*)&sam2_socket_buffer_size_client_to_server, sizeof(int)) < 0) {
-            SAM2_LOG_WARN("Failed to set socket recv buffer size");
-        }
-
-        SAM2_LOG_INFO("Client %05" PRIu16 " connected", client->peer_id);
-
-        // Send connect message
-        sam2_connect_message_t connect_msg = { SAM2_CONN_HEADER, client->peer_id, 0 };
-        sam2__write_message(server, client, (char *)&connect_msg);
-    }
-}
-
-// Main poll function
 SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
     server->current_time = sam2__get_time_ms();
     sam2__poll_stun(server);
@@ -1281,18 +1208,14 @@ SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
     server->pollfds[nfds].revents = 0;
     nfds++;
 
-    for (uint16_t i = 0; i < server->active_client_count; i++) {
-        sam2_client_t *client = &server->clients[server->active_clients[i]];
-
-        if (client->socket != SAM2_SOCKET_INVALID) {
-            server->pollfds[nfds].fd = client->socket;
+    for (int i = 0; nfds < server->active_client_count + 1 /* For server->listen_socket */; i++) {
+        if (server->clients[i].socket != SAM2_SOCKET_INVALID) {
+            server->pollfds[nfds].fd = server->clients[i].socket;
             server->pollfds[nfds].events = POLLIN;
             server->pollfds[nfds].revents = 0;
             nfds++;
         }
     }
-
-    server->poll_count = nfds;
 
     int n_events;
 #ifdef _WIN32
@@ -1301,37 +1224,90 @@ SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
     n_events = poll(server->pollfds, nfds, 0);
 #endif
 
-    if (n_events > 0) {
-        // Check listen socket
-        if (server->pollfds[0].revents & POLLIN) {
-            sam2__accept_connections(server);
-        }
+    if (n_events <= 0) {
+        return 0;
+    } else if (n_events < 0) {
+        SAM2_LOG_ERROR("Poll error: %d", SAM2_SOCKERRNO);
+        return -1;
+    }
 
-        // Check client sockets
-        int poll_idx = 1;
-        for (int i = 0; i < server->active_client_count; i++) {
-            sam2_client_t *client = &server->clients[server->active_clients[i]];
+    int potential_free_peer_id = SAM2_PORT_SENTINELS_MAX + 1;
+    int events_processed = 0;
 
-            if (poll_idx < server->poll_count && client->socket != SAM2_SOCKET_INVALID) {
-                if (server->pollfds[poll_idx].revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                    sam2__client_close_socket(server, client);
-                } else if (server->pollfds[poll_idx].revents & POLLIN) {
-                    sam2__process_client_read(server, client);
+    // Check listen socket
+    if (server->pollfds[0].revents & POLLIN) {
+        events_processed++;
+
+        // Try to accept all pending connections
+        while (1) {
+            struct sockaddr_storage addr;
+            socklen_t addrlen = sizeof(addr);
+            sam2_socket_t client_socket = accept(server->listen_socket, (struct sockaddr*)&addr, &addrlen);
+
+            if (client_socket == SAM2_SOCKET_INVALID) {
+                if (sam2__would_block()) {
+                    break;  // No more pending connections
+                } else {
+                    SAM2_LOG_ERROR("Accept error: %d", SAM2_SOCKERRNO);
+                    break;
                 }
-                poll_idx++;
             }
+
+            uint16_t peer_id = SAM2_PORT_UNAVAILABLE;
+            for (; potential_free_peer_id < SAM2_ARRAY_LENGTH(server->clients); potential_free_peer_id++) {
+                if (server->clients[potential_free_peer_id].socket == SAM2_SOCKET_INVALID) {
+                    peer_id = potential_free_peer_id++;
+                    break;
+                }
+            }
+
+            if (peer_id == SAM2_ARRAY_LENGTH(server->clients)) {
+                SAM2_LOG_WARN("No peer IDs available");
+                sam2__close_socket(client_socket);
+                break;
+            }
+
+            // Initialize client
+            sam2_client_t *client = &server->clients[peer_id];
+            memset(client, 0, sizeof(*client));
+            client->socket = client_socket;
+            client->last_activity = server->current_time;
+
+            // Configure socket
+            sam2__set_nonblocking(client_socket);
+
+            if (setsockopt(client_socket, SOL_SOCKET, SO_SNDBUF, (const char*)&sam2_socket_buffer_size_server_to_client, sizeof(int)) < 0) {
+                SAM2_LOG_WARN("Failed to set socket send buffer size");
+            }
+            if (setsockopt(client_socket, SOL_SOCKET, SO_RCVBUF, (const char*)&sam2_socket_buffer_size_client_to_server, sizeof(int)) < 0) {
+                SAM2_LOG_WARN("Failed to set socket recv buffer size");
+            }
+
+            server->active_client_count++;
+            SAM2_LOG_INFO("Client %05" PRIu16 " connected", peer_id);
+
+            // Send connect message
+            sam2_connect_message_t connect_msg = { SAM2_CONN_HEADER, peer_id, {0} };
+            sam2__write_message(server, client, (char *)&connect_msg);
         }
     }
 
-    // Sweep dead clients
-    for (int i = 0; i < server->active_client_count; i++) {
-        sam2_client_t *client = &server->clients[server->active_clients[i]];
+    // Check client sockets
+    int poll_idx = 1;
+    for (uint16_t i = 0; events_processed < n_events && poll_idx < nfds; i++) {
+        sam2_client_t *client = &server->clients[i];
 
-        if (client->socket == SAM2_SOCKET_INVALID) {
-            sam2__client_destroy(server, client);
-            server->active_clients[i] = server->active_clients[server->active_client_count - 1];
-            server->active_client_count--;
-            i--;
+        if (client->socket != SAM2_SOCKET_INVALID) {
+            if (server->pollfds[poll_idx].revents != 0) {
+                events_processed++;
+
+                if (server->pollfds[poll_idx].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+                    sam2__client_destroy(server, client);
+                } else if (server->pollfds[poll_idx].revents & POLLIN) {
+                    sam2__process_client_read(server, client);
+                }
+            }
+            poll_idx++;
         }
     }
 
@@ -1343,10 +1319,9 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     server->listen_socket = SAM2_SOCKET_INVALID;
     server->stun_socket = SAM2_SOCKET_INVALID;
 
-    // Init client free list
-    for (int i = 1; i < SAM2_ARRAY_LENGTH(server->clients); i++) {
-        memcpy(&server->clients[i], &server->client_free_list, sizeof(uint16_t));
-        server->client_free_list = (uint16_t) i;
+    // Init client sockets to invalid
+    for (int i = 0; i < SAM2_ARRAY_LENGTH(server->clients); i++) {
+        server->clients[i].socket = SAM2_SOCKET_INVALID;
     }
 
     // Initialize sockets on Windows
@@ -1447,8 +1422,10 @@ err:if (server->listen_socket != SAM2_SOCKET_INVALID) {
 // Destroy server
 SAM2_LINKAGE void sam2_server_destroy(sam2_server_t *server) {
     // Close all clients
-    for (int i = 0; i < server->active_client_count; i++) {
-        sam2__client_destroy(server, &server->clients[server->active_clients[i]]);
+    for (int i = 0; i < SAM2_ARRAY_LENGTH(server->clients); i++) {
+        if (server->clients[i].socket != SAM2_SOCKET_INVALID) {
+            sam2__client_destroy(server, &server->clients[i]);
+        }
     }
 
     // Close listen socket

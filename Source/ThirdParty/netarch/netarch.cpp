@@ -1622,21 +1622,18 @@ void draw_imgui() {
             ImGui::SeparatorText("Server");
             ImGui::TextColored(ImVec4(0, 1, 0, 1), "We're listening on %s:%d (IPv4 tunneling is OS dependent)", g_sam2_address, g_sam2_port);
 
-            int room_count = 0;
-            bool room_header_is_open = ImGui::CollapsingHeader("Rooms");
-            for (int i = 0; i < g_sam2_server->active_client_count; i++) {
-                uint16_t peer_id = g_sam2_server->clients[g_sam2_server->active_clients[i]].peer_id;
-                if (g_sam2_server->rooms[peer_id].flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
-                    if (room_header_is_open) {
-                        ulnet_imgui_show_room(g_sam2_server->rooms[peer_id], g_ulnet_session.our_peer_id);
-                    }
-                    room_count++;
-                }
-            }
-
             ImGui::Text("Clients connected: %d", g_sam2_server->active_client_count);
-            ImGui::Text("Rooms Hosted: %d", room_count);
 
+            if (ImGui::CollapsingHeader("Rooms")) {
+                int room_count = 0;
+                for (int i = 0; i < SAM2_ARRAY_LENGTH(g_sam2_server->rooms); i++) {
+                    if (g_sam2_server->rooms[i].flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+                        ulnet_imgui_show_room(g_sam2_server->rooms[i], g_ulnet_session.our_peer_id);
+                        room_count++;
+                    }
+                }
+                ImGui::Text("Rooms Hosted: %d", room_count);
+            }
 
             ImGui::SeparatorText("Client");
         }
