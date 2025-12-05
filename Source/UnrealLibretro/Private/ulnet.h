@@ -1224,6 +1224,13 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
         if (memcmp(&new_room_state, &session->room_we_are_in, sizeof(sam2_room_t)) != 0) {
             SAM2_LOG_INFO("Something about the room we're in was changed by the authority");
 
+            // Disconnect peers that are no longer in the room
+            for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
+                if (session->agent[i] && sam2_get_port_of_peer(&new_room_state, session->agent_peer_ids[i]) == -1) {
+                    ulnet_disconnect_peer(session, i);
+                }
+            }
+
             // When the room changes reuse existing peer connections if possible
             for (int j = 0; j < SAM2_TOTAL_PEERS; j++) {
                 for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
@@ -1255,9 +1262,8 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
             }
 
             for (int p = 0; p < SAM2_SPECTATOR_START; p++) {
-                if (new_room_state.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
-
-                if (new_room_state.peer_ids[p] != session->room_we_are_in.peer_ids[p]) {
+                if (   new_room_state.peer_ids[p] > SAM2_PORT_SENTINELS_MAX
+                    && new_room_state.peer_ids[p] != session->room_we_are_in.peer_ids[p]) {
                     session->state[p].frame = SAM2_MAX(session->state[p].frame, session->frame_counter);
                 }
             }
@@ -1265,12 +1271,7 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
             session->room_we_are_in = new_room_state;
             if (!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
                 SAM2_LOG_INFO("Client %05" PRId16 " abandoned the room '%s'", session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX], session->room_we_are_in.name);
-                for (int peer_port = 0; peer_port < SAM2_ARRAY_LENGTH(session->agent); peer_port++) {
-                    if (session->agent[peer_port]) {
-                        ulnet_disconnect_peer(session, peer_port);
-                    }
-                    session->room_we_are_in.peer_ids[peer_port] = SAM2_PORT_AVAILABLE;
-                }
+                ulnet_session_tear_down(session);
                 ulnet_session_init_defaulted(session);
             }
         }
@@ -1300,6 +1301,8 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
 }
 
 ULNET_LINKAGE void ulnet_swap_agent(ulnet_session_t *session, int peer_existing_port, int peer_new_port) {
+    SAM2_LOG_INFO("Swapping peer %d on port %d with peer %d on port %d",
+        session->room_we_are_in.peer_ids[peer_existing_port], peer_existing_port, session->room_we_are_in.peer_ids[peer_new_port], peer_new_port);
     if (peer_existing_port == peer_new_port) return;
 
     #define ULNET__SWAP(x, y, T) do { T temp = (x); (x) = (y); (y) = temp; } while(0)
@@ -1385,6 +1388,7 @@ ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session) {
     memset(session->state_packet_history, 0, sizeof(session->state_packet_history));
 
     session->frame_counter = 0;
+    memset(&session->room_we_are_in, 0, sizeof(session->room_we_are_in));
     session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
     session->reliable_retransmit_delay_microseconds = 50000; // 50 milliseconds
 
