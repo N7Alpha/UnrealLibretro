@@ -178,8 +178,8 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
         ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
     }
 #endif
-    ulnet_reliable_packet_t *msg1 = (ulnet_reliable_packet_t *) arena_deref(&sessions[0]->arena, sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][0]);
-    ulnet_reliable_packet_t *msg2 = (ulnet_reliable_packet_t *) arena_deref(&sessions[0]->arena, sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][1]);
+    ulnet_reliable_packet_t *msg1 = (ulnet_reliable_packet_t *) sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][0].data;
+    ulnet_reliable_packet_t *msg2 = (ulnet_reliable_packet_t *) sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][1].data;
 
     if (!(   msg1 && memcmp(msg1->payload, "HELLO", sizeof("HELLO") - 1) == 0
           && msg2 && memcmp(msg2->payload, "WORLD", sizeof("WORLD") - 1) == 0)) {
@@ -255,8 +255,8 @@ int ulnet_test_inproc(ulnet_session_t **session_1_out, ulnet_session_t **session
     ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3); // RETRANSMIT "WORLD"
     ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3); // RECEIVE "WORLD"
 
-    ulnet_reliable_packet_t *msg1 = (ulnet_reliable_packet_t *) arena_deref(&sessions[0]->arena, sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][0]);
-    ulnet_reliable_packet_t *msg2 = (ulnet_reliable_packet_t *) arena_deref(&sessions[0]->arena, sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][1]);
+    ulnet_reliable_packet_t *msg1 = (ulnet_reliable_packet_t *) sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][0].data;
+    ulnet_reliable_packet_t *msg2 = (ulnet_reliable_packet_t *) sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][1].data;
 
     if (!(   msg1 && memcmp(msg1->payload, "HELLO", sizeof("HELLO") - 1) == 0
           && msg2 && memcmp(msg2->payload, "WORLD", sizeof("WORLD") - 1) == 0)) {
@@ -380,4 +380,3 @@ int main () {
     return 0;
 }
 #endif
-

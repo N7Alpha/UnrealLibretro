@@ -1292,7 +1292,8 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
     }
 #endif
 
-    l->netplay_session = (ulnet_session_t *) calloc(1, sizeof(ulnet_session_t));
+    l->netplay_session = (ulnet_session_t *) ULNET_MALLOC(sizeof(ulnet_session_t));
+    memset(l->netplay_session, 0, sizeof(ulnet_session_t));
     ulnet_session_init_defaulted(l->netplay_session);
     l->netplay_session->delay_frames = 2; // @todo Make configurable
 
@@ -1639,14 +1640,11 @@ cleanup:
                 FPlatformProcess::FreeDllHandle(l->libretro_api.handle);
             }
 
-            for (int i = 0; i < SAM2_ARRAY_LENGTH(l->netplay_session->agent); i++) {
-                if (l->netplay_session->agent[i]) {
-                    juice_destroy(l->netplay_session->agent[i]);
-                }
+            if (l->netplay_session) {
+                ulnet_session_tear_down(l->netplay_session);
+                ULNET_FREE(l->netplay_session);
+                l->netplay_session = NULL;
             }
-
-            free(l->netplay_session);
-
 
             IPlatformFile::GetPlatformPhysical().DeleteFile(*InstancedCorePath);
 
