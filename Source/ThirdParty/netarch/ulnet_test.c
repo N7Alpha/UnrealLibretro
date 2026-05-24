@@ -61,6 +61,39 @@ bool ulnet__test_retro_unserialize(void *user_ptr, const void *data, size_t size
     return memcmp(data, g_serialize_test_data, size) == 0;
 }
 
+static void ulnet__test_inproc_pair_setup(ulnet_session_t *sessions[2],
+    ulnet_transport_inproc_t *transport, int64_t retransmit_delay_microseconds) {
+    for (int i = 0; i < 2; i++) {
+        sessions[i] = (ulnet_session_t *)calloc(1, sizeof(ulnet_session_t));
+        ulnet_session_init_defaulted(sessions[i]);
+        sessions[i]->reliable_retransmit_delay_microseconds = retransmit_delay_microseconds;
+        sessions[i]->use_inproc_transport = true;
+        sessions[i]->retro_run = ulnet__test_retro_run;
+        sessions[i]->retro_serialize_size = ulnet__test_retro_serialize_size;
+        sessions[i]->retro_serialize = ulnet__test_retro_serialize;
+        sessions[i]->retro_unserialize = ulnet__test_retro_unserialize;
+    }
+
+    sessions[0]->our_peer_id = 10001;
+    sessions[1]->our_peer_id = 30002;
+
+    sam2_room_t room = {0};
+    room.flags = SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+    room.peer_ids[SAM2_AUTHORITY_INDEX] = 10001;
+    room.peer_ids[SAM2_SPECTATOR_START] = 30002;
+
+    sessions[0]->room_we_are_in = room;
+    sessions[1]->room_we_are_in = room;
+
+    sessions[0]->inproc[SAM2_SPECTATOR_START] = transport;
+    sessions[1]->inproc[SAM2_AUTHORITY_INDEX] = transport;
+    sessions[0]->agent_peer_ids[SAM2_SPECTATOR_START] = room.peer_ids[SAM2_SPECTATOR_START];
+    sessions[1]->agent_peer_ids[SAM2_AUTHORITY_INDEX] = room.peer_ids[SAM2_AUTHORITY_INDEX];
+
+    sessions[1]->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
+    sessions[0]->peer_needs_sync_bitfield |= (1ULL << SAM2_SPECTATOR_START);
+}
+
 int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_out) {
     sam2_server_t *server = 0;
     ulnet_session_t *sessions[2] = {0};
@@ -210,40 +243,7 @@ int ulnet_test_inproc(ulnet_session_t **session_1_out, ulnet_session_t **session
     ulnet_transport_inproc_t transport = {0};
     int status = 0;
 
-    // Create two sessions
-    for (int i = 0; i < 2; i++) {
-        sessions[i] = (ulnet_session_t *)calloc(1, sizeof(ulnet_session_t));
-        ulnet_session_init_defaulted(sessions[i]);
-        sessions[i]->reliable_retransmit_delay_microseconds = 0;
-        sessions[i]->use_inproc_transport = true;
-        sessions[i]->retro_run = ulnet__test_retro_run;
-        sessions[i]->retro_serialize_size = ulnet__test_retro_serialize_size;
-        sessions[i]->retro_serialize = ulnet__test_retro_serialize;
-        sessions[i]->retro_unserialize = ulnet__test_retro_unserialize;
-    }
-
-    // Set up peer IDs and room state
-    sessions[0]->our_peer_id = 10001;  // Authority
-    sessions[1]->our_peer_id = 30002;  // Spectator
-
-    // Configure room state for both sessions
-    sam2_room_t room = {0};
-    room.flags = SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
-    room.peer_ids[SAM2_AUTHORITY_INDEX] = 10001;
-    room.peer_ids[SAM2_SPECTATOR_START] = 30002;
-
-    sessions[0]->room_we_are_in = room;
-    sessions[1]->room_we_are_in = room;
-
-    // Connect the transport
-    sessions[0]->inproc[SAM2_SPECTATOR_START] = &transport;
-    sessions[1]->inproc[SAM2_AUTHORITY_INDEX] = &transport;
-    sessions[0]->agent_peer_ids[SAM2_SPECTATOR_START] = room.peer_ids[SAM2_SPECTATOR_START];
-    sessions[1]->agent_peer_ids[SAM2_AUTHORITY_INDEX] = room.peer_ids[SAM2_AUTHORITY_INDEX];
-
-    // Prime savestate transfer
-    sessions[1]->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
-    sessions[0]->peer_needs_sync_bitfield |= (1ULL << SAM2_SPECTATOR_START);
+    ulnet__test_inproc_pair_setup(sessions, &transport, 0);
 
     sessions[0]->debug_udp_recv_drop_rate = 1.0f;
     ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "HELLO", sizeof("HELLO") - 1); // DROP
@@ -273,6 +273,40 @@ int ulnet_test_inproc(ulnet_session_t **session_1_out, ulnet_session_t **session
 
     if (!session_2_out) free(sessions[1]);
     else *session_2_out = sessions[1];
+
+    return status;
+}
+
+int ulnet_test_inproc_reliable_ack_unblocks_queue(void) {
+    ulnet_session_t *sessions[2] = {0};
+    ulnet_transport_inproc_t transport = {0};
+    int status = 0;
+
+    ulnet__test_inproc_pair_setup(sessions, &transport, 10 * 1000 * 1000);
+
+    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "HELLO", sizeof("HELLO") - 1);
+    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "WORLD", sizeof("WORLD") - 1);
+
+    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
+    ulnet_reliable_send_with_acks_only(sessions[0], SAM2_SPECTATOR_START, (const uint8_t*) "ACK CARRIER", sizeof("ACK CARRIER") - 1);
+    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3);
+    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
+
+    ulnet_reliable_packet_t *msg1 = (ulnet_reliable_packet_t *) sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][0].data;
+    ulnet_reliable_packet_t *msg2 = (ulnet_reliable_packet_t *) sessions[0]->reliable_rx_packet_history[SAM2_SPECTATOR_START][1].data;
+
+    if (!(   msg1 && memcmp(msg1->payload, "HELLO", sizeof("HELLO") - 1) == 0
+          && msg2 && memcmp(msg2->payload, "WORLD", sizeof("WORLD") - 1) == 0)) {
+        SAM2_LOG_ERROR("Reliable ACK did not immediately unblock the queued packet");
+        status = 1;
+    }
+
+    sessions[0]->inproc[SAM2_SPECTATOR_START] = NULL;
+    sessions[1]->inproc[SAM2_AUTHORITY_INDEX] = NULL;
+    ulnet_session_tear_down(sessions[0]);
+    ulnet_session_tear_down(sessions[1]);
+    free(sessions[0]);
+    free(sessions[1]);
 
     return status;
 }
@@ -340,9 +374,10 @@ void sam2_log_write(int level, const char *file, int line, const char *format, .
     }
 }
 
-int main () {
+int main (int argc, char **argv) {
     ulnet_session_t *session_1 = NULL;
     ulnet_session_t *session_2 = NULL;
+    bool inproc_only = argc > 1 && strcmp(argv[1], "--inproc-only") == 0;
 
     juice_set_log_level(JUICE_LOG_LEVEL_DEBUG);
 
@@ -350,6 +385,17 @@ int main () {
     if (status != 0) {
         printf("Inproc test failed with status: %d\n", status);
         return status;
+    }
+
+    status = ulnet_test_inproc_reliable_ack_unblocks_queue();
+    if (status != 0) {
+        printf("Inproc reliable ACK unblock test failed with status: %d\n", status);
+        return status;
+    }
+
+    if (inproc_only) {
+        printf("Inproc tests passed successfully!\n");
+        return 0;
     }
 
     status = ulnet_test_ice(&session_1, &session_2);
