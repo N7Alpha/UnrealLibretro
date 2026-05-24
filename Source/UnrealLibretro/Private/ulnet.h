@@ -2278,7 +2278,7 @@ ULNET_LINKAGE void ulnet_imgui_plot_history(ulnet_session_t *session) {
 }
 
 ULNET_LINKAGE void ulnet_imgui_show_session(ulnet_session_t *session) {
-    ImGui::Text("Frame Counter: %d", session->frame_counter);
+    ImGui::Text("Frame Counter: %" PRIi64, session->frame_counter);
     if (ImGui::CollapsingHeader("Room we are in")) {
         ulnet_imgui_show_room(session->room_we_are_in, session->our_peer_id);
     }
