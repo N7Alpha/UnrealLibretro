@@ -50,7 +50,6 @@ set(SOURCE_FILES
     Source/ThirdParty/netarch/sam2_test.c
     Source/ThirdParty/netarch/ulnet_test.c
     Source/UnrealLibretroEditor/miniz/miniz.c
-    Source/UnrealLibretro/Private/fec.c
     Source/ThirdParty/imgui/imgui.cpp
     Source/ThirdParty/imgui/backends/imgui_impl_sdl3.cpp
     Source/ThirdParty/imgui/backends/imgui_impl_opengl3.cpp

@@ -4,12 +4,12 @@
 #include "sam2.h"
 
 typedef struct juice_agent juice_agent_t;
-#include "fec.h"
 
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 
 #ifndef ULNET_MALLOC
 #define ULNET_MALLOC(size) malloc(size)
@@ -93,6 +93,11 @@ typedef struct juice_agent juice_agent_t;
 #define ULNET_MAX_SAMPLE_SIZE 128
 
 #define ULNET_RELIABLE_ACK_BUFFER_SIZE 128
+
+#define ULNET_RS_GF_SIZE 255
+#define ULNET_RS_GF_ORDER 256
+#define ULNET_RS_DATA_BLOCKS_MAX 239
+#define ULNET_RS_TOTAL_BLOCKS_MAX 255
 
 // This constant defines the maximum number of frames that can be buffered before blocking.
 // A value of 2 implies no delay can be accomidated.
@@ -292,9 +297,9 @@ typedef struct ulnet_session {
     int deflate_quality;
     int64_t remote_savestate_transfer_offset;
     uint8_t remote_packet_groups; // This is used to bookkeep how much data we actually need to receive to reform the complete savestate
-    ulnet_packet_ref_t packet_reference[FEC_PACKET_GROUPS_MAX][GF_SIZE - FEC_REDUNDANT_BLOCKS];
-    int fec_index[FEC_PACKET_GROUPS_MAX][GF_SIZE - FEC_REDUNDANT_BLOCKS];
-    int fec_index_counter[FEC_PACKET_GROUPS_MAX]; // Counts packets received in each "packet group"
+    ulnet_packet_ref_t packet_reference[FEC_PACKET_GROUPS_MAX][ULNET_RS_TOTAL_BLOCKS_MAX];
+    uint64_t fec_received_bits[FEC_PACKET_GROUPS_MAX][4];
+    int fec_index_counter[FEC_PACKET_GROUPS_MAX]; // Counts unique packets received in each packet group
 
     void *user_ptr;
     int (*sam2_send_callback)(void *user_ptr, char *response);
@@ -1537,7 +1542,7 @@ static inline int ulnet__sequence_greater_than(uint16_t s1, uint16_t s2) { retur
 static inline int ulnet__sequence_less_than(uint16_t s1, uint16_t s2)    { return ulnet__sequence_cmp(s1, s2) < 0; }
 
 static void ulnet__logical_partition(int sz, int redundant, int *n, int *out_k, int *packet_size, int *packet_groups) {
-    int k_max = GF_SIZE - redundant;
+    int k_max = ULNET_RS_GF_SIZE - redundant;
     *packet_groups = 1;
     int k = (sz - 1) / (*packet_groups * *packet_size) + 1;
 
@@ -1547,13 +1552,267 @@ static void ulnet__logical_partition(int sz, int redundant, int *n, int *out_k, 
         k = (sz - 1) / (*packet_groups * *packet_size) + 1;
     }
 
-    *n = k + k * redundant / k_max;
+    int repair = (k * redundant + k_max - 1) / k_max;
+    if (repair < 1) {
+        repair = 1;
+    }
+    *n = k + repair;
     *out_k = k;
 }
 
 // This is a little confusing since the lower byte of sequence corresponds to the largest stride
 static int64_t ulnet__logical_partition_offset_bytes(uint8_t sequence_hi, uint8_t sequence_lo, int block_size_bytes, int block_stride) {
     return (int64_t) sequence_hi * block_size_bytes + sequence_lo * block_size_bytes * block_stride;
+}
+
+static int ulnet__rs_repair_block_count(int k) {
+    if (k <= 0) {
+        return 0;
+    }
+
+    int repair = (k * FEC_REDUNDANT_BLOCKS + ULNET_RS_DATA_BLOCKS_MAX - 1) / ULNET_RS_DATA_BLOCKS_MAX;
+    return repair > 0 ? repair : 1;
+}
+
+static int ulnet__rs_total_block_count(int k) {
+    return k + ulnet__rs_repair_block_count(k);
+}
+
+static uint8_t ulnet__rs_exp[ULNET_RS_GF_SIZE * 2];
+static uint8_t ulnet__rs_log[ULNET_RS_GF_ORDER];
+static uint8_t ulnet__rs_initialized;
+
+static void ulnet__rs_init(void) {
+    if (ulnet__rs_initialized) {
+        return;
+    }
+
+    uint16_t x = 1;
+    for (int i = 0; i < ULNET_RS_GF_SIZE; i++) {
+        ulnet__rs_exp[i] = (uint8_t)x;
+        ulnet__rs_log[x] = (uint8_t)i;
+        x <<= 1;
+        if (x & 0x100) {
+            x ^= 0x11d;
+        }
+    }
+
+    for (int i = ULNET_RS_GF_SIZE; i < ULNET_RS_GF_SIZE * 2; i++) {
+        ulnet__rs_exp[i] = ulnet__rs_exp[i - ULNET_RS_GF_SIZE];
+    }
+
+    ulnet__rs_initialized = 1;
+}
+
+static inline uint8_t ulnet__rs_mul(uint8_t a, uint8_t b) {
+    if (a == 0 || b == 0) {
+        return 0;
+    }
+
+    return ulnet__rs_exp[ulnet__rs_log[a] + ulnet__rs_log[b]];
+}
+
+static inline uint8_t ulnet__rs_inv(uint8_t a) {
+    return ulnet__rs_exp[ULNET_RS_GF_SIZE - ulnet__rs_log[a]];
+}
+
+static void ulnet__rs_addmul(uint8_t *dst, const uint8_t *src, uint8_t c, int size) {
+    if (c == 0) {
+        return;
+    }
+
+    for (int i = 0; i < size; i++) {
+        dst[i] ^= ulnet__rs_mul(src[i], c);
+    }
+}
+
+static int ulnet__rs_invert_matrix(uint8_t *m, int k) {
+    uint8_t inv[ULNET_RS_DATA_BLOCKS_MAX * ULNET_RS_DATA_BLOCKS_MAX];
+
+    if (k <= 0 || k > ULNET_RS_DATA_BLOCKS_MAX) {
+        return -1;
+    }
+
+    memset(inv, 0, (size_t)k * (size_t)k);
+    for (int i = 0; i < k; i++) {
+        inv[i * k + i] = 1;
+    }
+
+    for (int col = 0; col < k; col++) {
+        int pivot = col;
+        while (pivot < k && m[pivot * k + col] == 0) {
+            pivot++;
+        }
+
+        if (pivot == k) {
+            return -1;
+        }
+
+        if (pivot != col) {
+            for (int i = 0; i < k; i++) {
+                uint8_t t = m[col * k + i];
+                m[col * k + i] = m[pivot * k + i];
+                m[pivot * k + i] = t;
+
+                t = inv[col * k + i];
+                inv[col * k + i] = inv[pivot * k + i];
+                inv[pivot * k + i] = t;
+            }
+        }
+
+        uint8_t scale = ulnet__rs_inv(m[col * k + col]);
+        for (int i = 0; i < k; i++) {
+            m[col * k + i] = ulnet__rs_mul(m[col * k + i], scale);
+            inv[col * k + i] = ulnet__rs_mul(inv[col * k + i], scale);
+        }
+
+        for (int row = 0; row < k; row++) {
+            if (row == col) {
+                continue;
+            }
+
+            uint8_t c = m[row * k + col];
+            if (c == 0) {
+                continue;
+            }
+
+            for (int i = 0; i < k; i++) {
+                m[row * k + i] ^= ulnet__rs_mul(m[col * k + i], c);
+                inv[row * k + i] ^= ulnet__rs_mul(inv[col * k + i], c);
+            }
+        }
+    }
+
+    memcpy(m, inv, (size_t)k * (size_t)k);
+    return 0;
+}
+
+static int ulnet__rs_build_matrix(int k, int n, uint8_t *matrix) {
+    uint8_t vandermonde[ULNET_RS_TOTAL_BLOCKS_MAX * ULNET_RS_DATA_BLOCKS_MAX];
+    uint8_t top_inverse[ULNET_RS_DATA_BLOCKS_MAX * ULNET_RS_DATA_BLOCKS_MAX];
+
+    if (k <= 0 || k > ULNET_RS_DATA_BLOCKS_MAX || n < k || n > ULNET_RS_TOTAL_BLOCKS_MAX) {
+        return -1;
+    }
+
+    ulnet__rs_init();
+    memset(vandermonde, 0, (size_t)n * (size_t)k);
+    vandermonde[0] = 1;
+    for (int row = 1; row < n; row++) {
+        uint8_t x = ulnet__rs_exp[row - 1];
+        uint8_t v = 1;
+        for (int col = 0; col < k; col++) {
+            vandermonde[row * k + col] = v;
+            v = ulnet__rs_mul(v, x);
+        }
+    }
+
+    memcpy(top_inverse, vandermonde, (size_t)k * (size_t)k);
+    if (ulnet__rs_invert_matrix(top_inverse, k) != 0) {
+        return -1;
+    }
+
+    memset(matrix, 0, (size_t)n * (size_t)k);
+    for (int i = 0; i < k; i++) {
+        matrix[i * k + i] = 1;
+    }
+
+    for (int row = k; row < n; row++) {
+        for (int col = 0; col < k; col++) {
+            uint8_t acc = 0;
+            for (int i = 0; i < k; i++) {
+                acc ^= ulnet__rs_mul(vandermonde[row * k + i], top_inverse[i * k + col]);
+            }
+            matrix[row * k + col] = acc;
+        }
+    }
+
+    return 0;
+}
+
+static void ulnet__rs_encode(void **blocks, int k, int n, int block_size) {
+    uint8_t matrix[ULNET_RS_TOTAL_BLOCKS_MAX * ULNET_RS_DATA_BLOCKS_MAX];
+
+    if (ulnet__rs_build_matrix(k, n, matrix) != 0) {
+        SAM2_LOG_ERROR("Failed to build Reed-Solomon encoding matrix");
+        assert(0);
+        return;
+    }
+
+    for (int row = k; row < n; row++) {
+        uint8_t *dst = (uint8_t *)blocks[row];
+        memset(dst, 0, (size_t)block_size);
+        for (int col = 0; col < k; col++) {
+            ulnet__rs_addmul(dst, (const uint8_t *)blocks[col], matrix[row * k + col], block_size);
+        }
+    }
+}
+
+static int ulnet__rs_decode(ulnet_packet_ref_t blocks[ULNET_RS_TOTAL_BLOCKS_MAX], int k, int n, int block_size) {
+    uint8_t matrix[ULNET_RS_TOTAL_BLOCKS_MAX * ULNET_RS_DATA_BLOCKS_MAX];
+    uint8_t decode_matrix[ULNET_RS_DATA_BLOCKS_MAX * ULNET_RS_DATA_BLOCKS_MAX];
+    uint8_t missing[ULNET_RS_DATA_BLOCKS_MAX];
+    uint8_t *decoded[ULNET_RS_DATA_BLOCKS_MAX];
+    int index[ULNET_RS_DATA_BLOCKS_MAX];
+    int received = 0;
+    int missing_count = 0;
+
+    if (ulnet__rs_build_matrix(k, n, matrix) != 0) {
+        return -1;
+    }
+
+    for (int i = 0; i < n && received < k; i++) {
+        if (blocks[i].data != NULL) {
+            index[received++] = i;
+        }
+    }
+
+    if (received < k) {
+        return -1;
+    }
+
+    for (int row = 0; row < k; row++) {
+        memcpy(&decode_matrix[row * k], &matrix[index[row] * k], (size_t)k);
+    }
+
+    if (ulnet__rs_invert_matrix(decode_matrix, k) != 0) {
+        return -1;
+    }
+
+    for (int row = 0; row < k; row++) {
+        if (blocks[row].data == NULL) {
+            missing[missing_count] = (uint8_t)row;
+            decoded[missing_count] = (uint8_t *)ULNET_MALLOC((size_t)block_size);
+            if (decoded[missing_count] == NULL) {
+                for (int i = 0; i < missing_count; i++) {
+                    ULNET_FREE(decoded[i]);
+                }
+                return -1;
+            }
+            memset(decoded[missing_count], 0, (size_t)block_size);
+            missing_count++;
+        }
+    }
+
+    for (int m = 0; m < missing_count; m++) {
+        int row = missing[m];
+        for (int col = 0; col < k; col++) {
+            ulnet__rs_addmul(decoded[m], blocks[index[col]].data, decode_matrix[row * k + col], block_size);
+        }
+    }
+
+    for (int m = 0; m < missing_count; m++) {
+        int row = missing[m];
+        if (ulnet_packet_ref_set(&blocks[row], decoded[m], (size_t)block_size, 0) != 0) {
+            for (int i = m; i < missing_count; i++) {
+                ULNET_FREE(decoded[i]);
+            }
+            return -1;
+        }
+        ULNET_FREE(decoded[m]);
+    }
+
+    return 0;
 }
 
 ULNET_LINKAGE void ulnet_input_poll(ulnet_session_t *session, ulnet_input_state_t (*input_state)[ULNET_PORT_COUNT]) {
@@ -2334,9 +2593,10 @@ static sam2_room_t ulnet__infer_future_room_we_are_in(ulnet_session_t *session) 
 }
 
 static inline void ulnet__reset_save_state_bookkeeping(ulnet_session_t *session) {
-    ulnet_packet_ref_clear_many(&session->packet_reference[0][0], FEC_PACKET_GROUPS_MAX * (GF_SIZE - FEC_REDUNDANT_BLOCKS));
+    ulnet_packet_ref_clear_many(&session->packet_reference[0][0], FEC_PACKET_GROUPS_MAX * ULNET_RS_TOTAL_BLOCKS_MAX);
     session->remote_packet_groups = FEC_PACKET_GROUPS_MAX;
     session->remote_savestate_transfer_offset = 0;
+    memset(session->fec_received_bits, 0, sizeof(session->fec_received_bits));
     memset(session->fec_index_counter, 0, sizeof(session->fec_index_counter));
 }
 
@@ -2703,6 +2963,15 @@ static void ulnet__process_udp_packet(ulnet_session_t *session, int p, const uin
             k = savestate_transfer_header.reed_solomon_k;
             session->remote_packet_groups = 1; // k != 239 => 1 packet group
         }
+        if (k == 0 || k > ULNET_RS_DATA_BLOCKS_MAX) {
+            SAM2_LOG_WARN("Received savestate transfer packet with invalid k");
+            break;
+        }
+        if (session->remote_packet_groups == 0 || session->remote_packet_groups > FEC_PACKET_GROUPS_MAX) {
+            SAM2_LOG_WARN("Received savestate transfer packet with invalid packet group count");
+            break;
+        }
+        int n = ulnet__rs_total_block_count(k);
 
         if (sequence_hi >= FEC_PACKET_GROUPS_MAX) {
             SAM2_LOG_WARN("Received savestate transfer packet with sequence_hi >= FEC_PACKET_GROUPS_MAX");
@@ -2715,33 +2984,44 @@ static void ulnet__process_udp_packet(ulnet_session_t *session, int p, const uin
         }
 
         uint8_t sequence_lo = savestate_transfer_header.sequence_lo;
+        if (sequence_lo >= n) {
+            SAM2_LOG_WARN("Received savestate transfer packet with sequence_lo >= n");
+            break;
+        }
+
+        // Store by shard number so decode sees the same systematic layout the sender encoded.
+        uint64_t sequence_lo_bit = 1ULL << (sequence_lo & 63);
+        uint64_t *sequence_lo_bits = &session->fec_received_bits[sequence_hi][sequence_lo >> 6];
+        if ((*sequence_lo_bits & sequence_lo_bit) != 0) {
+            break;
+        }
 
         SAM2_LOG_DEBUG("Received savestate packet sequence_hi: %hhu sequence_lo: %hhu", sequence_hi, sequence_lo);
 
         size_t payload_size = size - sizeof(ulnet_save_state_packet_header_t);
         session->remote_savestate_transfer_offset += size;
 
-        ulnet_packet_ref_set(
-            &session->packet_reference[sequence_hi][session->fec_index_counter[sequence_hi]],
+        if (ulnet_packet_ref_set(
+            &session->packet_reference[sequence_hi][sequence_lo],
             data + sizeof(ulnet_save_state_packet_header_t),
             payload_size,
             0
-        );
-        session->fec_index [sequence_hi][session->fec_index_counter[sequence_hi]++] = sequence_lo;
+        ) != 0) {
+            SAM2_LOG_ERROR("Failed to store savestate transfer packet");
+            break;
+        }
+        *sequence_lo_bits |= sequence_lo_bit;
+        session->fec_index_counter[sequence_hi]++;
 
         if (session->fec_index_counter[sequence_hi] == k) {
             SAM2_LOG_DEBUG("Received all the savestate data for packet group: %hhu", sequence_hi);
-            void *fec_packet[GF_SIZE - FEC_REDUNDANT_BLOCKS];
-            for (int i = 0; i < k; i++) {
-                fec_packet[i] = session->packet_reference[sequence_hi][i].data;
-            }
-
-            int redudant_blocks_sent = k * FEC_REDUNDANT_BLOCKS / (GF_SIZE - FEC_REDUNDANT_BLOCKS);
-            void *rs_code = fec_new(k, k + redudant_blocks_sent);
             int rs_block_size = (int) (size - sizeof(ulnet_save_state_packet_header_t));
-            int status = fec_decode(rs_code, fec_packet, session->fec_index[sequence_hi], rs_block_size);
-            assert(status == 0);
-            fec_free(rs_code);
+            int status = ulnet__rs_decode(session->packet_reference[sequence_hi], k, n, rs_block_size);
+            if (status != 0) {
+                SAM2_LOG_ERROR("Failed to decode savestate transfer packet group");
+                ulnet__reset_save_state_bookkeeping(session);
+                break;
+            }
 
             bool all_data_decoded = true;
             for (int i = 0; i < session->remote_packet_groups; i++) {
@@ -3124,7 +3404,6 @@ ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, voi
     // We have "packet grouping" because pretty much every implementation of Reed-Solomon doesn't support more than 255 blocks
     // and unfragmented UDP packets over ethernet are limited to ULNET_PACKET_SIZE_BYTES_MAX
     // This makes the code more complicated and the error correcting properties slightly worse but it's a practical tradeoff
-    void *rs_code = fec_new(k, n);
     for (int j = 0; j < packet_groups; j++) {
         void *data[255];
 
@@ -3132,11 +3411,8 @@ ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, voi
             data[i] = (unsigned char *) savestate_transfer_payload + ulnet__logical_partition_offset_bytes(j, i, packet_payload_size_bytes, packet_groups);
         }
 
-        for (int i = k; i < n; i++) {
-            fec_encode(rs_code, (void **)data, data[i], i, packet_payload_size_bytes);
-        }
+        ulnet__rs_encode(data, k, n, packet_payload_size_bytes);
     }
-    fec_free(rs_code);
 
     // Send original data blocks and parity blocks
     // @todo I wrote this in such a way that you can do a zero-copy when creating the packets to send
