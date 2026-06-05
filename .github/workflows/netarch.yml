@@ -49,13 +49,14 @@ jobs:
         tcc -DSAM2_IMPLEMENTATION \
         -DULNET_IMPLEMENTATION \
         -DULNET_TEST_MAIN \
+        -DULNET_THIRDPARTY_NO_ZSTD \
         -ISource/UnrealLibretro/Private \
-        -ISource/ThirdParty/zstd/lib \
+        -ISource/UnrealLibretroEditor/miniz \
         -ISource/ThirdParty/libjuice/include \
         -ISource/ThirdParty/libjuice/include/juice \
         Source/UnrealLibretro/Private/LibretroThirdPartyImplementation.c \
         Source/UnrealLibretro/Private/fec.c \
-        Source/ThirdParty/zstd/lib/decompress/huf_decompress_amd64.S \
+        Source/UnrealLibretroEditor/miniz/miniz.c \
         -run Source/ThirdParty/netarch/ulnet_test.c
 
   build-macos-x86_64:

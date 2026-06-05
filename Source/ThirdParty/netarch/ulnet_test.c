@@ -2,6 +2,7 @@
 #include "ulnet.h"
 #include "sam2.h"
 #include "juice/juice.h"
+#include "miniz.h"
 
 #define ULNET__TEST_SAM2_PORT (SAM2_SERVER_DEFAULT_PORT + 1)
 
@@ -311,6 +312,261 @@ int ulnet_test_inproc_reliable_ack_unblocks_queue(void) {
     return status;
 }
 
+#if defined(ULNET_IMPLEMENTATION)
+static void ulnet__test_fill_deflate_buffer(uint8_t *data, size_t size, int pattern) {
+    for (size_t i = 0; i < size; i++) {
+        switch (pattern) {
+        case 0:
+            data[i] = 0;
+            break;
+        case 1:
+            data[i] = (uint8_t)(i & 0xff);
+            break;
+        case 2:
+            data[i] = (uint8_t)((i * 37 + i / 3 + 11) & 0xff);
+            break;
+        default:
+            data[i] = (uint8_t)((i % 251) == 0 ? i : 0x5a);
+            break;
+        }
+    }
+}
+
+int ulnet_test_deflate_codec(void) {
+    const size_t test_sizes[] = {0, 1, 2, 3, 31, 4096, 65536};
+    uint8_t empty_sentinel = 0;
+
+    for (int pattern = 0; pattern < 4; pattern++) {
+        for (size_t i = 0; i < sizeof(test_sizes) / sizeof(test_sizes[0]); i++) {
+            size_t size = test_sizes[i];
+            uint8_t *original = size ? (uint8_t *)malloc(size) : &empty_sentinel;
+            uint8_t *decoded = size ? (uint8_t *)malloc(size) : &empty_sentinel;
+            size_t compressed_capacity = ULNET_DEFLATE_COMPRESS_BOUND(size);
+            uint8_t *compressed = (uint8_t *)malloc(compressed_capacity ? compressed_capacity : 1);
+
+            if (!original || !decoded || !compressed) {
+                SAM2_LOG_ERROR("Failed to allocate deflate test buffers");
+                if (size && original) free(original);
+                if (size && decoded) free(decoded);
+                if (compressed) free(compressed);
+                return 1;
+            }
+
+            ulnet__test_fill_deflate_buffer(original, size, pattern);
+
+            int64_t compressed_size = ULNET_DEFLATE_COMPRESS(compressed, compressed_capacity, original, size, 8);
+            if (compressed_size < 0) {
+                SAM2_LOG_ERROR("ULNET_DEFLATE_COMPRESS failed for size %zu pattern %d", size, pattern);
+                if (size) free(original);
+                if (size) free(decoded);
+                free(compressed);
+                return 1;
+            }
+
+            int64_t decoded_size = ULNET_DEFLATE_DECOMPRESS(decoded, size, compressed, compressed_size);
+            if (decoded_size != (int64_t)size || memcmp(original, decoded, size) != 0) {
+                SAM2_LOG_ERROR("ULNET_DEFLATE_DECOMPRESS round trip failed for size %zu pattern %d", size, pattern);
+                if (size) free(original);
+                if (size) free(decoded);
+                free(compressed);
+                return 1;
+            }
+
+            if (size) free(original);
+            if (size) free(decoded);
+            free(compressed);
+        }
+    }
+
+    return 0;
+}
+
+int ulnet_test_deflate_decodes_miniz(void) {
+    const int miniz_levels[] = {MZ_BEST_SPEED, MZ_DEFAULT_LEVEL, MZ_BEST_COMPRESSION};
+    const size_t test_sizes[] = {0, 1, 257, 32768, 98304};
+    uint8_t empty_sentinel = 0;
+
+    for (size_t level_idx = 0; level_idx < sizeof(miniz_levels) / sizeof(miniz_levels[0]); level_idx++) {
+        for (size_t size_idx = 0; size_idx < sizeof(test_sizes) / sizeof(test_sizes[0]); size_idx++) {
+            size_t size = test_sizes[size_idx];
+            uint8_t *original = size ? (uint8_t *)malloc(size) : &empty_sentinel;
+            uint8_t *decoded = size ? (uint8_t *)malloc(size) : &empty_sentinel;
+            mz_ulong compressed_capacity = mz_compressBound((mz_ulong)size);
+            uint8_t *compressed = (uint8_t *)malloc(compressed_capacity ? compressed_capacity : 1);
+
+            if (!original || !decoded || !compressed) {
+                SAM2_LOG_ERROR("Failed to allocate miniz compatibility test buffers");
+                if (size && original) free(original);
+                if (size && decoded) free(decoded);
+                if (compressed) free(compressed);
+                return 1;
+            }
+
+            ulnet__test_fill_deflate_buffer(original, size, (int)(level_idx + size_idx) % 4);
+
+            mz_ulong compressed_size = compressed_capacity;
+            int miniz_status = mz_compress2(compressed, &compressed_size, original, (mz_ulong)size, miniz_levels[level_idx]);
+            if (miniz_status != MZ_OK) {
+                SAM2_LOG_ERROR("mz_compress2 failed with status %d", miniz_status);
+                if (size) free(original);
+                if (size) free(decoded);
+                free(compressed);
+                return 1;
+            }
+
+            int64_t decoded_size = ULNET_DEFLATE_DECOMPRESS(decoded, size, compressed, compressed_size);
+            if (decoded_size != (int64_t)size || memcmp(original, decoded, size) != 0) {
+                SAM2_LOG_ERROR("ULNET_DEFLATE_DECOMPRESS failed to decode miniz data for size %zu level %d",
+                    size, miniz_levels[level_idx]);
+                if (size) free(original);
+                if (size) free(decoded);
+                free(compressed);
+                return 1;
+            }
+
+            if (size) free(original);
+            if (size) free(decoded);
+            free(compressed);
+        }
+    }
+
+    return 0;
+}
+
+static int ulnet__test_stream_deflate_once(const uint8_t *original, size_t size, size_t input_chunk_size, size_t output_chunk_size) {
+    size_t compressed_capacity = size * 2 + 1024;
+    uint8_t *compressed = (uint8_t *)malloc(compressed_capacity ? compressed_capacity : 1);
+    uint8_t *decoded = size ? (uint8_t *)malloc(size) : (uint8_t *)malloc(1);
+    if (!compressed || !decoded) {
+        SAM2_LOG_ERROR("Failed to allocate streaming deflate test buffers");
+        if (compressed) free(compressed);
+        if (decoded) free(decoded);
+        return 1;
+    }
+
+    ulnet_deflate_stream_t stream;
+    int status = ulnet_deflate_stream_init(&stream, 8);
+    if (status != ULNET_DEFLATE_STATUS_OK) {
+        SAM2_LOG_ERROR("ulnet_deflate_stream_init failed");
+        free(compressed);
+        free(decoded);
+        return 1;
+    }
+
+    size_t input_offset = 0;
+    size_t compressed_size = 0;
+    int done = 0;
+
+    while (!done) {
+        size_t call_input_size = 0;
+        if (input_offset < size) {
+            call_input_size = input_chunk_size;
+            if (call_input_size == 0 || call_input_size > size - input_offset) {
+                call_input_size = size - input_offset;
+            }
+        }
+
+        const uint8_t *src = original + input_offset;
+        size_t src_size = call_input_size;
+        int flush = (input_offset + call_input_size == size) ? ULNET_DEFLATE_FLUSH_FINISH : ULNET_DEFLATE_FLUSH_NONE;
+
+        for (;;) {
+            if (compressed_size >= compressed_capacity) {
+                SAM2_LOG_ERROR("Streaming deflate output exceeded test capacity for size %zu input_chunk %zu output_chunk %zu",
+                    size, input_chunk_size, output_chunk_size);
+                ulnet_deflate_stream_end(&stream);
+                free(compressed);
+                free(decoded);
+                return 1;
+            }
+
+            size_t dst_available = output_chunk_size;
+            if (dst_available == 0 || dst_available > compressed_capacity - compressed_size) {
+                dst_available = compressed_capacity - compressed_size;
+            }
+            uint8_t *dst = compressed + compressed_size;
+            uint8_t *dst_start = dst;
+
+            status = ulnet_deflate_stream_update(&stream, &src, &src_size, &dst, &dst_available, flush);
+            compressed_size += (size_t)(dst - dst_start);
+            input_offset = (size_t)(src - original);
+
+            if (status == ULNET_DEFLATE_STATUS_DONE) {
+                done = 1;
+                break;
+            } else if (status == ULNET_DEFLATE_STATUS_ERROR) {
+                SAM2_LOG_ERROR("ulnet_deflate_stream_update failed");
+                ulnet_deflate_stream_end(&stream);
+                free(compressed);
+                free(decoded);
+                return 1;
+            } else if (status == ULNET_DEFLATE_STATUS_NEEDS_OUTPUT) {
+                continue;
+            } else if (status == ULNET_DEFLATE_STATUS_NEEDS_INPUT) {
+                break;
+            } else if (status == ULNET_DEFLATE_STATUS_OK) {
+                continue;
+            } else {
+                SAM2_LOG_ERROR("Unexpected streaming deflate status %d", status);
+                ulnet_deflate_stream_end(&stream);
+                free(compressed);
+                free(decoded);
+                return 1;
+            }
+        }
+    }
+
+    ulnet_deflate_stream_end(&stream);
+
+    int64_t decoded_size = ULNET_DEFLATE_DECOMPRESS(decoded, size, compressed, compressed_size);
+    if (decoded_size != (int64_t)size || memcmp(original, decoded, size) != 0) {
+        SAM2_LOG_ERROR("Streaming deflate decode failed for size %zu input_chunk %zu output_chunk %zu",
+            size, input_chunk_size, output_chunk_size);
+        free(compressed);
+        free(decoded);
+        return 1;
+    }
+
+    free(compressed);
+    free(decoded);
+    return 0;
+}
+
+int ulnet_test_deflate_streaming(void) {
+    const size_t test_sizes[] = {0, 1, 2, 3, 31, 4096, 65536};
+    const size_t input_chunks[] = {0, 1, 2, 7, 1408, 65536};
+    const size_t output_chunks[] = {1, 2, 5, 64, 1408, 131072};
+    uint8_t empty_sentinel = 0;
+
+    for (int pattern = 0; pattern < 4; pattern++) {
+        for (size_t size_idx = 0; size_idx < sizeof(test_sizes) / sizeof(test_sizes[0]); size_idx++) {
+            size_t size = test_sizes[size_idx];
+            uint8_t *original = size ? (uint8_t *)malloc(size) : &empty_sentinel;
+            if (!original) {
+                SAM2_LOG_ERROR("Failed to allocate streaming deflate original buffer");
+                return 1;
+            }
+
+            ulnet__test_fill_deflate_buffer(original, size, pattern);
+
+            for (size_t in_idx = 0; in_idx < sizeof(input_chunks) / sizeof(input_chunks[0]); in_idx++) {
+                for (size_t out_idx = 0; out_idx < sizeof(output_chunks) / sizeof(output_chunks[0]); out_idx++) {
+                    int status = ulnet__test_stream_deflate_once(original, size, input_chunks[in_idx], output_chunks[out_idx]);
+                    if (status != 0) {
+                        if (size) free(original);
+                        return status;
+                    }
+                }
+            }
+
+            if (size) free(original);
+        }
+    }
+
+    return 0;
+}
+#endif
+
 void ulnet__bench_xxh32() {
     const size_t test_size = 64 * 1024 * 1024;
     const int iterations = 30;
@@ -353,8 +609,6 @@ void ulnet__bench_xxh32() {
 }
 
 
-#include <zstd.h>
-
 #if defined(ULNET_TEST_MAIN)
 void sam2_log_write(int level, const char *file, int line, const char *format, ...) {
     if (level == 2) {
@@ -386,6 +640,26 @@ int main (int argc, char **argv) {
         printf("Inproc test failed with status: %d\n", status);
         return status;
     }
+
+#if defined(ULNET_IMPLEMENTATION)
+    status = ulnet_test_deflate_codec();
+    if (status != 0) {
+        printf("Deflate codec test failed with status: %d\n", status);
+        return status;
+    }
+
+    status = ulnet_test_deflate_decodes_miniz();
+    if (status != 0) {
+        printf("Deflate miniz compatibility test failed with status: %d\n", status);
+        return status;
+    }
+
+    status = ulnet_test_deflate_streaming();
+    if (status != 0) {
+        printf("Deflate streaming test failed with status: %d\n", status);
+        return status;
+    }
+#endif
 
     status = ulnet_test_inproc_reliable_ack_unblocks_queue();
     if (status != 0) {

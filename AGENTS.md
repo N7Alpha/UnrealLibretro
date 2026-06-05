@@ -47,12 +47,14 @@ tcc -DSAM2_IMPLEMENTATION \
 tcc -DSAM2_IMPLEMENTATION \
     -DULNET_IMPLEMENTATION \
     -DULNET_TEST_MAIN \
+    -DULNET_THIRDPARTY_NO_ZSTD \
     -ISource/UnrealLibretro/Private \
-    -ISource/ThirdParty/zstd/lib \
+    -ISource/UnrealLibretroEditor/miniz \
     -ISource/ThirdParty/libjuice/include \
     -ISource/ThirdParty/libjuice/include/juice \
     Source/UnrealLibretro/Private/LibretroThirdPartyImplementation.c \
     Source/UnrealLibretro/Private/fec.c \
+    Source/UnrealLibretroEditor/miniz/miniz.c \
     -run Source/ThirdParty/netarch/ulnet_test.c
 
 ```

@@ -18,6 +18,8 @@ int g_log_level = 1; // Info
 #include "ulnet.h"
 #include "sam2.h"
 #include "miniz.h"
+#include "zstd.h"
+#include "common/xxhash.h"
 
 #define MAX_SAMPLE_SIZE ULNET_MAX_SAMPLE_SIZE
 
@@ -3981,7 +3983,7 @@ int main(int argc, char *argv[]) {
                         g_libretro_context.message_history[g_libretro_context.message_history_length++] = latest_sam2_message;
                     }
 
-                    g_ulnet_session.zstd_compress_level = g_zstd_compress_level;
+                    g_ulnet_session.deflate_quality = g_zstd_compress_level;
                     g_ulnet_session.user_ptr = (void *) &g_libretro_context;
                     g_ulnet_session.sam2_send_callback = [](void *user_ptr, char *response) {
                         // We delegate sends to us so we have a single location of debug bookkeeping + error checking of sent messages

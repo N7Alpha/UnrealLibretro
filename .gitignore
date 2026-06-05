@@ -9,7 +9,7 @@ UnrealLibretro.uplugin
 /build
 imgui.ini
 .vscode
-
+.cache
 
 ###### GITHUB PROVIDED FILTERS  ######
 # Visual Studio 2015 user specific files
