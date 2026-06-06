@@ -242,7 +242,6 @@ typedef struct ulnet_deflate_stream {
     uint32_t adler_s1;
     uint32_t adler_s2;
     int bitcount;
-    int quality;
     int phase;
     int header_pos;
     int block_header_pos;
@@ -401,17 +400,12 @@ static void *ulnet__stb_realloc_sized(void *old_ptr, size_t old_size, size_t new
     return new_ptr;
 }
 
-static int ulnet__stb_err(const char *reason, const char *detail) {
-    (void)reason;
-    (void)detail;
+static int ulnet__deflate_error(const char *reason) {
+    SAM2_LOG_ERROR("DEFLATE decompression failed: %s", reason);
     return 0;
 }
 
 #define ULNET__STBI_ASSERT(x) assert(x)
-#define ULNET__STBI_NOTUSED(x) ((void)(x))
-#define ULNET__STBI_REALLOC_SIZED(p, oldsz, newsz) ulnet__stb_realloc_sized(p, oldsz, newsz)
-#define ULNET__STBI_FREE(p) ULNET_FREE(p)
-#define ULNET__STBI_MALLOC(sz) ULNET_MALLOC(sz)
 #define ULNET__STBIW_ASSERT(x) assert(x)
 #define ULNET__STBIW_MALLOC(sz) ULNET_MALLOC(sz)
 #define ULNET__STBIW_FREE(p) ULNET_FREE(p)
@@ -671,7 +665,7 @@ static int ulnet__stbi__zbuild_huffman(ulnet__stbi__zhuffman *z, const uint8_t *
    sizes[0] = 0;
    for (i=1; i < 16; ++i)
       if (sizes[i] > (1 << i))
-         return ulnet__stb_err("bad sizes", "Corrupt PNG");
+         return ulnet__deflate_error("bad huffman sizes");
    code = 0;
    for (i=1; i < 16; ++i) {
       next_code[i] = code;
@@ -679,7 +673,7 @@ static int ulnet__stbi__zbuild_huffman(ulnet__stbi__zhuffman *z, const uint8_t *
       z->firstsymbol[i] = (uint16_t) k;
       code = (code + sizes[i]);
       if (sizes[i])
-         if (code-1 >= (1 << i)) return ulnet__stb_err("bad codelengths","Corrupt PNG");
+         if (code-1 >= (1 << i)) return ulnet__deflate_error("bad huffman code lengths");
       z->maxcode[i] = code << (16-i); // preshift for inner loop
       code <<= 1;
       k += sizes[i];
@@ -705,12 +699,6 @@ static int ulnet__stbi__zbuild_huffman(ulnet__stbi__zhuffman *z, const uint8_t *
    return 1;
 }
 
-// zlib-from-memory implementation for PNG reading
-//    because PNG allows splitting the zlib stream arbitrarily,
-//    and it's annoying structurally to have PNG call ZLIB call PNG,
-//    we require PNG read all the IDATs and combine them into a single
-//    memory buffer
-
 typedef struct
 {
    uint8_t *zbuffer, *zbuffer_end;
@@ -721,7 +709,6 @@ typedef struct
    char *zout;
    char *zout_start;
    char *zout_end;
-   int   z_expandable;
 
    ulnet__stbi__zhuffman z_length, z_distance;
 } ulnet__stbi__zbuf;
@@ -807,28 +794,6 @@ inline static int ulnet__stbi__zhuffman_decode(ulnet__stbi__zbuf *a, ulnet__stbi
    return ulnet__stbi__zhuffman_decode_slowpath(a, z);
 }
 
-static int ulnet__stbi__zexpand(ulnet__stbi__zbuf *z, char *zout, int n)  // need to make room for n bytes
-{
-   char *q;
-   unsigned int cur, limit, old_limit;
-   z->zout = zout;
-   if (!z->z_expandable) return ulnet__stb_err("output buffer limit","Corrupt PNG");
-   cur   = (unsigned int) (z->zout - z->zout_start);
-   limit = old_limit = (unsigned) (z->zout_end - z->zout_start);
-   if (~0U - cur < (unsigned) n) return ulnet__stb_err("outofmem", "Out of memory");
-   while (cur + n > limit) {
-      if(limit > ~0U / 2) return ulnet__stb_err("outofmem", "Out of memory");
-      limit *= 2;
-   }
-   q = (char *) ULNET__STBI_REALLOC_SIZED(z->zout_start, old_limit, limit);
-   ULNET__STBI_NOTUSED(old_limit);
-   if (q == NULL) return ulnet__stb_err("outofmem", "Out of memory");
-   z->zout_start = q;
-   z->zout       = q + cur;
-   z->zout_end   = q + limit;
-   return 1;
-}
-
 static const int ulnet__stbi__zlength_base[31] = {
    3,4,5,6,7,8,9,10,11,13,
    15,17,19,23,27,31,35,43,51,59,
@@ -849,10 +814,10 @@ static int ulnet__stbi__parse_huffman_block(ulnet__stbi__zbuf *a)
    for(;;) {
       int z = ulnet__stbi__zhuffman_decode(a, &a->z_length);
       if (z < 256) {
-         if (z < 0) return ulnet__stb_err("bad huffman code","Corrupt PNG"); // error in huffman codes
+         if (z < 0) return ulnet__deflate_error("bad huffman code");
          if (zout >= a->zout_end) {
-            if (!ulnet__stbi__zexpand(a, zout, 1)) return 0;
-            zout = a->zout;
+            a->zout = zout;
+            return ulnet__deflate_error("output buffer limit");
          }
          *zout++ = (char) z;
       } else {
@@ -865,22 +830,22 @@ static int ulnet__stbi__parse_huffman_block(ulnet__stbi__zbuf *a)
                // buffer so the decoder can just do its speculative decoding. But if we
                // actually consumed any of those bits (which is the case when num_bits < 16),
                // the stream actually read past the end so it is malformed.
-               return ulnet__stb_err("unexpected end","Corrupt PNG");
+               return ulnet__deflate_error("unexpected end");
             }
             return 1;
          }
-         if (z >= 286) return ulnet__stb_err("bad huffman code","Corrupt PNG"); // per DEFLATE, length codes 286 and 287 must not appear in compressed data
+         if (z >= 286) return ulnet__deflate_error("bad length code"); // per DEFLATE, length codes 286 and 287 must not appear in compressed data
          z -= 257;
          len = ulnet__stbi__zlength_base[z];
          if (ulnet__stbi__zlength_extra[z]) len += ulnet__stbi__zreceive(a, ulnet__stbi__zlength_extra[z]);
          z = ulnet__stbi__zhuffman_decode(a, &a->z_distance);
-         if (z < 0 || z >= 30) return ulnet__stb_err("bad huffman code","Corrupt PNG"); // per DEFLATE, distance codes 30 and 31 must not appear in compressed data
+         if (z < 0 || z >= 30) return ulnet__deflate_error("bad distance code"); // per DEFLATE, distance codes 30 and 31 must not appear in compressed data
          dist = ulnet__stbi__zdist_base[z];
          if (ulnet__stbi__zdist_extra[z]) dist += ulnet__stbi__zreceive(a, ulnet__stbi__zdist_extra[z]);
-         if (zout - a->zout_start < dist) return ulnet__stb_err("bad dist","Corrupt PNG");
+         if (zout - a->zout_start < dist) return ulnet__deflate_error("bad distance");
          if (len > a->zout_end - zout) {
-            if (!ulnet__stbi__zexpand(a, zout, len)) return 0;
-            zout = a->zout;
+            a->zout = zout;
+            return ulnet__deflate_error("output buffer limit");
          }
          p = (uint8_t *) (zout - dist);
          if (dist == 1) { // run of one byte; common in images.
@@ -916,28 +881,28 @@ static int ulnet__stbi__compute_huffman_codes(ulnet__stbi__zbuf *a)
    n = 0;
    while (n < ntot) {
       int c = ulnet__stbi__zhuffman_decode(a, &z_codelength);
-      if (c < 0 || c >= 19) return ulnet__stb_err("bad codelengths", "Corrupt PNG");
+      if (c < 0 || c >= 19) return ulnet__deflate_error("bad huffman code lengths");
       if (c < 16)
          lencodes[n++] = (uint8_t) c;
       else {
          uint8_t fill = 0;
          if (c == 16) {
             c = ulnet__stbi__zreceive(a,2)+3;
-            if (n == 0) return ulnet__stb_err("bad codelengths", "Corrupt PNG");
+            if (n == 0) return ulnet__deflate_error("bad huffman code lengths");
             fill = lencodes[n-1];
          } else if (c == 17) {
             c = ulnet__stbi__zreceive(a,3)+3;
          } else if (c == 18) {
             c = ulnet__stbi__zreceive(a,7)+11;
          } else {
-            return ulnet__stb_err("bad codelengths", "Corrupt PNG");
+            return ulnet__deflate_error("bad huffman code lengths");
          }
-         if (ntot - n < c) return ulnet__stb_err("bad codelengths", "Corrupt PNG");
+         if (ntot - n < c) return ulnet__deflate_error("bad huffman code lengths");
          memset(lencodes+n, fill, c);
          n += c;
       }
    }
-   if (n != ntot) return ulnet__stb_err("bad codelengths","Corrupt PNG");
+   if (n != ntot) return ulnet__deflate_error("bad huffman code lengths");
    if (!ulnet__stbi__zbuild_huffman(&a->z_length, lencodes, hlit)) return 0;
    if (!ulnet__stbi__zbuild_huffman(&a->z_distance, lencodes+hlit, hdist)) return 0;
    return 1;
@@ -956,16 +921,16 @@ static int ulnet__stbi__parse_uncompressed_block(ulnet__stbi__zbuf *a)
       a->code_buffer >>= 8;
       a->num_bits -= 8;
    }
-   if (a->num_bits < 0) return ulnet__stb_err("zlib corrupt","Corrupt PNG");
+   if (a->num_bits < 0) return ulnet__deflate_error("corrupt zlib block");
    // now fill header the normal way
    while (k < 4)
       header[k++] = ulnet__stbi__zget8(a);
    len  = header[1] * 256 + header[0];
    nlen = header[3] * 256 + header[2];
-   if (nlen != (len ^ 0xffff)) return ulnet__stb_err("zlib corrupt","Corrupt PNG");
-   if (a->zbuffer + len > a->zbuffer_end) return ulnet__stb_err("read past buffer","Corrupt PNG");
+   if (nlen != (len ^ 0xffff)) return ulnet__deflate_error("corrupt zlib block");
+   if (a->zbuffer + len > a->zbuffer_end) return ulnet__deflate_error("read past input buffer");
    if (a->zout + len > a->zout_end)
-      if (!ulnet__stbi__zexpand(a, a->zout, len)) return 0;
+      return ulnet__deflate_error("output buffer limit");
    memcpy(a->zout, a->zbuffer, len);
    a->zbuffer += len;
    a->zout += len;
@@ -978,10 +943,10 @@ static int ulnet__stbi__parse_zlib_header(ulnet__stbi__zbuf *a)
    int cm    = cmf & 15;
    /* int cinfo = cmf >> 4; */
    int flg   = ulnet__stbi__zget8(a);
-   if (ulnet__stbi__zeof(a)) return ulnet__stb_err("bad zlib header","Corrupt PNG"); // zlib spec
-   if ((cmf*256+flg) % 31 != 0) return ulnet__stb_err("bad zlib header","Corrupt PNG"); // zlib spec
-   if (flg & 32) return ulnet__stb_err("no preset dict","Corrupt PNG"); // preset dictionary not allowed in png
-   if (cm != 8) return ulnet__stb_err("bad compression","Corrupt PNG"); // DEFLATE required for png
+   if (ulnet__stbi__zeof(a)) return ulnet__deflate_error("bad zlib header");
+   if ((cmf*256+flg) % 31 != 0) return ulnet__deflate_error("bad zlib header");
+   if (flg & 32) return ulnet__deflate_error("preset dictionary is unsupported");
+   if (cm != 8) return ulnet__deflate_error("unsupported compression method");
    // window = 1 << (8 + cinfo)... but who cares, we fully buffer output
    return 1;
 }
@@ -1029,7 +994,7 @@ static int ulnet__stbi__parse_zlib(ulnet__stbi__zbuf *a, int parse_header)
       if (type == 0) {
          if (!ulnet__stbi__parse_uncompressed_block(a)) return 0;
       } else if (type == 3) {
-         return 0;
+         return ulnet__deflate_error("reserved block type");
       } else {
          if (type == 1) {
             // use fixed code lengths
@@ -1044,12 +1009,11 @@ static int ulnet__stbi__parse_zlib(ulnet__stbi__zbuf *a, int parse_header)
    return 1;
 }
 
-static int ulnet__stbi__do_zlib(ulnet__stbi__zbuf *a, char *obuf, int olen, int exp, int parse_header)
+static int ulnet__stbi__do_zlib(ulnet__stbi__zbuf *a, char *obuf, int olen, int parse_header)
 {
    a->zout_start = obuf;
    a->zout       = obuf;
    a->zout_end   = obuf + olen;
-   a->z_expandable = exp;
 
    return ulnet__stbi__parse_zlib(a, parse_header);
 }
@@ -1059,7 +1023,7 @@ static int ulnet__stbi_zlib_decode_buffer(char *obuffer, int olen, char const *i
    ulnet__stbi__zbuf a;
    a.zbuffer = (uint8_t *) ibuffer;
    a.zbuffer_end = (uint8_t *) ibuffer + ilen;
-   if (ulnet__stbi__do_zlib(&a, obuffer, olen, 0, 1))
+   if (ulnet__stbi__do_zlib(&a, obuffer, olen, 1))
       return (int) (a.zout - a.zout_start);
    else
       return -1;
@@ -1164,14 +1128,6 @@ static int ulnet__deflate_stream_huff(ulnet_deflate_stream_t *stream, uint8_t **
     }
 }
 
-static int ulnet__deflate_stream_huff_literal(ulnet_deflate_stream_t *stream, uint8_t **dst, size_t *dst_size, int n) {
-    if (n <= 143) {
-        return ulnet__deflate_stream_huffa(stream, dst, dst_size, 0x30 + n, 8);
-    } else {
-        return ulnet__deflate_stream_huffa(stream, dst, dst_size, 0x190 + n - 144, 9);
-    }
-}
-
 static void ulnet__deflate_stream_adler_update(ulnet_deflate_stream_t *stream, uint8_t byte) {
     stream->adler_s1 += byte;
     if (stream->adler_s1 >= 65521) {
@@ -1183,12 +1139,12 @@ static void ulnet__deflate_stream_adler_update(ulnet_deflate_stream_t *stream, u
 }
 
 ULNET_LINKAGE int ulnet_deflate_stream_init(ulnet_deflate_stream_t *stream, int quality) {
+    (void)quality;
     if (stream == NULL) {
         return ULNET_DEFLATE_STATUS_ERROR;
     }
 
     memset(stream, 0, sizeof(*stream));
-    stream->quality = quality < 5 ? 5 : quality;
     stream->adler_s1 = 1;
     stream->adler_s2 = 0;
     stream->phase = ULNET__DEFLATE_STREAM_PHASE_HEADER;
@@ -1263,7 +1219,7 @@ ULNET_LINKAGE int ulnet_deflate_stream_update(ulnet_deflate_stream_t *stream, co
         case ULNET__DEFLATE_STREAM_PHASE_LITERALS:
             while (*src_size > 0) {
                 uint8_t byte = **src;
-                if (!ulnet__deflate_stream_huff_literal(stream, dst, dst_size, byte)) {
+                if (!ulnet__deflate_stream_huff(stream, dst, dst_size, byte)) {
                     (*src)++;
                     (*src_size)--;
                     ulnet__deflate_stream_adler_update(stream, byte);
@@ -3072,7 +3028,7 @@ static void ulnet__process_udp_packet(ulnet_session_t *session, int p, const uin
                 );
 
                 if (ret < 0) {
-                    SAM2_LOG_ERROR("Error decompressing core options with DEFLATE");
+                    SAM2_LOG_ERROR("DEFLATE decompression failed for core options");
                 } else {
                     session->flags |= ULNET_SESSION_FLAG_CORE_OPTIONS_DIRTY;
                     //session.retro_run(); // Apply options before loading savestate; Lets hope this isn't necessary
@@ -3087,7 +3043,7 @@ static void ulnet__process_udp_packet(ulnet_session_t *session, int p, const uin
                     );
 
                     if (save_state_size < 0) {
-                        SAM2_LOG_ERROR("Error decompressing savestate with DEFLATE");
+                        SAM2_LOG_ERROR("DEFLATE decompression failed for savestate");
                     } else {
                         if (!session->retro_unserialize(session->user_ptr, save_state_data, save_state_size)) {
                             SAM2_LOG_ERROR("Failed to load savestate");
