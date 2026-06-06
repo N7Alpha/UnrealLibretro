@@ -19,6 +19,10 @@ typedef struct juice_agent juice_agent_t;
 #define ULNET_FREE(ptr) free(ptr)
 #endif
 
+#ifndef ULNET_MEMMOVE
+#define ULNET_MEMMOVE(a, b, sz) memmove(a, b, sz)
+#endif
+
 #ifndef ULNET_LINKAGE
 #ifdef __cplusplus
 #define ULNET_LINKAGE extern "C"
@@ -28,17 +32,17 @@ typedef struct juice_agent juice_agent_t;
 #endif
 
 #ifndef ULNET_DEFLATE_COMPRESS_BOUND
-#define ULNET_DEFLATE_COMPRESS_BOUND(src_size) ulnet__stb_deflate_compress_bound(src_size)
+#define ULNET_DEFLATE_COMPRESS_BOUND(src_size) ulnet__deflate_compress_bound(src_size)
 #endif
 
 #ifndef ULNET_DEFLATE_COMPRESS
 #define ULNET_DEFLATE_COMPRESS(dst, dst_capacity, src, src_size, quality) \
-    ulnet__stb_deflate_compress(dst, dst_capacity, src, src_size, quality)
+    ulnet__deflate_compress(dst, dst_capacity, src, src_size, quality)
 #endif
 
 #ifndef ULNET_DEFLATE_DECOMPRESS
 #define ULNET_DEFLATE_DECOMPRESS(dst, dst_capacity, src, src_size) \
-    ulnet__stb_deflate_decompress(dst, dst_capacity, src, src_size)
+    ulnet__deflate_decompress(dst, dst_capacity, src, src_size)
 #endif
 
 #define ULNET_DEFLATE_STATUS_ERROR        -1
@@ -365,7 +369,7 @@ static inline void ulnet__xor_delta(void *dest, void *src, int size) {
 #include <assert.h>
 #include <time.h>
 
-static void *ulnet__stb_realloc_sized(void *old_ptr, size_t old_size, size_t new_size) {
+static void *ulnet__realloc_sized(void *old_ptr, size_t old_size, size_t new_size) {
     void *new_ptr = ULNET_MALLOC(new_size);
     if (new_ptr == NULL) {
         return NULL;
@@ -385,52 +389,46 @@ static int ulnet__deflate_error(const char *reason) {
     return 0;
 }
 
-#define ULNET__STBI_ASSERT(x) assert(x)
-#define ULNET__STBIW_ASSERT(x) assert(x)
-#define ULNET__STBIW_MALLOC(sz) ULNET_MALLOC(sz)
-#define ULNET__STBIW_FREE(p) ULNET_FREE(p)
-#define ULNET__STBIW_REALLOC_SIZED(p, oldsz, newsz) ulnet__stb_realloc_sized(p, oldsz, newsz)
-#define ULNET__STBIW_MEMMOVE(a, b, sz) memmove(a, b, sz)
-#define ULNET__STBIW_UCHAR(x) ((unsigned char)((x) & 0xff))
+#define ULNET_ASSERT(x) assert(x)
+#define ULNET__REALLOC_SIZED(p, oldsz, newsz) ulnet__realloc_sized(p, oldsz, newsz)
 
-// stretchy buffer; ulnet__stbiw__sbpush() == vector<>::push_back() -- ulnet__stbiw__sbcount() == vector<>::size()
-#define ulnet__stbiw__sbraw(a) ((int *) (void *) (a) - 2)
-#define ulnet__stbiw__sbm(a)   ulnet__stbiw__sbraw(a)[0]
-#define ulnet__stbiw__sbn(a)   ulnet__stbiw__sbraw(a)[1]
+#define ULNET__UCHAR(x) ((unsigned char)((x) & 0xff))
 
-#define ulnet__stbiw__sbneedgrow(a,n)  ((a)==0 || ulnet__stbiw__sbn(a)+n >= ulnet__stbiw__sbm(a))
-#define ulnet__stbiw__sbmaybegrow(a,n) (ulnet__stbiw__sbneedgrow(a,(n)) ? ulnet__stbiw__sbgrow(a,n) : 0)
-#define ulnet__stbiw__sbgrow(a,n)  ulnet__stbiw__sbgrowf((void **) &(a), (n), sizeof(*(a)))
+// stretchy buffer; ulnet__sbpush() == vector<>::push_back() -- ulnet__sbcount() == vector<>::size()
+#define ulnet__sbraw(a) ((int *) (void *) (a) - 2)
+#define ulnet__sbm(a)   ulnet__sbraw(a)[0]
+#define ulnet__sbn(a)   ulnet__sbraw(a)[1]
 
-#define ulnet__stbiw__sbpush(a, v)      (ulnet__stbiw__sbmaybegrow(a,1), (a)[ulnet__stbiw__sbn(a)++] = (v))
-#define ulnet__stbiw__sbcount(a)        ((a) ? ulnet__stbiw__sbn(a) : 0)
-#define ulnet__stbiw__sbfree(a)         ((a) ? ULNET__STBIW_FREE(ulnet__stbiw__sbraw(a)),0 : 0)
+#define ulnet__sbneedgrow(a,n)  ((a)==0 || ulnet__sbn(a)+n >= ulnet__sbm(a))
+#define ulnet__sbmaybegrow(a,n) (ulnet__sbneedgrow(a,(n)) ? ulnet__sbgrow(a,n) : 0)
+#define ulnet__sbgrow(a,n)  ulnet__sbgrowf((void **) &(a), (n), sizeof(*(a)))
 
-static void *ulnet__stbiw__sbgrowf(void **arr, int increment, int itemsize)
-{
-   int m = *arr ? 2*ulnet__stbiw__sbm(*arr)+increment : increment+1;
-   void *p = ULNET__STBIW_REALLOC_SIZED(*arr ? ulnet__stbiw__sbraw(*arr) : 0, *arr ? (ulnet__stbiw__sbm(*arr)*itemsize + sizeof(int)*2) : 0, itemsize * m + sizeof(int)*2);
-   ULNET__STBIW_ASSERT(p);
+#define ulnet__sbpush(a, v)      (ulnet__sbmaybegrow(a,1), (a)[ulnet__sbn(a)++] = (v))
+#define ulnet__sbcount(a)        ((a) ? ulnet__sbn(a) : 0)
+#define ulnet__sbfree(a)         ((a) ? ULNET_FREE(ulnet__sbraw(a)),0 : 0)
+
+static void *ulnet__sbgrowf(void **arr, int increment, int itemsize) {
+   int m = *arr ? 2*ulnet__sbm(*arr)+increment : increment+1;
+   void *p = ULNET__REALLOC_SIZED(*arr ? ulnet__sbraw(*arr) : 0, *arr ? (ulnet__sbm(*arr)*itemsize + sizeof(int)*2) : 0, itemsize * m + sizeof(int)*2);
+   ULNET_ASSERT(p);
    if (p) {
       if (!*arr) ((int *) p)[1] = 0;
       *arr = (void *) ((int *) p + 2);
-      ulnet__stbiw__sbm(*arr) = m;
+      ulnet__sbm(*arr) = m;
    }
    return *arr;
 }
 
-static unsigned char *ulnet__stbiw__zlib_flushf(unsigned char *data, unsigned int *bitbuffer, int *bitcount)
-{
+static unsigned char *ulnet__zlib_flushf(unsigned char *data, unsigned int *bitbuffer, int *bitcount) {
    while (*bitcount >= 8) {
-      ulnet__stbiw__sbpush(data, ULNET__STBIW_UCHAR(*bitbuffer));
+      ulnet__sbpush(data, ULNET__UCHAR(*bitbuffer));
       *bitbuffer >>= 8;
       *bitcount -= 8;
    }
    return data;
 }
 
-static int ulnet__stbiw__zlib_bitrev(int code, int codebits)
-{
+static int ulnet__zlib_bitrev(int code, int codebits) {
    int res=0;
    while (codebits--) {
       res = (res << 1) | (code & 1);
@@ -439,16 +437,14 @@ static int ulnet__stbiw__zlib_bitrev(int code, int codebits)
    return res;
 }
 
-static unsigned int ulnet__stbiw__zlib_countm(unsigned char *a, unsigned char *b, int limit)
-{
+static unsigned int ulnet__zlib_countm(unsigned char *a, unsigned char *b, int limit) {
    int i;
    for (i=0; i < limit && i < 258; ++i)
       if (a[i] != b[i]) break;
    return i;
 }
 
-static unsigned int ulnet__stbiw__zhash(unsigned char *data)
-{
+static unsigned int ulnet__zhash(unsigned char *data) {
    uint32_t hash = data[0] + (data[1] << 8) + (data[2] << 16);
    hash ^= hash << 3;
    hash += hash >> 5;
@@ -459,22 +455,21 @@ static unsigned int ulnet__stbiw__zhash(unsigned char *data)
    return hash;
 }
 
-#define ulnet__stbiw__zlib_flush() (out = ulnet__stbiw__zlib_flushf(out, &bitbuf, &bitcount))
-#define ulnet__stbiw__zlib_add(code,codebits) \
-      (bitbuf |= (code) << bitcount, bitcount += (codebits), ulnet__stbiw__zlib_flush())
-#define ulnet__stbiw__zlib_huffa(b,c)  ulnet__stbiw__zlib_add(ulnet__stbiw__zlib_bitrev(b,c),c)
+#define ulnet__zlib_flush() (out = ulnet__zlib_flushf(out, &bitbuf, &bitcount))
+#define ulnet__zlib_add(code,codebits) \
+      (bitbuf |= (code) << bitcount, bitcount += (codebits), ulnet__zlib_flush())
+#define ulnet__zlib_huffa(b,c)  ulnet__zlib_add(ulnet__zlib_bitrev(b,c),c)
 // default huffman tables
-#define ulnet__stbiw__zlib_huff1(n)  ulnet__stbiw__zlib_huffa(0x30 + (n), 8)
-#define ulnet__stbiw__zlib_huff2(n)  ulnet__stbiw__zlib_huffa(0x190 + (n)-144, 9)
-#define ulnet__stbiw__zlib_huff3(n)  ulnet__stbiw__zlib_huffa(0 + (n)-256,7)
-#define ulnet__stbiw__zlib_huff4(n)  ulnet__stbiw__zlib_huffa(0xc0 + (n)-280,8)
-#define ulnet__stbiw__zlib_huff(n)  ((n) <= 143 ? ulnet__stbiw__zlib_huff1(n) : (n) <= 255 ? ulnet__stbiw__zlib_huff2(n) : (n) <= 279 ? ulnet__stbiw__zlib_huff3(n) : ulnet__stbiw__zlib_huff4(n))
-#define ulnet__stbiw__zlib_huffb(n) ((n) <= 143 ? ulnet__stbiw__zlib_huff1(n) : ulnet__stbiw__zlib_huff2(n))
+#define ulnet__zlib_huff1(n)  ulnet__zlib_huffa(0x30 + (n), 8)
+#define ulnet__zlib_huff2(n)  ulnet__zlib_huffa(0x190 + (n)-144, 9)
+#define ulnet__zlib_huff3(n)  ulnet__zlib_huffa(0 + (n)-256,7)
+#define ulnet__zlib_huff4(n)  ulnet__zlib_huffa(0xc0 + (n)-280,8)
+#define ulnet__zlib_huff(n)  ((n) <= 143 ? ulnet__zlib_huff1(n) : (n) <= 255 ? ulnet__zlib_huff2(n) : (n) <= 279 ? ulnet__zlib_huff3(n) : ulnet__zlib_huff4(n))
+#define ulnet__zlib_huffb(n) ((n) <= 143 ? ulnet__zlib_huff1(n) : ulnet__zlib_huff2(n))
 
-#define ulnet__stbiw__ZHASH   16384
+#define ulnet__ZHASH   16384
 
-static unsigned char * ulnet__stbi_zlib_compress(unsigned char *data, int data_len, int *out_len, int quality)
-{
+static unsigned char * ulnet__zlib_compress(unsigned char *data, int data_len, int *out_len, int quality) {
    static unsigned short lengthc[] = { 3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258, 259 };
    static unsigned char  lengtheb[]= { 0,0,0,0,0,0,0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4,  4,  5,  5,  5,  5,  0 };
    static unsigned short distc[]   = { 1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577, 32768 };
@@ -482,47 +477,47 @@ static unsigned char * ulnet__stbi_zlib_compress(unsigned char *data, int data_l
    unsigned int bitbuf=0;
    int i,j, bitcount=0;
    unsigned char *out = NULL;
-   unsigned char ***hash_table = (unsigned char***) ULNET__STBIW_MALLOC(ulnet__stbiw__ZHASH * sizeof(unsigned char**));
+   unsigned char ***hash_table = (unsigned char***) ULNET_MALLOC(ulnet__ZHASH * sizeof(unsigned char**));
    if (hash_table == NULL)
       return NULL;
    if (quality < 5) quality = 5;
 
-   ulnet__stbiw__sbpush(out, 0x78);   // DEFLATE 32K window
-   ulnet__stbiw__sbpush(out, 0x5e);   // FLEVEL = 1
-   ulnet__stbiw__zlib_add(1,1);  // BFINAL = 1
-   ulnet__stbiw__zlib_add(1,2);  // BTYPE = 1 -- fixed huffman
+   ulnet__sbpush(out, 0x78);   // DEFLATE 32K window
+   ulnet__sbpush(out, 0x5e);   // FLEVEL = 1
+   ulnet__zlib_add(1,1);  // BFINAL = 1
+   ulnet__zlib_add(1,2);  // BTYPE = 1 -- fixed huffman
 
-   for (i=0; i < ulnet__stbiw__ZHASH; ++i)
+   for (i=0; i < ulnet__ZHASH; ++i)
       hash_table[i] = NULL;
 
    i=0;
    while (i < data_len-3) {
       // hash next 3 bytes of data to be compressed
-      int h = ulnet__stbiw__zhash(data+i)&(ulnet__stbiw__ZHASH-1), best=3;
+      int h = ulnet__zhash(data+i)&(ulnet__ZHASH-1), best=3;
       unsigned char *bestloc = 0;
       unsigned char **hlist = hash_table[h];
-      int n = ulnet__stbiw__sbcount(hlist);
+      int n = ulnet__sbcount(hlist);
       for (j=0; j < n; ++j) {
          if (hlist[j]-data > i-32768) { // if entry lies within window
-            int d = ulnet__stbiw__zlib_countm(hlist[j], data+i, data_len-i);
+            int d = ulnet__zlib_countm(hlist[j], data+i, data_len-i);
             if (d >= best) { best=d; bestloc=hlist[j]; }
          }
       }
       // when hash table entry is too long, delete half the entries
-      if (hash_table[h] && ulnet__stbiw__sbn(hash_table[h]) == 2*quality) {
-         ULNET__STBIW_MEMMOVE(hash_table[h], hash_table[h]+quality, sizeof(hash_table[h][0])*quality);
-         ulnet__stbiw__sbn(hash_table[h]) = quality;
+      if (hash_table[h] && ulnet__sbn(hash_table[h]) == 2*quality) {
+         ULNET_MEMMOVE(hash_table[h], hash_table[h]+quality, sizeof(hash_table[h][0])*quality);
+         ulnet__sbn(hash_table[h]) = quality;
       }
-      ulnet__stbiw__sbpush(hash_table[h],data+i);
+      ulnet__sbpush(hash_table[h],data+i);
 
       if (bestloc) {
          // "lazy matching" - check match at *next* byte, and if it's better, do cur byte as literal
-         h = ulnet__stbiw__zhash(data+i+1)&(ulnet__stbiw__ZHASH-1);
+         h = ulnet__zhash(data+i+1)&(ulnet__ZHASH-1);
          hlist = hash_table[h];
-         n = ulnet__stbiw__sbcount(hlist);
+         n = ulnet__sbcount(hlist);
          for (j=0; j < n; ++j) {
             if (hlist[j]-data > i-32767) {
-               int e = ulnet__stbiw__zlib_countm(hlist[j], data+i+1, data_len-i-1);
+               int e = ulnet__zlib_countm(hlist[j], data+i+1, data_len-i-1);
                if (e > best) { // if next match is better, bail on current match
                   bestloc = NULL;
                   break;
@@ -533,44 +528,44 @@ static unsigned char * ulnet__stbi_zlib_compress(unsigned char *data, int data_l
 
       if (bestloc) {
          int d = (int) (data+i - bestloc); // distance back
-         ULNET__STBIW_ASSERT(d <= 32767 && best <= 258);
+         ULNET_ASSERT(d <= 32767 && best <= 258);
          for (j=0; best > lengthc[j+1]-1; ++j);
-         ulnet__stbiw__zlib_huff(j+257);
-         if (lengtheb[j]) ulnet__stbiw__zlib_add(best - lengthc[j], lengtheb[j]);
+         ulnet__zlib_huff(j+257);
+         if (lengtheb[j]) ulnet__zlib_add(best - lengthc[j], lengtheb[j]);
          for (j=0; d > distc[j+1]-1; ++j);
-         ulnet__stbiw__zlib_add(ulnet__stbiw__zlib_bitrev(j,5),5);
-         if (disteb[j]) ulnet__stbiw__zlib_add(d - distc[j], disteb[j]);
+         ulnet__zlib_add(ulnet__zlib_bitrev(j,5),5);
+         if (disteb[j]) ulnet__zlib_add(d - distc[j], disteb[j]);
          i += best;
       } else {
-         ulnet__stbiw__zlib_huffb(data[i]);
+         ulnet__zlib_huffb(data[i]);
          ++i;
       }
    }
    // write out final bytes
    for (;i < data_len; ++i)
-      ulnet__stbiw__zlib_huffb(data[i]);
-   ulnet__stbiw__zlib_huff(256); // end of block
+      ulnet__zlib_huffb(data[i]);
+   ulnet__zlib_huff(256); // end of block
    // pad with 0 bits to byte boundary
    while (bitcount)
-      ulnet__stbiw__zlib_add(0,1);
+      ulnet__zlib_add(0,1);
 
-   for (i=0; i < ulnet__stbiw__ZHASH; ++i)
-      (void) ulnet__stbiw__sbfree(hash_table[i]);
-   ULNET__STBIW_FREE(hash_table);
+   for (i=0; i < ulnet__ZHASH; ++i)
+      (void) ulnet__sbfree(hash_table[i]);
+   ULNET_FREE(hash_table);
 
    // store uncompressed instead if compression was worse
-   if (ulnet__stbiw__sbn(out) > data_len + 2 + ((data_len+32766)/32767)*5) {
-      ulnet__stbiw__sbn(out) = 2;  // truncate to DEFLATE 32K window and FLEVEL = 1
+   if (ulnet__sbn(out) > data_len + 2 + ((data_len+32766)/32767)*5) {
+      ulnet__sbn(out) = 2;  // truncate to DEFLATE 32K window and FLEVEL = 1
       for (j = 0; j < data_len;) {
          int blocklen = data_len - j;
          if (blocklen > 32767) blocklen = 32767;
-         ulnet__stbiw__sbpush(out, data_len - j == blocklen); // BFINAL = ?, BTYPE = 0 -- no compression
-         ulnet__stbiw__sbpush(out, ULNET__STBIW_UCHAR(blocklen)); // LEN
-         ulnet__stbiw__sbpush(out, ULNET__STBIW_UCHAR(blocklen >> 8));
-         ulnet__stbiw__sbpush(out, ULNET__STBIW_UCHAR(~blocklen)); // NLEN
-         ulnet__stbiw__sbpush(out, ULNET__STBIW_UCHAR(~blocklen >> 8));
-         memcpy(out+ulnet__stbiw__sbn(out), data+j, blocklen);
-         ulnet__stbiw__sbn(out) += blocklen;
+         ulnet__sbpush(out, data_len - j == blocklen); // BFINAL = ?, BTYPE = 0 -- no compression
+         ulnet__sbpush(out, ULNET__UCHAR(blocklen)); // LEN
+         ulnet__sbpush(out, ULNET__UCHAR(blocklen >> 8));
+         ulnet__sbpush(out, ULNET__UCHAR(~blocklen)); // NLEN
+         ulnet__sbpush(out, ULNET__UCHAR(~blocklen >> 8));
+         memcpy(out+ulnet__sbn(out), data+j, blocklen);
+         ulnet__sbn(out) += blocklen;
          j += blocklen;
       }
    }
@@ -586,37 +581,35 @@ static unsigned char * ulnet__stbi_zlib_compress(unsigned char *data, int data_l
          j += blocklen;
          blocklen = 5552;
       }
-      ulnet__stbiw__sbpush(out, ULNET__STBIW_UCHAR(s2 >> 8));
-      ulnet__stbiw__sbpush(out, ULNET__STBIW_UCHAR(s2));
-      ulnet__stbiw__sbpush(out, ULNET__STBIW_UCHAR(s1 >> 8));
-      ulnet__stbiw__sbpush(out, ULNET__STBIW_UCHAR(s1));
+      ulnet__sbpush(out, ULNET__UCHAR(s2 >> 8));
+      ulnet__sbpush(out, ULNET__UCHAR(s2));
+      ulnet__sbpush(out, ULNET__UCHAR(s1 >> 8));
+      ulnet__sbpush(out, ULNET__UCHAR(s1));
    }
-   *out_len = ulnet__stbiw__sbn(out);
+   *out_len = ulnet__sbn(out);
    // make returned pointer freeable
-   ULNET__STBIW_MEMMOVE(ulnet__stbiw__sbraw(out), out, *out_len);
-   return (unsigned char *) ulnet__stbiw__sbraw(out);
+   ULNET_MEMMOVE(ulnet__sbraw(out), out, *out_len);
+   return (unsigned char *) ulnet__sbraw(out);
 }
 
 
 // fast-way is faster to check than jpeg huffman, but slow way is slower
-#define ULNET__STBI__ZFAST_BITS  9 // accelerate all cases in default tables
-#define ULNET__STBI__ZFAST_MASK  ((1 << ULNET__STBI__ZFAST_BITS) - 1)
-#define ULNET__STBI__ZNSYMS 288 // number of symbols in literal/length alphabet
+#define ULNET__ZFAST_BITS  9 // accelerate all cases in default tables
+#define ULNET__ZFAST_MASK  ((1 << ULNET__ZFAST_BITS) - 1)
+#define ULNET__ZNSYMS 288 // number of symbols in literal/length alphabet
 
 // zlib-style huffman encoding
 // (jpegs packs from left, zlib from right, so can't share code)
-typedef struct
-{
-   uint16_t fast[1 << ULNET__STBI__ZFAST_BITS];
+typedef struct {
+   uint16_t fast[1 << ULNET__ZFAST_BITS];
    uint16_t firstcode[16];
    int maxcode[17];
    uint16_t firstsymbol[16];
-   uint8_t  size[ULNET__STBI__ZNSYMS];
-   uint16_t value[ULNET__STBI__ZNSYMS];
-} ulnet__stbi__zhuffman;
+   uint8_t  size[ULNET__ZNSYMS];
+   uint16_t value[ULNET__ZNSYMS];
+} ulnet__zhuffman;
 
-inline static int ulnet__stbi__bitreverse16(int n)
-{
+inline static int ulnet__bitreverse16(int n) {
   n = ((n & 0xAAAA) >>  1) | ((n & 0x5555) << 1);
   n = ((n & 0xCCCC) >>  2) | ((n & 0x3333) << 2);
   n = ((n & 0xF0F0) >>  4) | ((n & 0x0F0F) << 4);
@@ -624,16 +617,14 @@ inline static int ulnet__stbi__bitreverse16(int n)
   return n;
 }
 
-inline static int ulnet__stbi__bit_reverse(int v, int bits)
-{
-   ULNET__STBI_ASSERT(bits <= 16);
+inline static int ulnet__bit_reverse(int v, int bits) {
+   ULNET_ASSERT(bits <= 16);
    // to bit reverse n bits, reverse 16 and shift
    // e.g. 11 bits, bit reverse and shift away 5
-   return ulnet__stbi__bitreverse16(v) >> (16-bits);
+   return ulnet__bitreverse16(v) >> (16-bits);
 }
 
-static int ulnet__stbi__zbuild_huffman(ulnet__stbi__zhuffman *z, const uint8_t *sizelist, int num)
-{
+static int ulnet__zbuild_huffman(ulnet__zhuffman *z, const uint8_t *sizelist, int num) {
    int i,k=0;
    int code, next_code[16], sizes[17];
 
@@ -666,9 +657,9 @@ static int ulnet__stbi__zbuild_huffman(ulnet__stbi__zhuffman *z, const uint8_t *
          uint16_t fastv = (uint16_t) ((s << 9) | i);
          z->size [c] = (uint8_t     ) s;
          z->value[c] = (uint16_t) i;
-         if (s <= ULNET__STBI__ZFAST_BITS) {
-            int j = ulnet__stbi__bit_reverse(next_code[s],s);
-            while (j < (1 << ULNET__STBI__ZFAST_BITS)) {
+         if (s <= ULNET__ZFAST_BITS) {
+            int j = ulnet__bit_reverse(next_code[s],s);
+            while (j < (1 << ULNET__ZFAST_BITS)) {
                z->fast[j] = fastv;
                j += (1 << s);
             }
@@ -679,8 +670,7 @@ static int ulnet__stbi__zbuild_huffman(ulnet__stbi__zhuffman *z, const uint8_t *
    return 1;
 }
 
-typedef struct
-{
+typedef struct {
    uint8_t *zbuffer, *zbuffer_end;
    int num_bits;
    int hit_zeof_once;
@@ -690,65 +680,59 @@ typedef struct
    char *zout_start;
    char *zout_end;
 
-   ulnet__stbi__zhuffman z_length, z_distance;
-} ulnet__stbi__zbuf;
+   ulnet__zhuffman z_length, z_distance;
+} ulnet__zbuf;
 
-inline static int ulnet__stbi__zeof(ulnet__stbi__zbuf *z)
-{
+inline static int ulnet__zeof(ulnet__zbuf *z) {
    return (z->zbuffer >= z->zbuffer_end);
 }
 
-inline static uint8_t ulnet__stbi__zget8(ulnet__stbi__zbuf *z)
-{
-   return ulnet__stbi__zeof(z) ? 0 : *z->zbuffer++;
+inline static uint8_t ulnet__zget8(ulnet__zbuf *z) {
+   return ulnet__zeof(z) ? 0 : *z->zbuffer++;
 }
 
-static void ulnet__stbi__fill_bits(ulnet__stbi__zbuf *z)
-{
+static void ulnet__fill_bits(ulnet__zbuf *z) {
    do {
       if (z->code_buffer >= (1U << z->num_bits)) {
         z->zbuffer = z->zbuffer_end;  /* treat this as EOF so we fail. */
         return;
       }
-      z->code_buffer |= (unsigned int) ulnet__stbi__zget8(z) << z->num_bits;
+      z->code_buffer |= (unsigned int) ulnet__zget8(z) << z->num_bits;
       z->num_bits += 8;
    } while (z->num_bits <= 24);
 }
 
-inline static unsigned int ulnet__stbi__zreceive(ulnet__stbi__zbuf *z, int n)
-{
+inline static unsigned int ulnet__zreceive(ulnet__zbuf *z, int n) {
    unsigned int k;
-   if (z->num_bits < n) ulnet__stbi__fill_bits(z);
+   if (z->num_bits < n) ulnet__fill_bits(z);
    k = z->code_buffer & ((1 << n) - 1);
    z->code_buffer >>= n;
    z->num_bits -= n;
    return k;
 }
 
-static int ulnet__stbi__zhuffman_decode_slowpath(ulnet__stbi__zbuf *a, ulnet__stbi__zhuffman *z)
-{
+static int ulnet__zhuffman_decode_slowpath(ulnet__zbuf *a, ulnet__zhuffman *z) {
    int b,s,k;
    // not resolved by fast table, so compute it the slow way
    // use jpeg approach, which requires MSbits at top
-   k = ulnet__stbi__bit_reverse(a->code_buffer, 16);
-   for (s=ULNET__STBI__ZFAST_BITS+1; ; ++s)
+   k = ulnet__bit_reverse(a->code_buffer, 16);
+   for (s=ULNET__ZFAST_BITS+1; ; ++s)
       if (k < z->maxcode[s])
          break;
    if (s >= 16) return -1; // invalid code!
    // code size is s, so:
    b = (k >> (16-s)) - z->firstcode[s] + z->firstsymbol[s];
-   if (b >= ULNET__STBI__ZNSYMS) return -1; // some data was corrupt somewhere!
+   if (b >= ULNET__ZNSYMS) return -1; // some data was corrupt somewhere!
    if (z->size[b] != s) return -1;  // was originally an assert, but report failure instead.
    a->code_buffer >>= s;
    a->num_bits -= s;
    return z->value[b];
 }
 
-inline static int ulnet__stbi__zhuffman_decode(ulnet__stbi__zbuf *a, ulnet__stbi__zhuffman *z)
-{
+inline static int ulnet__zhuffman_decode(ulnet__zbuf *a, ulnet__zhuffman *z) {
    int b,s;
    if (a->num_bits < 16) {
-      if (ulnet__stbi__zeof(a)) {
+      if (ulnet__zeof(a)) {
          if (!a->hit_zeof_once) {
             // This is the first time we hit eof, insert 16 extra padding btis
             // to allow us to keep going; if we actually consume any of them
@@ -761,38 +745,37 @@ inline static int ulnet__stbi__zhuffman_decode(ulnet__stbi__zbuf *a, ulnet__stbi
             return -1;
          }
       } else {
-         ulnet__stbi__fill_bits(a);
+         ulnet__fill_bits(a);
       }
    }
-   b = z->fast[a->code_buffer & ULNET__STBI__ZFAST_MASK];
+   b = z->fast[a->code_buffer & ULNET__ZFAST_MASK];
    if (b) {
       s = b >> 9;
       a->code_buffer >>= s;
       a->num_bits -= s;
       return b & 511;
    }
-   return ulnet__stbi__zhuffman_decode_slowpath(a, z);
+   return ulnet__zhuffman_decode_slowpath(a, z);
 }
 
-static const int ulnet__stbi__zlength_base[31] = {
+static const int ulnet__zlength_base[31] = {
    3,4,5,6,7,8,9,10,11,13,
    15,17,19,23,27,31,35,43,51,59,
    67,83,99,115,131,163,195,227,258,0,0 };
 
-static const int ulnet__stbi__zlength_extra[31]=
+static const int ulnet__zlength_extra[31]=
 { 0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0,0,0 };
 
-static const int ulnet__stbi__zdist_base[32] = { 1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,
+static const int ulnet__zdist_base[32] = { 1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,
 257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577,0,0};
 
-static const int ulnet__stbi__zdist_extra[32] =
+static const int ulnet__zdist_extra[32] =
 { 0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13};
 
-static int ulnet__stbi__parse_huffman_block(ulnet__stbi__zbuf *a)
-{
+static int ulnet__parse_huffman_block(ulnet__zbuf *a) {
    char *zout = a->zout;
    for(;;) {
-      int z = ulnet__stbi__zhuffman_decode(a, &a->z_length);
+      int z = ulnet__zhuffman_decode(a, &a->z_length);
       if (z < 256) {
          if (z < 0) return ulnet__deflate_error("bad huffman code");
          if (zout >= a->zout_end) {
@@ -816,12 +799,12 @@ static int ulnet__stbi__parse_huffman_block(ulnet__stbi__zbuf *a)
          }
          if (z >= 286) return ulnet__deflate_error("bad length code"); // per DEFLATE, length codes 286 and 287 must not appear in compressed data
          z -= 257;
-         len = ulnet__stbi__zlength_base[z];
-         if (ulnet__stbi__zlength_extra[z]) len += ulnet__stbi__zreceive(a, ulnet__stbi__zlength_extra[z]);
-         z = ulnet__stbi__zhuffman_decode(a, &a->z_distance);
+         len = ulnet__zlength_base[z];
+         if (ulnet__zlength_extra[z]) len += ulnet__zreceive(a, ulnet__zlength_extra[z]);
+         z = ulnet__zhuffman_decode(a, &a->z_distance);
          if (z < 0 || z >= 30) return ulnet__deflate_error("bad distance code"); // per DEFLATE, distance codes 30 and 31 must not appear in compressed data
-         dist = ulnet__stbi__zdist_base[z];
-         if (ulnet__stbi__zdist_extra[z]) dist += ulnet__stbi__zreceive(a, ulnet__stbi__zdist_extra[z]);
+         dist = ulnet__zdist_base[z];
+         if (ulnet__zdist_extra[z]) dist += ulnet__zreceive(a, ulnet__zdist_extra[z]);
          if (zout - a->zout_start < dist) return ulnet__deflate_error("bad distance");
          if (len > a->zout_end - zout) {
             a->zout = zout;
@@ -838,42 +821,41 @@ static int ulnet__stbi__parse_huffman_block(ulnet__stbi__zbuf *a)
    }
 }
 
-static int ulnet__stbi__compute_huffman_codes(ulnet__stbi__zbuf *a)
-{
+static int ulnet__compute_huffman_codes(ulnet__zbuf *a) {
    static const uint8_t length_dezigzag[19] = { 16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15 };
-   ulnet__stbi__zhuffman z_codelength;
+   ulnet__zhuffman z_codelength;
    uint8_t lencodes[286+32+137];//padding for maximum single op
    uint8_t codelength_sizes[19];
    int i,n;
 
-   int hlit  = ulnet__stbi__zreceive(a,5) + 257;
-   int hdist = ulnet__stbi__zreceive(a,5) + 1;
-   int hclen = ulnet__stbi__zreceive(a,4) + 4;
+   int hlit  = ulnet__zreceive(a,5) + 257;
+   int hdist = ulnet__zreceive(a,5) + 1;
+   int hclen = ulnet__zreceive(a,4) + 4;
    int ntot  = hlit + hdist;
 
    memset(codelength_sizes, 0, sizeof(codelength_sizes));
    for (i=0; i < hclen; ++i) {
-      int s = ulnet__stbi__zreceive(a,3);
+      int s = ulnet__zreceive(a,3);
       codelength_sizes[length_dezigzag[i]] = (uint8_t) s;
    }
-   if (!ulnet__stbi__zbuild_huffman(&z_codelength, codelength_sizes, 19)) return 0;
+   if (!ulnet__zbuild_huffman(&z_codelength, codelength_sizes, 19)) return 0;
 
    n = 0;
    while (n < ntot) {
-      int c = ulnet__stbi__zhuffman_decode(a, &z_codelength);
+      int c = ulnet__zhuffman_decode(a, &z_codelength);
       if (c < 0 || c >= 19) return ulnet__deflate_error("bad huffman code lengths");
       if (c < 16)
          lencodes[n++] = (uint8_t) c;
       else {
          uint8_t fill = 0;
          if (c == 16) {
-            c = ulnet__stbi__zreceive(a,2)+3;
+            c = ulnet__zreceive(a,2)+3;
             if (n == 0) return ulnet__deflate_error("bad huffman code lengths");
             fill = lencodes[n-1];
          } else if (c == 17) {
-            c = ulnet__stbi__zreceive(a,3)+3;
+            c = ulnet__zreceive(a,3)+3;
          } else if (c == 18) {
-            c = ulnet__stbi__zreceive(a,7)+11;
+            c = ulnet__zreceive(a,7)+11;
          } else {
             return ulnet__deflate_error("bad huffman code lengths");
          }
@@ -883,17 +865,16 @@ static int ulnet__stbi__compute_huffman_codes(ulnet__stbi__zbuf *a)
       }
    }
    if (n != ntot) return ulnet__deflate_error("bad huffman code lengths");
-   if (!ulnet__stbi__zbuild_huffman(&a->z_length, lencodes, hlit)) return 0;
-   if (!ulnet__stbi__zbuild_huffman(&a->z_distance, lencodes+hlit, hdist)) return 0;
+   if (!ulnet__zbuild_huffman(&a->z_length, lencodes, hlit)) return 0;
+   if (!ulnet__zbuild_huffman(&a->z_distance, lencodes+hlit, hdist)) return 0;
    return 1;
 }
 
-static int ulnet__stbi__parse_uncompressed_block(ulnet__stbi__zbuf *a)
-{
+static int ulnet__parse_uncompressed_block(ulnet__zbuf *a) {
    uint8_t header[4];
    int len,nlen,k;
    if (a->num_bits & 7)
-      ulnet__stbi__zreceive(a, a->num_bits & 7); // discard
+      ulnet__zreceive(a, a->num_bits & 7); // discard
    // drain the bit-packed data into header
    k = 0;
    while (a->num_bits > 0) {
@@ -904,7 +885,7 @@ static int ulnet__stbi__parse_uncompressed_block(ulnet__stbi__zbuf *a)
    if (a->num_bits < 0) return ulnet__deflate_error("corrupt zlib block");
    // now fill header the normal way
    while (k < 4)
-      header[k++] = ulnet__stbi__zget8(a);
+      header[k++] = ulnet__zget8(a);
    len  = header[1] * 256 + header[0];
    nlen = header[3] * 256 + header[2];
    if (nlen != (len ^ 0xffff)) return ulnet__deflate_error("corrupt zlib block");
@@ -917,13 +898,12 @@ static int ulnet__stbi__parse_uncompressed_block(ulnet__stbi__zbuf *a)
    return 1;
 }
 
-static int ulnet__stbi__parse_zlib_header(ulnet__stbi__zbuf *a)
-{
-   int cmf   = ulnet__stbi__zget8(a);
+static int ulnet__parse_zlib_header(ulnet__zbuf *a) {
+   int cmf   = ulnet__zget8(a);
    int cm    = cmf & 15;
    /* int cinfo = cmf >> 4; */
-   int flg   = ulnet__stbi__zget8(a);
-   if (ulnet__stbi__zeof(a)) return ulnet__deflate_error("bad zlib header");
+   int flg   = ulnet__zget8(a);
+   if (ulnet__zeof(a)) return ulnet__deflate_error("bad zlib header");
    if ((cmf*256+flg) % 31 != 0) return ulnet__deflate_error("bad zlib header");
    if (flg & 32) return ulnet__deflate_error("preset dictionary is unsupported");
    if (cm != 8) return ulnet__deflate_error("unsupported compression method");
@@ -931,8 +911,7 @@ static int ulnet__stbi__parse_zlib_header(ulnet__stbi__zbuf *a)
    return 1;
 }
 
-static const uint8_t ulnet__stbi__zdefault_length[ULNET__STBI__ZNSYMS] =
-{
+static const uint8_t ulnet__zdefault_length[ULNET__ZNSYMS] = {
    8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8, 8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
    8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8, 8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
    8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8, 8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
@@ -943,78 +922,77 @@ static const uint8_t ulnet__stbi__zdefault_length[ULNET__STBI__ZNSYMS] =
    9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9, 9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,
    7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7, 7,7,7,7,7,7,7,7,8,8,8,8,8,8,8,8
 };
-static const uint8_t ulnet__stbi__zdefault_distance[32] =
-{
+static const uint8_t ulnet__zdefault_distance[32] = {
    5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5
 };
 /*
 Init algorithm:
 {
    int i;   // use <= to match clearly with spec
-   for (i=0; i <= 143; ++i)     ulnet__stbi__zdefault_length[i]   = 8;
-   for (   ; i <= 255; ++i)     ulnet__stbi__zdefault_length[i]   = 9;
-   for (   ; i <= 279; ++i)     ulnet__stbi__zdefault_length[i]   = 7;
-   for (   ; i <= 287; ++i)     ulnet__stbi__zdefault_length[i]   = 8;
+   for (i=0; i <= 143; ++i)     ulnet__zdefault_length[i]   = 8;
+   for (   ; i <= 255; ++i)     ulnet__zdefault_length[i]   = 9;
+   for (   ; i <= 279; ++i)     ulnet__zdefault_length[i]   = 7;
+   for (   ; i <= 287; ++i)     ulnet__zdefault_length[i]   = 8;
 
-   for (i=0; i <=  31; ++i)     ulnet__stbi__zdefault_distance[i] = 5;
+   for (i=0; i <=  31; ++i)     ulnet__zdefault_distance[i] = 5;
 }
 */
 
-static int ulnet__stbi__parse_zlib(ulnet__stbi__zbuf *a, int parse_header)
+static int ulnet__parse_zlib(ulnet__zbuf *a, int parse_header)
 {
    int final, type;
    if (parse_header)
-      if (!ulnet__stbi__parse_zlib_header(a)) return 0;
+      if (!ulnet__parse_zlib_header(a)) return 0;
    a->num_bits = 0;
    a->code_buffer = 0;
    a->hit_zeof_once = 0;
    do {
-      final = ulnet__stbi__zreceive(a,1);
-      type = ulnet__stbi__zreceive(a,2);
+      final = ulnet__zreceive(a,1);
+      type = ulnet__zreceive(a,2);
       if (type == 0) {
-         if (!ulnet__stbi__parse_uncompressed_block(a)) return 0;
+         if (!ulnet__parse_uncompressed_block(a)) return 0;
       } else if (type == 3) {
          return ulnet__deflate_error("reserved block type");
       } else {
          if (type == 1) {
             // use fixed code lengths
-            if (!ulnet__stbi__zbuild_huffman(&a->z_length  , ulnet__stbi__zdefault_length  , ULNET__STBI__ZNSYMS)) return 0;
-            if (!ulnet__stbi__zbuild_huffman(&a->z_distance, ulnet__stbi__zdefault_distance,  32)) return 0;
+            if (!ulnet__zbuild_huffman(&a->z_length  , ulnet__zdefault_length  , ULNET__ZNSYMS)) return 0;
+            if (!ulnet__zbuild_huffman(&a->z_distance, ulnet__zdefault_distance,  32)) return 0;
          } else {
-            if (!ulnet__stbi__compute_huffman_codes(a)) return 0;
+            if (!ulnet__compute_huffman_codes(a)) return 0;
          }
-         if (!ulnet__stbi__parse_huffman_block(a)) return 0;
+         if (!ulnet__parse_huffman_block(a)) return 0;
       }
    } while (!final);
    return 1;
 }
 
-static int ulnet__stbi__do_zlib(ulnet__stbi__zbuf *a, char *obuf, int olen, int parse_header)
+static int ulnet__do_zlib(ulnet__zbuf *a, char *obuf, int olen, int parse_header)
 {
    a->zout_start = obuf;
    a->zout       = obuf;
    a->zout_end   = obuf + olen;
 
-   return ulnet__stbi__parse_zlib(a, parse_header);
+   return ulnet__parse_zlib(a, parse_header);
 }
 
-static int ulnet__stbi_zlib_decode_buffer(char *obuffer, int olen, char const *ibuffer, int ilen)
+static int ulnet__zlib_decode_buffer(char *obuffer, int olen, char const *ibuffer, int ilen)
 {
-   ulnet__stbi__zbuf a;
+   ulnet__zbuf a;
    a.zbuffer = (uint8_t *) ibuffer;
    a.zbuffer_end = (uint8_t *) ibuffer + ilen;
-   if (ulnet__stbi__do_zlib(&a, obuffer, olen, 1))
+   if (ulnet__do_zlib(&a, obuffer, olen, 1))
       return (int) (a.zout - a.zout_start);
    else
       return -1;
 }
 
 
-static size_t ulnet__stb_deflate_compress_bound(size_t src_size) {
+static size_t ulnet__deflate_compress_bound(size_t src_size) {
     return src_size + (src_size / 16383) + 64;
 }
 
-static int64_t ulnet__stb_deflate_compress(void *dst, size_t dst_capacity, const void *src, size_t src_size, int quality) {
+static int64_t ulnet__deflate_compress(void *dst, size_t dst_capacity, const void *src, size_t src_size, int quality) {
     if (src_size > (size_t)INT32_MAX || dst_capacity > (size_t)INT32_MAX) {
         return -1;
     }
@@ -1029,7 +1007,7 @@ static int64_t ulnet__stb_deflate_compress(void *dst, size_t dst_capacity, const
     }
 
     int compressed_size = 0;
-    unsigned char *compressed = ulnet__stbi_zlib_compress((unsigned char *)src, (int)src_size, &compressed_size, quality);
+    unsigned char *compressed = ulnet__zlib_compress((unsigned char *)src, (int)src_size, &compressed_size, quality);
     if (compressed == NULL) {
         return -1;
     }
@@ -1044,24 +1022,13 @@ static int64_t ulnet__stb_deflate_compress(void *dst, size_t dst_capacity, const
     return compressed_size;
 }
 
-static int64_t ulnet__stb_deflate_decompress(void *dst, size_t dst_capacity, const void *src, size_t src_size) {
+static int64_t ulnet__deflate_decompress(void *dst, size_t dst_capacity, const void *src, size_t src_size) {
     if (src_size > (size_t)INT32_MAX || dst_capacity > (size_t)INT32_MAX) {
         return -1;
     }
 
-    return ulnet__stbi_zlib_decode_buffer((char *)dst, (int)dst_capacity, (const char *)src, (int)src_size);
+    return ulnet__zlib_decode_buffer((char *)dst, (int)dst_capacity, (const char *)src, (int)src_size);
 }
-
-#undef ulnet__stbiw__zlib_flush
-#undef ulnet__stbiw__zlib_add
-#undef ulnet__stbiw__zlib_huffa
-#undef ulnet__stbiw__zlib_huff1
-#undef ulnet__stbiw__zlib_huff2
-#undef ulnet__stbiw__zlib_huff3
-#undef ulnet__stbiw__zlib_huff4
-#undef ulnet__stbiw__zlib_huff
-#undef ulnet__stbiw__zlib_huffb
-
 
 #define XXH_PRIME32_1 2654435761u
 #define XXH_PRIME32_2 2246822519u
