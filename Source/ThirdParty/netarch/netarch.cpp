@@ -1444,14 +1444,18 @@ void draw_imgui() {
             ImPlot::SetupAxis(ImAxis_Y1, "Throughput", ImPlotAxisFlags_None);
             ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
 
-            // Test different compression levels for both algorithms
+            // Test different compression levels for each algorithm
             int miniz_levels[] = { 1, 2, 3, MZ_DEFAULT_LEVEL /* 6 */, /* MZ_UBER_COMPRESSION  10 */ };
+            int ulnet_deflate_levels[] = { 1, 2, 3, MZ_DEFAULT_LEVEL /* 6 */, 8 /* ulnet_session_t default */ };
             int zstd_levels[] = { -1, 0, ZSTD_CLEVEL_DEFAULT, 6, 9, 12, /* ZSTD_maxCLevel() 22 (currently) */ };
             constexpr int miniz_levels_count = sizeof(miniz_levels) / sizeof(miniz_levels[0]);
+            constexpr int ulnet_deflate_levels_count = sizeof(ulnet_deflate_levels) / sizeof(ulnet_deflate_levels[0]);
             constexpr int zstd_levels_count = sizeof(zstd_levels) / sizeof(zstd_levels[0]);
 
             double miniz_sizes[miniz_levels_count] = {0};
             double miniz_throughputs[miniz_levels_count] = {0};
+            double ulnet_deflate_sizes[ulnet_deflate_levels_count] = {0};
+            double ulnet_deflate_throughputs[ulnet_deflate_levels_count] = {0};
             double zstd_sizes[zstd_levels_count] = {0};
             double zstd_throughputs[zstd_levels_count] = {0};
 
@@ -1487,6 +1491,33 @@ void draw_imgui() {
                         max_throughput = fmax(max_throughput, throughput_bytes_per_cycle);
                         min_size = fmin(min_size, miniz_sizes[i]);
                         max_size = fmax(max_size, miniz_sizes[i]);
+                    }
+                }
+            }
+
+            for (int i = 0; i < ulnet_deflate_levels_count; i++) {
+                size_t compressed_size_capacity = ULNET_DEFLATE_COMPRESS_BOUND(g_serialize_size);
+                compressed_buffer = (uint8_t*)realloc(compressed_buffer, compressed_size_capacity);
+
+                if (compressed_buffer) {
+                    uint64_t start_cycles = ulnet__rdtsc();
+                    int64_t compressed_size = ULNET_DEFLATE_COMPRESS(compressed_buffer, compressed_size_capacity,
+                                                g_savebuffer[g_save_state_index], g_serialize_size,
+                                                ulnet_deflate_levels[i]);
+                    uint64_t end_cycles = ulnet__rdtsc();
+
+                    if (compressed_size >= 0) {
+                        double compression_time_cycles = end_cycles - start_cycles;
+                        double throughput_bytes_per_cycle = g_serialize_size / compression_time_cycles;
+
+                        ulnet_deflate_sizes[i] = compressed_size / 1024.0;
+                        ulnet_deflate_throughputs[i] = throughput_bytes_per_cycle;
+
+                        // Update bounds
+                        min_throughput = fmin(min_throughput, throughput_bytes_per_cycle);
+                        max_throughput = fmax(max_throughput, throughput_bytes_per_cycle);
+                        min_size = fmin(min_size, ulnet_deflate_sizes[i]);
+                        max_size = fmax(max_size, ulnet_deflate_sizes[i]);
                     }
                 }
             }
@@ -1544,6 +1575,11 @@ void draw_imgui() {
             ImPlot::PlotScatter(miniz_label, miniz_sizes, miniz_throughputs, miniz_levels_count);
             ImPlot::PlotLine(miniz_label, miniz_sizes, miniz_throughputs, miniz_levels_count);
 
+            const char *ulnet_deflate_label = "ulnet embedded deflate";
+            ImPlot::SetNextMarkerStyle(ImPlotMarker_Diamond);
+            ImPlot::PlotScatter(ulnet_deflate_label, ulnet_deflate_sizes, ulnet_deflate_throughputs, ulnet_deflate_levels_count);
+            ImPlot::PlotLine(ulnet_deflate_label, ulnet_deflate_sizes, ulnet_deflate_throughputs, ulnet_deflate_levels_count);
+
             const char *zstd_label = "zstd " ZSTD_VERSION_STRING;
             ImPlot::SetNextMarkerStyle(ImPlotMarker_Square);
             ImPlot::PlotScatter(zstd_label, zstd_sizes, zstd_throughputs, zstd_levels_count);
@@ -1560,6 +1596,20 @@ void draw_imgui() {
                     // Add text annotation
                     ImPlot::Annotation(miniz_sizes[i], miniz_throughputs[i],
                                     ImVec4(1,1,1,1), ImVec2(10, -10), true, "level=MZ_DEFAULT_LEVEL");
+                }
+            }
+
+            for (int i = 0; i < ulnet_deflate_levels_count; i++) {
+                if (ulnet_deflate_levels[i] == 8) {
+                    // Plot a larger marker at the default level
+                    ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, 8);
+                    ImPlot::SetNextMarkerStyle(ImPlotMarker_Diamond, -1, ImVec4(0,1,0,1), 2);
+                    ImPlot::PlotScatter("##ulnet_deflate_default", &ulnet_deflate_sizes[i], &ulnet_deflate_throughputs[i], 1);
+                    ImPlot::PopStyleVar();
+
+                    // Add text annotation
+                    ImPlot::Annotation(ulnet_deflate_sizes[i], ulnet_deflate_throughputs[i],
+                                    ImVec4(1,1,1,1), ImVec2(10, 0), true, "level=%d", ulnet_deflate_levels[i]);
                 }
             }
 
