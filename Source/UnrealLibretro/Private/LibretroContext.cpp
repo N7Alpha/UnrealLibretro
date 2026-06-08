@@ -1408,6 +1408,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
             }
             
             sam2_client_connect(&l->sam_socket, TCHAR_TO_ANSI(*Sam2ServerAddress), SAM2_SERVER_DEFAULT_PORT);
+            ulnet_set_stun_server(l->netplay_session, TCHAR_TO_ANSI(*Sam2ServerAddress), SAM2_SERVER_DEFAULT_PORT);
 
             l->netplay_session->user_ptr = (void*)l;
             l->netplay_session->sam2_send_callback = [](void* user_ptr, char* message) {

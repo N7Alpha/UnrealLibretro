@@ -51,42 +51,6 @@
 //   - Source code indexing still works in Visual Studio :D
 // This may end up being unmaintainable in which case I'll do something more sane
 
-// MARK: libjuice
-#pragma push
-#define __STDC_VERSION__ 0
-#define RELEASE 0
-#define JUICE_ENABLE_LOCALHOST_ADDRESS 0
-#define JUICE_STATIC
-#ifdef _WIN32
-#pragma comment(lib, "bcrypt.lib")
-#endif
-//#include "Windows/AllowWindowsPlatformTypes.h"
-#include "../../ThirdParty/libjuice/src/addr.c"
-#include "../../ThirdParty/libjuice/src/agent.c"
-#define alloc_string_copy alloc_string_copy2
-#include "../../ThirdParty/libjuice/src/base64.c"
-#include "../../ThirdParty/libjuice/src/conn.c"
-#include "../../ThirdParty/libjuice/src/conn_user.c"
-// The following contain conflicting static definitions so they have dedicated translation units
-#if 0
-#include "../../ThirdParty/libjuice/src/conn_mux.c"
-#include "../../ThirdParty/libjuice/src/conn_poll.c"
-#include "../../ThirdParty/libjuice/src/conn_thread.c"
-#endif
-#include "../../ThirdParty/libjuice/src/const_time.c"
-#include "../../ThirdParty/libjuice/src/crc32.c"
-#include "../../ThirdParty/libjuice/src/hash.c"
-#include "../../ThirdParty/libjuice/src/hmac.c"
-#include "../../ThirdParty/libjuice/src/ice.c"
-#include "../../ThirdParty/libjuice/src/juice.c"
-#include "../../ThirdParty/libjuice/src/log.c"
-#include "../../ThirdParty/libjuice/src/random.c"
-#include "../../ThirdParty/libjuice/src/server.c"
-#include "../../ThirdParty/libjuice/src/stun.c"
-#include "../../ThirdParty/libjuice/src/timestamp.c"
-#include "../../ThirdParty/libjuice/src/turn.c"
-#include "../../ThirdParty/libjuice/src/udp.c"
-#pragma pop
 // MARK: zstd
 #pragma push
 #define ZSTD_LEGACY_SUPPORT 0

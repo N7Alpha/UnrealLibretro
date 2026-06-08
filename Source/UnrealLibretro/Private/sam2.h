@@ -393,6 +393,7 @@ typedef struct sam2_client {
 
 typedef struct sam2_server {
     sam2_socket_t listen_socket;
+    sam2_socket_t stun_socket;
 
     // Client management
     sam2_client_t clients[SAM2__LARGE_POOL_SIZE];
@@ -1066,7 +1067,100 @@ static void sam2__close_socket(sam2_socket_t sock) {
 #endif
 }
 
-static int sam2__would_block() {
+static int sam2__would_block(void);
+
+#define SAM2__STUN_BINDING_REQUEST  0x0001
+#define SAM2__STUN_BINDING_RESPONSE 0x0101
+#define SAM2__STUN_MAGIC_COOKIE     0x2112A442u
+#define SAM2__STUN_ATTR_XOR_MAPPED_ADDRESS 0x0020
+
+static uint16_t sam2__read_be16(const uint8_t *p) {
+    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
+}
+
+static uint32_t sam2__read_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+static void sam2__write_be16(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)v;
+}
+
+static void sam2__write_be32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)v;
+}
+
+static void sam2__poll_stun(sam2_server_t *server) {
+    if (server->stun_socket == SAM2_SOCKET_INVALID) return;
+
+    for (;;) {
+        uint8_t request[512];
+        uint8_t response[64];
+        struct sockaddr_storage from;
+        socklen_t from_len = sizeof(from);
+        int n = (int)recvfrom(server->stun_socket, (char *)request, sizeof(request), 0, (struct sockaddr *)&from, &from_len);
+        if (n < 0) {
+            if (!sam2__would_block()) {
+                SAM2_LOG_WARN("STUN recvfrom failed: %d", SAM2_SOCKERRNO);
+            }
+            return;
+        }
+
+        if (n < 20
+            || sam2__read_be16(request) != SAM2__STUN_BINDING_REQUEST
+            || sam2__read_be32(request + 4) != SAM2__STUN_MAGIC_COOKIE) {
+            continue;
+        }
+
+        memset(response, 0, sizeof(response));
+        sam2__write_be16(response, SAM2__STUN_BINDING_RESPONSE);
+        memcpy(response + 4, request + 4, 16);
+        sam2__write_be16(response + 20, SAM2__STUN_ATTR_XOR_MAPPED_ADDRESS);
+
+        if (from.ss_family == AF_INET) {
+            struct sockaddr_in *a4 = (struct sockaddr_in *)&from;
+            uint16_t xport = (uint16_t)(ntohs(a4->sin_port) ^ (SAM2__STUN_MAGIC_COOKIE >> 16));
+            uint32_t xaddr = ntohl(a4->sin_addr.s_addr) ^ SAM2__STUN_MAGIC_COOKIE;
+            sam2__write_be16(response + 2, 12);
+            sam2__write_be16(response + 22, 8);
+            response[25] = 0x01;
+            sam2__write_be16(response + 26, xport);
+            sam2__write_be32(response + 28, xaddr);
+            sendto(server->stun_socket, (const char *)response, 32, 0, (struct sockaddr *)&from, from_len);
+        } else if (from.ss_family == AF_INET6) {
+            struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)&from;
+            uint16_t xport = (uint16_t)(ntohs(a6->sin6_port) ^ (SAM2__STUN_MAGIC_COOKIE >> 16));
+
+            if (IN6_IS_ADDR_V4MAPPED(&a6->sin6_addr)) {
+                uint32_t mapped_addr = ((uint32_t)a6->sin6_addr.s6_addr[12] << 24)
+                    | ((uint32_t)a6->sin6_addr.s6_addr[13] << 16)
+                    | ((uint32_t)a6->sin6_addr.s6_addr[14] << 8)
+                    | (uint32_t)a6->sin6_addr.s6_addr[15];
+                sam2__write_be16(response + 2, 12);
+                sam2__write_be16(response + 22, 8);
+                response[25] = 0x01;
+                sam2__write_be16(response + 26, xport);
+                sam2__write_be32(response + 28, mapped_addr ^ SAM2__STUN_MAGIC_COOKIE);
+                sendto(server->stun_socket, (const char *)response, 32, 0, (struct sockaddr *)&from, from_len);
+            } else {
+                sam2__write_be16(response + 2, 24);
+                sam2__write_be16(response + 22, 20);
+                response[25] = 0x02;
+                sam2__write_be16(response + 26, xport);
+                for (int i = 0; i < 16; i++) {
+                    response[28 + i] = a6->sin6_addr.s6_addr[i] ^ request[4 + i];
+                }
+                sendto(server->stun_socket, (const char *)response, 44, 0, (struct sockaddr *)&from, from_len);
+            }
+        }
+    }
+}
+
+static int sam2__would_block(void) {
 #ifdef _WIN32
     return SAM2_SOCKERRNO == WSAEWOULDBLOCK;
 #else
@@ -1398,6 +1492,7 @@ static int sam2__poll_sockets(sam2_server_t *server) {
 // Main poll function
 SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
     server->current_time = sam2__get_time_ms();
+    sam2__poll_stun(server);
 
 #if defined(__APPLE__) || defined(__FreeBSD__)
     int n_events = sam2__poll_sockets(server);
@@ -1454,6 +1549,8 @@ SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
 
 SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     memset(server, 0, sizeof(*server));
+    server->listen_socket = SAM2_SOCKET_INVALID;
+    server->stun_socket = SAM2_SOCKET_INVALID;
 
     // Initialize pools
     sam2__pool_init(&server->client_pool, SAM2_ARRAY_LENGTH(server->clients));
@@ -1522,6 +1619,24 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
         goto err;
     }
 
+    server->stun_socket = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+    if (server->stun_socket != SAM2_SOCKET_INVALID) {
+        int stun_v6only = 0;
+        setsockopt(server->stun_socket, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&stun_v6only, sizeof(stun_v6only));
+#if !defined(_WIN32)
+        int stun_reuse = 1;
+        setsockopt(server->stun_socket, SOL_SOCKET, SO_REUSEADDR, (const char*)&stun_reuse, sizeof(stun_reuse));
+#endif
+        sam2__set_nonblocking(server->stun_socket);
+        if (bind(server->stun_socket, (struct sockaddr*)&addr, sizeof(addr)) == SAM2_SOCKET_ERROR) {
+            SAM2_LOG_WARN("STUN UDP bind failed on port %d: %d", port, SAM2_SOCKERRNO);
+            sam2__close_socket(server->stun_socket);
+            server->stun_socket = SAM2_SOCKET_INVALID;
+        }
+    } else {
+        SAM2_LOG_WARN("Failed to create STUN UDP socket: %d", SAM2_SOCKERRNO);
+    }
+
     // Initialize platform-specific polling
 #if defined(__APPLE__) || defined(__FreeBSD__)
     server->kqueue_fd = kqueue();
@@ -1543,6 +1658,9 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
 
 err:if (server->listen_socket != SAM2_SOCKET_INVALID) {
         sam2__close_socket(server->listen_socket);
+    }
+    if (server->stun_socket != SAM2_SOCKET_INVALID) {
+        sam2__close_socket(server->stun_socket);
     }
 #if defined(__APPLE__) || defined(__FreeBSD__)
     if (server->kqueue_fd != -1) {
@@ -1568,6 +1686,10 @@ SAM2_LINKAGE void sam2_server_destroy(sam2_server_t *server) {
     // Close listen socket
     if (server->listen_socket != SAM2_SOCKET_INVALID) {
         sam2__close_socket(server->listen_socket);
+    }
+
+    if (server->stun_socket != SAM2_SOCKET_INVALID) {
+        sam2__close_socket(server->stun_socket);
     }
 
     // Close platform-specific resources

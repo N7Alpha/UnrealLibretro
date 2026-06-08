@@ -86,16 +86,7 @@ public class UnrealLibretro : ModuleRules
 		//PCHUsage = PCHUsageMode.NoSharedPCHs; // Prevents problem with Dear ImGui/NetImgui sources not including the right first header
 		//PrivatePCHHeaderFile = "Public/UnrealLibretro.h";
 
-		// libjuice stuff
-		PrivateDefinitions.Add("USE_NETTLE=0");
-		PrivateDefinitions.Add("JUICE_STATIC");
-		PrivateDefinitions.Add("JUICE_DISABLE_CONSENT_FRESHNESS=0");
-		PrivateDefinitions.Add("JUICE_ENABLE_LOCAL_ADDRESS_TRANSLATION=0");
-		//PrivateDefinitions.Add("__STDC_VERSION__=201112L"); // Ehhhh
-		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/libjuice/include");
-		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/libjuice/include/juice"); // We #include libjuice implementation files which expect this
-
-		// imgui stuff
+			// imgui stuff
 		PrivateDefinitions.Add("IMGUI_DEFINE_MATH_OPERATORS");  // We get unity build issues/packaging issues if this isn't defined
 		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/imgui");
 		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/netImgui/Code/Client");

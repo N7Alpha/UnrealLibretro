@@ -3,7 +3,14 @@
 
 #include "sam2.h"
 
-typedef struct juice_agent juice_agent_t;
+typedef struct ulnet_nat_agent ulnet_nat_agent_t;
+
+typedef enum ulnet_nat_state {
+    ULNET_NAT_STATE_DISCONNECTED = 0,
+    ULNET_NAT_STATE_CONNECTING,
+    ULNET_NAT_STATE_READY,
+    ULNET_NAT_STATE_FAILED
+} ulnet_nat_state_t;
 
 #include <stdlib.h>
 #include <stdint.h>
@@ -263,7 +270,7 @@ typedef struct ulnet_session {
     uint64_t peer_pending_disconnect_bitfield;
     int use_inproc_transport; // "Tag" for the following union
     union {
-        juice_agent_t *agent[SAM2_TOTAL_PEERS];
+        ulnet_nat_agent_t *agent[SAM2_TOTAL_PEERS];
         ulnet_transport_inproc_t *inproc[SAM2_TOTAL_PEERS];
     };
     uint16_t       agent_peer_ids[SAM2_TOTAL_PEERS];
@@ -300,6 +307,9 @@ typedef struct ulnet_session {
     float debug_udp_recv_drop_rate;
     float debug_udp_send_drop_rate;
 
+    char nat_stun_host[64];
+    uint16_t nat_stun_port;
+
     bool imgui_packet_table_show_most_recent_first;
     int input_packet_size[SAM2_PORT_MAX + 1][ULNET_MAX_SAMPLE_SIZE];
     int save_state_execution_time_cycles[ULNET_MAX_SAMPLE_SIZE];
@@ -313,11 +323,15 @@ static_assert(std::is_trivially_default_constructible<ulnet_session_t>::value &&
 
 ULNET_LINKAGE int ulnet_process_message(ulnet_session_t *session, const char *response);
 ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, void *save_state, size_t save_state_size, int64_t save_state_frame);
+ULNET_LINKAGE void ulnet_startup_nat_for_peer(ulnet_session_t *session, uint64_t peer_id, int p, const char *remote_signal);
 ULNET_LINKAGE void ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, int p, const char *remote_description);
 ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port);
 ULNET_LINKAGE void ulnet_swap_agent(ulnet_session_t *session, int peer_existing_port, int peer_new_port);
 ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session);
-ULNET_LINKAGE void ulnet_receive_packet_callback(juice_agent_t *agent, const char *packet, size_t size, void *user_ptr);
+ULNET_LINKAGE void ulnet_receive_packet_callback(ulnet_nat_agent_t *agent, const char *packet, size_t size, void *user_ptr);
+ULNET_LINKAGE ulnet_nat_state_t ulnet_nat_get_state(ulnet_nat_agent_t *agent);
+ULNET_LINKAGE const char *ulnet_nat_state_to_string(ulnet_nat_state_t state);
+ULNET_LINKAGE void ulnet_set_stun_server(ulnet_session_t *session, const char *host, uint16_t port);
 ULNET_LINKAGE int ulnet_udp_send(ulnet_session_t *session, int port, const uint8_t *packet, size_t size);
 ULNET_LINKAGE int ulnet_reliable_send_with_acks_only(ulnet_session_t *session, int port, const uint8_t *packet, int size);
 ULNET_LINKAGE int ulnet_reliable_send(ulnet_session_t *session, int port, const uint8_t *packet, int size);
@@ -365,9 +379,826 @@ static inline void ulnet__xor_delta(void *dest, void *src, int size) {
 #define IMH(statement) do {} while (0);
 #endif
 
-#include "juice/juice.h"
 #include <assert.h>
 #include <time.h>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#define ULNET_SOCKET_T uintptr_t
+#define ULNET_SOCKET_INVALID INVALID_SOCKET
+#define ULNET_CLOSESOCKET closesocket
+#define ULNET_SOCKERRNO ((int)WSAGetLastError())
+#define ULNET_EWOULDBLOCK WSAEWOULDBLOCK
+#else
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#define ULNET_SOCKET_T int
+#define ULNET_SOCKET_INVALID (-1)
+#define ULNET_CLOSESOCKET close
+#define ULNET_SOCKERRNO errno
+#define ULNET_EWOULDBLOCK EWOULDBLOCK
+#endif
+
+#define ULNET_NAT_SIGNAL_PREFIX "ULN1"
+#define ULNET_NAT_SIGNAL_CANDIDATE 'C'
+#define ULNET_NAT_PROBE "ULN1P"
+#define ULNET_NAT_PROBE_ACK "ULN1A"
+#define ULNET_NAT_CANDIDATES_MAX 8
+#define ULNET_NAT_POLL_PACKET_MAX 1600
+#define ULNET_NAT_CHECK_PACING_USEC 50000
+#define ULNET_NAT_CONNECT_TIMEOUT_USEC 5000000
+
+typedef struct ulnet_nat_candidate {
+    struct sockaddr_storage addr;
+    socklen_t addr_len;
+    uint8_t transaction_id[12];
+    int64_t next_check_time_usec;
+} ulnet_nat_candidate_t;
+
+struct ulnet_nat_agent {
+    ULNET_SOCKET_T socket;
+    ulnet_nat_state_t state;
+    ulnet_session_t *session;
+    int peer_port;
+    int candidate_count;
+    ulnet_nat_candidate_t candidate[ULNET_NAT_CANDIDATES_MAX];
+    struct sockaddr_storage selected_addr;
+    socklen_t selected_addr_len;
+    struct sockaddr_storage stun_server_addr;
+    socklen_t stun_server_addr_len;
+    uint8_t stun_transaction_id[12];
+    uint32_t rng_state;
+    int stun_candidate_sent;
+    int64_t connect_deadline_usec;
+    int64_t last_stun_time_usec;
+};
+
+#define ULNET__STUN_BINDING_REQUEST  0x0001
+#define ULNET__STUN_BINDING_RESPONSE 0x0101
+#define ULNET__STUN_MAGIC_COOKIE     0x2112A442u
+#define ULNET__STUN_ATTR_XOR_MAPPED_ADDRESS 0x0020
+
+static uint16_t ulnet__read_be16(const uint8_t *p) {
+    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
+}
+
+static uint32_t ulnet__read_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+static void ulnet__write_be16(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)v;
+}
+
+static void ulnet__write_be32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)v;
+}
+
+static int ulnet__socket_would_block(void) {
+#ifdef _WIN32
+    return ULNET_SOCKERRNO == WSAEWOULDBLOCK;
+#else
+    return errno == EAGAIN || errno == EWOULDBLOCK;
+#endif
+}
+
+static int ulnet__set_nonblocking(ULNET_SOCKET_T sock) {
+#ifdef _WIN32
+    u_long mode = 1;
+    return ioctlsocket(sock, FIONBIO, &mode);
+#else
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags < 0) return -1;
+    return fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+#endif
+}
+
+static void ulnet__addr_from_ipv4_mapped(struct sockaddr_storage *addr, uint32_t ipv4_network_order, uint16_t port) {
+    struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)addr;
+    memset(addr, 0, sizeof(*addr));
+    a6->sin6_family = AF_INET6;
+    a6->sin6_port = htons(port);
+    a6->sin6_addr.s6_addr[10] = 0xff;
+    a6->sin6_addr.s6_addr[11] = 0xff;
+    memcpy(&a6->sin6_addr.s6_addr[12], &ipv4_network_order, 4);
+}
+
+static int ulnet__addr_equal(const struct sockaddr_storage *a, socklen_t a_len, const struct sockaddr_storage *b, socklen_t b_len) {
+    (void)a_len;
+    (void)b_len;
+    if (a->ss_family != b->ss_family) {
+        return 0;
+    }
+    if (a->ss_family == AF_INET) {
+        const struct sockaddr_in *a4 = (const struct sockaddr_in *)a;
+        const struct sockaddr_in *b4 = (const struct sockaddr_in *)b;
+        return a4->sin_port == b4->sin_port && a4->sin_addr.s_addr == b4->sin_addr.s_addr;
+    }
+    if (a->ss_family == AF_INET6) {
+        const struct sockaddr_in6 *a6 = (const struct sockaddr_in6 *)a;
+        const struct sockaddr_in6 *b6 = (const struct sockaddr_in6 *)b;
+        return a6->sin6_port == b6->sin6_port
+            && a6->sin6_scope_id == b6->sin6_scope_id
+            && memcmp(&a6->sin6_addr, &b6->sin6_addr, sizeof(a6->sin6_addr)) == 0;
+    }
+    return 0;
+}
+
+static int ulnet__format_addr(const struct sockaddr_storage *addr, char *host, size_t host_size, uint16_t *port) {
+    void *src = NULL;
+    if (addr->ss_family == AF_INET) {
+        const struct sockaddr_in *a4 = (const struct sockaddr_in *)addr;
+        src = (void *)&a4->sin_addr;
+        *port = ntohs(a4->sin_port);
+    } else if (addr->ss_family == AF_INET6) {
+        const struct sockaddr_in6 *a6 = (const struct sockaddr_in6 *)addr;
+        *port = ntohs(a6->sin6_port);
+        if (IN6_IS_ADDR_V4MAPPED(&a6->sin6_addr)) {
+            struct in_addr addr4;
+            memcpy(&addr4.s_addr, &a6->sin6_addr.s6_addr[12], 4);
+            return inet_ntop(AF_INET, &addr4, host, (socklen_t)host_size) ? 0 : -1;
+        }
+        src = (void *)&a6->sin6_addr;
+    } else {
+        return -1;
+    }
+
+    return inet_ntop(addr->ss_family, src, host, (socklen_t)host_size) ? 0 : -1;
+}
+
+#if defined(ULNET_NAT_DEBUG)
+static void ulnet__nat_debug_addr(const char *prefix, const struct sockaddr_storage *addr) {
+    char host[INET6_ADDRSTRLEN];
+    uint16_t port = 0;
+    if (ulnet__format_addr(addr, host, sizeof(host), &port) == 0) {
+        SAM2_LOG_INFO("%s %s:%u", prefix, host, (unsigned)port);
+    }
+}
+#else
+#define ulnet__nat_debug_addr(prefix, addr) do { (void)(prefix); (void)(addr); } while (0)
+#endif
+
+static int ulnet__parse_addr(const char *host, uint16_t port, struct sockaddr_storage *addr, socklen_t *addr_len) {
+    memset(addr, 0, sizeof(*addr));
+    struct in_addr ipv4;
+    if (inet_pton(AF_INET, host, &ipv4) == 1) {
+        ulnet__addr_from_ipv4_mapped(addr, ipv4.s_addr, port);
+        *addr_len = sizeof(struct sockaddr_in6);
+        return 0;
+    }
+
+    struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)addr;
+    memset(addr, 0, sizeof(*addr));
+    a6->sin6_family = AF_INET6;
+    a6->sin6_port = htons(port);
+    if (inet_pton(AF_INET6, host, &a6->sin6_addr) == 1) {
+        *addr_len = sizeof(*a6);
+        return 0;
+    }
+
+    struct addrinfo hints;
+    struct addrinfo *res = NULL;
+    char port_string[16];
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_DGRAM;
+    snprintf(port_string, sizeof(port_string), "%u", (unsigned)port);
+    if (getaddrinfo(host, port_string, &hints, &res) != 0 || !res) {
+        return -1;
+    }
+
+    if (res->ai_family == AF_INET) {
+        struct sockaddr_in *res4 = (struct sockaddr_in *)res->ai_addr;
+        ulnet__addr_from_ipv4_mapped(addr, res4->sin_addr.s_addr, port);
+        *addr_len = sizeof(struct sockaddr_in6);
+    } else {
+        memcpy(addr, res->ai_addr, res->ai_addrlen);
+        *addr_len = (socklen_t)res->ai_addrlen;
+    }
+    freeaddrinfo(res);
+    return 0;
+}
+
+static void ulnet__nat_random_transaction_id(ulnet_nat_agent_t *agent, uint8_t transaction_id[12]) {
+    for (int i = 0; i < 12; i++) {
+        agent->rng_state = 1664525u * agent->rng_state + 1013904223u;
+        transaction_id[i] = (uint8_t)(agent->rng_state >> 24);
+    }
+}
+
+static void ulnet__nat_set_state(ulnet_nat_agent_t *agent, ulnet_nat_state_t state) {
+    if (!agent || agent->state == state) return;
+    if (state < agent->state) return;
+
+    ulnet_nat_state_t old_state = agent->state;
+    agent->state = state;
+
+    if (state == ULNET_NAT_STATE_FAILED && agent->session) {
+        agent->session->peer_pending_disconnect_bitfield |= (1ULL << agent->peer_port);
+        return;
+    }
+
+    if (old_state < ULNET_NAT_STATE_READY && state >= ULNET_NAT_STATE_READY) {
+        ulnet_session_t *session = agent->session;
+        if (   session
+            && agent->peer_port >= 0
+            && agent->peer_port < SAM2_TOTAL_PEERS
+            && session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
+            SAM2_LOG_INFO("Peer %05" PRId16 " connected; scheduling savestate sync", session->agent_peer_ids[agent->peer_port]);
+            session->peer_needs_sync_bitfield |= (1ULL << agent->peer_port);
+        }
+    }
+}
+
+static ulnet_nat_candidate_t *ulnet__nat_find_candidate(ulnet_nat_agent_t *agent, const struct sockaddr_storage *addr, socklen_t addr_len) {
+    for (int i = 0; i < agent->candidate_count; i++) {
+        if (ulnet__addr_equal(&agent->candidate[i].addr, agent->candidate[i].addr_len, addr, addr_len)) {
+            return &agent->candidate[i];
+        }
+    }
+    return NULL;
+}
+
+static void ulnet__nat_select_candidate(ulnet_nat_agent_t *agent, const struct sockaddr_storage *addr, socklen_t addr_len) {
+    agent->selected_addr = *addr;
+    agent->selected_addr_len = addr_len;
+    ulnet__nat_set_state(agent, ULNET_NAT_STATE_READY);
+}
+
+static ulnet_nat_candidate_t *ulnet__nat_find_candidate_from_transaction_id(ulnet_nat_agent_t *agent, const uint8_t transaction_id[12]) {
+    for (int i = 0; i < agent->candidate_count; i++) {
+        if (memcmp(agent->candidate[i].transaction_id, transaction_id, 12) == 0) {
+            return &agent->candidate[i];
+        }
+    }
+    return NULL;
+}
+
+static int ulnet__nat_send_control(ulnet_nat_agent_t *agent, const char *control, size_t size,
+    const struct sockaddr_storage *addr, socklen_t addr_len);
+
+static int ulnet__nat_add_candidate(ulnet_nat_agent_t *agent, const struct sockaddr_storage *addr, socklen_t addr_len) {
+    if (ulnet__nat_find_candidate(agent, addr, addr_len)) {
+        return 0;
+    }
+
+    if (agent->candidate_count >= ULNET_NAT_CANDIDATES_MAX) {
+        return -1;
+    }
+
+    ulnet_nat_candidate_t *candidate = &agent->candidate[agent->candidate_count];
+    memset(candidate, 0, sizeof(*candidate));
+    candidate->addr = *addr;
+    candidate->addr_len = addr_len;
+    candidate->next_check_time_usec = 0;
+    agent->candidate_count++;
+    ulnet__nat_debug_addr("Added NAT candidate", addr);
+    if (agent->state < ULNET_NAT_STATE_CONNECTING) {
+        ulnet__nat_set_state(agent, ULNET_NAT_STATE_CONNECTING);
+    }
+    return 0;
+}
+
+static int ulnet__nat_send_signal(ulnet_nat_agent_t *agent, char kind, const char *host, uint16_t port) {
+    sam2_signal_message_t response = { SAM2_SIGN_HEADER };
+    response.peer_id = agent->session->agent_peer_ids[agent->peer_port];
+    if (kind == ULNET_NAT_SIGNAL_CANDIDATE) {
+        snprintf(response.ice_sdp, sizeof(response.ice_sdp), "%s%c %s %u", ULNET_NAT_SIGNAL_PREFIX, kind, host, (unsigned)port);
+    } else {
+        snprintf(response.ice_sdp, sizeof(response.ice_sdp), "%s%c", ULNET_NAT_SIGNAL_PREFIX, kind);
+    }
+    return agent->session->sam2_send_callback(agent->session->user_ptr, (char *)&response);
+}
+
+static int ulnet__nat_send_local_candidate(ulnet_nat_agent_t *agent) {
+    struct sockaddr_storage local_addr;
+    socklen_t local_addr_len = sizeof(local_addr);
+    char host[INET6_ADDRSTRLEN];
+    uint16_t port = 0;
+
+    if (getsockname(agent->socket, (struct sockaddr *)&local_addr, &local_addr_len) != 0) {
+        return -1;
+    }
+
+    if (ulnet__format_addr(&local_addr, host, sizeof(host), &port) != 0) {
+        return -1;
+    }
+
+    if (strcmp(host, "0.0.0.0") == 0 || strcmp(host, "::") == 0) {
+        return 0;
+    }
+
+    return ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, host, port);
+}
+
+static int ulnet__nat_send_host_candidates(ulnet_nat_agent_t *agent) {
+    struct sockaddr_storage local_addr;
+    socklen_t local_addr_len = sizeof(local_addr);
+    char bound_host[INET6_ADDRSTRLEN];
+    uint16_t port = 0;
+    int sent = 0;
+
+    if (getsockname(agent->socket, (struct sockaddr *)&local_addr, &local_addr_len) != 0) {
+        return -1;
+    }
+
+    if (ulnet__format_addr(&local_addr, bound_host, sizeof(bound_host), &port) != 0) {
+        return -1;
+    }
+
+    if (strcmp(bound_host, "0.0.0.0") != 0 && strcmp(bound_host, "::") != 0) {
+        return ulnet__nat_send_local_candidate(agent);
+    }
+
+#ifdef _WIN32
+    return 0;
+#else
+    struct ifaddrs *ifas = NULL;
+    if (getifaddrs(&ifas) != 0) {
+        return -1;
+    }
+
+    struct in_addr seen4[ULNET_NAT_CANDIDATES_MAX];
+    struct in6_addr seen6[ULNET_NAT_CANDIDATES_MAX];
+    int seen4_count = 0;
+    int seen6_count = 0;
+    for (struct ifaddrs *ifa = ifas; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_addr) {
+            continue;
+        }
+        if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK)) {
+            continue;
+        }
+        if (ifa->ifa_addr->sa_family == AF_INET) {
+            struct sockaddr_in *addr4 = (struct sockaddr_in *)ifa->ifa_addr;
+            uint32_t ip = ntohl(addr4->sin_addr.s_addr);
+            if ((ip >> 24) == 127 || ip == 0) {
+                continue;
+            }
+
+            int duplicate = 0;
+            for (int i = 0; i < seen4_count; i++) {
+                if (seen4[i].s_addr == addr4->sin_addr.s_addr) {
+                    duplicate = 1;
+                    break;
+                }
+            }
+            if (duplicate) {
+                continue;
+            }
+
+            if (seen4_count < SAM2_ARRAY_LENGTH(seen4)) {
+                seen4[seen4_count++] = addr4->sin_addr;
+            }
+
+            char host[INET_ADDRSTRLEN];
+            if (inet_ntop(AF_INET, &addr4->sin_addr, host, sizeof(host))) {
+                if (ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, host, port) == 0) {
+                    sent++;
+                }
+            }
+        } else if (ifa->ifa_addr->sa_family == AF_INET6) {
+            struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)ifa->ifa_addr;
+            if (   IN6_IS_ADDR_UNSPECIFIED(&addr6->sin6_addr)
+                || IN6_IS_ADDR_LOOPBACK(&addr6->sin6_addr)
+                || IN6_IS_ADDR_LINKLOCAL(&addr6->sin6_addr)) {
+                continue;
+            }
+
+            int duplicate = 0;
+            for (int i = 0; i < seen6_count; i++) {
+                if (memcmp(&seen6[i], &addr6->sin6_addr, sizeof(addr6->sin6_addr)) == 0) {
+                    duplicate = 1;
+                    break;
+                }
+            }
+            if (duplicate) {
+                continue;
+            }
+
+            if (seen6_count < SAM2_ARRAY_LENGTH(seen6)) {
+                seen6[seen6_count++] = addr6->sin6_addr;
+            }
+
+            char host[INET6_ADDRSTRLEN];
+            if (inet_ntop(AF_INET6, &addr6->sin6_addr, host, sizeof(host))) {
+                if (ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, host, port) == 0) {
+                    sent++;
+                }
+            }
+        }
+    }
+
+    freeifaddrs(ifas);
+    return sent;
+#endif
+}
+
+static int ulnet__nat_send_stun_request(ulnet_nat_agent_t *agent) {
+    if (agent->stun_server_addr_len == 0) {
+        return -1;
+    }
+
+    uint8_t request[20];
+    memset(request, 0, sizeof(request));
+    ulnet__write_be16(request, ULNET__STUN_BINDING_REQUEST);
+    ulnet__write_be32(request + 4, ULNET__STUN_MAGIC_COOKIE);
+    ulnet__nat_random_transaction_id(agent, agent->stun_transaction_id);
+    memcpy(request + 8, agent->stun_transaction_id, sizeof(agent->stun_transaction_id));
+
+    int ret = (int)sendto(agent->socket, (const char *)request, sizeof(request), 0,
+        (const struct sockaddr *)&agent->stun_server_addr, agent->stun_server_addr_len);
+    if (ret == (int)sizeof(request)) {
+        agent->last_stun_time_usec = ulnet__get_unix_time_microseconds();
+        return 0;
+    }
+
+    return -1;
+}
+
+static int ulnet__nat_send_peer_stun_request(ulnet_nat_agent_t *agent, ulnet_nat_candidate_t *candidate) {
+    uint8_t request[20];
+    memset(request, 0, sizeof(request));
+    ulnet__write_be16(request, ULNET__STUN_BINDING_REQUEST);
+    ulnet__write_be32(request + 4, ULNET__STUN_MAGIC_COOKIE);
+    memcpy(request + 8, candidate->transaction_id, sizeof(candidate->transaction_id));
+
+    int ret = (int)sendto(agent->socket, (const char *)request, sizeof(request), 0,
+        (const struct sockaddr *)&candidate->addr, candidate->addr_len);
+    ulnet__nat_debug_addr(ret == (int)sizeof(request) ? "Sent peer STUN request to" : "Failed peer STUN request to", &candidate->addr);
+    return ret == (int)sizeof(request) ? 0 : -1;
+}
+
+static int ulnet__nat_send_stun_response(ulnet_nat_agent_t *agent, const uint8_t *request, const struct sockaddr_storage *to, socklen_t to_len) {
+    uint8_t response[44];
+    memset(response, 0, sizeof(response));
+    ulnet__write_be16(response, ULNET__STUN_BINDING_RESPONSE);
+    ulnet__write_be32(response + 4, ULNET__STUN_MAGIC_COOKIE);
+    memcpy(response + 8, request + 8, 12);
+    ulnet__write_be16(response + 20, ULNET__STUN_ATTR_XOR_MAPPED_ADDRESS);
+
+    int response_size = 0;
+    if (to->ss_family == AF_INET) {
+        const struct sockaddr_in *to4 = (const struct sockaddr_in *)to;
+        uint16_t xport = (uint16_t)(ntohs(to4->sin_port) ^ (ULNET__STUN_MAGIC_COOKIE >> 16));
+        uint32_t xaddr = ntohl(to4->sin_addr.s_addr) ^ ULNET__STUN_MAGIC_COOKIE;
+        ulnet__write_be16(response + 2, 12);
+        ulnet__write_be16(response + 22, 8);
+        response[25] = 0x01;
+        ulnet__write_be16(response + 26, xport);
+        ulnet__write_be32(response + 28, xaddr);
+        response_size = 32;
+    } else if (to->ss_family == AF_INET6) {
+        const struct sockaddr_in6 *to6 = (const struct sockaddr_in6 *)to;
+        uint16_t xport = (uint16_t)(ntohs(to6->sin6_port) ^ (ULNET__STUN_MAGIC_COOKIE >> 16));
+        if (IN6_IS_ADDR_V4MAPPED(&to6->sin6_addr)) {
+            uint32_t mapped_addr = ((uint32_t)to6->sin6_addr.s6_addr[12] << 24)
+                | ((uint32_t)to6->sin6_addr.s6_addr[13] << 16)
+                | ((uint32_t)to6->sin6_addr.s6_addr[14] << 8)
+                | (uint32_t)to6->sin6_addr.s6_addr[15];
+            ulnet__write_be16(response + 2, 12);
+            ulnet__write_be16(response + 22, 8);
+            response[25] = 0x01;
+            ulnet__write_be16(response + 26, xport);
+            ulnet__write_be32(response + 28, mapped_addr ^ ULNET__STUN_MAGIC_COOKIE);
+            response_size = 32;
+        } else {
+            ulnet__write_be16(response + 2, 24);
+            ulnet__write_be16(response + 22, 20);
+            response[25] = 0x02;
+            ulnet__write_be16(response + 26, xport);
+            for (int i = 0; i < 16; i++) {
+                response[28 + i] = to6->sin6_addr.s6_addr[i] ^ request[4 + i];
+            }
+            response_size = 44;
+        }
+    } else {
+        return -1;
+    }
+
+    int ret = (int)sendto(agent->socket, (const char *)response, response_size, 0, (const struct sockaddr *)to, to_len);
+    ulnet__nat_debug_addr(ret == response_size ? "Sent peer STUN response to" : "Failed peer STUN response to", to);
+    return ret == response_size ? 0 : -1;
+}
+
+static int ulnet__nat_process_stun_response(ulnet_nat_agent_t *agent, const uint8_t *packet, int size,
+    const struct sockaddr_storage *from, socklen_t from_len, int64_t now) {
+    if (size < 20
+        || ulnet__read_be16(packet) != ULNET__STUN_BINDING_RESPONSE
+        || ulnet__read_be32(packet + 4) != ULNET__STUN_MAGIC_COOKIE) {
+        return 0;
+    }
+
+    int server_response = memcmp(packet + 8, agent->stun_transaction_id, sizeof(agent->stun_transaction_id)) == 0;
+    ulnet_nat_candidate_t *peer_response_candidate = ulnet__nat_find_candidate_from_transaction_id(agent, packet + 8);
+    if (!server_response && !peer_response_candidate) {
+        return 1;
+    }
+
+    int message_len = ulnet__read_be16(packet + 2);
+    int offset = 20;
+    int end = SAM2_MIN(size, 20 + message_len);
+
+    while (offset + 4 <= end) {
+        uint16_t attr_type = ulnet__read_be16(packet + offset);
+        uint16_t attr_len = ulnet__read_be16(packet + offset + 2);
+        const uint8_t *attr = packet + offset + 4;
+        int padded_len = (attr_len + 3) & ~3;
+
+        if (offset + 4 + attr_len > end) {
+            return 1;
+        }
+
+        if (attr_type == ULNET__STUN_ATTR_XOR_MAPPED_ADDRESS && attr_len >= 8) {
+            char host[INET6_ADDRSTRLEN];
+            uint16_t port = (uint16_t)(ulnet__read_be16(attr + 2) ^ (ULNET__STUN_MAGIC_COOKIE >> 16));
+
+            if (attr[1] == 0x01 && attr_len >= 8) {
+                struct in_addr addr4;
+                addr4.s_addr = htonl(ulnet__read_be32(attr + 4) ^ ULNET__STUN_MAGIC_COOKIE);
+                if (inet_ntop(AF_INET, &addr4, host, sizeof(host))) {
+                    if (server_response) {
+                        SAM2_LOG_INFO("STUN mapped UDP candidate %s:%u", host, (unsigned)port);
+                        ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, host, port);
+                        agent->stun_candidate_sent = 1;
+                    } else {
+                        ulnet__nat_debug_addr("Peer STUN response from", from);
+                    }
+                }
+            } else if (attr[1] == 0x02 && attr_len >= 20) {
+                struct in6_addr addr6;
+                for (int i = 0; i < 16; i++) {
+                    addr6.s6_addr[i] = attr[4 + i] ^ packet[4 + i];
+                }
+                if (inet_ntop(AF_INET6, &addr6, host, sizeof(host))) {
+                    if (server_response) {
+                        SAM2_LOG_INFO("STUN mapped UDP candidate %s:%u", host, (unsigned)port);
+                        ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, host, port);
+                        agent->stun_candidate_sent = 1;
+                    } else {
+                        ulnet__nat_debug_addr("Peer STUN response from", from);
+                    }
+                }
+            }
+            if (peer_response_candidate) {
+                peer_response_candidate->next_check_time_usec = 0;
+                ulnet__nat_add_candidate(agent, from, from_len);
+                ulnet__nat_select_candidate(agent, from, from_len);
+            }
+            return 1;
+        }
+
+        offset += 4 + padded_len;
+    }
+
+    return 1;
+}
+
+static int ulnet__nat_process_stun_request(ulnet_nat_agent_t *agent, const uint8_t *packet, int size,
+    const struct sockaddr_storage *from, socklen_t from_len, int64_t now) {
+    if (size < 20
+        || ulnet__read_be16(packet) != ULNET__STUN_BINDING_REQUEST
+        || ulnet__read_be32(packet + 4) != ULNET__STUN_MAGIC_COOKIE) {
+        return 0;
+    }
+
+    ulnet__nat_add_candidate(agent, from, from_len);
+    ulnet__nat_send_stun_response(agent, packet, from, from_len);
+    if (agent->state < ULNET_NAT_STATE_READY) {
+        ulnet__nat_send_control(agent, ULNET_NAT_PROBE, sizeof(ULNET_NAT_PROBE) - 1, from, from_len);
+    }
+    return 1;
+}
+
+static void ulnet__nat_destroy(ulnet_nat_agent_t *agent) {
+    if (agent) {
+        if (agent->socket != ULNET_SOCKET_INVALID) {
+            ULNET_CLOSESOCKET(agent->socket);
+        }
+#ifdef _WIN32
+        WSACleanup();
+#endif
+        ULNET_FREE(agent);
+    }
+}
+
+static ulnet_nat_agent_t *ulnet__nat_create(ulnet_session_t *session, int peer_port) {
+    ulnet_nat_agent_t *agent = (ulnet_nat_agent_t *)ULNET_MALLOC(sizeof(*agent));
+    if (!agent) return NULL;
+#ifdef _WIN32
+    WSADATA wsa_data;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
+        return NULL;
+    }
+#endif
+
+    memset(agent, 0, sizeof(*agent));
+    agent->socket = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+    agent->state = ULNET_NAT_STATE_CONNECTING;
+    agent->session = session;
+    agent->peer_port = peer_port;
+    agent->rng_state = (uint32_t)ulnet__get_unix_time_microseconds() ^ (uint32_t)(uintptr_t)agent ^ ((uint32_t)peer_port << 16);
+    agent->connect_deadline_usec = ulnet__get_unix_time_microseconds() + ULNET_NAT_CONNECT_TIMEOUT_USEC;
+    int v6only = 0;
+    struct sockaddr_in6 bind_addr;
+
+    if (agent->socket == ULNET_SOCKET_INVALID) {
+        goto err;
+    }
+
+    setsockopt(agent->socket, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&v6only, sizeof(v6only));
+
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin6_family = AF_INET6;
+    bind_addr.sin6_addr = in6addr_any;
+    bind_addr.sin6_port = htons(0);
+
+    if (bind(agent->socket, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) != 0 || ulnet__set_nonblocking(agent->socket) != 0) {
+        goto err;
+    }
+
+    if (session->nat_stun_host[0] != '\0'
+        && ulnet__parse_addr(session->nat_stun_host, session->nat_stun_port, &agent->stun_server_addr, &agent->stun_server_addr_len) == 0) {
+        SAM2_LOG_INFO("Using STUN server %s:%u", session->nat_stun_host, (unsigned)session->nat_stun_port);
+        ulnet__nat_send_stun_request(agent);
+    }
+
+    return agent;
+
+err:ulnet__nat_destroy(agent);
+    return NULL;
+}
+
+ULNET_LINKAGE ulnet_nat_state_t ulnet_nat_get_state(ulnet_nat_agent_t *agent) {
+    return agent ? agent->state : ULNET_NAT_STATE_DISCONNECTED;
+}
+
+ULNET_LINKAGE const char *ulnet_nat_state_to_string(ulnet_nat_state_t state) {
+    switch (state) {
+    case ULNET_NAT_STATE_DISCONNECTED: return "DISCONNECTED";
+    case ULNET_NAT_STATE_CONNECTING:   return "CONNECTING";
+    case ULNET_NAT_STATE_READY:        return "READY";
+    case ULNET_NAT_STATE_FAILED:       return "FAILED";
+    default:                           return "UNKNOWN";
+    }
+}
+
+ULNET_LINKAGE void ulnet_set_stun_server(ulnet_session_t *session, const char *host, uint16_t port) {
+    if (!session) return;
+
+    session->nat_stun_host[0] = '\0';
+    if (host) {
+        strncpy(session->nat_stun_host, host, sizeof(session->nat_stun_host) - 1);
+        session->nat_stun_host[sizeof(session->nat_stun_host) - 1] = '\0';
+    }
+    session->nat_stun_port = port;
+}
+
+static int ulnet__nat_process_signal(ulnet_nat_agent_t *agent, const char *signal) {
+    if (!signal || strncmp(signal, ULNET_NAT_SIGNAL_PREFIX, strlen(ULNET_NAT_SIGNAL_PREFIX)) != 0) {
+        return -1;
+    }
+
+    char kind = signal[4];
+    if (kind == 'D') {
+        return 0;
+    }
+
+    if (kind == ULNET_NAT_SIGNAL_CANDIDATE) {
+        char host[INET6_ADDRSTRLEN];
+        unsigned port = 0;
+        struct sockaddr_storage addr;
+        socklen_t addr_len = 0;
+        if (sscanf(signal + 5, " %45s %u", host, &port) != 2 || port > 65535) {
+            return -1;
+        }
+        if (ulnet__parse_addr(host, (uint16_t)port, &addr, &addr_len) != 0) {
+            return -1;
+        }
+        return ulnet__nat_add_candidate(agent, &addr, addr_len);
+    }
+
+    return -1;
+}
+
+static int ulnet__nat_send_control(ulnet_nat_agent_t *agent, const char *control, size_t size, const struct sockaddr_storage *addr, socklen_t addr_len) {
+    int ret = (int)sendto(agent->socket, control, (int)size, 0, (const struct sockaddr *)addr, addr_len);
+    ulnet__nat_debug_addr(ret == (int)size ? "Sent NAT control to" : "Failed NAT control send to", addr);
+    return ret == (int)size ? 0 : -1;
+}
+
+static int ulnet__nat_send(ulnet_nat_agent_t *agent, const uint8_t *packet, size_t size) {
+    if (!agent || agent->selected_addr_len == 0) {
+        return -1;
+    }
+
+    int ret = (int)sendto(agent->socket, (const char *)packet, (int)size, 0,
+        (const struct sockaddr *)&agent->selected_addr, agent->selected_addr_len);
+    return ret == (int)size ? 0 : -1;
+}
+
+static void ulnet__nat_poll_agent(ulnet_nat_agent_t *agent) {
+    if (!agent) return;
+
+    int64_t now = ulnet__get_unix_time_microseconds();
+    if (   agent->stun_server_addr_len != 0
+        && !agent->stun_candidate_sent
+        && now - agent->last_stun_time_usec > 500000) {
+        ulnet__nat_send_stun_request(agent);
+    }
+
+    int checks_timed_out = agent->state < ULNET_NAT_STATE_READY
+        && agent->connect_deadline_usec != 0
+        && now > agent->connect_deadline_usec;
+    if (checks_timed_out) {
+        SAM2_LOG_ERROR("NAT traversal timed out for peer %05" PRId16 "; TODO rollback peer-to-peer room transition",
+            agent->session ? agent->session->agent_peer_ids[agent->peer_port] : 0);
+        ulnet__nat_set_state(agent, ULNET_NAT_STATE_FAILED);
+    } else {
+        for (int i = 0; i < agent->candidate_count; i++) {
+            ulnet_nat_candidate_t *candidate = &agent->candidate[i];
+            if (candidate->next_check_time_usec > now) {
+                continue;
+            }
+
+            ulnet__nat_random_transaction_id(agent, candidate->transaction_id);
+            ulnet__nat_send_peer_stun_request(agent, candidate);
+            ulnet__nat_send_control(agent, ULNET_NAT_PROBE, sizeof(ULNET_NAT_PROBE) - 1, &candidate->addr, candidate->addr_len);
+            candidate->next_check_time_usec = now + ULNET_NAT_CHECK_PACING_USEC;
+        }
+    }
+
+    for (;;) {
+        char packet[ULNET_NAT_POLL_PACKET_MAX];
+        struct sockaddr_storage from;
+        socklen_t from_len = sizeof(from);
+        int ret = (int)recvfrom(agent->socket, packet, sizeof(packet), 0, (struct sockaddr *)&from, &from_len);
+        if (ret < 0) {
+            if (ulnet__socket_would_block()) {
+                break;
+            }
+#ifdef _WIN32
+            if (ULNET_SOCKERRNO == WSAECONNRESET) {
+                break;
+            }
+#else
+            if (errno == ECONNREFUSED || errno == ECONNRESET) {
+                break;
+            }
+#endif
+            {
+                ulnet__nat_set_state(agent, ULNET_NAT_STATE_FAILED);
+            }
+            break;
+        }
+        if (ret == 0) {
+            break;
+        }
+
+        if (ulnet__nat_process_stun_request(agent, (const uint8_t *)packet, ret, &from, from_len, now)) {
+            continue;
+        }
+
+        if (ulnet__nat_process_stun_response(agent, (const uint8_t *)packet, ret, &from, from_len, now)) {
+            continue;
+        }
+
+        ulnet__nat_add_candidate(agent, &from, from_len);
+        ulnet__nat_debug_addr("Received NAT packet from", &from);
+
+        if (ret == (int)(sizeof(ULNET_NAT_PROBE) - 1) && memcmp(packet, ULNET_NAT_PROBE, sizeof(ULNET_NAT_PROBE) - 1) == 0) {
+            ulnet__nat_send_control(agent, ULNET_NAT_PROBE_ACK, sizeof(ULNET_NAT_PROBE_ACK) - 1, &from, from_len);
+            if (agent->state < ULNET_NAT_STATE_READY) {
+                ulnet__nat_send_control(agent, ULNET_NAT_PROBE, sizeof(ULNET_NAT_PROBE) - 1, &from, from_len);
+            }
+            continue;
+        }
+        if (ret == (int)(sizeof(ULNET_NAT_PROBE_ACK) - 1) && memcmp(packet, ULNET_NAT_PROBE_ACK, sizeof(ULNET_NAT_PROBE_ACK) - 1) == 0) {
+            ulnet__nat_select_candidate(agent, &from, from_len);
+            continue;
+        }
+
+        if (agent->state < ULNET_NAT_STATE_READY) {
+            ulnet__nat_select_candidate(agent, &from, from_len);
+        }
+        ulnet_receive_packet_callback(agent, packet, (size_t)ret, agent->session);
+    }
+}
 
 static void *ulnet__realloc_sized(void *old_ptr, size_t old_size, size_t new_size) {
     void *new_ptr = ULNET_MALLOC(new_size);
@@ -1648,7 +2479,7 @@ ULNET_LINKAGE int ulnet_udp_send(ulnet_session_t *session, int port, const uint8
         buf->count++;
         return 0;
     } else {
-        return juice_send(session->agent[port], (const char *)packet, size);
+        return ulnet__nat_send(session->agent[port], packet, size);
     }
 }
 
@@ -1844,7 +2675,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
 
             for (int p = 0; p < SAM2_PORT_MAX; p++) {
                 if (!session->agent[p]) continue;
-                if (juice_get_state(session->agent[p]) != JUICE_STATE_COMPLETED) continue;
+                if (ulnet_nat_get_state(session->agent[p]) != ULNET_NAT_STATE_READY) continue;
                 ulnet_reliable_send(session, p, packet, packet_size);
             }
         }
@@ -1881,10 +2712,10 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
 
         for (int p = 0; p < SAM2_ARRAY_LENGTH(session->agent); p++) {
             if (!session->agent[p]) continue;
-            juice_state_t state = juice_get_state(session->agent[p]);
+            ulnet_nat_state_t state = ulnet_nat_get_state(session->agent[p]);
 
             // Wait until we can send netplay messages to everyone without fail
-            if (state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED) {
+            if (state == ULNET_NAT_STATE_READY) {
                 ulnet_reliable_send_with_acks_only(session, p, packet, packet_size);
 
                 if (our_port < SAM2_SPECTATOR_START) {
@@ -1913,17 +2744,17 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
             }
 
             for (int i = 0; i < buf->count; i++) {
-                ulnet_receive_packet_callback((juice_agent_t *)session->inproc[p], (char*)buf->msg[i], buf->msg_size[i], session);
+                ulnet_receive_packet_callback((ulnet_nat_agent_t *)session->inproc[p], (char*)buf->msg[i], buf->msg_size[i], session);
             }
             buf->count = 0;  // Mark all messages as delivered
         }
     } else {
         // Get rid of dead agents first
-        juice_agent_t *agent[SAM2_ARRAY_LENGTH(session->agent)] = {0};
+        ulnet_nat_agent_t *agent[SAM2_ARRAY_LENGTH(session->agent)] = {0};
         int agent_count = 0;
         for (int p = 0; p < SAM2_ARRAY_LENGTH(session->agent); p++) {
             if (session->agent[p]) {
-                if (   juice_get_state(session->agent[p]) == JUICE_STATE_FAILED
+                if (   ulnet_nat_get_state(session->agent[p]) == ULNET_NAT_STATE_FAILED
                     || session->peer_pending_disconnect_bitfield & (1ULL << p)) {
                     if (p >= SAM2_PORT_MAX+1) {
                         SAM2_LOG_INFO("Spectator %05" PRId16 " left" , session->room_we_are_in.peer_ids[p]);
@@ -1969,10 +2800,11 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
             timeout_milliseconds = SAM2_MIN(timeout_milliseconds, 1000.0 * max_sleeping_allowed_when_polling_network_seconds);
 
             if (agent_count > 0) {
-                int ret = juice_user_poll(agent, agent_count, (int) timeout_milliseconds);
-                // This will call ulnet_receive_packet_callback in a loop
-                if (ret < 0) {
-                    SAM2_LOG_FATAL("Error polling agent (%d)", ret);
+                for (int ai = 0; ai < agent_count; ai++) {
+                    ulnet__nat_poll_agent(agent[ai]);
+                }
+                if (timeout_milliseconds > 0.0) {
+                    ulnet__sleep((unsigned int) timeout_milliseconds);
                 }
             } else {
                 if (timeout_milliseconds > 0.0) {
@@ -1986,7 +2818,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
                  && !ignore_frame_pacing_so_we_can_catch_up);
 
         if (debug_loop_count > 20) {
-            SAM2_LOG_WARN("juice_user_poll was called %d times. This is inefficent", debug_loop_count);
+            SAM2_LOG_WARN("ulnet NAT poll loop ran %d times. This is inefficent", debug_loop_count);
         }
     }
 
@@ -2212,11 +3044,55 @@ ULNET_LINKAGE void ulnet_swap_agent(ulnet_session_t *session, int peer_existing_
     if (peer_existing_port == peer_new_port) return;
 
     #define ULNET__SWAP(x, y, T) do { T temp = (x); (x) = (y); (y) = temp; } while(0)
-    ULNET__SWAP(session->agent[peer_existing_port], session->agent[peer_new_port], juice_agent_t *);
+    #define ULNET__SWAP_BITFIELD_BIT(bits, a, b) do { \
+        uint64_t bit_a = (bits) & (1ULL << (a)); \
+        uint64_t bit_b = (bits) & (1ULL << (b)); \
+        if (!!bit_a != !!bit_b) { \
+            (bits) ^= (1ULL << (a)) | (1ULL << (b)); \
+        } \
+    } while(0)
+    ULNET__SWAP(session->agent[peer_existing_port], session->agent[peer_new_port], ulnet_nat_agent_t *);
+    if (session->agent[peer_existing_port]) session->agent[peer_existing_port]->peer_port = peer_existing_port;
+    if (session->agent[peer_new_port]) session->agent[peer_new_port]->peer_port = peer_new_port;
+    ULNET__SWAP_BITFIELD_BIT(session->peer_needs_sync_bitfield, peer_existing_port, peer_new_port);
+    ULNET__SWAP_BITFIELD_BIT(session->peer_pending_disconnect_bitfield, peer_existing_port, peer_new_port);
+    ULNET__SWAP(session->peer_desynced_frame[peer_existing_port], session->peer_desynced_frame[peer_new_port], int64_t);
+    ULNET__SWAP(session->packet_history_next[peer_existing_port], session->packet_history_next[peer_new_port], uint8_t);
+    ULNET__SWAP(session->reliable_last_transmit_time[peer_existing_port], session->reliable_last_transmit_time[peer_new_port], int64_t);
     ULNET__SWAP(session->reliable_tx_next_seq[peer_existing_port], session->reliable_tx_next_seq[peer_new_port], uint16_t);
     ULNET__SWAP(session->reliable_tx_head[peer_existing_port], session->reliable_tx_head[peer_new_port], uint16_t);
     ULNET__SWAP(session->reliable_rx_head[peer_existing_port], session->reliable_rx_head[peer_new_port], uint16_t);
-    ULNET__SWAP(session->agent_peer_ids[peer_existing_port], session->agent_peer_ids[peer_new_port], int64_t);
+    ULNET__SWAP(session->agent_peer_ids[peer_existing_port], session->agent_peer_ids[peer_new_port], uint16_t);
+    ulnet_input_state_t spectator_input_state_temp[ULNET_PORT_COUNT];
+    memcpy(spectator_input_state_temp,
+           session->spectator_suggested_input_state[peer_existing_port],
+           sizeof(spectator_input_state_temp));
+    memcpy(session->spectator_suggested_input_state[peer_existing_port],
+           session->spectator_suggested_input_state[peer_new_port],
+           sizeof(spectator_input_state_temp));
+    memcpy(session->spectator_suggested_input_state[peer_new_port],
+           spectator_input_state_temp,
+           sizeof(spectator_input_state_temp));
+    for (int i = 0; i < ULNET_STATE_PACKET_HISTORY_SIZE; i++) {
+        ULNET__SWAP(session->state_packet_history[peer_existing_port][i],
+                    session->state_packet_history[peer_new_port][i],
+                    ulnet_packet_ref_t);
+    }
+    for (int i = 0; i < 256; i++) {
+        ULNET__SWAP(session->packet_history[peer_existing_port][i],
+                    session->packet_history[peer_new_port][i],
+                    ulnet_packet_ref_t);
+    }
+    for (int i = 0; i < ULNET_RELIABLE_ACK_BUFFER_SIZE; i++) {
+        ULNET__SWAP(session->reliable_tx_packet_history[peer_existing_port][i],
+                    session->reliable_tx_packet_history[peer_new_port][i],
+                    ulnet_packet_ref_t);
+        ULNET__SWAP(session->reliable_rx_packet_history[peer_existing_port][i],
+                    session->reliable_rx_packet_history[peer_new_port][i],
+                    ulnet_packet_ref_t);
+    }
+    #undef ULNET__SWAP_BITFIELD_BIT
+    #undef ULNET__SWAP
 }
 
 static void ulnet_peer_init_defaulted(ulnet_session_t *session, int peer_port) {
@@ -2243,7 +3119,7 @@ ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port
     }
 
     assert(session->agent[peer_port] != NULL);
-    juice_destroy(session->agent[peer_port]);
+    ulnet__nat_destroy(session->agent[peer_port]);
     session->agent[peer_port] = NULL;
 
     ulnet_clear_peer_packet_history(session, peer_port);
@@ -2314,65 +3190,6 @@ ULNET_LINKAGE void ulnet_session_init_defaulted(ulnet_session_t *session) {
     ulnet__reset_save_state_bookkeeping(session);
 }
 
-// MARK: libjuice callbacks
-static void ulnet__on_state_changed(juice_agent_t *agent, juice_state_t state, void *user_ptr) {
-    ulnet_session_t *session = (ulnet_session_t *) user_ptr;
-
-    int p;
-    SAM2_LOCATE(session->agent, agent, p);
-    if (p == -1) {
-        SAM2_LOG_ERROR("Couldn't find agent on port=%d", p);
-        return;
-    }
-
-    if (   state == JUICE_STATE_CONNECTED
-        && session->our_peer_id == session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX]) {
-        SAM2_LOG_INFO("Setting peer needs sync bit for peer %05" PRId16, session->our_peer_id);
-        session->peer_needs_sync_bitfield |= (1ULL << p);
-    } else if (state == JUICE_STATE_FAILED) {
-        //ulnet_disconnect_peer(session, p); // This is called from within juice_user_poll()... So freeing the agent here isn't safe
-        session->peer_pending_disconnect_bitfield |= (1ULL << p);
-    }
-}
-
-static void ulnet__on_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr) {
-    ulnet_session_t *session = (ulnet_session_t *) user_ptr;
-
-    int p;
-    SAM2_LOCATE(session->agent, agent, p);
-    if (p == -1) {
-        SAM2_LOG_ERROR("No agent found");
-        return;
-    }
-
-    sam2_signal_message_t response = { SAM2_SIGN_HEADER };
-
-    response.peer_id = session->agent_peer_ids[p];
-    if (strlen(sdp) < sizeof(response.ice_sdp)) {
-        strcpy(response.ice_sdp, sdp);
-        session->sam2_send_callback(session->user_ptr, (char *) &response);
-    } else {
-        SAM2_LOG_ERROR("Candidate too large");
-        return;
-    }
-}
-
-static void ulnet__on_gathering_done(juice_agent_t *agent, void *user_ptr) {
-    ulnet_session_t *session = (ulnet_session_t *) user_ptr;
-
-    int p;
-    SAM2_LOCATE(session->agent, agent, p);
-    if (p == -1) {
-        SAM2_LOG_ERROR("No agent found");
-        return;
-    }
-
-    sam2_signal_message_t response = { SAM2_SIGN_HEADER };
-
-    response.peer_id = session->agent_peer_ids[p];
-    session->sam2_send_callback(session->user_ptr, (char *) &response);
-}
-
 static void ulnet__check_for_desync(ulnet_state_t *our_state, ulnet_state_t *their_state, int64_t *our_desync_frame) {
     int64_t desync_frame = 0;
     int64_t latest_common_frame = SAM2_MIN(our_state->save_state_frame, their_state->save_state_frame);
@@ -2405,7 +3222,7 @@ static void ulnet__check_for_desync(ulnet_state_t *our_state, ulnet_state_t *the
 
 static void ulnet__process_udp_packet(ulnet_session_t *session, int p, const uint8_t *data, size_t size);
 // MARK: UDP Packet Processing
-ULNET_LINKAGE void ulnet_receive_packet_callback(juice_agent_t *agent, const char *packet, size_t size, void *user_ptr) {
+ULNET_LINKAGE void ulnet_receive_packet_callback(ulnet_nat_agent_t *agent, const char *packet, size_t size, void *user_ptr) {
     ulnet_session_t *session = (ulnet_session_t *) user_ptr;
 
     int p;
@@ -2792,7 +3609,7 @@ cleanup:
 }
 
 
-ULNET_LINKAGE void ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, int p, const char *remote_description) {
+ULNET_LINKAGE void ulnet_startup_nat_for_peer(ulnet_session_t *session, uint64_t peer_id, int p, const char *remote_signal) {
     if (p < 0 || p >= SAM2_TOTAL_PEERS) {
         SAM2_LOG_FATAL("Invalid peer port %d", p);
     }
@@ -2801,46 +3618,26 @@ ULNET_LINKAGE void ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t
         SAM2_LOG_FATAL("Peer ID cannot be zero");
     }
 
-    SAM2_LOG_INFO("Starting Interactive-Connectivity-Establishment for peer %05" PRId64, peer_id);
-
-    juice_config_t config;
-    memset(&config, 0, sizeof(config));
-
-    // STUN server example*
-    config.concurrency_mode = JUICE_CONCURRENCY_MODE_USER;
-    config.stun_server_host = "stun2.l.google.com"; // @todo Put a bad url here to test how to handle that
-    config.stun_server_port = 19302;
-    //config.bind_address = "127.0.0.1";
-
-    config.cb_state_changed = ulnet__on_state_changed;
-    config.cb_candidate = ulnet__on_candidate;
-    config.cb_gathering_done = ulnet__on_gathering_done;
-    config.cb_recv = ulnet_receive_packet_callback;
-
-    config.user_ptr = (void *) session;
+    SAM2_LOG_INFO("Starting ulnet NAT traversal for peer %05" PRId64, peer_id);
 
     session->agent_peer_ids[p] = peer_id;
 
     assert(session->agent[p] == NULL);
-    session->agent[p] = juice_create(&config);
-
-    if (remote_description) {
-        // Right now I think there could be some kind of bug or race condition in my code or libjuice when there
-        // is an ICE role conflict. A role conflict is benign, but when a spectator connects the authority will never fully
-        // establish the connection even though the spectator manages to. If I avoid the role conflict by setting
-        // the remote description here then my connection establishes fine, but I should look into this eventually @todo
-        juice_set_remote_description(session->agent[p], remote_description);
+    session->agent[p] = ulnet__nat_create(session, p);
+    if (!session->agent[p]) {
+        SAM2_LOG_ERROR("Failed to create ulnet NAT agent");
+        return;
     }
 
-    sam2_signal_message_t signal_message = { SAM2_SIGN_HEADER };
-    signal_message.peer_id = peer_id;
-    juice_get_local_description(session->agent[p], signal_message.ice_sdp, sizeof(signal_message.ice_sdp));
-    session->sam2_send_callback(session->user_ptr, (char *) &signal_message);
+    if (remote_signal) {
+        ulnet__nat_process_signal(session->agent[p], remote_signal);
+    }
 
-    // This call starts an asynchronous task that requires periodic polling via juice_user_poll to complete
-    // it will call the ulnet__on_gathering_done callback once it's finished
-    juice_gather_candidates(session->agent[p]);
+    ulnet__nat_send_host_candidates(session->agent[p]);
+}
 
+ULNET_LINKAGE void ulnet_startup_ice_for_peer(ulnet_session_t *session, uint64_t peer_id, int p, const char *remote_description) {
+    ulnet_startup_nat_for_peer(session, peer_id, p, remote_description);
 }
 
 int ulnet_process_message(ulnet_session_t *session, const char *response) {
@@ -2977,8 +3774,14 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
 
                     session->sam2_send_callback(session->user_ptr, (char *) &error);
                 } else {
-                    SAM2_LOG_INFO("We are letting them in as a spectator");
+                    SAM2_LOG_INFO("We are letting peer %05" PRId16 " in as spectator slot %d", room_signal->peer_id, p);
                     session->next_room_xor_delta.peer_ids[p] = future_room_we_are_in.peer_ids[p] ^ room_signal->peer_id;
+
+                    if (session->agent[p] && session->agent_peer_ids[p] != room_signal->peer_id) {
+                        SAM2_LOG_WARN("Replacing stale NAT agent for peer %05" PRId16 " at spectator slot %d",
+                            session->agent_peer_ids[p], p);
+                        ulnet_disconnect_peer(session, p);
+                    }
                 }
             }
         } else {
@@ -3000,19 +3803,13 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
         }
 
         if (p != -1 && session->agent[p] == NULL) {
-            ulnet_startup_ice_for_peer(session, room_signal->peer_id, p, /* remote_desciption = */ room_signal->ice_sdp);
+            SAM2_LOG_INFO("Creating NAT agent for peer %05" PRId16 " at slot %d", room_signal->peer_id, p);
+            ulnet_startup_nat_for_peer(session, room_signal->peer_id, p, /* remote_signal = */ room_signal->ice_sdp);
         }
 
-        if (p != -1) { // Can fail if we run out of spots for spectators
-            if (room_signal->ice_sdp[0] == '\0') {
-                SAM2_LOG_INFO("Received remote gathering done from peer %05" PRId16 "", room_signal->peer_id);
-                juice_set_remote_gathering_done(session->agent[p]);
-            } else if (strncmp(room_signal->ice_sdp, "a=ice", strlen("a=ice")) == 0) {
-                juice_set_remote_description(session->agent[p], room_signal->ice_sdp);
-            } else if (strncmp(room_signal->ice_sdp, "a=candidate", strlen("a=candidate")) == 0) {
-                juice_add_remote_candidate(session->agent[p], room_signal->ice_sdp);
-            } else {
-                SAM2_LOG_ERROR("Unable to parse signal message '%s'", room_signal->ice_sdp);
+        if (p != -1 && session->agent[p]) { // Can fail if we run out of spots for spectators
+            if (ulnet__nat_process_signal(session->agent[p], room_signal->ice_sdp) != 0) {
+                SAM2_LOG_ERROR("Unable to parse NAT signal message '%s'", room_signal->ice_sdp);
             }
         }
     }

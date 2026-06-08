@@ -16,7 +16,8 @@ jobs:
           build-essential \
           cmake \
           ninja-build \
-          tcc \
+          iproute2 \
+          iptables \
           libgl1-mesa-dev \
           libx11-dev \
           libxext-dev \
@@ -38,26 +39,32 @@ jobs:
 
     - name: Run sam2_test.c
       run: |
-        tcc -DSAM2_IMPLEMENTATION \
-        -DSAM2_TEST_MAIN \
-        -ISource/UnrealLibretro/Private \
-        -ISource/ThirdParty/libuv/include \
-        -run Source/ThirdParty/netarch/sam2_test.c
+        cc -DSAM2_IMPLEMENTATION \
+          -DSAM2_TEST_MAIN \
+          -ISource/UnrealLibretro/Private \
+          -ISource/ThirdParty/libuv/include \
+          Source/ThirdParty/netarch/sam2_test.c \
+          -o /tmp/sam2_test
+        /tmp/sam2_test
 
     - name: Run ulnet_test.c
       run: |
-        tcc -DSAM2_IMPLEMENTATION \
-        -DULNET_IMPLEMENTATION \
-        -DULNET_TEST_MAIN \
-        -DULNET_THIRDPARTY_NO_ZSTD \
-        -ISource/UnrealLibretro/Private \
-        -ISource/UnrealLibretroEditor/miniz \
-        -ISource/ThirdParty/libjuice/include \
-        -ISource/ThirdParty/libjuice/include/juice \
-        Source/UnrealLibretro/Private/LibretroThirdPartyImplementation.c \
-        Source/UnrealLibretro/Private/fec.c \
-        Source/UnrealLibretroEditor/miniz/miniz.c \
-        -run Source/ThirdParty/netarch/ulnet_test.c
+        cc -DSAM2_IMPLEMENTATION \
+          -DULNET_IMPLEMENTATION \
+          -DULNET_TEST_MAIN \
+          -DULNET_THIRDPARTY_NO_ZSTD \
+          -ISource/UnrealLibretro/Private \
+          -ISource/UnrealLibretroEditor/miniz \
+          Source/UnrealLibretroEditor/miniz/miniz.c \
+          Source/ThirdParty/netarch/ulnet_test.c \
+          -o /tmp/ulnet_test
+        /tmp/ulnet_test
+
+    - name: Run NAT matrix smoke test
+      run: sudo Source/ThirdParty/netarch/ulnet_nat_matrix_test.sh --skip-expected-fail --timeout 10
+
+    - name: Run IPv6 matrix smoke test
+      run: sudo Source/ThirdParty/netarch/ulnet_ipv6_matrix_test.sh --skip-expected-fail --timeout 10
 
   build-macos-x86_64:
     runs-on: macos-13 # Intel runner

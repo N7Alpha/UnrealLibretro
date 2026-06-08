@@ -88,8 +88,6 @@ if(LINUX) # Use heuristic to figure out if we're on a linux server or desktop, t
 endif()
 
 add_subdirectory(Source/ThirdParty/SDL)
-set(NO_TESTS ON CACHE BOOL "") # libjuice defaults to building tests (which we don't have checked in)
-add_subdirectory(Source/ThirdParty/libjuice)
 set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "")
 set(ZSTD_BUILD_TESTS OFF CACHE BOOL "")
 set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "")
@@ -105,7 +103,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     Source/UnrealLibretro/Private
     Source/UnrealLibretro/Public/libretro
     Source/UnrealLibretroEditor/miniz
-    Source/ThirdParty/libjuice/include
     Source/ThirdParty/zstd/lib
     Source/ThirdParty/imgui
     Source/ThirdParty/imgui/backends
@@ -115,4 +112,4 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 # Static link everything so we don't have to deal with dll hell
-target_link_libraries(${PROJECT_NAME} juice-static libzstd_static SDL3::SDL3-static)
+target_link_libraries(${PROJECT_NAME} libzstd_static SDL3::SDL3-static)

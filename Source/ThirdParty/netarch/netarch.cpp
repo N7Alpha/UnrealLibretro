@@ -516,8 +516,6 @@ struct FLibretroContext {
         return ret;
     }
 
-    void AuthoritySendSaveState(juice_agent_t *agent);
-
     int16_t core_input_state(unsigned port, unsigned device, unsigned index, unsigned id);
     void core_input_poll();
 };
@@ -1724,6 +1722,7 @@ void draw_imgui() {
 
                 if (connect) {
                     sam2_client_connect(&g_libretro_context.sam2_socket, g_sam2_address, g_sam2_port);
+                    ulnet_set_stun_server(&g_ulnet_session, g_sam2_address, (uint16_t)g_sam2_port);
                 }
             } else {
                 ImGui::TextColored(ImVec4(0.5, 0.5, 0.5, 1), "Connecting to %s:%d %c", g_sam2_address, g_sam2_port, spinnerGlyph);
@@ -1971,10 +1970,10 @@ void draw_imgui() {
                 ImVec4 color = WHITE;
 
                 if (g_ulnet_session.agent[p]) {
-                    juice_state_t connection_state = juice_get_state(g_ulnet_session.agent[p]);
+                    ulnet_nat_state_t connection_state = ulnet_nat_get_state(g_ulnet_session.agent[p]);
 
                 if (   g_ulnet_session.room_we_are_in.flags & (SAM2_FLAG_PORT0_PEER_IS_INACTIVE << p)
-                    || connection_state != JUICE_STATE_COMPLETED) {
+                    || connection_state != ULNET_NAT_STATE_READY) {
                         color = GREY;
                     } else if (g_ulnet_session.peer_desynced_frame[p]) {
                         color = RED;
@@ -1985,21 +1984,21 @@ void draw_imgui() {
 
                 ImGui::TextColored(color, "%05" PRId16, g_ulnet_session.room_we_are_in.peer_ids[p]);
                 if (g_ulnet_session.agent[p]) {
-                    juice_state_t connection_state = juice_get_state(g_ulnet_session.agent[p]);
+                    ulnet_nat_state_t connection_state = ulnet_nat_get_state(g_ulnet_session.agent[p]);
 
                     if (g_ulnet_session.peer_desynced_frame[p]) {
                         ImGui::SameLine();
                         ImGui::TextColored(color, "Peer desynced (frame %" PRId64 ")", g_ulnet_session.peer_desynced_frame[p]);
                     }
 
-                    if (connection_state != JUICE_STATE_COMPLETED) {
+                    if (connection_state != ULNET_NAT_STATE_READY) {
                         ImGui::SameLine();
-                        ImGui::TextColored(color, "%s %c", juice_state_to_string(connection_state), spinnerGlyph);
+                        ImGui::TextColored(color, "%s %c", ulnet_nat_state_to_string(connection_state), spinnerGlyph);
                     }
                 } else {
                     if (g_ulnet_session.room_we_are_in.peer_ids[p] != g_ulnet_session.our_peer_id) {
                         ImGui::SameLine();
-                        ImGui::TextColored(color, "ICE agent not created");
+                        ImGui::TextColored(color, "NAT agent not created");
                     }
                 }
 
@@ -2039,20 +2038,19 @@ void draw_imgui() {
                     else                                        ImGui::Text(             "%05" PRId16, peer_id);
 
                     ImGui::TableSetColumnIndex(1);
-                    // Display ICE connection status
-                    // Assuming g_ulnet_session.agent[] is an array of juice_agent_t* representing the ICE agents
-                    juice_agent_t *spectator_agent = g_ulnet_session.agent[s];
+                    // Display NAT connection status
+                    ulnet_nat_agent_t *spectator_agent = g_ulnet_session.agent[s];
                     if (spectator_agent) {
-                        juice_state_t connection_state = juice_get_state(spectator_agent);
+                        ulnet_nat_state_t connection_state = ulnet_nat_get_state(spectator_agent);
 
-                        if (connection_state >= JUICE_STATE_CONNECTED) {
-                            ImGui::Text("%s", juice_state_to_string(connection_state));
+                        if (connection_state == ULNET_NAT_STATE_READY) {
+                            ImGui::Text("%s", ulnet_nat_state_to_string(connection_state));
                         } else {
-                            ImGui::TextColored(GREY, "%s %c", juice_state_to_string(connection_state), spinnerGlyph);
+                            ImGui::TextColored(GREY, "%s %c", ulnet_nat_state_to_string(connection_state), spinnerGlyph);
                         }
 
                     } else {
-                        ImGui::Text("ICE agent not created");
+                        ImGui::Text("NAT agent not created");
                     }
                 }
 
@@ -2171,6 +2169,7 @@ void draw_imgui() {
                         SAM2_LOG_INFO("We are already in a room, leaving it first");
                     } else {
                         ulnet_session_init_defaulted(&g_ulnet_session);
+                        ulnet_set_stun_server(&g_ulnet_session, g_sam2_address, (uint16_t)g_sam2_port);
                         // Both of these methods should work
 #if 0
                         g_ulnet_session.room_we_are_in = g_sam2_rooms[selected_room_index];
@@ -3382,14 +3381,6 @@ static void core_unload() {
 
 static void noop() {}
 
-void receive_juice_log(juice_log_level_t level, const char *message) {
-    static const char *log_level_names[] = {"VERBOSE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"};
-
-    fprintf(stdout, "%s: %s\n", log_level_names[level], message);
-    fflush(stdout);
-    assert(level < JUICE_LOG_LEVEL_ERROR);
-}
-
 // Custom logging function for reliable library
 int reliable_log_redirect(const char *fmt, ...) {
     char buffer[4096];
@@ -3722,8 +3713,7 @@ int main(int argc, char *argv[]) {
     if (sam2_client_connect(&g_sam2_socket, g_sam2_address, g_sam2_port)) {
         SAM2_LOG_WARN("Failed to connect to Signaling-Server and a Match-Maker\n");
     }
-
-    juice_set_log_level(JUICE_LOG_LEVEL_WARN);
+    ulnet_set_stun_server(&g_ulnet_session, g_sam2_address, (uint16_t)g_sam2_port);
 
     g_parameters.d = 8;
     g_parameters.k = 256;
@@ -4075,12 +4065,7 @@ int main(int argc, char *argv[]) {
     audio_deinit();
     video_deinit();
 
-    // Destroy agent
-    for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-        if (g_ulnet_session.agent[p]) {
-            juice_destroy(g_ulnet_session.agent[p]);
-        }
-    }
+    ulnet_session_tear_down(&g_ulnet_session);
 
     if (g_vars) {
         for (const struct retro_variable *v = g_vars; v->key; ++v) {
