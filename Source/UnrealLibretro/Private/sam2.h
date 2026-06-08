@@ -1161,7 +1161,7 @@ static sam2_client_t *sam2__process_message(sam2_server_t *server, sam2_client_t
         }
 
         sam2_client_t *peer = NULL;
-        if (request.peer_id < SAM2_ARRAY_LENGTH(server->clients) && server->clients[request.peer_id].socket != SAM2_SOCKET_INVALID) {
+        if (server->clients[request.peer_id].socket != SAM2_SOCKET_INVALID) {
             peer = &server->clients[request.peer_id];
         }
 
@@ -1231,7 +1231,7 @@ SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
         return -1;
     }
 
-    int potential_free_peer_id = SAM2_PORT_SENTINELS_MAX + 1;
+    int potential_free_peer_id = SAM2_PORT_SENTINELS_MAX + 1; // Resume peer ID search from here to avoid scanning from zero for each connection
     int events_processed = 0;
 
     // Check listen socket
@@ -1261,7 +1261,7 @@ SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
                 }
             }
 
-            if (peer_id == SAM2_ARRAY_LENGTH(server->clients)) {
+            if (peer_id == SAM2_PORT_UNAVAILABLE) {
                 SAM2_LOG_WARN("No peer IDs available");
                 sam2__close_socket(client_socket);
                 break;
