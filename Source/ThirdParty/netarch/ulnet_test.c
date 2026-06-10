@@ -198,6 +198,7 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
             }
 
             if (sessions[i]->our_peer_id) {
+                connection_established = 1;
                 break;
             }
         }

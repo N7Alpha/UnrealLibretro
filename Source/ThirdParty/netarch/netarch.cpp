@@ -982,6 +982,7 @@ static sam2_room_t g_new_room_set_through_gui = {
 #define MAX_ROOMS 1024
 static sam2_room_t g_sam2_rooms[MAX_ROOMS];
 static int64_t g_sam2_room_count = 0;
+static uint16_t g_sam2_room_list_cursor = SAM2_PORT_SENTINELS_MAX + 1;
 sam2_room_list_message_t last_sam2_room_list_response;
 int64_t sam2_room_count;
 sam2_room_t sam2_rooms[1024];
@@ -1622,7 +1623,7 @@ void draw_imgui() {
             ImGui::SeparatorText("Server");
             ImGui::TextColored(ImVec4(0, 1, 0, 1), "We're listening on %s:%d (IPv4 tunneling is OS dependent)", g_sam2_address, g_sam2_port);
 
-            ImGui::Text("Clients connected: %d", g_sam2_server->active_client_count);
+            ImGui::Text("Clients connected: %d", g_sam2_server->num_client);
 
             if (ImGui::CollapsingHeader("Rooms")) {
                 int room_count = 0;
@@ -2085,8 +2086,9 @@ void draw_imgui() {
 
             if (g_is_refreshing_rooms) {
                 g_sam2_room_count = 0;
-                // The list request is only a header
+                g_sam2_room_list_cursor = SAM2_PORT_SENTINELS_MAX + 1;
                 sam2_room_list_message_t request = { SAM2_LIST_HEADER };
+                request.room.peer_ids[SAM2_AUTHORITY_INDEX] = g_sam2_room_list_cursor;
                 g_libretro_context.SAM2Send((char *) &request);
             } else {
 
@@ -4034,12 +4036,17 @@ int main(int argc, char *argv[]) {
                     } else if (sam2_header_matches((const char*)&latest_sam2_message, sam2_list_header)) {
                         sam2_room_list_message_t *room_list = (sam2_room_list_message_t *) &latest_sam2_message;
 
-                        if (room_list->room.peer_ids[SAM2_AUTHORITY_INDEX] == 0) {
+                        if (!(room_list->room.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
                             g_is_refreshing_rooms = false;
                         } else {
                             if (g_sam2_room_count < SAM2_ARRAY_LENGTH(g_sam2_rooms)) {
                                 g_sam2_rooms[g_sam2_room_count++] = room_list->room;
                             }
+                            g_sam2_room_list_cursor = room_list->room.peer_ids[SAM2_AUTHORITY_INDEX] + 1;
+
+                            sam2_room_list_message_t request = { SAM2_LIST_HEADER };
+                            request.room.peer_ids[SAM2_AUTHORITY_INDEX] = g_sam2_room_list_cursor;
+                            g_libretro_context.SAM2Send((char *) &request);
                         }
                     } else if (sam2_header_matches((const char*)&latest_sam2_message, sam2_conn_header)) {
                         g_new_room_set_through_gui.peer_ids[SAM2_AUTHORITY_INDEX] = latest_sam2_message.connect_message.peer_id;
