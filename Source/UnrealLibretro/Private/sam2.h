@@ -96,10 +96,6 @@
 
 #define SAM2_FLAG_AUTHORITY_IS_INACTIVE (0b00000001ULL << 24)
 
-#define SAM2_FLAG_SERVER_PERMISSION_MASK (SAM2_FLAG_AUTHORITY_IPv6)
-#define SAM2_FLAG_AUTHORITY_PERMISSION_MASK (SAM2_FLAG_NO_FIXED_PORT | SAM2_FLAG_ALLOW_SHOW_IP)
-#define SAM2_FLAG_CLIENT_PERMISSION_MASK (SAM2_FLAG_SPECTATOR)
-
 #define SAM2_RESPONSE_SUCCESS                  0
 #define SAM2_RESPONSE_SERVER_ERROR             -1  // Emitted by signaling server when there was an internal error
 #define SAM2_RESPONSE_AUTHORITY_ERROR          -2  // Emitted by authority when there isn't a code for what went wrong
