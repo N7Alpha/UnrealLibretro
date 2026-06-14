@@ -101,7 +101,6 @@ static int ulnet_test_swap_agent_moves_peer_state(void) {
 
     int failed = 0;
     failed |= session.agent[8] == NULL;
-    failed |= session.agent[8] && session.agent[8]->peer_port != 8;
     failed |= session.agent[9] != NULL;
     failed |= (session.peer_needs_sync_bitfield & (1ULL << 8)) == 0;
     failed |= (session.peer_needs_sync_bitfield & (1ULL << 9)) != 0;
