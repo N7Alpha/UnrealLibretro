@@ -249,22 +249,11 @@ typedef int sam2_socket_t;
 
 #define SAM2__INDEX_NULL ((uint16_t) 0x0000U)
 
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <winsock2.h>
-#else
-#include <sys/time.h>
-#include <poll.h>
-#endif
-
 typedef struct sam2_server {
-    sam2_socket_t listen_socket;
     sam2_socket_t stun_socket;
 
-    // Client management
-    sam2_socket_t clients[65536];
+    // Socket 0 is the server listen socket. Peer sockets start after the sentinel peer IDs.
+    sam2_socket_t sockets[65536];
     sam2_room_t rooms[65536];
     uint16_t num_client;
 } sam2_server_t;
@@ -362,6 +351,7 @@ SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const ch
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#include <winsock2.h>
 #include <ws2tcpip.h>
 #else
 #include <sys/time.h>
@@ -370,6 +360,7 @@ SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const ch
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <fcntl.h>
+#include <poll.h>
 #endif
 
 int sam2_socket_buffer_size_client_to_server = 8192;
@@ -845,19 +836,11 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message) {
     }
 }
 #endif // SAM2_CLIENT_C
-#endif // SAM2_IMPLEMENTATION
 
-#if defined(SAM2_IMPLEMENTATION)
 #ifndef SAM2_SERVER_C
 #define SAM2_SERVER_C
 
 #include <time.h>
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <WinSock2.h>
-#endif
 
 static int sam2__set_nonblocking(sam2_socket_t sock) {
 #ifdef _WIN32
@@ -878,7 +861,13 @@ static void sam2__close_socket(sam2_socket_t sock) {
 #endif
 }
 
-static int sam2__would_block(void);
+static int sam2__would_block(void) {
+#ifdef _WIN32
+    return SAM2_SOCKERRNO == WSAEWOULDBLOCK;
+#else
+    return errno == EAGAIN || errno == EWOULDBLOCK;
+#endif
+}
 
 #define SAM2__STUN_BINDING_REQUEST  0x0001
 #define SAM2__STUN_BINDING_RESPONSE 0x0101
@@ -971,29 +960,10 @@ static void sam2__poll_stun(sam2_server_t *server) {
     }
 }
 
-static int sam2__would_block(void) {
-#ifdef _WIN32
-    return SAM2_SOCKERRNO == WSAEWOULDBLOCK;
-#else
-    return errno == EAGAIN || errno == EWOULDBLOCK;
-#endif
-}
 
-static int64_t sam2__get_time_ms() {
-#ifdef _WIN32
-    LARGE_INTEGER freq, count;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&count);
-    return (count.QuadPart * 1000) / freq.QuadPart;
-#else
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-#endif
-}
 
 static uint16_t sam2__client_get_peer_id(sam2_server_t *server, sam2_socket_t *client) {
-    uint16_t peer_id = client - server->clients;
+    uint16_t peer_id = client - server->sockets;
     return peer_id;
 }
 
@@ -1067,7 +1037,7 @@ static sam2_socket_t *sam2__process_message(sam2_server_t *server, sam2_socket_t
     if (sam2_header_matches((const char*)message, sam2_conn_header)) {
         sam2_connect_message_t *request = &message->connect_message;
 
-        if (server->clients[request->peer_id] != SAM2_SOCKET_INVALID && request->peer_id != sam2__client_get_peer_id(server, client)) {
+        if (server->sockets[request->peer_id] != SAM2_SOCKET_INVALID && request->peer_id != sam2__client_get_peer_id(server, client)) {
             sam2__write_error(client, "Peer id is already in use", SAM2_RESPONSE_INVALID_ARGS);
             return client;
         }
@@ -1089,9 +1059,9 @@ static sam2_socket_t *sam2__process_message(sam2_server_t *server, sam2_socket_t
         SAM2_LOG_INFO("Changing peer id from %05d to %05d", old_peer_id, new_peer_id);
 
         if (new_peer_id != old_peer_id) {
-            server->clients[new_peer_id] = server->clients[old_peer_id];
-            server->clients[old_peer_id] = SAM2_SOCKET_INVALID;
-            client = &server->clients[new_peer_id];
+            server->sockets[new_peer_id] = server->sockets[old_peer_id];
+            server->sockets[old_peer_id] = SAM2_SOCKET_INVALID;
+            client = &server->sockets[new_peer_id];
         }
 
         sam2_connect_message_t response = { SAM2_CONN_HEADER, new_peer_id, 0 };
@@ -1133,8 +1103,8 @@ static sam2_socket_t *sam2__process_message(sam2_server_t *server, sam2_socket_t
         }
 
         sam2_socket_t *peer = NULL;
-        if (server->clients[request.peer_id] != SAM2_SOCKET_INVALID) {
-            peer = &server->clients[request.peer_id];
+        if (server->sockets[request.peer_id] != SAM2_SOCKET_INVALID) {
+            peer = &server->sockets[request.peer_id];
         }
 
         if (!peer) {
@@ -1164,7 +1134,7 @@ static void sam2__process_client_read(sam2_server_t *server, sam2_socket_t *clie
         } else {
             SAM2_LOG_INFO("Client %05" PRIu16 " sent '%.8s'", sam2__client_get_peer_id(server, client), (char*)&message);
             client = sam2__process_message(server, client, &message);
-            if (!client || *client == SAM2_SOCKET_INVALID) return;
+            if (*client == SAM2_SOCKET_INVALID) return;
         }
     }
 }
@@ -1175,7 +1145,7 @@ static void sam2__accept_connections(sam2_server_t *server) {
     while (1) {
         struct sockaddr_storage addr;
         socklen_t addrlen = sizeof(addr);
-        sam2_socket_t client_socket = accept(server->listen_socket, (struct sockaddr*)&addr, &addrlen);
+        sam2_socket_t client_socket = accept(server->sockets[0], (struct sockaddr*)&addr, &addrlen);
 
         if (client_socket == SAM2_SOCKET_INVALID) {
             if (!sam2__would_block()) {
@@ -1185,8 +1155,8 @@ static void sam2__accept_connections(sam2_server_t *server) {
         }
 
         uint16_t peer_id = SAM2_PORT_UNAVAILABLE;
-        for (; potential_free_peer_id < SAM2_ARRAY_LENGTH(server->clients); potential_free_peer_id++) {
-            if (server->clients[potential_free_peer_id] == SAM2_SOCKET_INVALID) {
+        for (; potential_free_peer_id < SAM2_ARRAY_LENGTH(server->sockets); potential_free_peer_id++) {
+            if (server->sockets[potential_free_peer_id] == SAM2_SOCKET_INVALID) {
                 peer_id = (uint16_t)potential_free_peer_id;
                 potential_free_peer_id++;
                 break;
@@ -1202,7 +1172,7 @@ static void sam2__accept_connections(sam2_server_t *server) {
             continue;
         }
 
-        sam2_socket_t *client = &server->clients[peer_id];
+        sam2_socket_t *client = &server->sockets[peer_id];
         *client = client_socket;
 
         sam2__set_nonblocking(client_socket);
@@ -1224,25 +1194,24 @@ static void sam2__accept_connections(sam2_server_t *server) {
 
 SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
     sam2__poll_stun(server);
-    sam2__accept_connections(server);
 
-    int clients_queued = 0;
-    int clients_to_queue = server->num_client;
-    int peer_scan = SAM2_PORT_SENTINELS_MAX + 1;
+    int sockets_queued = 0;
+    int sockets_to_queue = server->num_client + 1 /* For the server listen socket */;
+    int socket_scan = 0;
 
-    while (clients_queued < clients_to_queue) {
+    while (sockets_queued < sockets_to_queue) {
         enum { SAM2__POLL_BATCH_SIZE = 256 };
         struct pollfd pollfds[SAM2__POLL_BATCH_SIZE];
         uint16_t peer_ids[SAM2__POLL_BATCH_SIZE];
         int nfds = 0;
 
-        for (; nfds < SAM2__POLL_BATCH_SIZE && clients_queued < clients_to_queue && peer_scan < SAM2_ARRAY_LENGTH(server->clients); peer_scan++) {
-            if (server->clients[peer_scan] == SAM2_SOCKET_INVALID) continue;
-            pollfds[nfds].fd = server->clients[peer_scan];
+        for (; nfds < SAM2__POLL_BATCH_SIZE && sockets_queued < sockets_to_queue && socket_scan < SAM2_ARRAY_LENGTH(server->sockets); socket_scan++) {
+            if (server->sockets[socket_scan] == SAM2_SOCKET_INVALID) continue;
+            pollfds[nfds].fd = server->sockets[socket_scan];
             pollfds[nfds].events = POLLIN;
             pollfds[nfds].revents = 0;
-            peer_ids[nfds++] = (uint16_t)peer_scan;
-            clients_queued++;
+            peer_ids[nfds++] = (uint16_t)socket_scan;
+            sockets_queued++;
         }
 
         if (nfds == 0) {
@@ -1266,9 +1235,13 @@ SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
         for (int i = 0; i < nfds; i++) {
             if (pollfds[i].revents == 0) continue;
             uint16_t peer_id = peer_ids[i];
-            sam2_socket_t *client = &server->clients[peer_id];
-            if (*client == SAM2_SOCKET_INVALID || *client != pollfds[i].fd) continue;
-            sam2__process_client_read(server, client);
+            sam2_socket_t *socket = &server->sockets[peer_id];
+            if (*socket != pollfds[i].fd) continue;
+            if (peer_id == 0) {
+                sam2__accept_connections(server);
+            } else {
+                sam2__process_client_read(server, socket);
+            }
         }
     }
 
@@ -1277,12 +1250,11 @@ SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
 
 SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     memset(server, 0, sizeof(*server));
-    server->listen_socket = SAM2_SOCKET_INVALID;
     server->stun_socket = SAM2_SOCKET_INVALID;
 
-    // Init client sockets to invalid
-    for (int i = 0; i < SAM2_ARRAY_LENGTH(server->clients); i++) {
-        server->clients[i] = SAM2_SOCKET_INVALID;
+    // Init sockets to invalid
+    for (int i = 0; i < SAM2_ARRAY_LENGTH(server->sockets); i++) {
+        server->sockets[i] = SAM2_SOCKET_INVALID;
     }
 
     // Initialize sockets on Windows
@@ -1295,8 +1267,8 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
 #endif
 
     // Create listen socket - IPv6 with IPv4 support
-    server->listen_socket = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-    if (server->listen_socket == SAM2_SOCKET_INVALID) {
+    server->sockets[0] = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+    if (server->sockets[0] == SAM2_SOCKET_INVALID) {
         SAM2_LOG_ERROR("Failed to create socket: %d", SAM2_SOCKERRNO);
         goto err;
     }
@@ -1304,7 +1276,7 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     // Disable IPv6-only to allow IPv4 connections on the same socket
     int v6only;
     v6only = 0;
-    if (setsockopt(server->listen_socket, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&v6only, sizeof(v6only)) == SAM2_SOCKET_ERROR) {
+    if (setsockopt(server->sockets[0], IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&v6only, sizeof(v6only)) == SAM2_SOCKET_ERROR) {
         SAM2_LOG_ERROR("Failed to set IPV6_V6ONLY: %d", SAM2_SOCKERRNO);
         goto err;
     }
@@ -1313,18 +1285,18 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     // Set socket options for reusability
     int optval;
     optval = 1;
-    if (setsockopt(server->listen_socket, SOL_SOCKET, SO_REUSEADDR, (const char*)&optval, sizeof(optval)) == SAM2_SOCKET_ERROR) {
+    if (setsockopt(server->sockets[0], SOL_SOCKET, SO_REUSEADDR, (const char*)&optval, sizeof(optval)) == SAM2_SOCKET_ERROR) {
         SAM2_LOG_ERROR("Failed to set SO_REUSEADDR: %d", SAM2_SOCKERRNO);
         goto err;
     }
-    if (setsockopt(server->listen_socket, SOL_SOCKET, SO_REUSEPORT, (const char*)&optval, sizeof(optval)) == SAM2_SOCKET_ERROR) {
+    if (setsockopt(server->sockets[0], SOL_SOCKET, SO_REUSEPORT, (const char*)&optval, sizeof(optval)) == SAM2_SOCKET_ERROR) {
         SAM2_LOG_ERROR("Failed to set SO_REUSEPORT: %d", SAM2_SOCKERRNO);
         goto err;
     }
 #endif
 
     // Set non-blocking
-    if (sam2__set_nonblocking(server->listen_socket) != 0) {
+    if (sam2__set_nonblocking(server->sockets[0]) != 0) {
         SAM2_LOG_ERROR("Failed to set non-blocking");
         goto err;
     }
@@ -1336,13 +1308,13 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     addr.sin6_port = htons(port);
     addr.sin6_addr = in6addr_any;
 
-    if (bind(server->listen_socket, (struct sockaddr*)&addr, sizeof(addr)) == SAM2_SOCKET_ERROR) {
+    if (bind(server->sockets[0], (struct sockaddr*)&addr, sizeof(addr)) == SAM2_SOCKET_ERROR) {
         SAM2_LOG_ERROR("Bind failed on port %d: %d", port, SAM2_SOCKERRNO);
         goto err;
     }
 
     // Listen
-    if (listen(server->listen_socket, SAM2_DEFAULT_BACKLOG) == SAM2_SOCKET_ERROR) {
+    if (listen(server->sockets[0], SAM2_DEFAULT_BACKLOG) == SAM2_SOCKET_ERROR) {
         SAM2_LOG_ERROR("Listen failed: %d", SAM2_SOCKERRNO);
         goto err;
     }
@@ -1368,8 +1340,8 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     SAM2_LOG_INFO("Server listening on port %d (IPv4 and IPv6)", port);
     return 0;
 
-err:if (server->listen_socket != SAM2_SOCKET_INVALID) {
-        sam2__close_socket(server->listen_socket);
+err:if (server->sockets[0] != SAM2_SOCKET_INVALID) {
+        sam2__close_socket(server->sockets[0]);
     }
     if (server->stun_socket != SAM2_SOCKET_INVALID) {
         sam2__close_socket(server->stun_socket);
@@ -1383,15 +1355,15 @@ err:if (server->listen_socket != SAM2_SOCKET_INVALID) {
 // Destroy server
 SAM2_LINKAGE void sam2_server_destroy(sam2_server_t *server) {
     // Close all clients
-    for (int i = 0; i < SAM2_ARRAY_LENGTH(server->clients); i++) {
-        if (server->clients[i] != SAM2_SOCKET_INVALID) {
-            sam2__client_destroy(server, &server->clients[i]);
+    for (int i = SAM2_PORT_SENTINELS_MAX + 1; i < SAM2_ARRAY_LENGTH(server->sockets); i++) {
+        if (server->sockets[i] != SAM2_SOCKET_INVALID) {
+            sam2__client_destroy(server, &server->sockets[i]);
         }
     }
 
     // Close listen socket
-    if (server->listen_socket != SAM2_SOCKET_INVALID) {
-        sam2__close_socket(server->listen_socket);
+    if (server->sockets[0] != SAM2_SOCKET_INVALID) {
+        sam2__close_socket(server->sockets[0]);
     }
 
     if (server->stun_socket != SAM2_SOCKET_INVALID) {
