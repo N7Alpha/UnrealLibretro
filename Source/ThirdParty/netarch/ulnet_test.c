@@ -434,7 +434,7 @@ static void ulnet__test_fill_deflate_buffer(uint8_t *data, size_t size, int patt
     }
 }
 
-int ulnet_test_deflate_codec(void) {
+int ulnet_test_zstd_codec(void) {
     const size_t test_sizes[] = {0, 1, 2, 3, 31, 4096, 65536};
     uint8_t empty_sentinel = 0;
 
@@ -443,83 +443,31 @@ int ulnet_test_deflate_codec(void) {
             size_t size = test_sizes[i];
             uint8_t *original = size ? (uint8_t *)malloc(size) : &empty_sentinel;
             uint8_t *decoded = size ? (uint8_t *)malloc(size) : &empty_sentinel;
-            size_t compressed_capacity = ULNET_DEFLATE_COMPRESS_BOUND(size);
+            size_t compressed_capacity = (size_t)ULNET_ZSTD_COMPRESS_BOUND(size);
             uint8_t *compressed = (uint8_t *)malloc(compressed_capacity ? compressed_capacity : 1);
 
             if (!original || !decoded || !compressed) {
-                SAM2_LOG_ERROR("Failed to allocate deflate test buffers");
+                SAM2_LOG_ERROR("Failed to allocate zstd test buffers");
                 if (size && original) free(original);
                 if (size && decoded) free(decoded);
                 if (compressed) free(compressed);
                 return 1;
             }
 
-            ulnet__test_fill_deflate_buffer(original, size, pattern);
+            ulnet__test_fill_zstd_buffer(original, size, pattern);
 
-            int64_t compressed_size = ULNET_DEFLATE_COMPRESS(compressed, compressed_capacity, original, size, 8);
+            int64_t compressed_size = ULNET_ZSTD_COMPRESS(compressed, compressed_capacity, original, size, 8);
             if (compressed_size < 0) {
-                SAM2_LOG_ERROR("ULNET_DEFLATE_COMPRESS failed for size %zu pattern %d", size, pattern);
+                SAM2_LOG_ERROR("ULNET_ZSTD_COMPRESS failed for size %zu pattern %d", size, pattern);
                 if (size) free(original);
                 if (size) free(decoded);
                 free(compressed);
                 return 1;
             }
 
-            int64_t decoded_size = ULNET_DEFLATE_DECOMPRESS(decoded, size, compressed, compressed_size);
+            int64_t decoded_size = ULNET_ZSTD_DECOMPRESS(decoded, size, compressed, compressed_size);
             if (decoded_size != (int64_t)size || memcmp(original, decoded, size) != 0) {
-                SAM2_LOG_ERROR("ULNET_DEFLATE_DECOMPRESS round trip failed for size %zu pattern %d", size, pattern);
-                if (size) free(original);
-                if (size) free(decoded);
-                free(compressed);
-                return 1;
-            }
-
-            if (size) free(original);
-            if (size) free(decoded);
-            free(compressed);
-        }
-    }
-
-    return 0;
-}
-
-int ulnet_test_deflate_decodes_miniz(void) {
-    const int miniz_levels[] = {MZ_BEST_SPEED, MZ_DEFAULT_LEVEL, MZ_BEST_COMPRESSION};
-    const size_t test_sizes[] = {0, 1, 257, 32768, 98304};
-    uint8_t empty_sentinel = 0;
-
-    for (size_t level_idx = 0; level_idx < sizeof(miniz_levels) / sizeof(miniz_levels[0]); level_idx++) {
-        for (size_t size_idx = 0; size_idx < sizeof(test_sizes) / sizeof(test_sizes[0]); size_idx++) {
-            size_t size = test_sizes[size_idx];
-            uint8_t *original = size ? (uint8_t *)malloc(size) : &empty_sentinel;
-            uint8_t *decoded = size ? (uint8_t *)malloc(size) : &empty_sentinel;
-            mz_ulong compressed_capacity = mz_compressBound((mz_ulong)size);
-            uint8_t *compressed = (uint8_t *)malloc(compressed_capacity ? compressed_capacity : 1);
-
-            if (!original || !decoded || !compressed) {
-                SAM2_LOG_ERROR("Failed to allocate miniz compatibility test buffers");
-                if (size && original) free(original);
-                if (size && decoded) free(decoded);
-                if (compressed) free(compressed);
-                return 1;
-            }
-
-            ulnet__test_fill_deflate_buffer(original, size, (int)(level_idx + size_idx) % 4);
-
-            mz_ulong compressed_size = compressed_capacity;
-            int miniz_status = mz_compress2(compressed, &compressed_size, original, (mz_ulong)size, miniz_levels[level_idx]);
-            if (miniz_status != MZ_OK) {
-                SAM2_LOG_ERROR("mz_compress2 failed with status %d", miniz_status);
-                if (size) free(original);
-                if (size) free(decoded);
-                free(compressed);
-                return 1;
-            }
-
-            int64_t decoded_size = ULNET_DEFLATE_DECOMPRESS(decoded, size, compressed, compressed_size);
-            if (decoded_size != (int64_t)size || memcmp(original, decoded, size) != 0) {
-                SAM2_LOG_ERROR("ULNET_DEFLATE_DECOMPRESS failed to decode miniz data for size %zu level %d",
-                    size, miniz_levels[level_idx]);
+                SAM2_LOG_ERROR("ULNET_ZSTD_DECOMPRESS round trip failed for size %zu pattern %d", size, pattern);
                 if (size) free(original);
                 if (size) free(decoded);
                 free(compressed);
