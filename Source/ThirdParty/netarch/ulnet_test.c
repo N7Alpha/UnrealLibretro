@@ -414,8 +414,40 @@ int ulnet_test_inproc_reliable_ack_unblocks_queue(void) {
     return status;
 }
 
-#if defined(ULNET_IMPLEMENTATION)
-static void ulnet__test_fill_deflate_buffer(uint8_t *data, size_t size, int pattern) {
+int ulnet_test_reliable_rejects_bad_sequence_state(void) {
+    ulnet_session_t session = {0};
+    uint8_t packet[ULNET_PACKET_SIZE_BYTES_MAX] = {0};
+    uint8_t ack_packet[sizeof(ulnet_reliable_packet_t)] = {0};
+    int status = 0;
+
+    ulnet_session_init_defaulted(&session);
+
+    if (ulnet_reliable_send(&session, SAM2_AUTHORITY_INDEX, packet, sizeof(packet)) >= 0) {
+        SAM2_LOG_ERROR("Oversized reliable packet unexpectedly sent");
+        status = 1;
+    }
+
+    if (session.reliable_tx_next_seq[SAM2_AUTHORITY_INDEX] != 0) {
+        SAM2_LOG_ERROR("Oversized reliable packet consumed a sequence number");
+        status = 1;
+    }
+
+    session.reliable_tx_next_seq[SAM2_AUTHORITY_INDEX] = 2;
+    session.reliable_tx_head[SAM2_AUTHORITY_INDEX] = 0;
+    ack_packet[0] = ULNET_CHANNEL_RELIABLE | ULNET_RELIABLE_FLAG_ACK_ONLY;
+    ack_packet[3] = 3;
+
+    ulnet__process_udp_packet(&session, SAM2_AUTHORITY_INDEX, ack_packet, sizeof(ack_packet));
+    if (session.reliable_tx_head[SAM2_AUTHORITY_INDEX] != 0) {
+        SAM2_LOG_ERROR("Invalid reliable ACK advanced tx head");
+        status = 1;
+    }
+
+    ulnet_session_tear_down(&session);
+    return status;
+}
+
+static void ulnet__test_fill_zstd_buffer(uint8_t *data, size_t size, int pattern) {
     for (size_t i = 0; i < size; i++) {
         switch (pattern) {
         case 0:
@@ -872,19 +904,11 @@ int main (int argc, char **argv) {
         return status;
     }
 
-#if defined(ULNET_IMPLEMENTATION)
-    status = ulnet_test_deflate_codec();
+    status = ulnet_test_zstd_codec();
     if (status != 0) {
-        printf("Deflate codec test failed with status: %d\n", status);
+        printf("Zstd codec test failed with status: %d\n", status);
         return status;
     }
-
-    status = ulnet_test_deflate_decodes_miniz();
-    if (status != 0) {
-        printf("Deflate miniz compatibility test failed with status: %d\n", status);
-        return status;
-    }
-#endif
 
     status = ulnet_test_inproc_reliable_ack_unblocks_queue();
     if (status != 0) {
@@ -892,13 +916,17 @@ int main (int argc, char **argv) {
         return status;
     }
 
-#if defined(ULNET_IMPLEMENTATION)
+    status = ulnet_test_reliable_rejects_bad_sequence_state();
+    if (status != 0) {
+        printf("Reliable bad sequence state test failed with status: %d\n", status);
+        return status;
+    }
+
     status = ulnet_test_swap_agent_moves_peer_state();
     if (status != 0) {
         printf("Agent swap peer-state test failed with status: %d\n", status);
         return status;
     }
-#endif
 
     if (inproc_only) {
         printf("Inproc tests passed successfully!\n");

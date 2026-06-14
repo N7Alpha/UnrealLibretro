@@ -2533,6 +2533,7 @@ static inline int ulnet__sequence_cmp(uint16_t s1, uint16_t s2) {
 }
 static inline int ulnet__sequence_greater_than(uint16_t s1, uint16_t s2) { return ulnet__sequence_cmp(s1, s2) > 0; }
 static inline int ulnet__sequence_less_than(uint16_t s1, uint16_t s2)    { return ulnet__sequence_cmp(s1, s2) < 0; }
+static inline int ulnet__sequence_in_range_inclusive(uint16_t sequence, uint16_t low, uint16_t high) { return !ulnet__sequence_less_than(sequence, low) && !ulnet__sequence_greater_than(sequence, high); }
 
 static void ulnet__logical_partition(int sz, int redundant, int *n, int *out_k, int *packet_size, int *packet_groups) {
     int k_max = ULNET_RS_GF_SIZE - redundant;
@@ -2959,6 +2960,7 @@ ULNET_LINKAGE int ulnet_udp_send(ulnet_session_t *session, int port, const uint8
 
         if (buf->count >= sizeof(buf->msg) / sizeof(buf->msg[0])) {
             SAM2_LOG_FATAL("Inproc transport buffer is full, cannot send packet");
+            return -1;
         }
 
         buf->msg_size[buf->count] = size;
@@ -3012,6 +3014,7 @@ static int ulnet__reliable_send_head(ulnet_session_t *session, int port, bool re
 
     if (!packet || memcmp(&packet->sequence_le, &head_sequence, sizeof(head_sequence)) != 0) {
         SAM2_LOG_FATAL("Head of queue packet overwritten");
+        return -1;
     }
 
     uint8_t packet_to_send[ULNET_PACKET_SIZE_BYTES_MAX];
@@ -3804,7 +3807,11 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
 
         uint16_t old_tx_head = session->reliable_tx_head[p];
         uint16_t ack_sequence = (reliable_packet->ack_sequence_le[1] << 8) | reliable_packet->ack_sequence_le[0];
-        if (ulnet__sequence_greater_than(ack_sequence, old_tx_head)) {
+        if (!ulnet__sequence_in_range_inclusive(ack_sequence, old_tx_head, session->reliable_tx_next_seq[p])) {
+            SAM2_LOG_WARN("Ignoring invalid reliable ACK seq=%u from peer %05" PRIu16 " outside tx window [%u, %u]",
+                ack_sequence, session->agent_peer_ids[p], old_tx_head, session->reliable_tx_next_seq[p]);
+            ack_sequence = old_tx_head;
+        } else if (ulnet__sequence_greater_than(ack_sequence, old_tx_head)) {
             session->reliable_tx_head[p] = ack_sequence;
         }
 
