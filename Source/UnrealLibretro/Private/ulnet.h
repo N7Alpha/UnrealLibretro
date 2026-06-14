@@ -2556,13 +2556,14 @@ ULNET_LINKAGE int ulnet_reliable_send(ulnet_session_t *session, int port, const 
         return -1;
     }
 
-    uint16_t sequence = session->reliable_tx_next_seq[port]++;
+    uint16_t sequence = session->reliable_tx_next_seq[port];
     uint16_t ack_sequence = session->reliable_rx_head[port];
 
     int maybe_wrapped_size = ulnet__wrap_packet(packet, size, sequence, ack_sequence, tmp);
     if (maybe_wrapped_size < 0) {
         return maybe_wrapped_size;
     } else {
+        session->reliable_tx_next_seq[port]++;
         return ulnet_udp_send(session, port, tmp, maybe_wrapped_size);
     }
 }
