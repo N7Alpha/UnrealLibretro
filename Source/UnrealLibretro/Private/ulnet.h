@@ -1009,7 +1009,7 @@ static void ulnet__nat_destroy(ulnet_nat_agent_t *agent) {
     }
 }
 
-static ulnet_nat_agent_t *ulnet__nat_create(ulnet_session_t *session, int peer_port) {
+ULNET_LINKAGE ulnet_nat_agent_t *ulnet__nat_create(ulnet_session_t *session, int peer_port) {
     ulnet_nat_agent_t *agent = (ulnet_nat_agent_t *)ULNET_MALLOC(sizeof(*agent));
     if (!agent) return NULL;
 #ifdef _WIN32
@@ -3712,7 +3712,7 @@ static void ulnet__check_for_desync(ulnet_state_t *our_state, ulnet_state_t *the
     *our_desync_frame = desync_frame;
 }
 
-static void ulnet__process_udp_packet(ulnet_session_t *session, int p, const uint8_t *data, size_t size);
+ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, const uint8_t *data, size_t size);
 // MARK: UDP Packet Processing
 ULNET_LINKAGE void ulnet_receive_packet_callback(ulnet_nat_agent_t *agent, const char *packet, size_t size, void *user_ptr) {
     ulnet_session_t *session = (ulnet_session_t *) user_ptr;
@@ -3745,7 +3745,7 @@ ULNET_LINKAGE void ulnet_receive_packet_callback(ulnet_nat_agent_t *agent, const
     ulnet__process_udp_packet(session, p, (const uint8_t *) packet, size); // Fallthrough to the next function
 }
 
-static void ulnet__process_udp_packet(ulnet_session_t *session, int p, const uint8_t *data, size_t size) {
+ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, const uint8_t *data, size_t size) {
     if (size == 0) {
         SAM2_LOG_WARN("Received a UDP packet with no payload");
         return;

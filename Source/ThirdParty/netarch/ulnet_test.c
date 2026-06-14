@@ -1,9 +1,11 @@
 #define SAM2_ENABLE_LOGGING
 #include "ulnet.h"
 #include "sam2.h"
-#include "miniz.h"
 
 #define ULNET__TEST_SAM2_PORT (SAM2_SERVER_DEFAULT_PORT + 1)
+
+extern ulnet_nat_agent_t *ulnet__nat_create(ulnet_session_t *session, int peer_port);
+extern void ulnet__process_udp_packet(ulnet_session_t *session, int p, const uint8_t *data, size_t size);
 
 int ulnet__test_forward_messages(sam2_server_t *server, ulnet_session_t *session, sam2_socket_t socket) {
     int status;
@@ -67,7 +69,6 @@ int ulnet__test_discard_send_callback(void *user_ptr, char *message) {
     return 0;
 }
 
-#if defined(ULNET_IMPLEMENTATION)
 static int ulnet_test_swap_agent_moves_peer_state(void) {
     ulnet_session_t session;
     memset(&session, 0, sizeof(session));
@@ -122,7 +123,6 @@ static int ulnet_test_swap_agent_moves_peer_state(void) {
 
     return 0;
 }
-#endif
 
 static void ulnet__test_inproc_pair_setup(ulnet_session_t *sessions[2],
     ulnet_transport_inproc_t *transport, int64_t retransmit_delay_microseconds) {
@@ -482,8 +482,6 @@ int ulnet_test_zstd_codec(void) {
 
     return 0;
 }
-
-#endif
 
 void ulnet__bench_xxh32() {
     const size_t test_size = 64 * 1024 * 1024;
