@@ -216,7 +216,7 @@ typedef struct {
     int64_t frame_counter;
     sam2_room_t room;
 
-    uint32_t xxhash;
+    uint32_t checksum;
     int32_t compressed_options_size;
     int32_t compressed_savestate_size;
     int32_t decompressed_savestate_size;
@@ -2348,65 +2348,70 @@ fail:
 #endif /* UZSTD_IMPLEMENTATION */
 
 
-#define XXH_PRIME32_1 2654435761u
-#define XXH_PRIME32_2 2246822519u
-#define XXH_PRIME32_3 3266489917u
-#define XXH_PRIME32_4  668265263u
-#define XXH_PRIME32_5  374761393u
+#define ULNET__XXH32_PRIME1 2654435761u
+#define ULNET__XXH32_PRIME2 2246822519u
+#define ULNET__XXH32_PRIME3 3266489917u
+#define ULNET__XXH32_PRIME4  668265263u
+#define ULNET__XXH32_PRIME5  374761393u
 
-static inline uint32_t read_unaligned_u32(const void* p) {
-    uint32_t val;
-    memcpy(&val, p, sizeof(val));
-    return val;
+static uint32_t ulnet__read32le(const void *p) {
+    const uint8_t *b = (const uint8_t *)p;
+    return ((uint32_t)b[0])
+         | ((uint32_t)b[1] << 8)
+         | ((uint32_t)b[2] << 16)
+         | ((uint32_t)b[3] << 24);
 }
 
-static inline uint32_t xxh32_rotl(uint32_t x, int r) {
+static uint32_t ulnet__rotl32(uint32_t x, int r) {
     return (x << r) | (x >> (32 - r));
 }
 
 ULNET_LINKAGE uint32_t ulnet_xxh32(const void* data, size_t len, uint32_t seed) {
-    const uint8_t* p = (const uint8_t*)data;
-    const uint8_t* end = p + len;
+    const uint8_t *p = data ? (const uint8_t *)data : (const uint8_t *)"";
+    const uint8_t *end = p + len;
     uint32_t h32;
 
     if (len >= 16) {
-        const uint8_t* limit = end - 16;
-        uint32_t v1 = seed + XXH_PRIME32_1 + XXH_PRIME32_2;
-        uint32_t v2 = seed + XXH_PRIME32_2;
-        uint32_t v3 = seed + 0;
-        uint32_t v4 = seed - XXH_PRIME32_1;
+        const uint8_t *limit = end - 16;
+        uint32_t v1 = seed + ULNET__XXH32_PRIME1 + ULNET__XXH32_PRIME2;
+        uint32_t v2 = seed + ULNET__XXH32_PRIME2;
+        uint32_t v3 = seed;
+        uint32_t v4 = seed - ULNET__XXH32_PRIME1;
 
         do {
-            v1 = xxh32_rotl(v1 + read_unaligned_u32(p)      * XXH_PRIME32_2, 13) * XXH_PRIME32_1;
-            v2 = xxh32_rotl(v2 + read_unaligned_u32(p + 4)  * XXH_PRIME32_2, 13) * XXH_PRIME32_1;
-            v3 = xxh32_rotl(v3 + read_unaligned_u32(p + 8)  * XXH_PRIME32_2, 13) * XXH_PRIME32_1;
-            v4 = xxh32_rotl(v4 + read_unaligned_u32(p + 12) * XXH_PRIME32_2, 13) * XXH_PRIME32_1;
-            p += 16;
+            v1 = ulnet__rotl32(v1 + ulnet__read32le(p) * ULNET__XXH32_PRIME2, 13) * ULNET__XXH32_PRIME1;
+            p += 4;
+            v2 = ulnet__rotl32(v2 + ulnet__read32le(p) * ULNET__XXH32_PRIME2, 13) * ULNET__XXH32_PRIME1;
+            p += 4;
+            v3 = ulnet__rotl32(v3 + ulnet__read32le(p) * ULNET__XXH32_PRIME2, 13) * ULNET__XXH32_PRIME1;
+            p += 4;
+            v4 = ulnet__rotl32(v4 + ulnet__read32le(p) * ULNET__XXH32_PRIME2, 13) * ULNET__XXH32_PRIME1;
+            p += 4;
         } while (p <= limit);
 
-        h32 = xxh32_rotl(v1, 1) + xxh32_rotl(v2, 7) + xxh32_rotl(v3, 12) + xxh32_rotl(v4, 18);
+        h32 = ulnet__rotl32(v1, 1) + ulnet__rotl32(v2, 7) + ulnet__rotl32(v3, 12) + ulnet__rotl32(v4, 18);
     } else {
-        h32 = seed + XXH_PRIME32_5;
+        h32 = seed + ULNET__XXH32_PRIME5;
     }
 
     h32 += (uint32_t)len;
 
     while (p + 4 <= end) {
-        h32 += read_unaligned_u32(p) * XXH_PRIME32_3;
-        h32 = xxh32_rotl(h32, 17) * XXH_PRIME32_4;
+        h32 += ulnet__read32le(p) * ULNET__XXH32_PRIME3;
+        h32 = ulnet__rotl32(h32, 17) * ULNET__XXH32_PRIME4;
         p += 4;
     }
 
     while (p < end) {
-        h32 += (*p) * XXH_PRIME32_5;
-        h32 = xxh32_rotl(h32, 11) * XXH_PRIME32_1;
+        h32 += (uint32_t)(*p) * ULNET__XXH32_PRIME5;
+        h32 = ulnet__rotl32(h32, 11) * ULNET__XXH32_PRIME1;
         p++;
     }
 
     h32 ^= h32 >> 15;
-    h32 *= XXH_PRIME32_2;
+    h32 *= ULNET__XXH32_PRIME2;
     h32 ^= h32 >> 13;
-    h32 *= XXH_PRIME32_3;
+    h32 *= ULNET__XXH32_PRIME3;
     h32 ^= h32 >> 16;
 
     return h32;
@@ -4028,8 +4033,8 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
             int32_t remote_payload_size;
             bool inconsistent_savestate_block_sizes;
             bool all_data_decoded;
-            uint32_t their_savestate_transfer_payload_xxhash;
-            uint32_t our_savestate_transfer_payload_xxhash;
+            uint32_t their_savestate_transfer_payload_checksum;
+            uint32_t our_savestate_transfer_payload_checksum;
             unsigned char *save_state_data = NULL;
             savestate_transfer_payload_t *savestate_transfer_payload = NULL;
 
@@ -4061,8 +4066,8 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
 
             if (all_data_decoded) {
                 ret = 0;
-                their_savestate_transfer_payload_xxhash = 0;
-                our_savestate_transfer_payload_xxhash = 0;
+                their_savestate_transfer_payload_checksum = 0;
+                our_savestate_transfer_payload_checksum = 0;
                 savestate_transfer_payload = (savestate_transfer_payload_t *) ULNET_MALLOC(sizeof(savestate_transfer_payload_t) /* Fixed size header */ + k * session->remote_packet_groups * rs_block_size);
                 if (savestate_transfer_payload == NULL) {
                     SAM2_LOG_ERROR("Failed to allocate savestate transfer payload");
@@ -4102,12 +4107,12 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
                     goto cleanup;
                 }
 
-                their_savestate_transfer_payload_xxhash = savestate_transfer_payload->xxhash;
-                savestate_transfer_payload->xxhash = 0; // Needed to recompute the hash correctly
-                our_savestate_transfer_payload_xxhash = ulnet_xxh32(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes, 0);
+                their_savestate_transfer_payload_checksum = savestate_transfer_payload->checksum;
+                savestate_transfer_payload->checksum = 0; // Needed to recompute the hash correctly
+                our_savestate_transfer_payload_checksum = ulnet_xxh32(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes, 0);
 
-                if (their_savestate_transfer_payload_xxhash != our_savestate_transfer_payload_xxhash) {
-                    SAM2_LOG_ERROR("Savestate transfer payload hash mismatch: %" PRIx32 " != %" PRIx32 "", savestate_transfer_payload->xxhash, our_savestate_transfer_payload_xxhash);
+                if (their_savestate_transfer_payload_checksum != our_savestate_transfer_payload_checksum) {
+                    SAM2_LOG_ERROR("Savestate transfer payload hash mismatch: %" PRIx32 " != %" PRIx32 "", savestate_transfer_payload->checksum, our_savestate_transfer_payload_checksum);
                     goto cleanup;
                 }
 
@@ -4422,8 +4427,8 @@ ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, voi
     savestate_transfer_payload->room = session->room_we_are_in;
     savestate_transfer_payload->total_size_bytes = sizeof(savestate_transfer_payload_t) + savestate_transfer_payload->compressed_savestate_size + savestate_transfer_payload->compressed_options_size;
 
-    savestate_transfer_payload->xxhash = 0;
-    savestate_transfer_payload->xxhash = ulnet_xxh32(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes, 0);
+    savestate_transfer_payload->checksum = 0;
+    savestate_transfer_payload->checksum = ulnet_xxh32(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes, 0);
     // Create parity blocks for Reed-Solomon. n - k in total for each packet group
     // We have "packet grouping" because pretty much every implementation of Reed-Solomon doesn't support more than 255 blocks
     // and unfragmented UDP packets over ethernet are limited to ULNET_PACKET_SIZE_BYTES_MAX
@@ -4475,7 +4480,7 @@ void ulnet_imgui_show_room(const sam2_room_t& room, int our_peer_id = -1) {
     ImGui::Text("Room: %s", room.name);
     ImGui::Text("Flags: %016" PRIx64, room.flags);
     ImGui::Text("Core: %s", room.core_and_version);
-    ImGui::Text("ROM Hash: %016" PRIx64, room.rom_hash_xxh64);
+    ImGui::Text("ROM Hash: %016" PRIx64, room.rom_hash);
 
     for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
         if (p == SAM2_AUTHORITY_INDEX) {

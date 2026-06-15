@@ -113,7 +113,7 @@ void ULibretroCoreInstance::NetplayHost(int PeerId)
     HostRoomRequest.room.flags |= SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
     CoreInstance.GetValue()->NetplayTasks.Enqueue([CoreInstance = this->CoreInstance.GetValue(), HostRoomRequest, PeerId](libretro_api_t& libretro_api)
         mutable {
-            HostRoomRequest.room.rom_hash_xxh64 = CoreInstance->rom_hash_xxh64;
+            HostRoomRequest.room.rom_hash = CoreInstance->rom_hash;
 
             sam2_format_core_version(
                 &HostRoomRequest.room,

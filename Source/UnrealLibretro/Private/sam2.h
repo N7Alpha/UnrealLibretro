@@ -131,7 +131,7 @@ typedef struct sam2_room {
     char name[64];
     uint64_t flags;
     char core_and_version[32];
-    uint64_t rom_hash_xxh64;
+    uint64_t rom_hash;
     uint16_t peer_ids[SAM2_TOTAL_PEERS]; // 0-7 p2p, 8 authority, 9-63 spectator; Must be unique per port (including authority and spectators)
 } sam2_room_t;
 

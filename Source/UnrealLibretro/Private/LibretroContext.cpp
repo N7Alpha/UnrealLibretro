@@ -1193,7 +1193,7 @@ int FLibretroContext::load_game(const char* filename) {
         return 1;
     }
 
-    rom_hash_xxh64 = ZSTD_XXH64(gameBinary.GetData(), gameBinary.Num(), 0);
+    rom_hash = ulnet_crc32(gameBinary.GetData(), gameBinary.Num(), 0);
 
     if (filename && !system.need_fullpath) {
         info.data = gameBinary.GetData();

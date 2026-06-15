@@ -3339,7 +3339,7 @@ static void core_load_game(const char *rom_path, void *rom_data, size_t rom_size
     }
 
     // Update room configuration with new ROM info
-    g_new_room_set_through_gui.rom_hash_xxh64 = ZSTD_XXH64(rom_data, rom_size, 0);
+    g_new_room_set_through_gui.rom_hash = ulnet_xxh32(rom_data, rom_size, 0);
     sam2_format_core_version(
         &g_new_room_set_through_gui,
         g_libretro_context.system_info.library_name,
