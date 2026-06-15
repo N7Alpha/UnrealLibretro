@@ -566,7 +566,6 @@ static void ulnet__nat_debug_addr(const char *prefix, const struct sockaddr_stor
 #endif
 
 static int ulnet__parse_addr(const char *host, uint16_t port, struct sockaddr_storage *addr, socklen_t *addr_len) {
-    memset(addr, 0, sizeof(*addr));
     struct in_addr ipv4;
     if (inet_pton(AF_INET, host, &ipv4) == 1) {
         ulnet__addr_from_ipv4_mapped(addr, ipv4.s_addr, port);
@@ -680,9 +679,6 @@ static int ulnet__nat_add_candidate(ulnet_nat_agent_t *agent, const struct socka
     candidate->next_check_time_usec = 0;
     agent->candidate_count++;
     ulnet__nat_debug_addr("Added NAT candidate", addr);
-    if (agent->state < ULNET_NAT_STATE_CONNECTING) {
-        ulnet__nat_set_state(agent, ULNET_NAT_STATE_CONNECTING);
-    }
     return 0;
 }
 
@@ -697,25 +693,83 @@ static int ulnet__nat_send_signal(ulnet_nat_agent_t *agent, char kind, const cha
     return agent->session->sam2_send_callback(agent->session->user_ptr, (char *)&response);
 }
 
-static int ulnet__nat_send_local_candidate(ulnet_nat_agent_t *agent) {
-    struct sockaddr_storage local_addr;
-    socklen_t local_addr_len = sizeof(local_addr);
-    char host[INET6_ADDRSTRLEN];
-    uint16_t port = 0;
+static int ulnet__nat_ipv4_is_usable(const struct in_addr *addr) {
+    uint32_t ip = ntohl(addr->s_addr);
+    return ip != 0 /* IN4_IS_ADDR_UNSPECIFIED */
+        && (ip >> 24) != 127 /* IN4_IS_ADDR_LOOPBACK */
+        && (ip >> 16) != 0xa9fe /* IN4_IS_ADDR_LINKLOCAL */;
+}
 
-    if (getsockname(agent->socket, (struct sockaddr *)&local_addr, &local_addr_len) != 0) {
-        return -1;
-    }
+static int ulnet__nat_ipv6_is_usable(const struct in6_addr *addr) {
+    return !IN6_IS_ADDR_UNSPECIFIED(addr)
+        && !IN6_IS_ADDR_LOOPBACK(addr)
+        && !IN6_IS_ADDR_LINKLOCAL(addr);
+}
 
-    if (ulnet__format_addr(&local_addr, host, sizeof(host), &port) != 0) {
-        return -1;
-    }
+typedef struct ulnet_nat_host_candidate_state {
+    struct in_addr seen4[ULNET_NAT_CANDIDATES_MAX];
+    struct in6_addr seen6[ULNET_NAT_CANDIDATES_MAX];
+    int seen4_count;
+    int seen6_count;
+    int sent;
+} ulnet_nat_host_candidate_state_t;
 
-    if (strcmp(host, "0.0.0.0") == 0 || strcmp(host, "::") == 0) {
+static int ulnet__nat_send_host_candidate_addr(ulnet_nat_agent_t *agent, uint16_t port,
+    const struct sockaddr *addr, ulnet_nat_host_candidate_state_t *state) {
+    if (!addr) {
         return 0;
     }
 
-    return ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, host, port);
+    if (addr->sa_family == AF_INET) {
+        const struct sockaddr_in *addr4 = (const struct sockaddr_in *)addr;
+        if (!ulnet__nat_ipv4_is_usable(&addr4->sin_addr)) {
+            return 0;
+        }
+
+        for (int i = 0; i < state->seen4_count; i++) {
+            if (state->seen4[i].s_addr == addr4->sin_addr.s_addr) {
+                return 0;
+            }
+        }
+
+        if (state->seen4_count < SAM2_ARRAY_LENGTH(state->seen4)) {
+            state->seen4[state->seen4_count++] = addr4->sin_addr;
+        }
+
+        char host[INET_ADDRSTRLEN];
+        if (inet_ntop(AF_INET, &addr4->sin_addr, host, sizeof(host))) {
+            if (ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, host, port) == 0) {
+                state->sent++;
+            }
+        }
+        return 0;
+    }
+
+    if (addr->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *addr6 = (const struct sockaddr_in6 *)addr;
+        if (!ulnet__nat_ipv6_is_usable(&addr6->sin6_addr)) {
+            return 0;
+        }
+
+        for (int i = 0; i < state->seen6_count; i++) {
+            if (memcmp(&state->seen6[i], &addr6->sin6_addr, sizeof(addr6->sin6_addr)) == 0) {
+                return 0;
+            }
+        }
+
+        if (state->seen6_count < SAM2_ARRAY_LENGTH(state->seen6)) {
+            state->seen6[state->seen6_count++] = addr6->sin6_addr;
+        }
+
+        char host[INET6_ADDRSTRLEN];
+        if (inet_ntop(AF_INET6, &addr6->sin6_addr, host, sizeof(host))) {
+            if (ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, host, port) == 0) {
+                state->sent++;
+            }
+        }
+    }
+
+    return 0;
 }
 
 static int ulnet__nat_send_host_candidates(ulnet_nat_agent_t *agent) {
@@ -723,7 +777,6 @@ static int ulnet__nat_send_host_candidates(ulnet_nat_agent_t *agent) {
     socklen_t local_addr_len = sizeof(local_addr);
     char bound_host[INET6_ADDRSTRLEN];
     uint16_t port = 0;
-    int sent = 0;
 
     if (getsockname(agent->socket, (struct sockaddr *)&local_addr, &local_addr_len) != 0) {
         return -1;
@@ -734,21 +787,35 @@ static int ulnet__nat_send_host_candidates(ulnet_nat_agent_t *agent) {
     }
 
     if (strcmp(bound_host, "0.0.0.0") != 0 && strcmp(bound_host, "::") != 0) {
-        return ulnet__nat_send_local_candidate(agent);
+        return ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, bound_host, port);
     }
 
 #ifdef _WIN32
-    return 0;
+    union {
+        SOCKET_ADDRESS_LIST list;
+        char bytes[16 * 1024];
+    } buffer;
+    DWORD bytes = 0;
+    SOCKET_ADDRESS_LIST *addresses = &buffer.list;
+    ulnet_nat_host_candidate_state_t state;
+    memset(&state, 0, sizeof(state));
+
+    if (WSAIoctl(agent->socket, SIO_ADDRESS_LIST_QUERY, NULL, 0,
+        buffer.bytes, sizeof(buffer.bytes), &bytes, NULL, NULL) != 0) {
+        return -1;
+    }
+
+    for (int i = 0; i < addresses->iAddressCount; i++) {
+        ulnet__nat_send_host_candidate_addr(agent, port, addresses->Address[i].lpSockaddr, &state);
+    }
 #else
     struct ifaddrs *ifas = NULL;
     if (getifaddrs(&ifas) != 0) {
         return -1;
     }
 
-    struct in_addr seen4[ULNET_NAT_CANDIDATES_MAX];
-    struct in6_addr seen6[ULNET_NAT_CANDIDATES_MAX];
-    int seen4_count = 0;
-    int seen6_count = 0;
+    ulnet_nat_host_candidate_state_t state;
+    memset(&state, 0, sizeof(state));
     for (struct ifaddrs *ifa = ifas; ifa; ifa = ifa->ifa_next) {
         if (!ifa->ifa_addr) {
             continue;
@@ -756,69 +823,12 @@ static int ulnet__nat_send_host_candidates(ulnet_nat_agent_t *agent) {
         if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK)) {
             continue;
         }
-        if (ifa->ifa_addr->sa_family == AF_INET) {
-            struct sockaddr_in *addr4 = (struct sockaddr_in *)ifa->ifa_addr;
-            uint32_t ip = ntohl(addr4->sin_addr.s_addr);
-            if ((ip >> 24) == 127 || ip == 0) {
-                continue;
-            }
-
-            int duplicate = 0;
-            for (int i = 0; i < seen4_count; i++) {
-                if (seen4[i].s_addr == addr4->sin_addr.s_addr) {
-                    duplicate = 1;
-                    break;
-                }
-            }
-            if (duplicate) {
-                continue;
-            }
-
-            if (seen4_count < SAM2_ARRAY_LENGTH(seen4)) {
-                seen4[seen4_count++] = addr4->sin_addr;
-            }
-
-            char host[INET_ADDRSTRLEN];
-            if (inet_ntop(AF_INET, &addr4->sin_addr, host, sizeof(host))) {
-                if (ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, host, port) == 0) {
-                    sent++;
-                }
-            }
-        } else if (ifa->ifa_addr->sa_family == AF_INET6) {
-            struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)ifa->ifa_addr;
-            if (   IN6_IS_ADDR_UNSPECIFIED(&addr6->sin6_addr)
-                || IN6_IS_ADDR_LOOPBACK(&addr6->sin6_addr)
-                || IN6_IS_ADDR_LINKLOCAL(&addr6->sin6_addr)) {
-                continue;
-            }
-
-            int duplicate = 0;
-            for (int i = 0; i < seen6_count; i++) {
-                if (memcmp(&seen6[i], &addr6->sin6_addr, sizeof(addr6->sin6_addr)) == 0) {
-                    duplicate = 1;
-                    break;
-                }
-            }
-            if (duplicate) {
-                continue;
-            }
-
-            if (seen6_count < SAM2_ARRAY_LENGTH(seen6)) {
-                seen6[seen6_count++] = addr6->sin6_addr;
-            }
-
-            char host[INET6_ADDRSTRLEN];
-            if (inet_ntop(AF_INET6, &addr6->sin6_addr, host, sizeof(host))) {
-                if (ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, host, port) == 0) {
-                    sent++;
-                }
-            }
-        }
+        ulnet__nat_send_host_candidate_addr(agent, port, ifa->ifa_addr, &state);
     }
 
     freeifaddrs(ifas);
-    return sent;
 #endif
+    return state.sent;
 }
 
 static int ulnet__nat_send_stun_request(ulnet_nat_agent_t *agent) {
@@ -909,7 +919,7 @@ static int ulnet__nat_send_stun_response(ulnet_nat_agent_t *agent, const uint8_t
 }
 
 static int ulnet__nat_process_stun_response(ulnet_nat_agent_t *agent, const uint8_t *packet, int size,
-    const struct sockaddr_storage *from, socklen_t from_len, int64_t now) {
+    const struct sockaddr_storage *from, socklen_t from_len) {
     if (size < 20
         || ulnet__read_be16(packet) != ULNET__STUN_BINDING_RESPONSE
         || ulnet__read_be32(packet + 4) != ULNET__STUN_MAGIC_COOKIE) {
@@ -939,32 +949,27 @@ static int ulnet__nat_process_stun_response(ulnet_nat_agent_t *agent, const uint
         if (attr_type == ULNET__STUN_ATTR_XOR_MAPPED_ADDRESS && attr_len >= 8) {
             char host[INET6_ADDRSTRLEN];
             uint16_t port = (uint16_t)(ulnet__read_be16(attr + 2) ^ (ULNET__STUN_MAGIC_COOKIE >> 16));
+            const char *mapped = NULL;
 
             if (attr[1] == 0x01 && attr_len >= 8) {
                 struct in_addr addr4;
                 addr4.s_addr = htonl(ulnet__read_be32(attr + 4) ^ ULNET__STUN_MAGIC_COOKIE);
-                if (inet_ntop(AF_INET, &addr4, host, sizeof(host))) {
-                    if (server_response) {
-                        SAM2_LOG_INFO("STUN mapped UDP candidate %s:%u", host, (unsigned)port);
-                        ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, host, port);
-                        agent->stun_candidate_sent = 1;
-                    } else {
-                        ulnet__nat_debug_addr("Peer STUN response from", from);
-                    }
-                }
+                mapped = inet_ntop(AF_INET, &addr4, host, sizeof(host));
             } else if (attr[1] == 0x02 && attr_len >= 20) {
                 struct in6_addr addr6;
                 for (int i = 0; i < 16; i++) {
                     addr6.s6_addr[i] = attr[4 + i] ^ packet[4 + i];
                 }
-                if (inet_ntop(AF_INET6, &addr6, host, sizeof(host))) {
-                    if (server_response) {
-                        SAM2_LOG_INFO("STUN mapped UDP candidate %s:%u", host, (unsigned)port);
-                        ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, host, port);
-                        agent->stun_candidate_sent = 1;
-                    } else {
-                        ulnet__nat_debug_addr("Peer STUN response from", from);
-                    }
+                mapped = inet_ntop(AF_INET6, &addr6, host, sizeof(host));
+            }
+
+            if (mapped) {
+                if (server_response) {
+                    SAM2_LOG_INFO("STUN mapped UDP candidate %s:%u", host, (unsigned)port);
+                    ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, host, port);
+                    agent->stun_candidate_sent = 1;
+                } else {
+                    ulnet__nat_debug_addr("Peer STUN response from", from);
                 }
             }
             if (peer_response_candidate) {
@@ -982,7 +987,7 @@ static int ulnet__nat_process_stun_response(ulnet_nat_agent_t *agent, const uint
 }
 
 static int ulnet__nat_process_stun_request(ulnet_nat_agent_t *agent, const uint8_t *packet, int size,
-    const struct sockaddr_storage *from, socklen_t from_len, int64_t now) {
+    const struct sockaddr_storage *from, socklen_t from_len) {
     if (size < 20
         || ulnet__read_be16(packet) != ULNET__STUN_BINDING_REQUEST
         || ulnet__read_be32(packet + 4) != ULNET__STUN_MAGIC_COOKIE) {
@@ -1015,6 +1020,7 @@ ULNET_LINKAGE ulnet_nat_agent_t *ulnet__nat_create(ulnet_session_t *session, int
 #ifdef _WIN32
     WSADATA wsa_data;
     if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
+        ULNET_FREE(agent);
         return NULL;
     }
 #endif
@@ -1130,6 +1136,7 @@ static void ulnet__nat_poll_agent(ulnet_nat_agent_t *agent) {
     int64_t now = ulnet__get_unix_time_microseconds();
     if (   agent->stun_server_addr_len != 0
         && !agent->stun_candidate_sent
+        && agent->state < ULNET_NAT_STATE_READY
         && now - agent->last_stun_time_usec > 500000) {
         ulnet__nat_send_stun_request(agent);
     }
@@ -1141,7 +1148,7 @@ static void ulnet__nat_poll_agent(ulnet_nat_agent_t *agent) {
         SAM2_LOG_ERROR("NAT traversal timed out for peer %05" PRId16 "; TODO rollback peer-to-peer room transition",
             agent->session ? agent->session->agent_peer_ids[agent->peer_port] : 0);
         ulnet__nat_set_state(agent, ULNET_NAT_STATE_FAILED);
-    } else {
+    } else if (agent->state < ULNET_NAT_STATE_READY) {
         for (int i = 0; i < agent->candidate_count; i++) {
             ulnet_nat_candidate_t *candidate = &agent->candidate[i];
             if (candidate->next_check_time_usec > now) {
@@ -1165,10 +1172,14 @@ static void ulnet__nat_poll_agent(ulnet_nat_agent_t *agent) {
                 break;
             }
 #ifdef _WIN32
-            if (ULNET_SOCKERRNO == WSAECONNRESET) {
+            int sock_error = ULNET_SOCKERRNO;
+            if (sock_error == WSAECONNRESET || sock_error == WSAENETRESET || sock_error == WSAECONNREFUSED) {
                 break;
             }
 #else
+            if (errno == EINTR) {
+                continue;
+            }
             if (errno == ECONNREFUSED || errno == ECONNRESET) {
                 break;
             }
@@ -1182,11 +1193,11 @@ static void ulnet__nat_poll_agent(ulnet_nat_agent_t *agent) {
             break;
         }
 
-        if (ulnet__nat_process_stun_request(agent, (const uint8_t *)packet, ret, &from, from_len, now)) {
+        if (ulnet__nat_process_stun_request(agent, (const uint8_t *)packet, ret, &from, from_len)) {
             continue;
         }
 
-        if (ulnet__nat_process_stun_response(agent, (const uint8_t *)packet, ret, &from, from_len, now)) {
+        if (ulnet__nat_process_stun_response(agent, (const uint8_t *)packet, ret, &from, from_len)) {
             continue;
         }
 
