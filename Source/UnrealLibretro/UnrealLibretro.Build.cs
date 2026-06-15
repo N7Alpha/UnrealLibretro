@@ -91,8 +91,5 @@ public class UnrealLibretro : ModuleRules
 		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/imgui");
 		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/netImgui/Code/Client");
 		PrivateIncludePaths.Add("$(PluginDir)/../ThirdParty/implot");
-
-		// zstd stuff
-		PublicIncludePaths.Add("$(PluginDir)/Source/ThirdParty/zstd/lib");
 	}
 }

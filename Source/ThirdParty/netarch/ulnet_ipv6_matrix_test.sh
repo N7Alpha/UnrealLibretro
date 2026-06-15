@@ -92,7 +92,6 @@ trap cleanup EXIT
 cc -DSAM2_IMPLEMENTATION \
     -DULNET_IMPLEMENTATION \
     -DULNET_TEST_MAIN \
-    -DULNET_THIRDPARTY_NO_ZSTD \
     ${ULNET_IPV6_MATRIX_DEBUG:+-DULNET_NAT_DEBUG} \
     -I"$ROOT_DIR/Source/UnrealLibretro/Private" \
     -I"$ROOT_DIR/Source/UnrealLibretroEditor/miniz" \

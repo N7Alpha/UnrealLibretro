@@ -52,7 +52,6 @@ jobs:
         cc -DSAM2_IMPLEMENTATION \
           -DULNET_IMPLEMENTATION \
           -DULNET_TEST_MAIN \
-          -DULNET_THIRDPARTY_NO_ZSTD \
           -ISource/UnrealLibretro/Private \
           -ISource/UnrealLibretroEditor/miniz \
           Source/UnrealLibretroEditor/miniz/miniz.c \

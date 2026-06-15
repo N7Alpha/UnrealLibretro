@@ -51,50 +51,6 @@
 //   - Source code indexing still works in Visual Studio :D
 // This may end up being unmaintainable in which case I'll do something more sane
 
-// MARK: zstd
-#pragma push
-#define ZSTD_LEGACY_SUPPORT 0
-#define ZSTDLIB_STATIC_API
-#define ZDICTLIB_STATIC_API
-#define ZDICTLIB_VISIBLE
-#include "../../ThirdParty/zstd/lib/common/debug.c"
-#include "../../ThirdParty/zstd/lib/common/entropy_common.c"
-#include "../../ThirdParty/zstd/lib/common/error_private.c"
-#include "../../ThirdParty/zstd/lib/common/fse_decompress.c"
-#include "../../ThirdParty/zstd/lib/common/pool.c"
-#include "../../ThirdParty/zstd/lib/common/threading.c"
-#include "../../ThirdParty/zstd/lib/common/xxhash.c"
-#include "../../ThirdParty/zstd/lib/common/zstd_common.c"
-#include "../../ThirdParty/zstd/lib/compress/fse_compress.c"
-#include "../../ThirdParty/zstd/lib/compress/hist.c"
-#include "../../ThirdParty/zstd/lib/compress/huf_compress.c"
-#include "../../ThirdParty/zstd/lib/compress/zstdmt_compress.c"
-#include "../../ThirdParty/zstd/lib/compress/zstd_compress.c"
-#include "../../ThirdParty/zstd/lib/compress/zstd_compress_literals.c"
-#include "../../ThirdParty/zstd/lib/compress/zstd_compress_sequences.c"
-#include "../../ThirdParty/zstd/lib/compress/zstd_compress_superblock.c"
-#include "../../ThirdParty/zstd/lib/compress/zstd_double_fast.c"
-#include "../../ThirdParty/zstd/lib/compress/zstd_fast.c"
-#include "../../ThirdParty/zstd/lib/compress/zstd_lazy.c"
-#include "../../ThirdParty/zstd/lib/compress/zstd_ldm.c"
-#include "../../ThirdParty/zstd/lib/compress/zstd_opt.c"
-#include "../../ThirdParty/zstd/lib/compress/zstd_preSplit.c"
-#include "../../ThirdParty/zstd/lib/decompress/huf_decompress.c"
-#include "../../ThirdParty/zstd/lib/decompress/zstd_ddict.c"
-#include "../../ThirdParty/zstd/lib/decompress/zstd_decompress.c"
-#include "../../ThirdParty/zstd/lib/decompress/zstd_decompress_block.c"
-// Don't need these right now
-#if 0
-#include "../../ThirdParty/zstd/lib/deprecated/zbuff_common.c"
-#include "../../ThirdParty/zstd/lib/deprecated/zbuff_compress.c"
-#include "../../ThirdParty/zstd/lib/deprecated/zbuff_decompress.c"
-#include "../../ThirdParty/zstd/lib/dictBuilder/cover.c"
-#include "../../ThirdParty/zstd/lib/dictBuilder/divsufsort.c"
-#include "../../ThirdParty/zstd/lib/dictBuilder/fastcover.c"
-#include "../../ThirdParty/zstd/lib/dictBuilder/zdict.c"
-#endif
-#pragma pop
-
 // This is good practice but also necessary considering Unreal allows unity builds
 #ifdef _MSC_VER
 #pragma warning(pop)

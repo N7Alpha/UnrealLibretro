@@ -120,7 +120,7 @@ The main user interface for the UnrealLibretro plugin is exposed to Blueprint th
 The netplay system implements:
 - P2P transport with authority-mediated room/session control
 - Selective reliability in `ulnet.h`: frequent input packets carry an RLE-compressed rolling `ulnet_state_t` window, while every 8th input state is sent through the queued reliable wrapper
-- Savestate sync uses Zstd compression, xxhash verification, MTU-sized fragments, and Reed-Solomon FEC; it is separate from the reliable packet wrapper
+- Savestate sync uses the embedded uzstd compressor, CRC32 verification, MTU-sized fragments, and Reed-Solomon FEC; it is separate from the reliable packet wrapper
 
 ## Testing and Quality
 

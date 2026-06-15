@@ -18,8 +18,6 @@ int g_log_level = 1; // Info
 #include "ulnet.h"
 #include "sam2.h"
 #include "miniz.h"
-#include "zstd.h"
-#include "common/xxhash.h"
 
 #define MAX_SAMPLE_SIZE ULNET_MAX_SAMPLE_SIZE
 
@@ -32,9 +30,6 @@ int g_log_level = 1; // Info
 #include "imgui_impl_opengl3.h"
 #endif
 #include "implot.h"
-
-#define ZDICT_STATIC_LINKING_ONLY
-#include "zdict.h"
 
 #if !defined(NETARCH_NO_SDL)
 #include <SDL3/SDL_stdinc.h>
@@ -993,26 +988,17 @@ static int g_sam2_port = SAM2_SERVER_DEFAULT_PORT;
 static sam2_socket_t &g_sam2_socket = g_libretro_context.sam2_socket;
 
 static int g_sample_size = 100;
-static int g_zstd_compress_level = 0;
-static uint64_t g_zstd_cycle_count[MAX_SAMPLE_SIZE] = {1}; // The 1 is so we don't divide by 0
-static size_t g_zstd_compress_size[MAX_SAMPLE_SIZE] = {0};
+static int g_compression_level = 0;
+static uint64_t g_compress_cycle_count[MAX_SAMPLE_SIZE] = {1}; // The 1 is so we don't divide by 0
+static size_t g_compress_size[MAX_SAMPLE_SIZE] = {0};
 static uint64_t g_reed_solomon_encode_cycle_count[MAX_SAMPLE_SIZE] = {0};
 static float g_frame_time_milliseconds[MAX_SAMPLE_SIZE] = {0};
 static float g_core_wants_tick_in_milliseconds[MAX_SAMPLE_SIZE] = {0};
 static int64_t g_main_loop_cyclic_offset = 0;
 static size_t g_serialize_size = 0;
-static bool g_do_zstd_compress = true;
-static bool g_do_zstd_delta_compress = false;
+static bool g_do_compress = true;
+static bool g_do_delta_compress = false;
 static bool g_use_rle = false;
-
-int g_zstd_thread_count = 4;
-
-size_t dictionary_size = 0;
-unsigned char g_dictionary[256*1024];
-
-static bool g_use_dictionary = false;
-static bool g_dictionary_is_dirty = true;
-static ZDICT_cover_params_t g_parameters = {0};
 
 static int g_lost_packets = 0;
 
@@ -1331,44 +1317,33 @@ void draw_imgui() {
         ImGui::SliderInt("Volume", &g_volume, 0, 100);
 
         double avg_cycle_count = 0;
-        double avg_zstd_compress_size = 0;
+        double avg_compress_size = 0;
         double max_compress_size = 0;
-        double avg_zstd_cycle_count = 0;
+        double avg_compress_cycle_count = 0;
 
         for (int i = 0; i < g_sample_size; i++) {
             avg_cycle_count += g_ulnet_session.save_state_execution_time_cycles[i];
-            avg_zstd_compress_size += g_zstd_compress_size[i];
-            avg_zstd_cycle_count += g_zstd_cycle_count[i];
-            if (g_zstd_compress_size[i] > max_compress_size) {
-                max_compress_size = g_zstd_compress_size[i];
+            avg_compress_size += g_compress_size[i];
+            avg_compress_cycle_count += g_compress_cycle_count[i];
+            if (g_compress_size[i] > max_compress_size) {
+                max_compress_size = g_compress_size[i];
             }
         }
         avg_cycle_count        /= g_sample_size;
-        avg_zstd_compress_size /= g_sample_size;
-        avg_zstd_cycle_count   /= g_sample_size;
+        avg_compress_size /= g_sample_size;
+        avg_compress_cycle_count   /= g_sample_size;
 
         strcpy(unit, "cycles");
         double display_count = format_unit_count(avg_cycle_count, unit);
         ImGui::Text("retro_serialize average cycle count: %.2f %s", display_count, unit);
-        ImGui::Checkbox("Compress serialized data with zstd", &g_do_zstd_compress);
-        if (g_do_zstd_compress) {
-            const char *algorithm_name = g_use_rle ? "rle" : "zstd";
+        ImGui::Checkbox("Compress serialized data", &g_do_compress);
+        if (g_do_compress) {
+            const char *algorithm_name = g_use_rle ? "rle" : "uzstd";
             ImGui::Checkbox("Use RLE", &g_use_rle);
-            ImGui::Checkbox("Delta Compression", &g_do_zstd_delta_compress);
-            ImGui::Checkbox("Use Dictionary", &g_use_dictionary);
-            if (g_use_dictionary) {
-                unsigned k_min = 16;
-                unsigned k_max = 2048;
-
-                unsigned d_min = 6;
-                unsigned d_max = 16;
-
-                g_dictionary_is_dirty |= ImGui::SliderScalar("k", ImGuiDataType_U32, &g_parameters.k, &k_min, &k_max);
-                g_dictionary_is_dirty |= ImGui::SliderScalar("d", ImGuiDataType_U32, &g_parameters.d, &d_min, &d_max);
-            }
+            ImGui::Checkbox("Delta Compression", &g_do_delta_compress);
 
             strcpy(unit, "bits");
-            display_count = format_unit_count(8 * avg_zstd_compress_size, unit);
+            display_count = format_unit_count(8 * avg_compress_size, unit);
             ImGui::Text("%s compression average size: %.2f %s", algorithm_name, display_count, unit);
 
             // Show compression max size
@@ -1377,7 +1352,7 @@ void draw_imgui() {
             ImGui::Text("%s compression max size: %.2f %s", algorithm_name, display_count, unit);
 
             strcpy(unit, "bytes/cycle");
-            display_count = format_unit_count(g_serialize_size / avg_zstd_cycle_count, unit);
+            display_count = format_unit_count(g_serialize_size / avg_compress_cycle_count, unit);
             ImGui::Text("%s compression average speed: %.2f %s", algorithm_name, display_count, unit);
 
             ImGui::Text("Remote Savestate hash: %016" PRIx64 "", g_remote_savestate_hash);
@@ -1385,8 +1360,7 @@ void draw_imgui() {
 
         ImGui::SliderInt("Sample size", &g_sample_size, 1, MAX_SAMPLE_SIZE);
         if (!g_use_rle) {
-            g_dictionary_is_dirty |= ImGui::SliderInt("Compression level", (int*)&g_zstd_compress_level, -22, 22);
-            g_parameters.zParams.compressionLevel = g_zstd_compress_level;
+            ImGui::SliderInt("Compression level", &g_compression_level, 1, 8);
         }
 
         { // Show a graph of one of the data sets
@@ -1405,11 +1379,11 @@ void draw_imgui() {
                 }
             } else if (current_item == 1) {
                 for (int i = 0; i < g_sample_size; ++i) {
-                    temp[i] = static_cast<float>(g_zstd_cycle_count[(i+g_ulnet_session.frame_counter)%g_sample_size]);
+                    temp[i] = static_cast<float>(g_compress_cycle_count[(i+g_ulnet_session.frame_counter)%g_sample_size]);
                 }
             } else if (current_item == 2) {
                 for (int i = 0; i < g_sample_size; ++i) {
-                    temp[i] = static_cast<float>(g_zstd_compress_size[(i+g_ulnet_session.frame_counter)%g_sample_size]);
+                    temp[i] = static_cast<float>(g_compress_size[(i+g_ulnet_session.frame_counter)%g_sample_size]);
                 }
             }
         }
@@ -1430,17 +1404,13 @@ void draw_imgui() {
             // Test different compression levels for each algorithm
             int miniz_levels[] = { 1, 2, 3, MZ_DEFAULT_LEVEL /* 6 */, 9 };
             int ulnet_zstd_levels[] = { 1, 2, 3, 5, 6, 8 /* ulnet_session_t default */ };
-            int zstd_levels[] = { -5, 0, ZSTD_CLEVEL_DEFAULT, 6, 9, 12, 19, /* ZSTD_maxCLevel() 22 (currently) */ };
             constexpr int miniz_levels_count = sizeof(miniz_levels) / sizeof(miniz_levels[0]);
             constexpr int ulnet_zstd_levels_count = sizeof(ulnet_zstd_levels) / sizeof(ulnet_zstd_levels[0]);
-            constexpr int zstd_levels_count = sizeof(zstd_levels) / sizeof(zstd_levels[0]);
 
             double miniz_sizes[miniz_levels_count] = {0};
             double miniz_throughputs[miniz_levels_count] = {0};
             double ulnet_zstd_sizes[ulnet_zstd_levels_count] = {0};
             double ulnet_zstd_throughputs[ulnet_zstd_levels_count] = {0};
-            double zstd_sizes[zstd_levels_count] = {0};
-            double zstd_throughputs[zstd_levels_count] = {0};
 
             // Track min/max values for setting plot limits
             double min_throughput = DBL_MAX;
@@ -1502,32 +1472,6 @@ void draw_imgui() {
                 }
             }
 
-            for (int i = 0; i < zstd_levels_count; i++) {
-                size_t compressed_size = ZSTD_compressBound(g_serialize_size);
-                compressed_buffer = (uint8_t*)realloc(compressed_buffer, compressed_size);
-
-                if (compressed_buffer) {
-                    uint64_t start_cycles = ulnet__rdtsc();
-                    compressed_size = ZSTD_compress(compressed_buffer, compressed_size,
-                                                g_savebuffer[g_save_state_index], g_serialize_size,
-                                                zstd_levels[i]);
-                    uint64_t end_cycles = ulnet__rdtsc();
-
-                    if (!ZSTD_isError(compressed_size)) {
-                        double compression_time_cycles = end_cycles - start_cycles;
-                        double throughput_bytes_per_cycle = g_serialize_size / compression_time_cycles;
-
-                        zstd_sizes[i] = compressed_size / 1024.0;
-                        zstd_throughputs[i] = throughput_bytes_per_cycle;
-
-                        // Update bounds
-                        min_throughput = fmin(min_throughput, throughput_bytes_per_cycle);
-                        max_throughput = fmax(max_throughput, throughput_bytes_per_cycle);
-                        min_size = fmin(min_size, zstd_sizes[i]);
-                        max_size = fmax(max_size, zstd_sizes[i]);
-                    }
-                }
-            }
             free(compressed_buffer);
 
             // Set plot limits with some padding
@@ -1560,11 +1504,6 @@ void draw_imgui() {
             ImPlot::PlotScatter(ulnet_zstd_label, ulnet_zstd_sizes, ulnet_zstd_throughputs, ulnet_zstd_levels_count);
             ImPlot::PlotLine(ulnet_zstd_label, ulnet_zstd_sizes, ulnet_zstd_throughputs, ulnet_zstd_levels_count);
 
-            const char *zstd_label = "zstd " ZSTD_VERSION_STRING;
-            ImPlot::SetNextMarkerStyle(ImPlotMarker_Square);
-            ImPlot::PlotScatter(zstd_label, zstd_sizes, zstd_throughputs, zstd_levels_count);
-            ImPlot::PlotLine(zstd_label, zstd_sizes, zstd_throughputs, zstd_levels_count);
-
             for (int i = 0; i < miniz_levels_count; i++) {
                 if (miniz_levels[i] == MZ_DEFAULT_LEVEL) {
                     ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, 5);
@@ -1588,20 +1527,6 @@ void draw_imgui() {
                     // Add text annotation
                     ImPlot::Annotation(ulnet_zstd_sizes[i], ulnet_zstd_throughputs[i],
                                     ImVec4(1,1,1,1), ImVec2(10, 0), true, "level=%d", ulnet_zstd_levels[i]);
-                }
-            }
-
-            for (int i = 0; i < zstd_levels_count; i++) {
-                if (zstd_levels[i] == 0) {
-                    // Plot a larger marker at the default level
-                    ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, 10);
-                    ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, -1, ImVec4(0,0,1,1), 2); // Blue outline
-                    ImPlot::PlotScatter("##zstd_default", &zstd_sizes[i], &zstd_throughputs[i], 1);
-                    ImPlot::PopStyleVar();
-
-                    // Add text annotation
-                    ImPlot::Annotation(zstd_sizes[i], zstd_throughputs[i],
-                                    ImVec4(1,1,1,1), ImVec2(10, 10), true, "level=%d", zstd_levels[i]);
                 }
             }
 
@@ -2127,7 +2052,7 @@ void draw_imgui() {
                 //ImGui::Text("%s", ports_str);
 
                 ImGui::TableNextColumn();
-                ImGui::Text("%016" PRIx64, g_sam2_rooms[room_index].rom_hash_xxh64);
+                ImGui::Text("%016" PRIx64, g_sam2_rooms[room_index].rom_hash);
             }
 
             ImGui::EndTable();
@@ -2137,7 +2062,7 @@ void draw_imgui() {
 
         if (selected_room_index != -1) {
             if (   0 == strcmp(g_sam2_rooms[selected_room_index].core_and_version, g_new_room_set_through_gui.core_and_version)
-                && g_sam2_rooms[selected_room_index].rom_hash_xxh64 == g_new_room_set_through_gui.rom_hash_xxh64) {
+                && g_sam2_rooms[selected_room_index].rom_hash == g_new_room_set_through_gui.rom_hash) {
 
                 ImGui::SameLine();
                 if (ImGui::Button("Spectate")) {
@@ -2172,8 +2097,8 @@ void draw_imgui() {
                         "Core or ROM hash mismatch\n"
                         "server ROM hash: %016" PRIx64 " core: %s\n"
                         "client ROM hash: %016" PRIx64 " core: %s",
-                        g_sam2_rooms[selected_room_index].rom_hash_xxh64, g_sam2_rooms[selected_room_index].core_and_version,
-                        g_new_room_set_through_gui.rom_hash_xxh64, g_new_room_set_through_gui.core_and_version
+                        g_sam2_rooms[selected_room_index].rom_hash, g_sam2_rooms[selected_room_index].core_and_version,
+                        g_new_room_set_through_gui.rom_hash, g_new_room_set_through_gui.core_and_version
                     );
                 }
             }
@@ -3475,7 +3400,7 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
     uint64_t start = ulnet__rdtsc();
     unsigned char *buffer = g_savebuffer[g_save_state_index];
     static unsigned char g_savebuffer_delta[sizeof(g_savebuffer[0])];
-    if (g_do_zstd_delta_compress) {
+    if (g_do_delta_compress) {
         buffer = g_savebuffer_delta;
         for (int i = 0; i < g_serialize_size; i++) {
             int delta_index = (g_save_state_index - g_save_state_used_for_delta_index_offset + MAX_SAVE_STATES) % MAX_SAVE_STATES;
@@ -3487,72 +3412,18 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
     if (g_use_rle) {
         // If we're 4 byte aligned use the 4-byte wordsize rle that gives us the highest gains in 32-bit consoles (where we need it the most)
         if (g_serialize_size % 4 == 0) {
-            rle_encode32(buffer, g_serialize_size / 4, savebuffer_compressed, &g_zstd_compress_size[g_ulnet_session.frame_counter % g_sample_size]);
-            g_zstd_compress_size[g_ulnet_session.frame_counter % g_sample_size] *= 4;
+            rle_encode32(buffer, g_serialize_size / 4, savebuffer_compressed, &g_compress_size[g_ulnet_session.frame_counter % g_sample_size]);
+            g_compress_size[g_ulnet_session.frame_counter % g_sample_size] *= 4;
         } else {
-            g_zstd_compress_size[g_ulnet_session.frame_counter % g_sample_size] = rle8_encode_capped(buffer, g_serialize_size, savebuffer_compressed, sizeof(savebuffer_compressed)); // @todo Technically this can overflow I don't really plan to use it though and I find the odds unlikely
+            g_compress_size[g_ulnet_session.frame_counter % g_sample_size] = rle8_encode_capped(buffer, g_serialize_size, savebuffer_compressed, sizeof(savebuffer_compressed)); // @todo Technically this can overflow I don't really plan to use it though and I find the odds unlikely
         }
     } else {
-        if (g_use_dictionary) {
-
-            // There is a lot of ceremony to use the dictionary
-            static ZSTD_CDict *cdict = NULL;
-            if (g_dictionary_is_dirty) {
-                size_t partition_size = rom_size / 8;
-                size_t samples_sizes[8] = { partition_size, partition_size, partition_size, partition_size,
-                                            partition_size, partition_size, partition_size, partition_size };
-                size_t dictionary_size = ZDICT_optimizeTrainFromBuffer_cover(
-                    g_dictionary, sizeof(g_dictionary),
-                    rom_data, samples_sizes, sizeof(samples_sizes)/sizeof(samples_sizes[0]),
-                    &g_parameters);
-
-                if (cdict) {
-                    ZSTD_freeCDict(cdict);
-                }
-
-                if (ZDICT_isError(dictionary_size)) {
-                    fprintf(stderr, "Error optimizing dictionary: %s\n", ZDICT_getErrorName(dictionary_size));
-                    cdict = NULL;
-                } else {
-                    cdict = ZSTD_createCDict(g_dictionary, sizeof(g_dictionary), g_zstd_compress_level);
-                }
-
-                g_dictionary_is_dirty = false;
-            }
-
-            static ZSTD_CCtx *cctx = NULL;
-            if (cctx == NULL) {
-                cctx = ZSTD_createCCtx();
-            }
-
-            ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, g_zstd_compress_level);
-            //ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 0);
-            ZSTD_CCtx_setParameter(cctx, ZSTD_c_nbWorkers, g_zstd_thread_count);
-            //ZSTD_CCtx_setParameter(cctx, ZSTD_c_jobSize, 0);
-            //ZSTD_CCtx_setParameter(cctx, ZSTD_c_overlapLog, 0);
-            //ZSTD_CCtx_setParameter(cctx, ZSTD_c_enableLdm, 0);
-            //ZSTD_CCtx_setParameter(cctx, ZSTD_c_ldmHashLog, 0);
-
-            if (cdict) {
-                g_zstd_compress_size[g_ulnet_session.frame_counter % g_sample_size] = ZSTD_compress_usingCDict(cctx,
-                                                                                       savebuffer_compressed, sizeof(savebuffer_compressed),
-                                                                                       buffer, g_serialize_size,
-                                                                                       cdict);
-            }
-        } else {
-            g_zstd_compress_size[g_ulnet_session.frame_counter % g_sample_size] = ZSTD_compress(savebuffer_compressed,
-                                                                        sizeof(savebuffer_compressed),
-                                                                        buffer, g_serialize_size, g_zstd_compress_level);
-        }
-
+        int64_t compressed_size = ULNET_ZSTD_COMPRESS(savebuffer_compressed, sizeof(savebuffer_compressed),
+                                                      buffer, g_serialize_size, g_compression_level);
+        g_compress_size[g_ulnet_session.frame_counter % g_sample_size] = compressed_size < 0 ? 0 : (size_t)compressed_size;
     }
 
-    if (ZSTD_isError(g_zstd_compress_size[g_ulnet_session.frame_counter % g_sample_size])) {
-        fprintf(stderr, "Error compressing: %s\n", ZSTD_getErrorName(g_zstd_compress_size[g_ulnet_session.frame_counter % g_sample_size]));
-        g_zstd_compress_size[g_ulnet_session.frame_counter % g_sample_size] = 0;
-    }
-
-    g_zstd_cycle_count[g_ulnet_session.frame_counter % g_sample_size] = ulnet__rdtsc() - start;
+    g_compress_cycle_count[g_ulnet_session.frame_counter % g_sample_size] = ulnet__rdtsc() - start;
 
     // I'm trying to compress the save state data by finding matching blocks that are in the ROM.
     // This doesn't seem to work. Here are my theories:
@@ -3573,7 +3444,7 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
         auto &unique_blocks = data_info->first;
         auto data = data_info->second;
 
-        size_t hash = ZSTD_XXH64((uint8_t*)data + offset, len, 0);
+        size_t hash = ulnet_crc32((uint8_t*)data + offset, len, 0);
         (*unique_blocks)[hash] = len;
         return 0;
     };
@@ -3600,7 +3471,7 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
         auto &unique_blocks = *data_info->unique_blocks;  // Change here
         auto &shared_size = data_info->shared_size;
 
-        size_t hash = ZSTD_XXH64(data_info->data + offset, len, 0);
+        size_t hash = ulnet_crc32(data_info->data + offset, len, 0);
         auto it = unique_blocks.find(hash);
         if (it != unique_blocks.end()) {
             shared_size += it->second;
@@ -3703,13 +3574,6 @@ int main(int argc, char *argv[]) {
     }
     ulnet_set_stun_server(&g_ulnet_session, g_sam2_address, (uint16_t)g_sam2_port);
 
-    g_parameters.d = 8;
-    g_parameters.k = 256;
-    g_parameters.steps = 4;
-    g_parameters.nbThreads = g_zstd_thread_count;
-    g_parameters.splitPoint = 0;
-    g_parameters.zParams.compressionLevel = g_zstd_compress_level;
-
     if (!SDL_Init(g_headless ? 0 : SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS|SDL_INIT_GAMEPAD)) {
         SAM2_LOG_FATAL("Failed to initialize SDL: %s", SDL_GetError());
     }
@@ -3806,7 +3670,7 @@ int main(int argc, char *argv[]) {
     SDL_Event ev;
 
     if (strcmp(g_libretro_context.system_info.library_name, "dolphin-emu") == 0) { // @todo Really we just should prevent saving before retro_run is called
-        g_do_zstd_compress = false;
+        g_do_compress = false;
     }
 
     for (g_main_loop_cyclic_offset = 0; running; g_main_loop_cyclic_offset = (g_main_loop_cyclic_offset + 1) % MAX_SAMPLE_SIZE) {
@@ -3917,11 +3781,11 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        if (g_do_zstd_compress) {
+        if (g_do_compress) {
             g_serialize_size = g_retro.retro_serialize_size();
             if (g_serialize_size > sizeof(g_savebuffer[g_save_state_index])) {
                 SAM2_LOG_ERROR("Save state buffer is too small (%zu > %zu)", g_serialize_size, sizeof(g_savebuffer[g_save_state_index]));
-                g_do_zstd_compress = false;
+                g_do_compress = false;
             }
         }
 
@@ -3944,14 +3808,14 @@ int main(int argc, char *argv[]) {
         g_ulnet_session.retro_unserialize = [](void *user_ptr, const void *data, size_t size) {
             return g_retro.retro_unserialize(data, size);
         };
-        int status = ulnet_poll_session(&g_ulnet_session, g_do_zstd_compress, g_savebuffer[g_save_state_index], sizeof(g_savebuffer[g_save_state_index]),
+        int status = ulnet_poll_session(&g_ulnet_session, g_do_compress, g_savebuffer[g_save_state_index], sizeof(g_savebuffer[g_save_state_index]),
             g_av.timing.fps, max_sleeping_allowed_when_polling_network_seconds);
 
         if (status & ULNET_POLL_SESSION_BUFFERED_INPUT) {
             memset(&g_ulnet_session.next_core_option, 0, sizeof(g_ulnet_session.next_core_option));
         }
 
-        if (g_do_zstd_compress && (status & ULNET_POLL_SESSION_SAVED_STATE)) {
+        if (g_do_compress && (status & ULNET_POLL_SESSION_SAVED_STATE)) {
             tick_compression_investigation((char *)g_savebuffer[g_save_state_index], g_serialize_size, (char*)rom_data, rom_size);
 
             g_save_state_index = (g_save_state_index + 1) % MAX_SAVE_STATES;
@@ -4012,7 +3876,7 @@ int main(int argc, char *argv[]) {
                         g_libretro_context.message_history[g_libretro_context.message_history_length++] = latest_sam2_message;
                     }
 
-                    g_ulnet_session.compression_quality = g_zstd_compress_level;
+                    g_ulnet_session.compression_quality = g_compression_level;
                     g_ulnet_session.user_ptr = (void *) &g_libretro_context;
                     g_ulnet_session.sam2_send_callback = [](void *user_ptr, char *response) {
                         // We delegate sends to us so we have a single location of debug bookkeeping + error checking of sent messages

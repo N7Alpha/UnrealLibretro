@@ -88,12 +88,6 @@ if(LINUX) # Use heuristic to figure out if we're on a linux server or desktop, t
 endif()
 
 add_subdirectory(Source/ThirdParty/SDL)
-set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "")
-set(ZSTD_BUILD_TESTS OFF CACHE BOOL "")
-set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "")
-set(ZSTD_BUILD_SHARED OFF CACHE BOOL "")
-set(ZSTD_BUILD_DICTBUILDER ON CACHE BOOL "" FORCE)
-add_subdirectory(Source/ThirdParty/zstd/build/cmake)
 
 # Target
 add_executable(${PROJECT_NAME} ${SOURCE_FILES})
@@ -104,7 +98,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     Source/UnrealLibretro/Public/libretro
     Source/UnrealLibretroEditor/miniz
     Source/ThirdParty/netarch
-    Source/ThirdParty/zstd/lib
     Source/ThirdParty/imgui
     Source/ThirdParty/imgui/backends
     Source/ThirdParty/implot
@@ -113,4 +106,4 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 # Static link everything so we don't have to deal with dll hell
-target_link_libraries(${PROJECT_NAME} libzstd_static SDL3::SDL3-static)
+target_link_libraries(${PROJECT_NAME} SDL3::SDL3-static)
