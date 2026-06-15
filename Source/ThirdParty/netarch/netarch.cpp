@@ -969,7 +969,7 @@ static char g_core_path[MAX_PATH] = {0};
 static bool g_core_needs_reload = false;
 bool g_rom_needs_reload = false;
 static sam2_room_t g_new_room_set_through_gui = {
-    "My Room Name", 0, "VERSIONCORE", 0,
+    "My Room Name", "VERSIONCORE", 0, 0,
     { SAM2_PORT_UNAVAILABLE,   SAM2_PORT_AVAILABLE,   SAM2_PORT_AVAILABLE,   SAM2_PORT_AVAILABLE,
       SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE }
 };
@@ -1828,14 +1828,11 @@ void draw_imgui() {
 
         if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
             ImGui::Text("Room: %s", g_ulnet_session.room_we_are_in.name);
-            // Fixed text fields to display binary values
-            //char ports_str[65] = {0};
-            char flags_str[65] = {0};
+            char flags_str[9] = {0};
 
-            // Convert the integer values to binary strings
-            for (int i = 0; i < 64; i+=4) {
-                //ports_str[i/4] = '0' + ((g_room.ports >> (60 - i)) & 0xF);
-                flags_str[i/4] = '0' + ((g_ulnet_session.room_we_are_in.flags >> (60 - i)) & 0xF);
+            // Convert the flag bitfield to a fixed-width hex string.
+            for (int i = 0; i < 32; i+=4) {
+                flags_str[i/4] = '0' + ((g_ulnet_session.room_we_are_in.flags >> (28 - i)) & 0xF);
             }
 
             ImGui::Text("Flags bitfield: %s", flags_str);
@@ -2052,7 +2049,7 @@ void draw_imgui() {
                 //ImGui::Text("%s", ports_str);
 
                 ImGui::TableNextColumn();
-                ImGui::Text("%016" PRIx64, g_sam2_rooms[room_index].rom_hash);
+                ImGui::Text("%08" PRIx32, g_sam2_rooms[room_index].rom_hash);
             }
 
             ImGui::EndTable();
@@ -2095,8 +2092,8 @@ void draw_imgui() {
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip(
                         "Core or ROM hash mismatch\n"
-                        "server ROM hash: %016" PRIx64 " core: %s\n"
-                        "client ROM hash: %016" PRIx64 " core: %s",
+                        "server ROM hash: %08" PRIx32 " core: %s\n"
+                        "client ROM hash: %08" PRIx32 " core: %s",
                         g_sam2_rooms[selected_room_index].rom_hash, g_sam2_rooms[selected_room_index].core_and_version,
                         g_new_room_set_through_gui.rom_hash, g_new_room_set_through_gui.core_and_version
                     );

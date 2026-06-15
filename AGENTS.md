@@ -37,22 +37,13 @@ make netarch
 Used for debugging and standalone netplay functionality without UE dependencies. **`ulnet.h`,`sam2.h`,`netarch.cpp`** make up the netplay implementation
 
 ### Preferred method when testing `ulnet.h` and `sam2.h` header libraries
-Try running with `tcc` first and use `cc` as a backup if it does not exist on path
+Try running with `tcc` first and use the system compiler as a backup if it does not exist on path
 
 ```bash
-tcc -DSAM2_IMPLEMENTATION \
-   -DSAM2_TEST_MAIN \
-   -ISource/UnrealLibretro/Private \
-   -ISource/ThirdParty/libuv/include \
-   Source/ThirdParty/netarch/sam2_test.c \
-   -o /tmp/sam2_test && /tmp/sam2_test
-
 tcc -DSAM2_IMPLEMENTATION \
    -DULNET_IMPLEMENTATION \
    -DULNET_TEST_MAIN \
    -ISource/UnrealLibretro/Private \
-   -ISource/UnrealLibretroEditor/miniz \
-   Source/UnrealLibretroEditor/miniz/miniz.c \
    Source/ThirdParty/netarch/ulnet_test.c \
    -o /tmp/ulnet_test && /tmp/ulnet_test
 ```

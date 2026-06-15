@@ -514,48 +514,6 @@ int ulnet_test_zstd_codec(void) {
     return 0;
 }
 
-void ulnet__bench_xxh32() {
-    const size_t test_size = 64 * 1024 * 1024;
-    const int iterations = 30;
-
-    uint8_t* test_data = malloc(test_size);
-    if (!test_data) {
-        printf("Failed to allocate test buffer\n");
-        return;
-    }
-
-    for (size_t i = 0; i < test_size; i++) {
-        test_data[i] = (uint8_t)(i * 0x9E3779B1);
-    }
-
-    // Warm up
-    volatile uint32_t dummy = 0;
-    for (int i = 0; i < 5; i++) {
-        dummy ^= ulnet_xxh32(test_data, test_size, 0);
-    }
-
-    uint64_t start_unix_us = ulnet__get_unix_time_microseconds();
-    uint32_t result = 0;
-
-    for (int i = 0; i < iterations; i++) {
-        test_data[0] = (uint8_t)i; // Prevent compiler optimization
-        result ^= ulnet_xxh32(test_data, test_size, 0);
-    }
-
-    double total_bytes = (double)test_size * iterations;
-    uint64_t elapsed_us = ulnet__get_unix_time_microseconds() - start_unix_us;
-
-    double elapsed_seconds = elapsed_us / 1e6;
-
-    double bytes_per_second = total_bytes / elapsed_seconds;
-    double gigabytes_per_second = bytes_per_second / (1024.0 * 1024.0 * 1024.0);
-
-    printf("xxh32 Throughput: %.3f GB/s\n", gigabytes_per_second);
-
-    free(test_data);
-}
-
-
 #if defined(ULNET_TEST_MAIN)
 #include <stdarg.h>
 #include <sys/stat.h>
@@ -953,8 +911,6 @@ int main (int argc, char **argv) {
         printf("XXH32 hash test failed\n");
         return 1;
     }
-
-    ulnet__bench_xxh32();
 
     printf("All tests passed successfully!\n");
     return 0;

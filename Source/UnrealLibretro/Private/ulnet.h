@@ -4489,9 +4489,9 @@ void ulnet_imgui_show_room(const sam2_room_t& room, int our_peer_id = -1) {
     const ImVec4 WHITE(1.0f, 1.0f, 1.0f, 1.0f);
     const ImVec4 GOLD(1.0f, 0.843f, 0.0f, 1.0f);
     ImGui::Text("Room: %s", room.name);
-    ImGui::Text("Flags: %016" PRIx64, room.flags);
+    ImGui::Text("Flags: %08" PRIx32, room.flags);
     ImGui::Text("Core: %s", room.core_and_version);
-    ImGui::Text("ROM Hash: %016" PRIx64, room.rom_hash);
+    ImGui::Text("ROM Hash: %08" PRIx32, room.rom_hash);
 
     for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
         if (p == SAM2_AUTHORITY_INDEX) {

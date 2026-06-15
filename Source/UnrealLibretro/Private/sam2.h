@@ -84,17 +84,17 @@
 #define SAM2_DEFAULT_BACKLOG 128
 
 // @todo move some of these into the UDP netcode file
-#define SAM2_FLAG_ROOM_IS_NETWORK_HOSTED   0b01000000ULL
+#define SAM2_FLAG_ROOM_IS_NETWORK_HOSTED   0b01000000U
 
-#define SAM2_FLAG_PORT0_CAN_SET_ALL_INPUTS (0b00000001ULL << 8)
-//#define SAM2_FLAG_PORT1_CAN_SET_ALL_INPUTS (0b00000010ULL << 8)
+#define SAM2_FLAG_PORT0_CAN_SET_ALL_INPUTS (0b00000001U << 8)
+//#define SAM2_FLAG_PORT1_CAN_SET_ALL_INPUTS (0b00000010U << 8)
 // etc...
 
-#define SAM2_FLAG_PORT0_PEER_IS_INACTIVE (0b00000001ULL << 16)
-//#define SAM2_FLAG_PORT1_PEER_IS_INACTIVE (0b00000010ULL << 16)
+#define SAM2_FLAG_PORT0_PEER_IS_INACTIVE (0b00000001U << 16)
+//#define SAM2_FLAG_PORT1_PEER_IS_INACTIVE (0b00000010U << 16)
 // etc...
 
-#define SAM2_FLAG_AUTHORITY_IS_INACTIVE (0b00000001ULL << 24)
+#define SAM2_FLAG_AUTHORITY_IS_INACTIVE (0b00000001U << 24)
 
 #define SAM2_RESPONSE_SUCCESS                  0
 #define SAM2_RESPONSE_SERVER_ERROR             -1  // Emitted by signaling server when there was an internal error
@@ -129,9 +129,9 @@ SAM2_LINKAGE int sam2_test_all(void);
 // Packing of structs is asserted at compile time since packing directives are compiler specific
 typedef struct sam2_room {
     char name[64];
-    uint64_t flags;
     char core_and_version[32];
-    uint64_t rom_hash;
+    uint32_t rom_hash;
+    uint32_t flags;
     uint16_t peer_ids[SAM2_TOTAL_PEERS]; // 0-7 p2p, 8 authority, 9-63 spectator; Must be unique per port (including authority and spectators)
 } sam2_room_t;
 
@@ -1430,7 +1430,7 @@ SAM2_LINKAGE void sam2_server_destroy(sam2_server_t *server) {
 // If these fail then this server won't be binary compatible with the protocol and would fail horrendously
 // Resort to packing pragmas until these succeed if you run into this issue yourself
 SAM2_STATIC_ASSERT(SAM2_BYTEORDER_ENDIAN == SAM2_BYTEORDER_LITTLE_ENDIAN, "Platform is big-endian which is unsupported");
-SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == sizeof(char[64]) + sizeof(uint64_t) + sizeof(char[32]) + sizeof(uint64_t) + sizeof(uint16_t[SAM2_TOTAL_PEERS]), "sam2_room_t is not packed");
+SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == sizeof(char[64]) + sizeof(char[32]) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint16_t[SAM2_TOTAL_PEERS]), "sam2_room_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_make_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_make_message_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_list_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_list_message_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_join_message_t) == 8 + 8 + sizeof(sam2_room_t), "sam2_room_join_message_t is not packed");
