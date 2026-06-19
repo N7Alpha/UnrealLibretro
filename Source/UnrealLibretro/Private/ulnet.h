@@ -3629,8 +3629,9 @@ ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port
     }
 
     assert(session->agent[peer_port] != NULL);
-    ulnet__nat_destroy(session->agent[peer_port]);
-    session->agent[peer_port] = NULL;
+    if (!session->use_inproc_transport) {
+        ulnet__nat_destroy(session->agent[peer_port]);
+    }
 
     ulnet_clear_peer_packet_history(session, peer_port);
     ulnet_peer_init_defaulted(session, peer_port);

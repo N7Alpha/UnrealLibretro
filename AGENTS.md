@@ -44,8 +44,7 @@ tcc -DSAM2_IMPLEMENTATION \
    -DULNET_IMPLEMENTATION \
    -DULNET_TEST_MAIN \
    -ISource/UnrealLibretro/Private \
-   Source/ThirdParty/netarch/ulnet_test.c \
-   -o /tmp/ulnet_test && /tmp/ulnet_test
+   -run Source/ThirdParty/netarch/ulnet_test.c
 ```
 
 Do not add `Source/UnrealLibretro/Private/fec.c` to these commands unless that file exists in the checkout; current `ulnet_test.c` builds without it.

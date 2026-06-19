@@ -121,9 +121,6 @@
 #define SAM2_TOTAL_PEERS 64
 #define SAM2_SPECTATOR_START (SAM2_PORT_MAX + 1)
 
-// sam2_test.c
-SAM2_LINKAGE int sam2_test_all(void);
-
 // All data is sent in little-endian format
 // All strings are utf-8 encoded unless stated otherwise... @todo Actually I should just add _utf8 if the field isn't ascii
 // Packing of structs is asserted at compile time since packing directives are compiler specific

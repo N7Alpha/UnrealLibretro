@@ -366,8 +366,6 @@ int ulnet_test_inproc(ulnet_session_t **session_1_out, ulnet_session_t **session
         status = 1;
     }
 
-    sessions[0]->inproc[SAM2_SPECTATOR_START] = NULL;
-    sessions[1]->inproc[SAM2_AUTHORITY_INDEX] = NULL;
     ulnet_session_tear_down(sessions[0]);
     ulnet_session_tear_down(sessions[1]);
     if (!session_1_out) free(sessions[0]);
@@ -403,14 +401,246 @@ int ulnet_test_inproc_reliable_ack_unblocks_queue(void) {
         status = 1;
     }
 
-    sessions[0]->inproc[SAM2_SPECTATOR_START] = NULL;
-    sessions[1]->inproc[SAM2_AUTHORITY_INDEX] = NULL;
     ulnet_session_tear_down(sessions[0]);
     ulnet_session_tear_down(sessions[1]);
     free(sessions[0]);
     free(sessions[1]);
 
     return status;
+}
+
+static uint32_t ulnet__test_fuzz_next(uint32_t *rng) {
+    *rng = *rng * 1664525u + 1013904223u;
+    return *rng;
+}
+
+static int ulnet__test_peer_index(const uint16_t *peer_ids, int peer_count, uint16_t peer_id) {
+    for (int i = 0; i < peer_count; i++) {
+        if (peer_ids[i] == peer_id) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static int ulnet__test_find_occupied_port(sam2_room_t *room, int first_port, int last_port,
+    uint32_t *rng) {
+    int span = last_port - first_port;
+    int start = first_port + (int)(ulnet__test_fuzz_next(rng) % (uint32_t)span);
+    for (int i = 0; i < span; i++) {
+        int p = first_port + (start - first_port + i) % span;
+        if (room->peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
+            return p;
+        }
+    }
+
+    return -1;
+}
+
+static int ulnet__test_find_available_port(sam2_room_t *room, int first_port, int last_port,
+    uint32_t *rng) {
+    int span = last_port - first_port;
+    int start = first_port + (int)(ulnet__test_fuzz_next(rng) % (uint32_t)span);
+    for (int i = 0; i < span; i++) {
+        int p = first_port + (start - first_port + i) % span;
+        if (room->peer_ids[p] == SAM2_PORT_AVAILABLE) {
+            return p;
+        }
+    }
+
+    return -1;
+}
+
+static int ulnet__test_find_first_available_port(sam2_room_t *room, int first_port, int last_port) {
+    for (int p = first_port; p < last_port; p++) {
+        if (room->peer_ids[p] == SAM2_PORT_AVAILABLE) {
+            return p;
+        }
+    }
+
+    return -1;
+}
+
+static void ulnet__test_ready_authority_tick(ulnet_session_t *session) {
+    session->core_wants_tick_at_unix_usec = 0;
+    for (int p = 0; p < SAM2_SPECTATOR_START; p++) {
+        if (session->room_we_are_in.peer_ids[p] > SAM2_PORT_SENTINELS_MAX) {
+            session->state[p].frame = session->frame_counter;
+        }
+    }
+}
+
+static int ulnet__test_wait_for_peer_port(ulnet_session_t *session, uint16_t peer_id,
+    int expected_port) {
+    uint8_t save_state[sizeof(g_serialize_test_data)];
+    for (int i = 0; i < ULNET_DELAY_BUFFER_SIZE + 4; i++) {
+        ulnet__test_ready_authority_tick(session);
+        int status = ulnet_poll_session(session, 0, save_state, sizeof(save_state), 60.0, 0.0);
+        if (status < 0) {
+            return status;
+        }
+
+        if (sam2_get_port_of_peer(&session->room_we_are_in, peer_id) == expected_port) {
+            return 0;
+        }
+    }
+
+    SAM2_LOG_ERROR("Timed out waiting for peer %05" PRIu16 " to reach port %d", peer_id, expected_port);
+    return 1;
+}
+
+static int ulnet__test_validate_inproc_connections(ulnet_session_t *session,
+    const uint16_t *peer_ids, ulnet_transport_inproc_t *transports, const uint16_t *rx_heads,
+    const uint8_t *packet_history_next, int peer_count) {
+    for (int i = 0; i < peer_count; i++) {
+        int p = sam2_get_port_of_peer(&session->room_we_are_in, peer_ids[i]);
+        if (p == -1) {
+            SAM2_LOG_ERROR("Peer %05" PRIu16 " disappeared from the room", peer_ids[i]);
+            return 1;
+        }
+
+        if (   session->inproc[p] != &transports[i]
+            || session->agent_peer_ids[p] != peer_ids[i]
+            || session->reliable_rx_head[p] != rx_heads[i]
+            || session->packet_history_next[p] != packet_history_next[i]) {
+            SAM2_LOG_ERROR("Connection state for peer %05" PRIu16 " did not follow it to port %d",
+                peer_ids[i], p);
+            return 1;
+        }
+    }
+
+    for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
+        if (!session->inproc[p]) continue;
+
+        int peer_index = ulnet__test_peer_index(peer_ids, peer_count, session->agent_peer_ids[p]);
+        if (   peer_index == -1
+            || session->room_we_are_in.peer_ids[p] != session->agent_peer_ids[p]
+            || session->inproc[p] != &transports[peer_index]) {
+            SAM2_LOG_ERROR("Stale or misplaced inproc connection at port %d", p);
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+int ulnet_test_inproc_room_switch_fuzz(void) {
+    enum { PEER_COUNT = 6, ITERATIONS = 64 };
+    const uint16_t peer_ids[PEER_COUNT] = {30002, 30003, 30004, 30005, 30006, 30007};
+    const int initial_ports[PEER_COUNT] = {0, 2, 9, 10, 11, 12};
+    uint16_t rx_heads[PEER_COUNT];
+    uint8_t packet_history_next[PEER_COUNT];
+    ulnet_transport_inproc_t transports[PEER_COUNT];
+    ulnet_session_t session;
+    uint32_t rng = 0x12345678u;
+
+    memset(&session, 0, sizeof(session));
+    memset(transports, 0, sizeof(transports));
+    ulnet_session_init_defaulted(&session);
+    session.use_inproc_transport = true;
+    session.delay_frames = 1;
+    session.our_peer_id = 10001;
+    session.sam2_send_callback = ulnet__test_discard_send_callback;
+    session.retro_run = ulnet__test_retro_run;
+    session.retro_serialize_size = ulnet__test_retro_serialize_size;
+    session.retro_serialize = ulnet__test_retro_serialize;
+    session.retro_unserialize = ulnet__test_retro_unserialize;
+    session.room_we_are_in.flags = SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+    session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session.our_peer_id;
+
+    for (int i = 0; i < PEER_COUNT; i++) {
+        int p = initial_ports[i];
+        rx_heads[i] = (uint16_t)(0x4000 + i);
+        packet_history_next[i] = (uint8_t)(20 + i);
+        session.room_we_are_in.peer_ids[p] = peer_ids[i];
+        session.inproc[p] = &transports[i];
+        session.agent_peer_ids[p] = peer_ids[i];
+        session.reliable_rx_head[p] = rx_heads[i];
+        session.packet_history_next[p] = packet_history_next[i];
+    }
+
+    if (ulnet__test_validate_inproc_connections(&session, peer_ids, transports, rx_heads,
+            packet_history_next, PEER_COUNT) != 0) {
+        return 1;
+    }
+
+    for (int iter = 0; iter < ITERATIONS; iter++) {
+        int current_port = -1;
+        int desired_port = -1;
+        int expected_port = -1;
+        int attempts = 0;
+        sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
+
+        while (attempts++ < 24 && expected_port == -1) {
+            int op = (int)(ulnet__test_fuzz_next(&rng) % 3);
+            if (op == 0) {
+                current_port = ulnet__test_find_occupied_port(&session.room_we_are_in,
+                    SAM2_SPECTATOR_START, SAM2_TOTAL_PEERS, &rng);
+                desired_port = ulnet__test_find_available_port(&session.room_we_are_in,
+                    0, SAM2_PORT_MAX, &rng);
+                if (current_port != -1 && desired_port != -1) {
+                    expected_port = desired_port;
+                }
+            } else if (op == 1) {
+                current_port = ulnet__test_find_occupied_port(&session.room_we_are_in,
+                    0, SAM2_PORT_MAX, &rng);
+                desired_port = -1;
+                if (current_port != -1) {
+                    sam2_room_t future_room = session.room_we_are_in;
+                    future_room.peer_ids[current_port] = SAM2_PORT_AVAILABLE;
+                    expected_port = ulnet__test_find_first_available_port(&future_room,
+                        SAM2_SPECTATOR_START, SAM2_TOTAL_PEERS);
+                }
+            } else {
+                current_port = ulnet__test_find_occupied_port(&session.room_we_are_in,
+                    SAM2_SPECTATOR_START, SAM2_TOTAL_PEERS, &rng);
+                desired_port = ulnet__test_find_available_port(&session.room_we_are_in,
+                    SAM2_SPECTATOR_START, SAM2_TOTAL_PEERS, &rng);
+                if (current_port != -1 && desired_port != -1 && current_port != desired_port) {
+                    expected_port = desired_port;
+                }
+            }
+        }
+
+        if (expected_port == -1) {
+            SAM2_LOG_ERROR("Unable to find a valid room switch fuzz operation");
+            return 1;
+        }
+
+        uint16_t peer_id = session.room_we_are_in.peer_ids[current_port];
+        int peer_index = ulnet__test_peer_index(peer_ids, PEER_COUNT, peer_id);
+        if (peer_index == -1) {
+            SAM2_LOG_ERROR("Selected unknown peer %05" PRIu16 " for room switch", peer_id);
+            return 1;
+        }
+
+        request.peer_id = peer_id;
+        request.room = session.room_we_are_in;
+        request.room.peer_ids[current_port] = SAM2_PORT_AVAILABLE;
+        if (desired_port != -1) {
+            request.room.peer_ids[desired_port] = peer_id;
+        }
+
+        if (ulnet_process_message(&session, (const char *)&request) != 0) {
+            SAM2_LOG_ERROR("Room switch request failed during fuzz iteration %d", iter);
+            return 1;
+        }
+
+        int status = ulnet__test_wait_for_peer_port(&session, peer_id, expected_port);
+        if (status != 0) {
+            return status;
+        }
+
+        if (ulnet__test_validate_inproc_connections(&session, peer_ids, transports, rx_heads,
+                packet_history_next, PEER_COUNT) != 0) {
+            SAM2_LOG_ERROR("Room switch fuzz validation failed at iteration %d", iter);
+            return 1;
+        }
+    }
+
+    ulnet_session_tear_down(&session);
+    return 0;
 }
 
 int ulnet_test_reliable_rejects_bad_sequence_state(void) {
@@ -870,6 +1100,12 @@ int main (int argc, char **argv) {
     status = ulnet_test_inproc_reliable_ack_unblocks_queue();
     if (status != 0) {
         printf("Inproc reliable ACK unblock test failed with status: %d\n", status);
+        return status;
+    }
+
+    status = ulnet_test_inproc_room_switch_fuzz();
+    if (status != 0) {
+        printf("Inproc room switch fuzz test failed with status: %d\n", status);
         return status;
     }
 

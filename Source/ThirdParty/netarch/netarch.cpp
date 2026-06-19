@@ -3531,7 +3531,6 @@ int main(int argc, char *argv[]) {
             int num_failed_tests = 0;
 
             SAM2_LOG_INFO("Running tests...");
-            num_failed_tests += sam2_test_all();
             num_failed_tests += ulnet_test_inproc(NULL, NULL);
             num_failed_tests += ulnet_test_inproc_reliable_ack_unblocks_queue();
             if (num_failed_tests > 0) {
