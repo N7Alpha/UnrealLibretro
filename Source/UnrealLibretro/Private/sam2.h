@@ -187,8 +187,6 @@ typedef struct sam2_error_message {
 } sam2_error_message_t;
 
 typedef union sam2_message {
-    union sam2_message *next; // Points to next element in freelist @todo I should refactor the freelist code so I actually use this
-
     sam2_room_make_message_t room_make_response;
     sam2_room_list_message_t room_list_response;
     sam2_room_join_message_t room_join_response;
