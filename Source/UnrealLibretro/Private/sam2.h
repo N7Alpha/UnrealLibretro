@@ -117,9 +117,8 @@
 #define SAM2_PORT_SENTINELS_MAX               SAM2_PORT_UNAVAILABLE
 
 #define SAM2_PORT_MAX 8
-#define SAM2_AUTHORITY_INDEX SAM2_PORT_MAX
+#define SAM2_AUTHORITY_INDEX 0 // The authority always occupies port 0
 #define SAM2_TOTAL_PEERS 64
-#define SAM2_SPECTATOR_START (SAM2_PORT_MAX + 1)
 
 // All data is sent in little-endian format
 // Packing of structs is asserted at compile time since packing directives are compiler specific
@@ -128,7 +127,8 @@ typedef struct sam2_room {
     char core_and_version[32];
     uint32_t rom_hash;
     uint32_t flags;
-    uint16_t peer_ids[SAM2_TOTAL_PEERS]; // 0-7 p2p, 8 authority, 9-63 spectator; Must be unique per port (including authority and spectators)
+    uint16_t peer_ids[SAM2_TOTAL_PEERS]; // Port 0 is the authority; any port may host a peer. Must be unique per port
+    uint64_t peer_topology; // Bit p set => port p is a p2p player (direct mesh + deterministic input). 0 => client-server (relayed spectator)
 } sam2_room_t;
 
 // This is a test for identity not equality
@@ -1424,7 +1424,7 @@ SAM2_LINKAGE void sam2_server_destroy(sam2_server_t *server) {
 // If these fail then this server won't be binary compatible with the protocol and would fail horrendously
 // Resort to packing pragmas until these succeed if you run into this issue yourself
 SAM2_STATIC_ASSERT(SAM2_BYTEORDER_ENDIAN == SAM2_BYTEORDER_LITTLE_ENDIAN, "Platform is big-endian which is unsupported");
-SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == sizeof(char[64]) + sizeof(char[32]) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint16_t[SAM2_TOTAL_PEERS]), "sam2_room_t is not packed");
+SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == sizeof(char[64]) + sizeof(char[32]) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint16_t[SAM2_TOTAL_PEERS]) + sizeof(uint64_t), "sam2_room_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_make_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_make_message_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_list_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_list_message_t is not packed");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_join_message_t) == 8 + 8 + sizeof(sam2_room_t), "sam2_room_join_message_t is not packed");

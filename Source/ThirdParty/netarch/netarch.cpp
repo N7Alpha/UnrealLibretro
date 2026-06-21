@@ -971,7 +971,8 @@ bool g_rom_needs_reload = false;
 static sam2_room_t g_new_room_set_through_gui = {
     "My Room Name", "VERSIONCORE", 0, 0,
     { SAM2_PORT_UNAVAILABLE,   SAM2_PORT_AVAILABLE,   SAM2_PORT_AVAILABLE,   SAM2_PORT_AVAILABLE,
-      SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE }
+      SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE, SAM2_PORT_UNAVAILABLE },
+    (1ULL << SAM2_AUTHORITY_INDEX) // peer_topology: authority is a p2p player by default
 };
 
 #define MAX_ROOMS 1024
@@ -1719,6 +1720,7 @@ void draw_imgui() {
                     sam2_room_make_message_t message = { SAM2_MAKE_HEADER };
                     message.room.peer_ids[SAM2_AUTHORITY_INDEX] = g_ulnet_session.our_peer_id;
                     message.room.flags |= SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+                    message.room.peer_topology |= (1ULL << SAM2_AUTHORITY_INDEX);
                     snprintf((char *) &message.room.name, sizeof(message.room.name), "Test message %d", i);
                     sam2_client_send(g_libretro_context.sam2_socket, (char *) &message);
                 }
@@ -1843,151 +1845,104 @@ void draw_imgui() {
     }
 
     if (g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
-        ImGui::SeparatorText("Connection Status");
-        for (int p = 0; p < SAM2_PORT_MAX+1; p++) {
-            if (g_ulnet_session.room_we_are_in.peer_ids[p] == SAM2_PORT_UNAVAILABLE) {
-                ImGui::Text("Port %d: Unavailable", p);
-            } else if (g_ulnet_session.room_we_are_in.peer_ids[p] == SAM2_PORT_AVAILABLE) {
-                char label[32];
-                snprintf(label, sizeof(label), "Port %d", p);
-                if (ImGui::Button(label)) {
-                    // Send a join room request for the available port
+        // One unified list of everyone in the room. A peer's role is decided by its topology bit, not
+        // its slot, so any occupied slot can be the authority, a p2p player, or a client-server spectator.
+        ImGui::SeparatorText("Room");
+        if (ImGui::BeginTable("RoomPeers", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+            ImGui::TableSetupColumn("Port");
+            ImGui::TableSetupColumn("Peer ID");
+            ImGui::TableSetupColumn("Role");
+            ImGui::TableSetupColumn("Connection");
+            ImGui::TableHeadersRow();
+
+            for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
+                uint16_t peer_id = g_ulnet_session.room_we_are_in.peer_ids[p];
+                if (peer_id <= SAM2_PORT_SENTINELS_MAX) continue; // skip empty / unavailable slots
+
+                bool is_us = (peer_id == g_ulnet_session.our_peer_id);
+                ImVec4 color = g_ulnet_session.peer_desynced_frame[p] ? RED : (is_us ? GOLD : WHITE);
+
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0); ImGui::Text("%d", p);
+                ImGui::TableSetColumnIndex(1); ImGui::TextColored(color, "%05" PRId16, peer_id);
+
+                ImGui::TableSetColumnIndex(2);
+                const char *role =
+                    p == SAM2_AUTHORITY_INDEX
+                    ? (ulnet_port_is_p2p(&g_ulnet_session.room_we_are_in, p) ? "Authority + Player" : "Coordinator")
+                    : (ulnet_port_is_p2p(&g_ulnet_session.room_we_are_in, p) ? "Player" : "Spectator");
+                ImGui::Text("%s", role);
+
+                ImGui::TableSetColumnIndex(3);
+                if (is_us) {
+                    ImGui::TextColored(color, "(you) Frame %" PRId64, g_ulnet_session.frame_counter);
+                } else if (g_ulnet_session.agent[p]) {
+                    ulnet_nat_state_t connection_state = ulnet_nat_get_state(g_ulnet_session.agent[p]);
+                    if (connection_state != ULNET_NAT_STATE_READY) {
+                        ImGui::TextColored(GREY, "%s %c", ulnet_nat_state_to_string(connection_state), spinnerGlyph);
+                    } else if (g_ulnet_session.peer_desynced_frame[p]) {
+                        ImGui::TextColored(RED, "desynced @ %" PRId64, g_ulnet_session.peer_desynced_frame[p]);
+                    } else {
+                        char buffer_depth[ULNET_DELAY_BUFFER_SIZE] = {0};
+                        int64_t peer_num_frames_ahead = g_ulnet_session.state[p].frame - g_ulnet_session.frame_counter;
+                        for (int f = 0; f < (int)sizeof(buffer_depth)-1; f++) buffer_depth[f] = f < peer_num_frames_ahead ? 'X' : 'O';
+                        ImGui::TextColored(color, "ready  Queue: %s Frame: %" PRId64, buffer_depth, g_ulnet_session.state[p].frame);
+                    }
+                } else {
+                    ImGui::TextColored(GREY, "NAT agent not created");
+                }
+            }
+            ImGui::EndTable();
+        }
+
+        // Change your own role in place: a peer keeps its slot for life and just toggles between p2p
+        // player and client-server spectator (the authority schedules the flip on an 8-frame boundary).
+        {
+            int our_port = sam2_get_port_of_peer(&g_ulnet_session.room_we_are_in, g_ulnet_session.our_peer_id);
+            if (our_port != -1) {
+                bool we_are_player = ulnet_port_is_p2p(&g_ulnet_session.room_we_are_in, our_port);
+                const char *button_label =
+                    our_port == SAM2_AUTHORITY_INDEX
+                    ? (we_are_player ? "Become Coordinator" : "Join Mesh")
+                    : (we_are_player ? "Become Spectator" : "Become Player");
+                if (ImGui::Button(button_label)) {
                     sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
                     request.room = g_ulnet_session.room_we_are_in;
-                    request.room.peer_ids[p] = g_ulnet_session.our_peer_id;
-                    ulnet_message_send(&g_ulnet_session, SAM2_AUTHORITY_INDEX, (unsigned char *) &request);
-                }
-            } else {
-                if (p == SAM2_AUTHORITY_INDEX) {
-                    ImGui::Text("Authority:");
-                } else {
-                    ImGui::Text("Port %d:", p);
-                }
-
-                ImGui::SameLine();
-
-                ImVec4 color = WHITE;
-
-                if (g_ulnet_session.agent[p]) {
-                    ulnet_nat_state_t connection_state = ulnet_nat_get_state(g_ulnet_session.agent[p]);
-
-                if (   g_ulnet_session.room_we_are_in.flags & (SAM2_FLAG_PORT0_PEER_IS_INACTIVE << p)
-                    || connection_state != ULNET_NAT_STATE_READY) {
-                        color = GREY;
-                    } else if (g_ulnet_session.peer_desynced_frame[p]) {
-                        color = RED;
-                    }
-                } else if (g_ulnet_session.room_we_are_in.peer_ids[p] == g_ulnet_session.our_peer_id) {
-                    color = GOLD;
-                }
-
-                ImGui::TextColored(color, "%05" PRId16, g_ulnet_session.room_we_are_in.peer_ids[p]);
-                if (g_ulnet_session.agent[p]) {
-                    ulnet_nat_state_t connection_state = ulnet_nat_get_state(g_ulnet_session.agent[p]);
-
-                    if (g_ulnet_session.peer_desynced_frame[p]) {
-                        ImGui::SameLine();
-                        ImGui::TextColored(color, "Peer desynced (frame %" PRId64 ")", g_ulnet_session.peer_desynced_frame[p]);
-                    }
-
-                    if (connection_state != ULNET_NAT_STATE_READY) {
-                        ImGui::SameLine();
-                        ImGui::TextColored(color, "%s %c", ulnet_nat_state_to_string(connection_state), spinnerGlyph);
-                    }
-                } else {
-                    if (g_ulnet_session.room_we_are_in.peer_ids[p] != g_ulnet_session.our_peer_id) {
-                        ImGui::SameLine();
-                        ImGui::TextColored(color, "NAT agent not created");
-                    }
-                }
-
-                char buffer_depth[ULNET_DELAY_BUFFER_SIZE] = {0};
-
-                int64_t peer_num_frames_ahead = g_ulnet_session.state[p].frame - g_ulnet_session.frame_counter;
-                for (int f = 0; f < sizeof(buffer_depth)-1; f++) {
-                    buffer_depth[f] = f < peer_num_frames_ahead ? 'X' : 'O';
-                }
-
-                ImGui::SameLine();
-                ImGui::TextColored(color, "Queue: %s Frame: %" PRId64, buffer_depth, g_ulnet_session.state[p].frame);
-            }
-        }
-
-        {
-            ImGui::BeginChild("SpectatorsTableWindow",
-                ImVec2(
-                    ImGui::GetContentRegionAvail().x,
-                    ImGui::GetWindowContentRegionMax().y / 4
-                    ), ImGuiWindowFlags_NoTitleBar);
-
-            ImGui::SeparatorText("Spectators");
-            if (ImGui::BeginTable("SpectatorsTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
-                ImGui::TableSetupColumn("Peer ID");
-                ImGui::TableSetupColumn("ICE Connection");
-                ImGui::TableHeadersRow();
-
-                for (int s = SAM2_SPECTATOR_START; s < SAM2_TOTAL_PEERS; s++) {
-                    if (g_ulnet_session.room_we_are_in.peer_ids[s] <= SAM2_PORT_SENTINELS_MAX) continue;
-                    ImGui::TableNextRow();
-                    ImGui::TableSetColumnIndex(0);
-
-                    // Display peer ID
-                    uint16_t peer_id = g_ulnet_session.room_we_are_in.peer_ids[s];
-                    if (peer_id == g_ulnet_session.our_peer_id) ImGui::TextColored(GOLD, "%05" PRId16, peer_id);
-                    else                                        ImGui::Text(             "%05" PRId16, peer_id);
-
-                    ImGui::TableSetColumnIndex(1);
-                    // Display NAT connection status
-                    ulnet_nat_agent_t *spectator_agent = g_ulnet_session.agent[s];
-                    if (spectator_agent) {
-                        ulnet_nat_state_t connection_state = ulnet_nat_get_state(spectator_agent);
-
-                        if (connection_state == ULNET_NAT_STATE_READY) {
-                            ImGui::Text("%s", ulnet_nat_state_to_string(connection_state));
-                        } else {
-                            ImGui::TextColored(GREY, "%s %c", ulnet_nat_state_to_string(connection_state), spinnerGlyph);
+                    request.room.peer_topology ^= (1ULL << our_port); // Toggle our own topology bit at our current slot
+                    request.peer_id = g_ulnet_session.our_peer_id;
+                    const char *role_change =
+                        our_port == SAM2_AUTHORITY_INDEX
+                        ? (we_are_player ? "authority player -> coordinator" : "coordinator -> authority player")
+                        : (we_are_player ? "player -> spectator" : "spectator -> player");
+                    SAM2_LOG_INFO("Requesting role change at port %d: %s", our_port, role_change);
+                    if (our_port == SAM2_AUTHORITY_INDEX) {
+                        if (ulnet_process_message(&g_ulnet_session, (const char *) &request) != 0) {
+                            SAM2_LOG_ERROR("Failed to process local authority role-change request");
                         }
-
-                    } else {
-                        ImGui::Text("NAT agent not created");
+                    } else if (ulnet_message_send(&g_ulnet_session, SAM2_AUTHORITY_INDEX, (unsigned char *) &request) != 0) {
+                        SAM2_LOG_ERROR("Failed to send role-change request to the authority");
                     }
                 }
-
-                ImGui::EndTable();
             }
-
-            ImGui::EndChild();
         }
 
-        sam2_room_join_message_t message = { SAM2_JOIN_HEADER };
-        message.room = g_ulnet_session.room_we_are_in;
-        int our_port = sam2_get_port_of_peer(&g_ulnet_session.room_we_are_in, g_ulnet_session.our_peer_id);
-        if (our_port <= -1) {
-            SAM2_LOG_WARN("No port associated for our peer_id=%d", g_ulnet_session.our_peer_id);
-        } else if (our_port == SAM2_AUTHORITY_INDEX) {
-            if (ImGui::Button("Abandon")) {
-                message.room = g_ulnet_session.room_we_are_in;
-                message.room.flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
-                message.peer_id = g_ulnet_session.our_peer_id;
-                ulnet_process_message(&g_ulnet_session, (const char *) &message); // *Send* a message to ourselves
-            }
-        } else if (our_port >= SAM2_SPECTATOR_START) {
-            if (ImGui::Button("Exit")) {
-                ulnet_session_tear_down(&g_ulnet_session);
-                g_ulnet_session.room_we_are_in = g_new_room_set_through_gui;
-            }
-        } else {
-            if (ImGui::Button("Detach Port")) {
-#if 1
-                message.room.peer_ids[our_port] = SAM2_PORT_AVAILABLE;
-                ulnet_message_send(&g_ulnet_session, SAM2_AUTHORITY_INDEX, (unsigned char *) &message);
-#else
-                sam2_room_t future_room_we_are_in = ulnet_future_room_we_are_in(&g_ulnet_session);
-                int future_our_port = sam2_get_port_of_peer(&future_room_we_are_in, g_ulnet_session.our_peer_id);
-                if (future_our_port != -1) {
-                    g_ulnet_session.next_room_xor_delta.peer_ids[future_our_port] = future_room_we_are_in.peer_ids[future_our_port] ^ SAM2_PORT_AVAILABLE;
+        // Leave the room. The authority abandons it (tears it down for everyone); anyone else just
+        // exits. There is no longer a "detach port" -- use Become Spectator above to stop playing.
+        {
+            int our_port = sam2_get_port_of_peer(&g_ulnet_session.room_we_are_in, g_ulnet_session.our_peer_id);
+            if (our_port == SAM2_AUTHORITY_INDEX) {
+                if (ImGui::Button("Abandon")) {
+                    sam2_room_join_message_t message = { SAM2_JOIN_HEADER };
+                    message.room = g_ulnet_session.room_we_are_in;
+                    message.room.flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+                    message.peer_id = g_ulnet_session.our_peer_id;
+                    ulnet_process_message(&g_ulnet_session, (const char *) &message); // *Send* a message to ourselves
                 }
-#endif
+            } else if (our_port != -1) {
+                if (ImGui::Button("Leave")) {
+                    ulnet_session_tear_down(&g_ulnet_session);
+                    g_ulnet_session.room_we_are_in = g_new_room_set_through_gui;
+                }
             }
         }
     } else {
@@ -1996,6 +1951,7 @@ void draw_imgui() {
             sam2_room_make_message_t request = { SAM2_MAKE_HEADER };
             request.room = g_new_room_set_through_gui;
             request.room.flags |= SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+            request.room.peer_topology |= (1ULL << SAM2_AUTHORITY_INDEX);
             g_libretro_context.SAM2Send((char *) &request);
         }
         if (ImGui::Button(g_is_refreshing_rooms ? "Stop" : "Refresh")) {
