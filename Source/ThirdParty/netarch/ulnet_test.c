@@ -270,7 +270,7 @@ int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_
     // Have session 1 join the room
     sessions[1]->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = sessions[0]->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX];
     sessions[1]->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
-    ulnet_startup_ice_for_peer(sessions[1], sessions[0]->our_peer_id, SAM2_AUTHORITY_INDEX, NULL);
+    ulnet_startup_nat_for_peer(sessions[1], sessions[0]->our_peer_id, SAM2_AUTHORITY_INDEX, NULL);
 
     // Give at least 2 seconds for ICE connection establishment
     int connection_established = 0;
@@ -459,7 +459,7 @@ static int ulnet__test_ice_join(sam2_server_t *server, ulnet_session_t **session
 
     joiner->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = authority->our_peer_id;
     joiner->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
-    ulnet_startup_ice_for_peer(joiner, authority->our_peer_id, SAM2_AUTHORITY_INDEX, NULL);
+    ulnet_startup_nat_for_peer(joiner, authority->our_peer_id, SAM2_AUTHORITY_INDEX, NULL);
 
     for (int64_t t0 = ulnet__get_unix_time_microseconds(); ulnet__get_unix_time_microseconds() - t0 < 5000000;) {
         int status = ulnet__test_ice_pump(server, sessions, sockets, count);
@@ -1731,7 +1731,7 @@ static int ulnet__test_nat_matrix_spectator(const char *host, int port, uint16_t
 
     session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = authority_peer_id;
     session.frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
-    ulnet_startup_ice_for_peer(&session, authority_peer_id, SAM2_AUTHORITY_INDEX, NULL);
+    ulnet_startup_nat_for_peer(&session, authority_peer_id, SAM2_AUTHORITY_INDEX, NULL);
 
     int64_t deadline = ulnet__get_unix_time_microseconds() + (int64_t)timeout_seconds * 1000000;
     while (ulnet__get_unix_time_microseconds() < deadline) {

@@ -81,7 +81,7 @@ void ULibretroCoreInstance::NetplaySync(int PeerId)
             ulnet_session_init_defaulted(CoreInstance->netplay_session);
             CoreInstance->netplay_session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = PeerId;
             CoreInstance->netplay_session->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
-            ulnet_startup_ice_for_peer(
+            ulnet_startup_nat_for_peer(
                 CoreInstance->netplay_session,
                 PeerId,
                 SAM2_AUTHORITY_INDEX,

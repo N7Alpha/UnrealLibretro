@@ -2033,7 +2033,7 @@ void draw_imgui() {
                         g_ulnet_session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX];
 #endif
                         g_ulnet_session.frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
-                        ulnet_startup_ice_for_peer(
+                        ulnet_startup_nat_for_peer(
                             &g_ulnet_session,
                             g_sam2_rooms[selected_room_index].peer_ids[SAM2_AUTHORITY_INDEX],
                             SAM2_AUTHORITY_INDEX,
