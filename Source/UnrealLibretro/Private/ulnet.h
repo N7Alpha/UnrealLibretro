@@ -161,6 +161,7 @@ typedef struct {
     int64_t save_state_frame; // This is the current frame the peer is on the essentially
     uint32_t save_state_hash[ULNET_DELAY_BUFFER_SIZE];
     uint32_t input_state_hash[ULNET_DELAY_BUFFER_SIZE];
+    int64_t input_poll_unix_usec[ULNET_DELAY_BUFFER_SIZE];
 } ulnet_state_t;
 SAM2_STATIC_ASSERT(
     sizeof(ulnet_state_t) ==
@@ -171,12 +172,17 @@ SAM2_STATIC_ASSERT(
     + sizeof(((ulnet_state_t *)0)->core_option))
     + sizeof(((ulnet_state_t *)0)->save_state_frame)
     + sizeof(((ulnet_state_t *)0)->save_state_hash)
-    + sizeof(((ulnet_state_t *)0)->input_state_hash),
+    + sizeof(((ulnet_state_t *)0)->input_state_hash)
+    + sizeof(((ulnet_state_t *)0)->input_poll_unix_usec),
     "ulnet_state_t is not packed"
 );
 
 typedef struct {
     uint8_t channel_and_port;
+    uint8_t ping_send_unix_usec_le[8]; // Local userspace TX time, T1/T3 in the RFC 5905 exchange
+    uint8_t ping_echo_send_unix_usec_le[8]; // Peer's previous T1 echoed back to it
+    uint8_t ping_echo_callsite_receive_unix_usec_le[8]; // Our userspace receive time for that previous peer packet, T2
+    uint8_t ping_echo_kernel_receive_unix_usec_le[8]; // Same previous packet's kernel SO_TIMESTAMP T2, if available
     uint8_t coded_state[];
 } ulnet_state_packet_t;
 
@@ -291,6 +297,17 @@ typedef struct ulnet_session {
     uint16_t reliable_tx_next_seq[SAM2_TOTAL_PEERS]; // Greatest sequence we have sent
     uint16_t reliable_tx_head[SAM2_TOTAL_PEERS];     // Greatest sequence we have sent and received an ack for
     uint16_t reliable_rx_head[SAM2_TOTAL_PEERS];     // Next sequence we expect to receive
+    int64_t peer_last_packet_send_unix_usec[SAM2_TOTAL_PEERS];
+    int64_t peer_last_packet_callsite_receive_unix_usec[SAM2_TOTAL_PEERS];
+    int64_t peer_last_packet_kernel_receive_unix_usec[SAM2_TOTAL_PEERS];
+    int64_t peer_clock_offset_usec[SAM2_TOTAL_PEERS]; // RFC 5905 theta: remote clock ~= local clock + offset
+    int64_t peer_kernel_clock_offset_usec[SAM2_TOTAL_PEERS];
+    int64_t peer_packet_ping_samples[SAM2_TOTAL_PEERS];
+    int64_t peer_packet_ping_usec[SAM2_TOTAL_PEERS]; // RFC 5905 delta from userspace receive/send timestamps
+    int64_t peer_packet_kernel_ping_samples[SAM2_TOTAL_PEERS];
+    int64_t peer_packet_kernel_ping_usec[SAM2_TOTAL_PEERS]; // RFC 5905 delta from kernel SO_TIMESTAMP receive timestamps
+    int64_t peer_input_to_core_ping_usec[SAM2_TOTAL_PEERS];
+    int64_t pending_packet_kernel_receive_unix_usec;
 
     // MARK: Save state transfer
     int compression_quality;
@@ -437,6 +454,7 @@ UZSTD_LINKAGE unsigned long long uzstd_frame_content_size(const void *src, size_
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -509,6 +527,21 @@ static void ulnet__write_be32(uint8_t *p, uint32_t v) {
     p[3] = (uint8_t)v;
 }
 
+static int64_t ulnet__read_le64s(const uint8_t *p) {
+    uint64_t v = 0;
+    for (int i = 7; i >= 0; i--) {
+        v = (v << 8) | p[i];
+    }
+    return (int64_t)v;
+}
+
+static void ulnet__write_le64s(uint8_t *p, int64_t v) {
+    uint64_t u = (uint64_t)v;
+    for (int i = 0; i < 8; i++) {
+        p[i] = (uint8_t)(u >> (8 * i));
+    }
+}
+
 static int ulnet__socket_would_block(void) {
 #ifdef _WIN32
     return ULNET_SOCKERRNO == WSAEWOULDBLOCK;
@@ -525,6 +558,65 @@ static int ulnet__set_nonblocking(ULNET_SOCKET_T sock) {
     int flags = fcntl(sock, F_GETFL, 0);
     if (flags < 0) return -1;
     return fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+#endif
+}
+
+static void ulnet__enable_kernel_rx_timestamps(ULNET_SOCKET_T sock) {
+#ifndef _WIN32
+#if defined(SO_TIMESTAMP)
+    int enabled = 1;
+    setsockopt(sock, SOL_SOCKET, SO_TIMESTAMP, &enabled, sizeof(enabled));
+#else
+    (void)sock;
+#endif
+#else
+    (void)sock;
+#endif
+}
+
+static int ulnet__recvfrom_with_timestamp(ULNET_SOCKET_T sock, char *packet, size_t packet_capacity,
+    struct sockaddr_storage *from, socklen_t *from_len, int64_t *kernel_receive_time_usec) {
+    *kernel_receive_time_usec = 0;
+
+#ifdef _WIN32
+    return (int)recvfrom(sock, packet, (int)packet_capacity, 0, (struct sockaddr *)from, from_len);
+#else
+#if defined(SO_TIMESTAMP) && defined(SCM_TIMESTAMP)
+    struct iovec iov;
+    struct msghdr msg;
+    char control[CMSG_SPACE(sizeof(struct timeval))];
+
+    memset(&iov, 0, sizeof(iov));
+    iov.iov_base = packet;
+    iov.iov_len = packet_capacity;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_name = from;
+    msg.msg_namelen = *from_len;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+
+    int ret = (int)recvmsg(sock, &msg, 0);
+    if (ret >= 0) {
+        *from_len = msg.msg_namelen;
+        for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+            if (   cmsg->cmsg_level == SOL_SOCKET
+                && cmsg->cmsg_type == SCM_TIMESTAMP
+                && cmsg->cmsg_len >= CMSG_LEN(sizeof(struct timeval))) {
+                struct timeval tv;
+                memcpy(&tv, CMSG_DATA(cmsg), sizeof(tv));
+                *kernel_receive_time_usec = (int64_t)tv.tv_sec * 1000000 + (int64_t)tv.tv_usec;
+                break;
+            }
+        }
+    }
+
+    return ret;
+#else
+    return (int)recvfrom(sock, packet, packet_capacity, 0, (struct sockaddr *)from, from_len);
+#endif
 #endif
 }
 
@@ -1068,6 +1160,7 @@ ULNET_LINKAGE ulnet_nat_agent_t *ulnet__nat_create(ulnet_session_t *session, int
     }
 
     setsockopt(agent->socket, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&v6only, sizeof(v6only));
+    ulnet__enable_kernel_rx_timestamps(agent->socket);
 
     memset(&bind_addr, 0, sizeof(bind_addr));
     bind_addr.sin6_family = AF_INET6;
@@ -1202,7 +1295,8 @@ static void ulnet__nat_poll_agent(ulnet_nat_agent_t *agent) {
         char packet[ULNET_NAT_POLL_PACKET_MAX];
         struct sockaddr_storage from;
         socklen_t from_len = sizeof(from);
-        int ret = (int)recvfrom(agent->socket, packet, sizeof(packet), 0, (struct sockaddr *)&from, &from_len);
+        int64_t kernel_receive_time_usec = 0;
+        int ret = ulnet__recvfrom_with_timestamp(agent->socket, packet, sizeof(packet), &from, &from_len, &kernel_receive_time_usec);
         if (ret < 0) {
             if (ulnet__socket_would_block()) {
                 break;
@@ -1255,6 +1349,7 @@ static void ulnet__nat_poll_agent(ulnet_nat_agent_t *agent) {
         if (agent->state < ULNET_NAT_STATE_READY) {
             ulnet__nat_select_candidate(agent, &from, from_len);
         }
+        agent->session->pending_packet_kernel_receive_unix_usec = kernel_receive_time_usec;
         ulnet_receive_packet_callback(agent, packet, (size_t)ret, agent->session);
     }
 }
@@ -2864,6 +2959,8 @@ static int ulnet__rs_decode(ulnet_packet_ref_t blocks[ULNET_RS_TOTAL_BLOCKS_MAX]
 }
 
 ULNET_LINKAGE void ulnet_input_poll(ulnet_session_t *session, ulnet_input_state_t (*input_state)[ULNET_PORT_COUNT]) {
+    int64_t input_digest_time_usec = ulnet__get_unix_time_microseconds();
+
     for (int peer_idx = 0; peer_idx < SAM2_TOTAL_PEERS; peer_idx++) {
         if (ulnet_port_is_active_player(&session->room_we_are_in, peer_idx)) {
 
@@ -2881,6 +2978,17 @@ ULNET_LINKAGE void ulnet_input_poll(ulnet_session_t *session, ulnet_input_state_
                 for (int i = 0; i < SAM2_ARRAY_LENGTH((*input_state)[port]); i++) {
                     (*input_state)[port][i] |= session->state[peer_idx].input_state[session->frame_counter % ULNET_DELAY_BUFFER_SIZE][port][i];
                 }
+            }
+
+            int64_t poll_time_usec = session->state[peer_idx].input_poll_unix_usec[session->frame_counter % ULNET_DELAY_BUFFER_SIZE];
+            int our_port = sam2_get_port_of_peer(&session->room_we_are_in, session->our_peer_id);
+            if (   poll_time_usec > 0
+                && (peer_idx == our_port || session->peer_packet_ping_samples[peer_idx] > 0)) {
+                int64_t clock_offset_usec = session->peer_packet_kernel_ping_samples[peer_idx] > 0
+                    ? session->peer_kernel_clock_offset_usec[peer_idx]
+                    : session->peer_clock_offset_usec[peer_idx];
+                int64_t poll_time_local_usec = poll_time_usec - clock_offset_usec;
+                session->peer_input_to_core_ping_usec[peer_idx] = input_digest_time_usec - poll_time_local_usec;
             }
         }
     }
@@ -3159,6 +3267,16 @@ static SAM2_FORCEINLINE int64_t ulnet__get_frame_from_packet(const uint8_t *pack
     return frame;
 }
 
+static void ulnet__stamp_state_packet_ping(ulnet_session_t *session, int peer_port, uint8_t *packet, int64_t send_time_usec) {
+    if (!ulnet__is_input_channel(packet[0])) return;
+
+    ulnet_state_packet_t *state_packet = (ulnet_state_packet_t *) packet;
+    ulnet__write_le64s(state_packet->ping_send_unix_usec_le, send_time_usec);
+    ulnet__write_le64s(state_packet->ping_echo_send_unix_usec_le, session->peer_last_packet_send_unix_usec[peer_port]);
+    ulnet__write_le64s(state_packet->ping_echo_callsite_receive_unix_usec_le, session->peer_last_packet_callsite_receive_unix_usec[peer_port]);
+    ulnet__write_le64s(state_packet->ping_echo_kernel_receive_unix_usec_le, session->peer_last_packet_kernel_receive_unix_usec[peer_port]);
+}
+
 
 static void ulnet__memor(void *dst, const void *src, size_t n) {
     int16_t *d = (int16_t *)dst;
@@ -3178,6 +3296,12 @@ static void ulnet__publish_authority_room_snapshot(ulnet_session_t *session, int
 
 static int64_t ulnet__encode_state_packet(ulnet_session_t *session, int state_port, uint8_t *packet, size_t packet_capacity) {
     packet[0] = ULNET_CHANNEL_INPUT_HI | state_port;
+    ulnet_state_packet_t *state_packet = (ulnet_state_packet_t *) packet;
+    memset(state_packet->ping_send_unix_usec_le, 0, sizeof(state_packet->ping_send_unix_usec_le));
+    memset(state_packet->ping_echo_send_unix_usec_le, 0, sizeof(state_packet->ping_echo_send_unix_usec_le));
+    memset(state_packet->ping_echo_callsite_receive_unix_usec_le, 0, sizeof(state_packet->ping_echo_callsite_receive_unix_usec_le));
+    memset(state_packet->ping_echo_kernel_receive_unix_usec_le, 0, sizeof(state_packet->ping_echo_kernel_receive_unix_usec_le));
+
     // Reserve room for the reliable wrapper: these state packets are always sent through the reliable
     // channel (ulnet_reliable_send / ..._with_acks_only), and a payload that fits unwrapped but not
     // wrapped would be silently dropped by ulnet__wrap_packet.
@@ -3211,6 +3335,7 @@ static void ulnet__send_state_packet_to_ready_peers(ulnet_session_t *session, in
 
     for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
         if (!ulnet__peer_link_ready(session, p)) continue;
+        ulnet__stamp_state_packet_ping(session, p, packet, ulnet__get_unix_time_microseconds());
         if (queued_reliable) {
             ulnet_reliable_send(session, p, packet, packet_size);
         } else {
@@ -3250,6 +3375,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
         int64_t next_buffer_index = ++session->state[our_port].frame % ULNET_DELAY_BUFFER_SIZE;
 
         session->state[our_port].core_option[next_buffer_index] = session->next_core_option;
+        session->state[our_port].input_poll_unix_usec[next_buffer_index] = ulnet__get_unix_time_microseconds();
 
         // Advertise the authoritative room snapshot (and the frame it takes effect) so peers reach
         // consensus on membership at 8-frame boundaries. Only the authority's snapshot is consulted.
@@ -3286,6 +3412,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
             status |= ULNET_POLL_SESSION_BUFFERED_INPUT;
             int64_t next_buffer_index = ++session->state[SAM2_AUTHORITY_INDEX].frame % ULNET_DELAY_BUFFER_SIZE;
             session->state[SAM2_AUTHORITY_INDEX].core_option[next_buffer_index] = session->next_core_option;
+            session->state[SAM2_AUTHORITY_INDEX].input_poll_unix_usec[next_buffer_index] = ulnet__get_unix_time_microseconds();
             memset(session->state[SAM2_AUTHORITY_INDEX].input_state[next_buffer_index], 0,
                 sizeof(session->state[SAM2_AUTHORITY_INDEX].input_state[next_buffer_index]));
             ulnet__publish_authority_room_snapshot(session, SAM2_AUTHORITY_INDEX);
@@ -3316,6 +3443,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
             packet_size = ulnet__encode_state_packet(session, our_port, packet, sizeof(packet));
         } else {
             packet[0] = ULNET_CHANNEL_SPECTATOR_INPUT;
+            memset(packet + 1, 0, sizeof(ulnet_state_packet_t) - 1);
             packet_size = sizeof(ulnet_state_packet_t) + rle8_encode_capped(
                 (uint8_t *) &session->spectator_suggested_input_state[63],
                 sizeof(session->spectator_suggested_input_state[63]),
@@ -3333,6 +3461,9 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
         for (int p = 0; packet_size >= 0 && p < SAM2_ARRAY_LENGTH(session->agent); p++) {
             // Wait until we can send netplay messages to everyone without fail
             if (ulnet__peer_link_ready(session, p)) {
+                if (we_send_authoritative_state) {
+                    ulnet__stamp_state_packet_ping(session, p, packet, ulnet__get_unix_time_microseconds());
+                }
                 ulnet_reliable_send_with_acks_only(session, p, packet, packet_size);
 
                 if (we_send_authoritative_state) {
@@ -3705,6 +3836,16 @@ static void ulnet_peer_init_defaulted(ulnet_session_t *session, int peer_port) {
     session->peer_desynced_frame[peer_port] = 0;
     session->packet_history_next[peer_port] = 0;
     session->reliable_last_transmit_time[peer_port] = 0;
+    session->peer_last_packet_send_unix_usec[peer_port] = 0;
+    session->peer_last_packet_callsite_receive_unix_usec[peer_port] = 0;
+    session->peer_last_packet_kernel_receive_unix_usec[peer_port] = 0;
+    session->peer_clock_offset_usec[peer_port] = 0;
+    session->peer_kernel_clock_offset_usec[peer_port] = 0;
+    session->peer_packet_ping_samples[peer_port] = 0;
+    session->peer_packet_ping_usec[peer_port] = 0;
+    session->peer_packet_kernel_ping_samples[peer_port] = 0;
+    session->peer_packet_kernel_ping_usec[peer_port] = 0;
+    session->peer_input_to_core_ping_usec[peer_port] = 0;
     session->peer_needs_sync_bitfield        &= ~(1ULL << peer_port);
     session->peer_pending_disconnect_bitfield &= ~(1ULL << peer_port);
 }
@@ -3854,6 +3995,55 @@ static void ulnet__check_for_desync(ulnet_state_t *our_state, ulnet_state_t *the
 }
 
 ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, const uint8_t *data, size_t size);
+
+static bool ulnet__estimate_ping_usec(int64_t local_send_usec, int64_t remote_receive_usec, int64_t remote_send_usec,
+    int64_t local_receive_usec, int64_t *delay_usec, int64_t *offset_usec) {
+    if (   local_send_usec <= 0
+        || remote_receive_usec <= 0
+        || remote_send_usec < remote_receive_usec
+        || local_receive_usec < local_send_usec) {
+        return false;
+    }
+
+    // RFC 5905 theta/delta with local T1/T4 and remote T2/T3.
+    *delay_usec = (local_receive_usec - local_send_usec) - (remote_send_usec - remote_receive_usec);
+    *offset_usec = ((remote_receive_usec - local_send_usec) + (remote_send_usec - local_receive_usec)) / 2;
+    return *delay_usec >= 0;
+}
+
+static void ulnet__process_state_packet_ping(ulnet_session_t *session, int p, const uint8_t *data, size_t size,
+    int64_t callsite_receive_time_usec, int64_t kernel_receive_time_usec) {
+    if (size < sizeof(ulnet_state_packet_t) || !ulnet__is_input_channel(data[0])) return;
+
+    const ulnet_state_packet_t *state_packet = (const ulnet_state_packet_t *) data;
+    int64_t remote_send_usec = ulnet__read_le64s(state_packet->ping_send_unix_usec_le);
+    int64_t echoed_local_send_usec = ulnet__read_le64s(state_packet->ping_echo_send_unix_usec_le);
+    int64_t remote_callsite_receive_usec = ulnet__read_le64s(state_packet->ping_echo_callsite_receive_unix_usec_le);
+    int64_t remote_kernel_receive_usec = ulnet__read_le64s(state_packet->ping_echo_kernel_receive_unix_usec_le);
+
+    if (remote_send_usec > 0) {
+        session->peer_last_packet_send_unix_usec[p] = remote_send_usec;
+        session->peer_last_packet_callsite_receive_unix_usec[p] = callsite_receive_time_usec;
+        session->peer_last_packet_kernel_receive_unix_usec[p] = kernel_receive_time_usec;
+    }
+
+    int64_t delay_usec = 0;
+    int64_t offset_usec = 0;
+    if (ulnet__estimate_ping_usec(echoed_local_send_usec, remote_callsite_receive_usec,
+        remote_send_usec, callsite_receive_time_usec, &delay_usec, &offset_usec)) {
+        session->peer_packet_ping_usec[p] = delay_usec;
+        session->peer_clock_offset_usec[p] = offset_usec;
+        session->peer_packet_ping_samples[p]++;
+    }
+
+    if (ulnet__estimate_ping_usec(echoed_local_send_usec, remote_kernel_receive_usec,
+        remote_send_usec, kernel_receive_time_usec, &delay_usec, &offset_usec)) {
+        session->peer_packet_kernel_ping_usec[p] = delay_usec;
+        session->peer_kernel_clock_offset_usec[p] = offset_usec;
+        session->peer_packet_kernel_ping_samples[p]++;
+    }
+}
+
 // MARK: UDP Packet Processing
 ULNET_LINKAGE void ulnet_receive_packet_callback(ulnet_nat_agent_t *agent, const char *packet, size_t size, void *user_ptr) {
     ulnet_session_t *session = (ulnet_session_t *) user_ptr;
@@ -3886,6 +4076,7 @@ ULNET_LINKAGE void ulnet_receive_packet_callback(ulnet_nat_agent_t *agent, const
     }
 
     ulnet__process_udp_packet(session, p, (const uint8_t *) packet, size); // Fallthrough to the next function
+    session->pending_packet_kernel_receive_unix_usec = 0;
 }
 
 ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, const uint8_t *data, size_t size) {
@@ -3971,6 +4162,8 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
     case ULNET_CHANNEL_INPUT: {
         assert(size <= ULNET_PACKET_SIZE_BYTES_MAX);
 
+        int64_t receive_time_usec = ulnet__get_unix_time_microseconds();
+
         ulnet_state_packet_t *input_packet = (ulnet_state_packet_t *) data; // @todo Violates strict aliasing rule
         int original_sender_port = data[0] & 0b00111111;
 
@@ -3995,7 +4188,12 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
             return;
         }
 
-        int64_t coded_state_size = size - ULNET_HEADER_SIZE;
+        if (p == original_sender_port) {
+            ulnet__process_state_packet_ping(session, p, data, size, receive_time_usec,
+                session->pending_packet_kernel_receive_unix_usec);
+        }
+
+        int64_t coded_state_size = size - sizeof(ulnet_state_packet_t);
 
         int64_t frame;
         rle8_decode(input_packet->coded_state, coded_state_size, (uint8_t *) &frame, sizeof(frame));
@@ -4031,7 +4229,10 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
                 for (int s = 0; s < SAM2_TOTAL_PEERS; s++) {
                     if (s == p) continue; // Don't echo back to the sender
                     if (!session->agent[s]) continue;
-                    ulnet_reliable_send_with_acks_only(session, s, (const uint8_t *)data, size);
+                    uint8_t relayed_packet[ULNET_PACKET_SIZE_BYTES_MAX];
+                    memcpy(relayed_packet, data, size);
+                    ulnet__stamp_state_packet_ping(session, s, relayed_packet, ulnet__get_unix_time_microseconds());
+                    ulnet_reliable_send_with_acks_only(session, s, relayed_packet, size);
                 }
             }
         }
@@ -4702,6 +4903,28 @@ ULNET_LINKAGE void ulnet_imgui_show_session(ulnet_session_t *session) {
                 if (ImGui::CollapsingHeader("Reliable Protocol State", ImGuiTreeNodeFlags_DefaultOpen)) {
                     ImGui::Text("Transmit: Next Seq=%u, Greatest Acked=%u", session->reliable_tx_next_seq[p], session->reliable_tx_head[p]);
                     ImGui::Text("Receive: Greatest Seq=%u", session->reliable_rx_head[p]);
+                }
+
+                if (ImGui::CollapsingHeader("Ping Estimates", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    if (session->peer_packet_ping_samples[p] > 0) {
+                        ImGui::Text("Packet ping (callsite): %.3f ms", session->peer_packet_ping_usec[p] / 1000.0);
+                        ImGui::Text("Clock offset (callsite): %.3f ms", session->peer_clock_offset_usec[p] / 1000.0);
+                    } else {
+                        ImGui::TextDisabled("Packet ping (callsite): waiting for echoed timestamp");
+                    }
+
+                    if (session->peer_packet_kernel_ping_samples[p] > 0) {
+                        ImGui::Text("Packet ping (SO_TIMESTAMP): %.3f ms", session->peer_packet_kernel_ping_usec[p] / 1000.0);
+                        ImGui::Text("Clock offset (SO_TIMESTAMP): %.3f ms", session->peer_kernel_clock_offset_usec[p] / 1000.0);
+                    } else {
+                        ImGui::TextDisabled("Packet ping (SO_TIMESTAMP): unavailable");
+                    }
+
+                    if (session->peer_input_to_core_ping_usec[p] > 0) {
+                        ImGui::Text("Input poll to core: %.3f ms", session->peer_input_to_core_ping_usec[p] / 1000.0);
+                    } else {
+                        ImGui::TextDisabled("Input poll to core: waiting for consumed input");
+                    }
                 }
 
                 if (ImGui::CollapsingHeader("Recent Packets", ImGuiTreeNodeFlags_DefaultOpen)) {
