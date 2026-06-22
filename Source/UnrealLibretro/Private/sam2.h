@@ -691,8 +691,8 @@ SAM2_LINKAGE int sam2_client_poll_connection(sam2_socket_t sockfd, int timeout_m
     #define SAM2_ENOTCONN ENOTCONN
 #endif
 
-static int sam2__frame_message(sam2_message_u *message, char *buffer, int *length) {
-    if (*length < SAM2_HEADER_SIZE) return 0;
+static int sam2__frame_message(sam2_message_u *message, char *buffer, int length) {
+    if (length < SAM2_HEADER_SIZE) return 0;
     sam2_message_metadata_t *metadata = sam2_get_metadata(buffer);
 
     if (metadata == NULL)                      return SAM2_RESPONSE_INVALID_HEADER;
@@ -704,28 +704,25 @@ static int sam2__frame_message(sam2_message_u *message, char *buffer, int *lengt
     if (buffer[7] == 'z') {
         message_bytes_read = rle8_decode_extra(
             (uint8_t *) buffer,
-            *length,
+            length,
             &input_consumed,
             (uint8_t *) message,
             metadata->message_size
         );
     } else if (buffer[7] == 'r') {
-        if (*length >= metadata->message_size) {
+            if (length < metadata->message_size) return 0;
+
             memcpy(message, buffer, metadata->message_size);
-            message_bytes_read = input_consumed = metadata->message_size;
-        }
+            message_bytes_read = metadata->message_size;
+            input_consumed = metadata->message_size;
     } else {
-        return SAM2_RESPONSE_INVALID_ENCODE_TYPE;
+            return SAM2_RESPONSE_INVALID_ENCODE_TYPE;
     }
 
-    if (message_bytes_read == metadata->message_size) {
-        // Theoretically the memmove here is inefficient, but it shouldn't actually matter
-        memmove(buffer, buffer + input_consumed, *length - input_consumed);
-        *length -= input_consumed;
-
-        return 1;
-    } else {
+    if (message_bytes_read != metadata->message_size) {
         return 0;
+    } else {
+        return (int)input_consumed;
     }
 }
 
@@ -776,24 +773,20 @@ SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *message)
     }
 
     // See if we can frame a whole message
-    int buf_len = peeked;
-    int frame_status = sam2__frame_message(message, temp_buf, &buf_len);
+    int consumed = sam2__frame_message(message, temp_buf, peeked);
 
-    if (frame_status == 0) {
+    if (consumed == 0) {
         // Not yet a complete message.
         return 0;
-    } else if (frame_status < 0) {
-        SAM2_LOG_ERROR("Message framing failed with code (%d)", frame_status);
-        if (frame_status == SAM2_RESPONSE_INVALID_HEADER) {
+    } else if (consumed < 0) {
+        SAM2_LOG_ERROR("Message framing failed with code (%d)", consumed);
+        if (consumed == SAM2_RESPONSE_INVALID_HEADER) {
             SAM2_LOG_WARN("Invalid header received '%.4s'", temp_buf);
         }
 
-        return frame_status;
+        return consumed;
     } else {
         // Complete message was framed.
-        // Calculate how many bytes were consumed by the framing routine
-        int consumed = peeked - buf_len;
-        // Now remove exactly the consumed bytes from the socket
         int received = recv(sockfd, temp_buf, consumed, 0);
         if (received != consumed) {
             SAM2_LOG_ERROR("Socket receive consumed %d/%d bytes", received, consumed);
