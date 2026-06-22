@@ -130,6 +130,60 @@ static int ulnet_test_no_slot_swap(void) {
     return 0;
 }
 
+static int ulnet_test_room_change_scheduling_guards(void) {
+    ulnet_session_t session;
+    memset(&session, 0, sizeof(session));
+    ulnet_session_init_defaulted(&session);
+    session.our_peer_id = 10001;
+    session.sam2_send_callback = ulnet__test_discard_send_callback;
+    session.room_we_are_in.flags = SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+    session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session.our_peer_id;
+    session.room_we_are_in.peer_ids[ULNET__TEST_SPECTATOR_PORT] = 30002;
+    session.room_we_are_in.peer_topology = (1ULL << SAM2_AUTHORITY_INDEX);
+    session.next_room = session.room_we_are_in;
+
+    sam2_room_join_message_t promote = { SAM2_JOIN_HEADER };
+    promote.room = session.room_we_are_in;
+    promote.room.peer_topology |= (1ULL << ULNET__TEST_SPECTATOR_PORT);
+    promote.peer_id = session.room_we_are_in.peer_ids[ULNET__TEST_SPECTATOR_PORT];
+
+    if (ulnet_process_message(&session, (const char *) &promote) != 0) {
+        SAM2_LOG_ERROR("Failed to schedule spectator promotion");
+        return 1;
+    }
+
+    int64_t advertise_frame = ulnet__room_advertise_frame_from_effective_frame(session.next_room_effective_frame);
+    if (advertise_frame != 1) {
+        SAM2_LOG_ERROR("Room change advertised on frame %" PRId64 " instead of frame 1", advertise_frame);
+        return 1;
+    }
+    if (session.next_room_effective_frame != 1 + ULNET_ROOM_CHANGE_LEAD_FRAMES) {
+        SAM2_LOG_ERROR("Room change effective frame was %" PRId64 " instead of %" PRId64,
+            session.next_room_effective_frame, (int64_t)(1 + ULNET_ROOM_CHANGE_LEAD_FRAMES));
+        return 1;
+    }
+
+    sam2_room_t first_pending = session.next_room;
+    int64_t first_effective_frame = session.next_room_effective_frame;
+
+    sam2_room_join_message_t demote_authority = { SAM2_JOIN_HEADER };
+    demote_authority.room = session.room_we_are_in;
+    demote_authority.room.peer_topology &= ~(1ULL << SAM2_AUTHORITY_INDEX);
+    demote_authority.peer_id = session.our_peer_id;
+
+    if (ulnet_process_message(&session, (const char *) &demote_authority) != 0) {
+        SAM2_LOG_ERROR("Failed to process overlapping active-set change");
+        return 1;
+    }
+    if (session.next_room_effective_frame != first_effective_frame ||
+        memcmp(&session.next_room, &first_pending, sizeof(session.next_room)) != 0) {
+        SAM2_LOG_ERROR("Overlapping active-set change replaced an already pending room change");
+        return 1;
+    }
+
+    return 0;
+}
+
 static void ulnet__test_inproc_pair_setup(ulnet_session_t *sessions[2],
     ulnet_transport_inproc_t *transport, int64_t retransmit_delay_microseconds) {
     for (int i = 0; i < 2; i++) {
@@ -204,6 +258,20 @@ static int ulnet__test_expect_room_change_lead(ulnet_session_t *authority, const
     int64_t advertise_frame = ulnet__room_advertise_frame_from_effective_frame(authority->next_room_effective_frame);
     if (advertise_frame <= authority->authority_room_snapshot_last_sent_frame) {
         SAM2_LOG_ERROR("%s reused an authority state frame that may already have been sent", label);
+        return 1;
+    }
+    int64_t expected_advertise_frame = SAM2_MAX(
+        authority->state[SAM2_AUTHORITY_INDEX].frame,
+        authority->authority_room_snapshot_last_sent_frame + 1
+    );
+    expected_advertise_frame = SAM2_MAX(expected_advertise_frame, 1);
+    int64_t expected_effective_frame = expected_advertise_frame + ULNET_ROOM_CHANGE_LEAD_FRAMES;
+    if (advertise_frame != expected_advertise_frame ||
+        authority->next_room_effective_frame != expected_effective_frame) {
+        SAM2_LOG_ERROR("%s scheduled advertise/effective frames %" PRId64 "/%" PRId64
+            " instead of %" PRId64 "/%" PRId64, label,
+            advertise_frame, authority->next_room_effective_frame,
+            expected_advertise_frame, expected_effective_frame);
         return 1;
     }
 
@@ -987,8 +1055,9 @@ int ulnet_test_inproc_coordinator_only_authority(void) {
         sessions[1]->core_wants_tick_at_unix_usec = 0;
         ulnet_poll_session(sessions[1], 0, save_state, sizeof(save_state), 60.0, 0.0);
     }
-    if (blocked_frame != sessions[1]->frame_counter || blocked_frame > blocked_boundary) {
-        SAM2_LOG_ERROR("coordinator test: player advanced beyond room-change lead without authority snapshot");
+    if (blocked_frame != blocked_boundary || sessions[1]->frame_counter != blocked_boundary) {
+        SAM2_LOG_ERROR("coordinator test: player stalled at frame %" PRId64 " instead of room-change boundary %" PRId64,
+            blocked_frame, blocked_boundary);
         status = 1;
         goto done;
     }
@@ -1846,6 +1915,12 @@ int main (int argc, char **argv) {
     status = ulnet_test_no_slot_swap();
     if (status != 0) {
         printf("No-slot-swap reconstruct test failed with status: %d\n", status);
+        return status;
+    }
+
+    status = ulnet_test_room_change_scheduling_guards();
+    if (status != 0) {
+        printf("Room change scheduling guard test failed with status: %d\n", status);
         return status;
     }
 

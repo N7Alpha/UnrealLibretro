@@ -3311,6 +3311,11 @@ static void ulnet__publish_authority_room_snapshot(ulnet_session_t *session, int
     }
 }
 
+static bool ulnet__authority_has_pending_room_change(ulnet_session_t *session) {
+    return    session->next_room_effective_frame > 0
+           && memcmp(&session->next_room, &session->room_we_are_in, sizeof(sam2_room_t)) != 0;
+}
+
 static int64_t ulnet__encode_state_packet(ulnet_session_t *session, int state_port, uint8_t *packet, size_t packet_capacity) {
     packet[0] = ULNET_CHANNEL_INPUT_HI | state_port;
     ulnet_state_packet_t *state_packet = (ulnet_state_packet_t *) packet;
@@ -3465,7 +3470,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
             if (we_are_authority) {
                 ulnet__publish_authority_room_snapshot(session, our_port);
             }
-            packet_size = ulnet__encode_state_packet(session, our_port, packet, sizeof(packet));
+            ulnet__send_state_packet_to_ready_peers(session, our_port, false);
         } else {
             packet[0] = ULNET_CHANNEL_SPECTATOR_INPUT;
             memset(packet + 1, 0, sizeof(ulnet_state_packet_t) - 1);
@@ -3475,38 +3480,20 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
                 &packet[sizeof(ulnet_state_packet_t)],
                 sizeof(packet) - sizeof(ulnet_state_packet_t)
             );
-        }
 
-        if (packet_size < 0 || packet_size > ULNET_PACKET_SIZE_BYTES_MAX) {
-            // Recoverable: skip this frame's send rather than crashing on a state that won't fit
-            SAM2_LOG_WARN("Outgoing packet too large to send this frame; skipping");
-            packet_size = -1;
-        }
+            if (packet_size < 0 || packet_size > ULNET_PACKET_SIZE_BYTES_MAX) {
+                // Recoverable: skip this frame's send rather than crashing on a state that won't fit
+                SAM2_LOG_WARN("Outgoing packet too large to send this frame; skipping");
+                packet_size = -1;
+            }
 
-        bool sent_authority_state_packet = false;
-        for (int p = 0; packet_size >= 0 && p < SAM2_ARRAY_LENGTH(session->agent); p++) {
-            // Wait until we can send netplay messages to everyone without fail
-            if (ulnet__peer_link_ready(session, p)) {
-                if (we_send_authoritative_state) {
-                    ulnet__stamp_state_packet_ping(session, p, packet, ulnet__get_unix_time_microseconds());
-                }
-                ulnet_reliable_send_with_acks_only(session, p, packet, packet_size);
-                sent_authority_state_packet |= we_send_authoritative_state && we_are_authority && our_port == SAM2_AUTHORITY_INDEX;
-
-                if (we_send_authoritative_state) {
-                    SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%05" PRId16,
-                        session->state[our_port].frame, p, session->room_we_are_in.peer_ids[p]);
-                } else {
+            for (int p = 0; packet_size >= 0 && p < SAM2_ARRAY_LENGTH(session->agent); p++) {
+                // Wait until we can send netplay messages to everyone without fail
+                if (ulnet__peer_link_ready(session, p)) {
+                    ulnet_reliable_send_with_acks_only(session, p, packet, packet_size);
                     SAM2_LOG_DEBUG("Sent spectator input packet dest peer_ids[%d]=%05" PRId16, p, session->room_we_are_in.peer_ids[p]);
                 }
             }
-        }
-
-        if (sent_authority_state_packet) {
-            session->authority_room_snapshot_last_sent_frame = SAM2_MAX(
-                session->authority_room_snapshot_last_sent_frame,
-                session->state[SAM2_AUTHORITY_INDEX].frame
-            );
         }
     }
 
@@ -3774,6 +3761,9 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
             SAM2_LOG_INFO("Adopting authoritative room snapshot at frame %" PRId64, session->frame_counter + 1);
 
             ulnet__reconcile_connections(session, &incoming_room); // commits room_we_are_in, rebuilds changed agents (never swaps)
+            if (ulnet_is_authority(session)) {
+                session->next_room_effective_frame = 0;
+            }
 
             if (!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
                 SAM2_LOG_INFO("Room '%s' was abandoned", session->room_we_are_in.name);
@@ -3919,15 +3909,21 @@ static sam2_room_t *ulnet__authority_desired_room(ulnet_session_t *session) {
 static void ulnet__schedule_active_set_change(ulnet_session_t *session) {
     assert(ulnet_is_authority(session));
 
-    int64_t advertise_frame = session->state[SAM2_AUTHORITY_INDEX].frame;
-    if (session->authority_room_snapshot_last_sent_frame >= advertise_frame) {
-        advertise_frame++;
-    }
+    int64_t advertise_frame = SAM2_MAX(
+        session->state[SAM2_AUTHORITY_INDEX].frame,
+        session->authority_room_snapshot_last_sent_frame + 1
+    );
+    advertise_frame = SAM2_MAX(advertise_frame, 1);
 
     session->next_room_effective_frame = advertise_frame + ULNET_ROOM_CHANGE_LEAD_FRAMES;
 }
 
 static void ulnet__authority_remove_peer(ulnet_session_t *session, sam2_room_t *desired, int port, bool was_player) {
+    if (was_player && ulnet__authority_has_pending_room_change(session)) {
+        SAM2_LOG_WARN("Ignoring player leave for port %d while another room change is pending", port);
+        return;
+    }
+
     desired->peer_ids[port] = SAM2_PORT_AVAILABLE;
     desired->peer_topology &= ~(1ULL << port);
 
@@ -4610,9 +4606,13 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
             bool wants_player = (room_join->room.peer_topology >> current_port) & 1ULL;
             bool is_player    = ulnet_port_is_p2p(desired, current_port);
             if (wants_player != is_player) {
-                if (wants_player) desired->peer_topology |=  (1ULL << current_port);
-                else              desired->peer_topology &= ~(1ULL << current_port);
-                ulnet__schedule_active_set_change(session);
+                if (ulnet__authority_has_pending_room_change(session)) {
+                    SAM2_LOG_WARN("Ignoring active-set change from peer %05" PRId16 " while another room change is pending", peer_id);
+                } else {
+                    if (wants_player) desired->peer_topology |=  (1ULL << current_port);
+                    else              desired->peer_topology &= ~(1ULL << current_port);
+                    ulnet__schedule_active_set_change(session);
+                }
             } else {
                 SAM2_LOG_WARN("Join request from peer %05" PRId16 " changed nothing", peer_id);
             }
