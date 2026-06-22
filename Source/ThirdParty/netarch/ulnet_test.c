@@ -200,6 +200,16 @@ static int ulnet__test_request_remote_role_toggle(ulnet_session_t *peer, int por
     return ulnet_message_send(peer, SAM2_AUTHORITY_INDEX, (const uint8_t *) &req);
 }
 
+static int ulnet__test_expect_room_change_lead(ulnet_session_t *authority, const char *label) {
+    int64_t advertise_frame = ulnet__room_advertise_frame_from_effective_frame(authority->next_room_effective_frame);
+    if (advertise_frame <= authority->authority_room_snapshot_last_sent_frame) {
+        SAM2_LOG_ERROR("%s reused an authority state frame that may already have been sent", label);
+        return 1;
+    }
+
+    return 0;
+}
+
 int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_out) {
     sam2_server_t *server = 0;
     ulnet_session_t *sessions[2] = {0};
@@ -585,11 +595,8 @@ int ulnet_test_ice_promote_spectator(void) {
 
     status = ulnet__test_request_local_role_toggle(sessions[A], SAM2_AUTHORITY_INDEX);
     if (status) goto done;
-    if (sessions[A]->next_room_effective_frame % ULNET_DELAY_BUFFER_SIZE != 0) {
-        SAM2_LOG_ERROR("Real-ICE coordinator toggle was not scheduled on a block boundary");
-        status = 1;
-        goto done;
-    }
+    status = ulnet__test_expect_room_change_lead(sessions[A], "Real-ICE coordinator toggle");
+    if (status) goto done;
 
     int coordinator_mode = 0;
     for (int64_t t0 = ulnet__get_unix_time_microseconds(); ulnet__get_unix_time_microseconds() - t0 < 5000000;) {
@@ -918,8 +925,7 @@ int ulnet_test_inproc_coordinator_only_authority(void) {
         goto done;
     }
     int64_t scheduled_out_frame = sessions[0]->next_room_effective_frame;
-    if (scheduled_out_frame % ULNET_DELAY_BUFFER_SIZE != 0) {
-        SAM2_LOG_ERROR("coordinator test: authority leave-mesh frame is not block aligned");
+    if (ulnet__test_expect_room_change_lead(sessions[0], "coordinator leave-mesh")) {
         status = 1;
         goto done;
     }
@@ -965,8 +971,7 @@ int ulnet_test_inproc_coordinator_only_authority(void) {
     }
 
     int64_t authority_snapshot_frame = sessions[1]->state[SAM2_AUTHORITY_INDEX].frame;
-    int64_t satisfied_block_start = ((authority_snapshot_frame + 1) / ULNET_DELAY_BUFFER_SIZE) * ULNET_DELAY_BUFFER_SIZE;
-    int64_t blocked_boundary = satisfied_block_start + ULNET_DELAY_BUFFER_SIZE;
+    int64_t blocked_boundary = authority_snapshot_frame + ULNET_ROOM_CHANGE_LEAD_FRAMES;
     for (int i = 0; i < 80 && sessions[1]->frame_counter < blocked_boundary; i++) {
         sessions[0]->core_wants_tick_at_unix_usec = 0;
         ulnet_poll_session(sessions[0], 0, save_state, sizeof(save_state), 60.0, 0.0);
@@ -983,7 +988,7 @@ int ulnet_test_inproc_coordinator_only_authority(void) {
         ulnet_poll_session(sessions[1], 0, save_state, sizeof(save_state), 60.0, 0.0);
     }
     if (blocked_frame != sessions[1]->frame_counter || blocked_frame > blocked_boundary) {
-        SAM2_LOG_ERROR("coordinator test: player advanced into a block without authority snapshot");
+        SAM2_LOG_ERROR("coordinator test: player advanced beyond room-change lead without authority snapshot");
         status = 1;
         goto done;
     }
@@ -1004,9 +1009,7 @@ int ulnet_test_inproc_coordinator_only_authority(void) {
         status = 1;
         goto done;
     }
-    int64_t scheduled_in_frame = sessions[0]->next_room_effective_frame;
-    if (scheduled_in_frame % ULNET_DELAY_BUFFER_SIZE != 0) {
-        SAM2_LOG_ERROR("coordinator test: authority join-mesh frame is not block aligned");
+    if (ulnet__test_expect_room_change_lead(sessions[0], "coordinator join-mesh")) {
         status = 1;
         goto done;
     }

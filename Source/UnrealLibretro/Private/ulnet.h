@@ -131,6 +131,10 @@ static SAM2_FORCEINLINE bool ulnet__is_input_channel(uint8_t channel_and_flags) 
 #define ULNET_DELAY_BUFFER_SIZE 8
 
 #define ULNET_DELAY_FRAMES_MAX (ULNET_DELAY_BUFFER_SIZE/2-1)
+#define ULNET_ROOM_CHANGE_LEAD_FRAMES (ULNET_DELAY_FRAMES_MAX + 1)
+#if ULNET_ROOM_CHANGE_LEAD_FRAMES <= 0 || ULNET_ROOM_CHANGE_LEAD_FRAMES > ULNET_DELAY_BUFFER_SIZE
+#error ULNET_ROOM_CHANGE_LEAD_FRAMES must fit in the input delay buffer
+#endif
 
 #define ULNET_PORT_COUNT 8
 typedef int16_t ulnet_input_state_t[64]; // This must be a POD for putting into packets
@@ -261,13 +265,14 @@ typedef struct ulnet_session {
     int64_t flags;
     uint16_t our_peer_id;
 
-    sam2_room_t room_we_are_in; // The committed simulation room (active-port set is constant within an 8-frame block)
+    sam2_room_t room_we_are_in; // The committed simulation room
 
     // Authority only: the desired room and the boundary frame at which it takes effect for everyone.
     // Spectator (topology-clear) edits are mirrored into room_we_are_in immediately (determinism-safe);
-    // active-set (topology bit / player) edits land here and are scheduled a block ahead.
+    // active-set (topology bit / player) edits land here and are advertised ahead in state packets.
     sam2_room_t next_room;
     int64_t next_room_effective_frame;
+    int64_t authority_room_snapshot_last_sent_frame;
 
     ulnet_input_state_t next_input_state[SAM2_PORT_MAX]; // This is the next input state that will be buffered, it is not yet applied to the state buffer
     ulnet_core_option_t next_core_option;
@@ -3288,10 +3293,22 @@ static void ulnet__memor(void *dst, const void *src, size_t n) {
     }
 }
 
+static int64_t ulnet__room_advertise_frame_from_effective_frame(int64_t effective_frame) {
+    return effective_frame - ULNET_ROOM_CHANGE_LEAD_FRAMES;
+}
+
 static void ulnet__publish_authority_room_snapshot(ulnet_session_t *session, int state_port) {
     assert(ulnet_is_authority(session));
-    session->state[state_port].room = session->next_room;
-    session->state[state_port].room_effective_frame = session->next_room_effective_frame;
+
+    if (   session->next_room_effective_frame > 0
+        && session->state[state_port].frame < ulnet__room_advertise_frame_from_effective_frame(session->next_room_effective_frame)
+        && memcmp(&session->next_room, &session->room_we_are_in, sizeof(sam2_room_t)) != 0) {
+        session->state[state_port].room = session->room_we_are_in;
+        session->state[state_port].room_effective_frame = 0;
+    } else {
+        session->state[state_port].room = session->next_room;
+        session->state[state_port].room_effective_frame = session->next_room_effective_frame;
+    }
 }
 
 static int64_t ulnet__encode_state_packet(ulnet_session_t *session, int state_port, uint8_t *packet, size_t packet_capacity) {
@@ -3333,6 +3350,7 @@ static void ulnet__send_state_packet_to_ready_peers(ulnet_session_t *session, in
         ulnet_update_state_history(session, packet, packet_size);
     }
 
+    bool sent = false;
     for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
         if (!ulnet__peer_link_ready(session, p)) continue;
         ulnet__stamp_state_packet_ping(session, p, packet, ulnet__get_unix_time_microseconds());
@@ -3341,13 +3359,20 @@ static void ulnet__send_state_packet_to_ready_peers(ulnet_session_t *session, in
         } else {
             ulnet_reliable_send_with_acks_only(session, p, packet, packet_size);
         }
+        sent = true;
+    }
+
+    if (sent && ulnet_is_authority(session) && state_port == SAM2_AUTHORITY_INDEX) {
+        session->authority_room_snapshot_last_sent_frame = SAM2_MAX(
+            session->authority_room_snapshot_last_sent_frame,
+            session->state[state_port].frame
+        );
     }
 }
 
 static int64_t ulnet__required_authority_snapshot_frame(int64_t frame_counter) {
-    if (frame_counter < ULNET_DELAY_BUFFER_SIZE) return -1;
-    int64_t block_start = (frame_counter / ULNET_DELAY_BUFFER_SIZE) * ULNET_DELAY_BUFFER_SIZE;
-    return block_start - 1;
+    int64_t required = frame_counter + 1 - ULNET_ROOM_CHANGE_LEAD_FRAMES;
+    return required > 0 ? required : -1;
 }
 
 #define ULNET_POLL_SESSION_SAVED_STATE    0b00000001
@@ -3377,8 +3402,8 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
         session->state[our_port].core_option[next_buffer_index] = session->next_core_option;
         session->state[our_port].input_poll_unix_usec[next_buffer_index] = ulnet__get_unix_time_microseconds();
 
-        // Advertise the authoritative room snapshot (and the frame it takes effect) so peers reach
-        // consensus on membership at 8-frame boundaries. Only the authority's snapshot is consulted.
+        // Advertise the authoritative room snapshot and the frame it takes effect.
+        // Only the authority's snapshot is consulted.
         if (we_are_authority) {
             ulnet__publish_authority_room_snapshot(session, our_port);
         } else {
@@ -3458,6 +3483,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
             packet_size = -1;
         }
 
+        bool sent_authority_state_packet = false;
         for (int p = 0; packet_size >= 0 && p < SAM2_ARRAY_LENGTH(session->agent); p++) {
             // Wait until we can send netplay messages to everyone without fail
             if (ulnet__peer_link_ready(session, p)) {
@@ -3465,6 +3491,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
                     ulnet__stamp_state_packet_ping(session, p, packet, ulnet__get_unix_time_microseconds());
                 }
                 ulnet_reliable_send_with_acks_only(session, p, packet, packet_size);
+                sent_authority_state_packet |= we_send_authoritative_state && we_are_authority && our_port == SAM2_AUTHORITY_INDEX;
 
                 if (we_send_authoritative_state) {
                     SAM2_LOG_DEBUG("Sent input packet for frame %" PRId64 " dest peer_ids[%d]=%05" PRId16,
@@ -3473,6 +3500,13 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
                     SAM2_LOG_DEBUG("Sent spectator input packet dest peer_ids[%d]=%05" PRId16, p, session->room_we_are_in.peer_ids[p]);
                 }
             }
+        }
+
+        if (sent_authority_state_packet) {
+            session->authority_room_snapshot_last_sent_frame = SAM2_MAX(
+                session->authority_room_snapshot_last_sent_frame,
+                session->state[SAM2_AUTHORITY_INDEX].frame
+            );
         }
     }
 
@@ -3719,11 +3753,9 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
 
         session->core_wants_tick_at_unix_usec += 1000000 / frame_rate;
 
-        // Membership consensus: adopt the authority's room snapshot at the boundary frame it is
-        // scheduled for. The authority drives this off its own desired room (next_room); everyone
-        // else reads the snapshot the authority advertised in its state packets. Because the active
-        // set only changes at this scheduled boundary -- and the snapshot is delivered reliably and
-        // ahead of time -- every peer flips membership on the same frame, so no desync and no swaps.
+        // Membership consensus: adopt the authority's room snapshot at the frame it is scheduled for.
+        // The authority drives this off its own desired room (next_room); everyone else reads the
+        // snapshot the authority advertised in its state packets.
         sam2_room_t incoming_room;
         int64_t incoming_effective_frame;
         if (ulnet_is_authority(session)) {
@@ -3884,10 +3916,15 @@ static sam2_room_t *ulnet__authority_desired_room(ulnet_session_t *session) {
     return &session->next_room;
 }
 
-static int64_t ulnet__next_active_set_change_frame(ulnet_session_t *session) {
-    int64_t base = SAM2_MAX(session->frame_counter, session->state[SAM2_AUTHORITY_INDEX].frame);
-    int64_t target = base + 2 * ULNET_DELAY_BUFFER_SIZE;
-    return target - (target % ULNET_DELAY_BUFFER_SIZE); // snap down to a block boundary (still >= 1 block of lead)
+static void ulnet__schedule_active_set_change(ulnet_session_t *session) {
+    assert(ulnet_is_authority(session));
+
+    int64_t advertise_frame = session->state[SAM2_AUTHORITY_INDEX].frame;
+    if (session->authority_room_snapshot_last_sent_frame >= advertise_frame) {
+        advertise_frame++;
+    }
+
+    session->next_room_effective_frame = advertise_frame + ULNET_ROOM_CHANGE_LEAD_FRAMES;
 }
 
 static void ulnet__authority_remove_peer(ulnet_session_t *session, sam2_room_t *desired, int port, bool was_player) {
@@ -3895,7 +3932,7 @@ static void ulnet__authority_remove_peer(ulnet_session_t *session, sam2_room_t *
     desired->peer_topology &= ~(1ULL << port);
 
     if (was_player) {
-        session->next_room_effective_frame = ulnet__next_active_set_change_frame(session);
+        ulnet__schedule_active_set_change(session);
     } else {
         session->room_we_are_in.peer_ids[port] = SAM2_PORT_AVAILABLE;
         session->room_we_are_in.peer_topology &= ~(1ULL << port);
@@ -3939,6 +3976,7 @@ static void ulnet__reset_to_local_solo(ulnet_session_t *session) {
     session->room_we_are_in.peer_topology = (1ULL << SAM2_AUTHORITY_INDEX);
     session->next_room = session->room_we_are_in;
     session->next_room_effective_frame = 0;
+    session->authority_room_snapshot_last_sent_frame = -1;
     session->frame_counter = 0;
 }
 
@@ -4535,7 +4573,7 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
     } else if (sam2_header_matches(response, sam2_join_header)) {
         // A peer (or the local GUI) requests a room change: leave, or toggle player<->spectator at its
         // own port. Peers never move ports -- a slot is a fixed identity. The authority edits its desired
-        // room (next_room); active-set changes are scheduled for a boundary, spectator edits are immediate.
+        // room (next_room); active-set changes are scheduled ahead, spectator edits are immediate.
         sam2_room_join_message_t *room_join = (sam2_room_join_message_t *) response;
         if (!ulnet_is_authority(session)) {
             SAM2_LOG_WARN("Only the authority handles join requests");
@@ -4562,8 +4600,8 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
         if (current_port == -1) {
             SAM2_LOG_WARN("Peer %05" PRId16 " is not in the room; connect (signal) first to spectate", peer_id);
         } else if (requested_port == -1) {
-            // Leave. A departing player is dropped on a boundary so everyone stops awaiting its input on
-            // the same frame; the boundary reconcile tears its agent down after its final input arrives.
+            // Leave. A departing player is dropped on a scheduled frame so everyone stops awaiting
+            // its input together; the reconcile tears its agent down after its final input arrives.
             ulnet__authority_remove_peer(session, desired, current_port, ulnet_port_is_p2p(desired, current_port));
         } else if (requested_port != current_port) {
             SAM2_LOG_WARN("Peer %05" PRId16 " requested a port move which is unsupported (slots are fixed)", peer_id);
@@ -4574,7 +4612,7 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
             if (wants_player != is_player) {
                 if (wants_player) desired->peer_topology |=  (1ULL << current_port);
                 else              desired->peer_topology &= ~(1ULL << current_port);
-                session->next_room_effective_frame = ulnet__next_active_set_change_frame(session);
+                ulnet__schedule_active_set_change(session);
             } else {
                 SAM2_LOG_WARN("Join request from peer %05" PRId16 " changed nothing", peer_id);
             }
@@ -4616,7 +4654,7 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
             SAM2_LOG_INFO("Creating NAT agent for peer %05" PRId16 " at slot %d", room_signal->peer_id, p);
             ulnet_startup_nat_for_peer(session, room_signal->peer_id, p, /* remote_signal = */ room_signal->ice_sdp); // sets peer_ids[p]
 
-            // Advertise the new spectator so other peers learn of it at the next snapshot boundary
+            // Advertise the new spectator so other peers learn of it in authority state packets.
             if (ulnet_is_authority(session)) {
                 session->next_room.peer_ids[p] = room_signal->peer_id; // topology bit stays clear (spectator)
             }
