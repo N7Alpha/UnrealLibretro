@@ -203,6 +203,12 @@ typedef struct {
 
 #define ULNET_SAVESTATE_TRANSFER_FLAG_K_IS_239         0b0001
 #define ULNET_SAVESTATE_TRANSFER_FLAG_SEQUENCE_HI_IS_0 0b0010
+#define ULNET_SAVESTATE_TRANSFER_FLAG_ACK              0b0100
+#define ULNET_SAVESTATE_TRANSFER_ID_MASK               0b11000
+#define ULNET_SAVESTATE_TRANSFER_ID_SHIFT              3
+#define ULNET_SAVESTATE_TRANSFER_DEFAULT_BANDWIDTH_BITS_PER_SECOND (8LL * 1024LL * 1024LL)
+#define ULNET_SAVESTATE_TRANSFER_MAX_RETRIES 2
+#define ULNET_SAVESTATE_TRANSFER_ACK_TIMEOUT_MICROSECONDS 2000000LL
 
 typedef struct {
     uint8_t channel_and_flags;
@@ -317,11 +323,15 @@ typedef struct ulnet_session {
 
     // MARK: Save state transfer
     int compression_quality;
-    int64_t remote_savestate_transfer_offset;
     uint8_t remote_packet_groups; // This is used to bookkeep how much data we actually need to receive to reform the complete savestate
+    uint8_t remote_savestate_transfer_id;
+    uint8_t remote_savestate_completed_transfer_id;
     ulnet_packet_ref_t packet_reference[FEC_PACKET_GROUPS_MAX][ULNET_RS_TOTAL_BLOCKS_MAX];
-    uint64_t fec_received_bits[FEC_PACKET_GROUPS_MAX][4];
     int fec_index_counter[FEC_PACKET_GROUPS_MAX]; // Counts unique packets received in each packet group
+    uint8_t savestate_transfer_id;
+    uint8_t savestate_transfer_retry_count;
+    uint64_t savestate_transfer_awaiting_bitfield;
+    int64_t savestate_transfer_ack_deadline_unix_usec;
 
     void *user_ptr;
     int (*sam2_send_callback)(void *user_ptr, char *response);
@@ -3338,6 +3348,10 @@ static int64_t ulnet__required_authority_snapshot_frame(int64_t frame_counter) {
     return required > 0 ? required : -1;
 }
 
+static void ulnet__savestate_tx_poll(ulnet_session_t *session);
+static int ulnet__send_save_state_to_peers(ulnet_session_t *session, uint64_t peer_bitfield, void *save_state,
+    size_t save_state_size, int64_t save_state_frame);
+
 #define ULNET_POLL_SESSION_SAVED_STATE    0b00000001
 #define ULNET_POLL_SESSION_TICKED         0b00000010
 #define ULNET_POLL_SESSION_BUFFERED_INPUT 0b00000100
@@ -3547,6 +3561,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
 
         ulnet__reliable_send_head(session, port, true);
     }
+    ulnet__savestate_tx_poll(session);
 
     // Reconstruct input required for next tick if we're spectating
     if (ulnet_is_spectator(session, session->our_peer_id)) {
@@ -3655,7 +3670,8 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
         bool save_state_allocated = false;
         size_t  save_state_size;
         int64_t save_state_frame = session->frame_counter;
-        if (force_save_state_on_tick || session->peer_needs_sync_bitfield) {
+        bool should_start_savestate_transfer = session->peer_needs_sync_bitfield && !session->savestate_transfer_awaiting_bitfield;
+        if (force_save_state_on_tick || should_start_savestate_transfer) {
             uint64_t start = ulnet__rdtsc();
             save_state_size = session->retro_serialize_size(session->user_ptr);
             if (save_state_size > save_state_capacity) {
@@ -3673,12 +3689,10 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
             }
         }
 
-        if (session->peer_needs_sync_bitfield) {
-            for (uint64_t p = 0; p < SAM2_ARRAY_LENGTH(session->agent); p++) {
-                if (session->peer_needs_sync_bitfield & (1ULL << p)) {
-                    ulnet_send_save_state(session, p, save_state, save_state_size, save_state_frame);
-                    session->peer_needs_sync_bitfield &= ~(1ULL << p);
-                }
+        if (should_start_savestate_transfer) {
+            uint64_t target_bitfield = session->peer_needs_sync_bitfield;
+            if (ulnet__send_save_state_to_peers(session, target_bitfield, save_state, save_state_size, save_state_frame) == 0) {
+                session->peer_needs_sync_bitfield &= ~target_bitfield;
             }
         }
 
@@ -3818,6 +3832,11 @@ static void ulnet_peer_init_defaulted(ulnet_session_t *session, int peer_port) {
     session->peer_input_to_core_ping_usec[peer_port] = 0;
     session->peer_needs_sync_bitfield        &= ~(1ULL << peer_port);
     session->peer_pending_disconnect_bitfield &= ~(1ULL << peer_port);
+    session->savestate_transfer_awaiting_bitfield &= ~(1ULL << peer_port);
+    if (!session->savestate_transfer_awaiting_bitfield) {
+        session->savestate_transfer_retry_count = 0;
+        session->savestate_transfer_ack_deadline_unix_usec = 0;
+    }
 }
 
 static void ulnet_clear_peer_packet_history(ulnet_session_t *session, int peer_port) {
@@ -3887,8 +3906,7 @@ static void ulnet__authority_remove_peer(ulnet_session_t *session, sam2_room_t *
 static inline void ulnet__reset_save_state_bookkeeping(ulnet_session_t *session) {
     ulnet_packet_ref_clear_many(&session->packet_reference[0][0], FEC_PACKET_GROUPS_MAX * ULNET_RS_TOTAL_BLOCKS_MAX);
     session->remote_packet_groups = FEC_PACKET_GROUPS_MAX;
-    session->remote_savestate_transfer_offset = 0;
-    memset(session->fec_received_bits, 0, sizeof(session->fec_received_bits));
+    session->remote_savestate_transfer_id = 0xff;
     memset(session->fec_index_counter, 0, sizeof(session->fec_index_counter));
 }
 
@@ -3904,7 +3922,46 @@ static bool ulnet__savestate_blocks_size_consistent(ulnet_session_t *session, in
     return true;
 }
 
+static void ulnet__reset_to_local_solo(ulnet_session_t *session);
+
+static uint8_t ulnet__savestate_transfer_id(uint8_t channel_and_flags) {
+    return (uint8_t)((channel_and_flags & ULNET_SAVESTATE_TRANSFER_ID_MASK) >> ULNET_SAVESTATE_TRANSFER_ID_SHIFT);
+}
+
+static uint8_t ulnet__savestate_transfer_id_flags(uint8_t transfer_id) {
+    return (uint8_t)((transfer_id << ULNET_SAVESTATE_TRANSFER_ID_SHIFT) & ULNET_SAVESTATE_TRANSFER_ID_MASK);
+}
+
+static void ulnet__savestate_tx_clear(ulnet_session_t *session) {
+    session->savestate_transfer_awaiting_bitfield = 0;
+    session->savestate_transfer_ack_deadline_unix_usec = 0;
+}
+
+static void ulnet__savestate_tx_poll(ulnet_session_t *session) {
+    if (!session->savestate_transfer_awaiting_bitfield
+        || ulnet__get_unix_time_microseconds() < session->savestate_transfer_ack_deadline_unix_usec) {
+        return;
+    }
+
+    uint64_t retry_bitfield = session->savestate_transfer_awaiting_bitfield | session->peer_needs_sync_bitfield;
+    if (session->savestate_transfer_retry_count >= ULNET_SAVESTATE_TRANSFER_MAX_RETRIES) {
+        SAM2_LOG_ERROR("Savestate transfer failed after %d retries for peers 0x%016" PRIx64 "; returning to solo session",
+            (int)session->savestate_transfer_retry_count, retry_bitfield);
+        ulnet__reset_to_local_solo(session);
+        return;
+    }
+
+    session->savestate_transfer_retry_count++;
+    SAM2_LOG_WARN("Savestate transfer id=%u failed for peers 0x%016" PRIx64 "; retrying at %" PRId64 " bits/s",
+        (unsigned)session->savestate_transfer_id, retry_bitfield,
+        ULNET_SAVESTATE_TRANSFER_DEFAULT_BANDWIDTH_BITS_PER_SECOND / (1LL << session->savestate_transfer_retry_count));
+    ulnet__savestate_tx_clear(session);
+    session->peer_needs_sync_bitfield = retry_bitfield;
+}
+
 static void ulnet__reset_to_local_solo(ulnet_session_t *session) {
+    ulnet__savestate_tx_clear(session);
+
     for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
         if (session->agent[i]) {
             ulnet_disconnect_peer(session, i); // also clears history + peer-defaults the slot
@@ -3915,13 +3972,16 @@ static void ulnet__reset_to_local_solo(ulnet_session_t *session) {
     }
     ulnet__reset_save_state_bookkeeping(session);
 
-    session->room_we_are_in.flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+    memset(&session->room_we_are_in, 0, sizeof(session->room_we_are_in));
     session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
     session->room_we_are_in.peer_topology = (1ULL << SAM2_AUTHORITY_INDEX);
     session->next_room = session->room_we_are_in;
     session->next_room_effective_frame = 0;
     session->authority_room_snapshot_last_sent_frame = -1;
     session->frame_counter = 0;
+    session->peer_needs_sync_bitfield = 0;
+    session->savestate_transfer_retry_count = 0;
+    session->remote_savestate_completed_transfer_id = 0xff;
 }
 
 ULNET_LINKAGE void ulnet_session_tear_down(ulnet_session_t *session) {
@@ -4248,11 +4308,6 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
             session->remote_packet_groups = FEC_PACKET_GROUPS_MAX;
         }
 
-        if (p != SAM2_AUTHORITY_INDEX) {
-            printf("Received savestate transfer packet from non-authority agent\n");
-            break;
-        }
-
         if (size < sizeof(ulnet_save_state_packet_header_t)) {
             SAM2_LOG_WARN("Recv savestate transfer packet with size smaller than header");
             break;
@@ -4262,8 +4317,38 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
             SAM2_LOG_WARN("Recv savestate transfer packet potentially larger than MTU");
         }
 
+        if (channel_and_flags & ULNET_SAVESTATE_TRANSFER_FLAG_ACK) {
+            uint8_t transfer_id = ulnet__savestate_transfer_id(channel_and_flags);
+            if (   ulnet_is_authority(session)
+                && transfer_id == session->savestate_transfer_id
+                && (session->savestate_transfer_awaiting_bitfield & (1ULL << p))) {
+                session->savestate_transfer_awaiting_bitfield &= ~(1ULL << p);
+                if (session->savestate_transfer_awaiting_bitfield == 0) {
+                    SAM2_LOG_INFO("Savestate transfer id=%u completed", (unsigned)session->savestate_transfer_id);
+                    ulnet__savestate_tx_clear(session);
+                    session->savestate_transfer_retry_count = 0;
+                }
+            }
+            break;
+        }
+
+        if (p != SAM2_AUTHORITY_INDEX) {
+            printf("Received savestate transfer packet from non-authority agent\n");
+            break;
+        }
+
         ulnet_save_state_packet_header_t savestate_transfer_header;
         memcpy(&savestate_transfer_header, data, sizeof(ulnet_save_state_packet_header_t)); // Strict-aliasing
+
+        uint8_t transfer_id = ulnet__savestate_transfer_id(channel_and_flags);
+        if (session->remote_savestate_completed_transfer_id == transfer_id) {
+            break;
+        }
+        if (session->remote_savestate_transfer_id != transfer_id) {
+            ulnet__reset_save_state_bookkeeping(session);
+            session->remote_savestate_transfer_id = transfer_id;
+            session->remote_savestate_completed_transfer_id = 0xff;
+        }
 
         uint8_t sequence_hi = 0;
         int k = 239;
@@ -4304,16 +4389,13 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
         }
 
         // Store by shard number so decode sees the same systematic layout the sender encoded.
-        uint64_t sequence_lo_bit = 1ULL << (sequence_lo & 63);
-        uint64_t *sequence_lo_bits = &session->fec_received_bits[sequence_hi][sequence_lo >> 6];
-        if ((*sequence_lo_bits & sequence_lo_bit) != 0) {
+        if (session->packet_reference[sequence_hi][sequence_lo].data != NULL) {
             break;
         }
 
         SAM2_LOG_DEBUG("Received savestate packet sequence_hi: %hhu sequence_lo: %hhu", sequence_hi, sequence_lo);
 
         size_t payload_size = size - sizeof(ulnet_save_state_packet_header_t);
-        session->remote_savestate_transfer_offset += size;
 
         if (!ulnet__savestate_blocks_size_consistent(session, sequence_hi, n, payload_size)) {
             SAM2_LOG_WARN("Received savestate transfer packet with mismatched block size");
@@ -4330,18 +4412,15 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
             SAM2_LOG_ERROR("Failed to store savestate transfer packet");
             break;
         }
-        *sequence_lo_bits |= sequence_lo_bit;
         session->fec_index_counter[sequence_hi]++;
 
         if (session->fec_index_counter[sequence_hi] == k) {
             int rs_block_size;
-            int status;
-            int64_t ret;
             int64_t compressed_data_size;
             int64_t compressed_savestate_size;
             int64_t compressed_options_size;
             int32_t remote_payload_size;
-            bool all_data_decoded;
+            bool all_data_decoded = true;
             uint32_t their_savestate_transfer_payload_checksum;
             uint32_t our_savestate_transfer_payload_checksum;
             unsigned char *save_state_data = NULL;
@@ -4349,113 +4428,106 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
 
             SAM2_LOG_DEBUG("Received all the savestate data for packet group: %hhu", sequence_hi);
             rs_block_size = (int) (size - sizeof(ulnet_save_state_packet_header_t));
-            if (!ulnet__savestate_blocks_size_consistent(session, sequence_hi, n, (size_t)rs_block_size)) {
-                SAM2_LOG_WARN("Savestate transfer packet group has inconsistent block sizes");
-                goto cleanup;
-            }
-
-            status = ulnet__rs_decode(session->packet_reference[sequence_hi], k, n, rs_block_size);
-            if (status != 0) {
+            if (ulnet__rs_decode(session->packet_reference[sequence_hi], k, n, rs_block_size) != 0) {
                 SAM2_LOG_ERROR("Failed to decode savestate transfer packet group");
                 goto cleanup;
             }
 
-            all_data_decoded = true;
             for (int i = 0; i < session->remote_packet_groups; i++) {
                 all_data_decoded &= session->fec_index_counter[i] >= k;
             }
 
-            if (all_data_decoded) {
-                ret = 0;
-                their_savestate_transfer_payload_checksum = 0;
-                our_savestate_transfer_payload_checksum = 0;
-                savestate_transfer_payload = (savestate_transfer_payload_t *) ULNET_MALLOC(sizeof(savestate_transfer_payload_t) /* Fixed size header */ + k * session->remote_packet_groups * rs_block_size);
-                if (savestate_transfer_payload == NULL) {
-                    SAM2_LOG_ERROR("Failed to allocate savestate transfer payload");
-                    ulnet__reset_save_state_bookkeeping(session);
-                    break;
-                }
+            if (!all_data_decoded) {
+                break;
+            }
 
-                remote_payload_size = 0;
-                for (int i = 0; i < k; i++) {
-                    for (int j = 0; j < session->remote_packet_groups; j++) {
-                        void *decoded_packet = session->packet_reference[j][i].data;
-                        if (decoded_packet == NULL) {
-                            SAM2_LOG_ERROR("Savestate transfer packet already overwritten");
-                            goto cleanup;
-                        }
-                        memcpy(((uint8_t *) savestate_transfer_payload) + remote_payload_size, decoded_packet, rs_block_size);
-                        remote_payload_size += rs_block_size;
-                    }
-                }
+            savestate_transfer_payload = (savestate_transfer_payload_t *) ULNET_MALLOC(sizeof(savestate_transfer_payload_t) /* Fixed size header */ + k * session->remote_packet_groups * rs_block_size);
+            if (savestate_transfer_payload == NULL) {
+                SAM2_LOG_ERROR("Failed to allocate savestate transfer payload");
+                ulnet__reset_save_state_bookkeeping(session);
+                break;
+            }
 
-                SAM2_LOG_INFO("Received savestate transfer payload for frame %" PRId64 "", savestate_transfer_payload->frame_counter);
-
-                if (   savestate_transfer_payload->total_size_bytes > k * (int) rs_block_size * session->remote_packet_groups
-                    || savestate_transfer_payload->total_size_bytes < (int64_t)sizeof(savestate_transfer_payload_t)) {
-                    SAM2_LOG_ERROR("Savestate transfer payload total size would out-of-bounds when computing hash: %" PRId64 "", savestate_transfer_payload->total_size_bytes);
-                    goto cleanup;
-                }
-
-                compressed_data_size = savestate_transfer_payload->total_size_bytes - (int64_t)sizeof(savestate_transfer_payload_t);
-                compressed_savestate_size = savestate_transfer_payload->compressed_savestate_size;
-                compressed_options_size = savestate_transfer_payload->compressed_options_size;
-                if (   compressed_savestate_size < 0
-                    || compressed_options_size < 0
-                    || compressed_savestate_size + compressed_options_size > compressed_data_size
-                    || savestate_transfer_payload->decompressed_savestate_size <= 0) {
-                    SAM2_LOG_ERROR("Savestate transfer payload has invalid compressed size fields");
-                    goto cleanup;
-                }
-
-                their_savestate_transfer_payload_checksum = savestate_transfer_payload->checksum;
-                savestate_transfer_payload->checksum = 0; // Needed to recompute the hash correctly
-                our_savestate_transfer_payload_checksum = ulnet_xxh32(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes, 0);
-
-                if (their_savestate_transfer_payload_checksum != our_savestate_transfer_payload_checksum) {
-                    SAM2_LOG_ERROR("Savestate transfer payload hash mismatch: %" PRIx32 " != %" PRIx32 "", savestate_transfer_payload->checksum, our_savestate_transfer_payload_checksum);
-                    goto cleanup;
-                }
-
-                ret = ULNET_ZSTD_DECOMPRESS(
-                    session->core_options, sizeof(session->core_options),
-                    savestate_transfer_payload->compressed_data + savestate_transfer_payload->compressed_savestate_size,
-                    savestate_transfer_payload->compressed_options_size
-                );
-
-                if (ret < 0) {
-                    SAM2_LOG_ERROR("ZSTD decompression failed for core options");
-                } else {
-                    session->flags |= ULNET_SESSION_FLAG_CORE_OPTIONS_DIRTY;
-                    //session.retro_run(); // Apply options before loading savestate; Lets hope this isn't necessary
-
-                    save_state_data = (unsigned char *) ULNET_MALLOC(savestate_transfer_payload->decompressed_savestate_size);
-                    if (save_state_data == NULL) {
-                        SAM2_LOG_ERROR("Failed to allocate decompressed savestate buffer");
-                        goto cleanup;
-                    }
-
-                    int64_t save_state_size = ULNET_ZSTD_DECOMPRESS(
-                        save_state_data,
-                        savestate_transfer_payload->decompressed_savestate_size,
-                        savestate_transfer_payload->compressed_data,
-                        savestate_transfer_payload->compressed_savestate_size
-                    );
-
-                    if (save_state_size < 0) {
-                        SAM2_LOG_ERROR("ZSTD decompression failed for savestate");
-                    } else {
-                        if (!session->retro_unserialize(session->user_ptr, save_state_data, save_state_size)) {
-                            SAM2_LOG_ERROR("Failed to load savestate");
-                        } else {
-                            SAM2_LOG_DEBUG("Save state loaded");
-                            session->frame_counter = savestate_transfer_payload->frame_counter;
-                            session->room_we_are_in = savestate_transfer_payload->room;
-                        }
-                    }
+            remote_payload_size = 0;
+            for (int i = 0; i < k; i++) {
+                for (int j = 0; j < session->remote_packet_groups; j++) {
+                    void *decoded_packet = session->packet_reference[j][i].data;
+                    memcpy(((uint8_t *) savestate_transfer_payload) + remote_payload_size, decoded_packet, rs_block_size);
+                    remote_payload_size += rs_block_size;
                 }
             }
-cleanup:    ULNET_FREE(save_state_data);
+
+            SAM2_LOG_INFO("Received savestate transfer payload for frame %" PRId64 "", savestate_transfer_payload->frame_counter);
+
+            if (   savestate_transfer_payload->total_size_bytes > k * (int) rs_block_size * session->remote_packet_groups
+                || savestate_transfer_payload->total_size_bytes < (int64_t)sizeof(savestate_transfer_payload_t)) {
+                SAM2_LOG_ERROR("Savestate transfer payload total size would out-of-bounds when computing hash: %" PRId64 "", savestate_transfer_payload->total_size_bytes);
+                goto cleanup;
+            }
+
+            compressed_data_size = savestate_transfer_payload->total_size_bytes - (int64_t)sizeof(savestate_transfer_payload_t);
+            compressed_savestate_size = savestate_transfer_payload->compressed_savestate_size;
+            compressed_options_size = savestate_transfer_payload->compressed_options_size;
+            if (   compressed_savestate_size < 0
+                || compressed_options_size < 0
+                || compressed_savestate_size + compressed_options_size > compressed_data_size
+                || savestate_transfer_payload->decompressed_savestate_size <= 0) {
+                SAM2_LOG_ERROR("Savestate transfer payload has invalid compressed size fields");
+                goto cleanup;
+            }
+
+            their_savestate_transfer_payload_checksum = savestate_transfer_payload->checksum;
+            savestate_transfer_payload->checksum = 0; // Needed to recompute the hash correctly
+            our_savestate_transfer_payload_checksum = ulnet_xxh32(savestate_transfer_payload, savestate_transfer_payload->total_size_bytes, 0);
+
+            if (their_savestate_transfer_payload_checksum != our_savestate_transfer_payload_checksum) {
+                SAM2_LOG_ERROR("Savestate transfer payload hash mismatch: %" PRIx32 " != %" PRIx32 "", savestate_transfer_payload->checksum, our_savestate_transfer_payload_checksum);
+                goto cleanup;
+            }
+
+            if (ULNET_ZSTD_DECOMPRESS(
+                session->core_options, sizeof(session->core_options),
+                savestate_transfer_payload->compressed_data + savestate_transfer_payload->compressed_savestate_size,
+                savestate_transfer_payload->compressed_options_size
+            ) < 0) {
+                SAM2_LOG_ERROR("ZSTD decompression failed for core options");
+                goto cleanup;
+            }
+
+            session->flags |= ULNET_SESSION_FLAG_CORE_OPTIONS_DIRTY;
+            //session.retro_run(); // Apply options before loading savestate; Lets hope this isn't necessary
+
+            save_state_data = (unsigned char *) ULNET_MALLOC(savestate_transfer_payload->decompressed_savestate_size);
+            if (save_state_data == NULL) {
+                SAM2_LOG_ERROR("Failed to allocate decompressed savestate buffer");
+                goto cleanup;
+            }
+
+            int64_t save_state_size = ULNET_ZSTD_DECOMPRESS(
+                save_state_data,
+                savestate_transfer_payload->decompressed_savestate_size,
+                savestate_transfer_payload->compressed_data,
+                savestate_transfer_payload->compressed_savestate_size
+            );
+            if (save_state_size < 0) {
+                SAM2_LOG_ERROR("ZSTD decompression failed for savestate");
+                goto cleanup;
+            }
+            if (!session->retro_unserialize(session->user_ptr, save_state_data, save_state_size)) {
+                SAM2_LOG_ERROR("Failed to load savestate");
+                goto cleanup;
+            }
+            SAM2_LOG_DEBUG("Save state loaded");
+            session->frame_counter = savestate_transfer_payload->frame_counter;
+            session->room_we_are_in = savestate_transfer_payload->room;
+            session->remote_savestate_completed_transfer_id = transfer_id;
+            ulnet_save_state_packet_header_t ack = {0};
+            ack.channel_and_flags = ULNET_CHANNEL_SAVESTATE_TRANSFER
+                | ULNET_SAVESTATE_TRANSFER_FLAG_ACK
+                | ulnet__savestate_transfer_id_flags(transfer_id);
+            ulnet_udp_send(session, p, (const uint8_t *)&ack, sizeof(ack));
+cleanup:
+            ULNET_FREE(save_state_data);
             ULNET_FREE(savestate_transfer_payload);
             ulnet__reset_save_state_bookkeeping(session);
         }
@@ -4616,9 +4688,23 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
     return 0;
 }
 
-// Pass in save state since often retro_serialize can tick the core
-ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, void *save_state, size_t save_state_size, int64_t save_state_frame) {
+static int ulnet__send_save_state_to_peers(ulnet_session_t *session, uint64_t peer_bitfield, void *save_state,
+    size_t save_state_size, int64_t save_state_frame) {
     assert(save_state);
+    peer_bitfield &= ~(1ULL << SAM2_AUTHORITY_INDEX);
+    if (session->savestate_transfer_awaiting_bitfield) {
+        session->peer_needs_sync_bitfield |= peer_bitfield;
+        return -1;
+    }
+    int peer_count = 0;
+    for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
+        if ((peer_bitfield & (1ULL << p)) && !ulnet__peer_link_ready(session, p)) {
+            peer_bitfield &= ~(1ULL << p);
+            session->peer_needs_sync_bitfield |= (1ULL << p);
+        }
+        if (peer_bitfield & (1ULL << p)) peer_count++;
+    }
+    if (peer_bitfield == 0) return 0;
 
     int packet_payload_size_bytes = ULNET_PACKET_SIZE_BYTES_MAX - sizeof(ulnet_save_state_packet_header_t);
     int n, k, packet_groups;
@@ -4633,6 +4719,10 @@ ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, voi
     // This points to the savestate transfer payload, but also the remaining bytes at the end hold our parity blocks
     // Having this data in a single contiguous buffer makes indexing easier
     savestate_transfer_payload_t *savestate_transfer_payload = (savestate_transfer_payload_t *) ULNET_MALLOC(savestate_transfer_payload_plus_parity_bound_bytes);
+    if (!savestate_transfer_payload) {
+        SAM2_LOG_ERROR("Failed to allocate savestate transfer payload");
+        return -1;
+    }
 
     savestate_transfer_payload->decompressed_savestate_size = save_state_size;
     int64_t compressed_savestate_size = ULNET_ZSTD_COMPRESS(
@@ -4643,7 +4733,8 @@ ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, voi
 
     if (compressed_savestate_size < 0 || compressed_savestate_size > INT32_MAX) {
         SAM2_LOG_ERROR("ZSTD compression failed for savestate");
-        assert(0);
+        ULNET_FREE(savestate_transfer_payload);
+        return -1;
     }
     savestate_transfer_payload->compressed_savestate_size = (int32_t)compressed_savestate_size;
 
@@ -4655,7 +4746,8 @@ ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, voi
 
     if (compressed_options_size < 0 || compressed_options_size > INT32_MAX) {
         SAM2_LOG_ERROR("ZSTD compression failed for core options");
-        assert(0);
+        ULNET_FREE(savestate_transfer_payload);
+        return -1;
     }
     savestate_transfer_payload->compressed_options_size = (int32_t)compressed_options_size;
 
@@ -4685,12 +4777,22 @@ ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, voi
         ulnet__rs_encode(data, k, n, packet_payload_size_bytes);
     }
 
+    session->savestate_transfer_id = (uint8_t)((session->savestate_transfer_id + 1) & 0x3);
+    session->savestate_transfer_awaiting_bitfield = peer_bitfield;
+    int64_t transfer_bandwidth_bits_per_second =
+        ULNET_SAVESTATE_TRANSFER_DEFAULT_BANDWIDTH_BITS_PER_SECOND / (1LL << session->savestate_transfer_retry_count);
+
+    SAM2_LOG_INFO("Starting savestate transfer id=%u to peers 0x%016" PRIx64 " at %" PRId64 " bits/s retry=%u",
+        (unsigned)session->savestate_transfer_id, peer_bitfield,
+        transfer_bandwidth_bits_per_second,
+        (unsigned)session->savestate_transfer_retry_count);
+
     // Send original data blocks and parity blocks
     // @todo I wrote this in such a way that you can do a zero-copy when creating the packets to send
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < packet_groups; j++) {
+    for (int j = 0; j < packet_groups; j++) {
+        for (int i = 0; i < n; i++) {
             ulnet_save_state_packet_fragment2_t packet;
-            packet.channel_and_flags = ULNET_CHANNEL_SAVESTATE_TRANSFER;
+            packet.channel_and_flags = ULNET_CHANNEL_SAVESTATE_TRANSFER | ulnet__savestate_transfer_id_flags(session->savestate_transfer_id);
             if (k == 239) {
                 packet.channel_and_flags |= ULNET_SAVESTATE_TRANSFER_FLAG_K_IS_239;
                 if (j == 0) {
@@ -4707,12 +4809,37 @@ ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, voi
 
             memcpy(packet.payload, (unsigned char *) savestate_transfer_payload + ulnet__logical_partition_offset_bytes(j, i, packet_payload_size_bytes, packet_groups), packet_payload_size_bytes);
 
-            int status = ulnet_udp_send(session, port, (const uint8_t *) &packet, sizeof(ulnet_save_state_packet_header_t) + packet_payload_size_bytes);
-            assert(status == 0);
+            for (uint64_t p = 0; p < SAM2_TOTAL_PEERS; p++) {
+                if (!(peer_bitfield & (1ULL << p))) continue;
+                ulnet_udp_send(session, (int)p, (const uint8_t *) &packet, sizeof(ulnet_save_state_packet_header_t) + packet_payload_size_bytes);
+            }
+        }
+
+        if (j + 1 < packet_groups) {
+            int64_t packet_size_bits = (int64_t)(sizeof(ulnet_save_state_packet_header_t) + packet_payload_size_bytes) * 8LL;
+            int64_t group_bits = packet_size_bits * n * peer_count;
+            int64_t interval_usec = (group_bits * 1000000LL + transfer_bandwidth_bits_per_second - 1)
+                / transfer_bandwidth_bits_per_second;
+            if (interval_usec > 0) {
+                ulnet__sleep((unsigned int)SAM2_MAX(1, interval_usec / 1000));
+            }
         }
     }
 
+    session->savestate_transfer_ack_deadline_unix_usec =
+        ulnet__get_unix_time_microseconds() + ULNET_SAVESTATE_TRANSFER_ACK_TIMEOUT_MICROSECONDS;
     ULNET_FREE(savestate_transfer_payload);
+    return 0;
+}
+
+// Pass in save state since often retro_serialize can tick the core
+ULNET_LINKAGE void ulnet_send_save_state(ulnet_session_t *session, int port, void *save_state, size_t save_state_size, int64_t save_state_frame) {
+    if (port < 0 || port >= SAM2_TOTAL_PEERS) {
+        SAM2_LOG_ERROR("Invalid savestate transfer port %d", port);
+        return;
+    }
+
+    ulnet__send_save_state_to_peers(session, 1ULL << port, save_state, save_state_size, save_state_frame);
 }
 
 #if defined(ULNET_IMGUI)

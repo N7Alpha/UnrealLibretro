@@ -1350,6 +1350,75 @@ int ulnet_test_inproc_reliable_ack_unblocks_queue(void) {
     return status;
 }
 
+int ulnet_test_inproc_savestate_retry_failure_goes_solo(void) {
+    ulnet_session_t *sessions[2] = {0};
+    ulnet_transport_inproc_t transport = {0};
+    uint8_t save_state[256];
+    uint64_t spectator_bit = 1ULL << ULNET__TEST_SPECTATOR_PORT;
+    int status = 0;
+
+    ulnet__test_inproc_pair_setup(sessions, &transport, 0);
+    sessions[0]->delay_frames = 0;
+
+    sessions[0]->core_wants_tick_at_unix_usec = 0;
+    ulnet_poll_session(sessions[0], 0, save_state, sizeof(save_state), 60.0, 0.0);
+    if (sessions[0]->savestate_transfer_awaiting_bitfield != spectator_bit ||
+        sessions[0]->savestate_transfer_retry_count != 0 ||
+        sessions[0]->peer_needs_sync_bitfield != 0) {
+        SAM2_LOG_ERROR("savestate retry test: initial transfer was not active as expected");
+        status = 1;
+        goto done;
+    }
+    uint8_t first_transfer_id = sessions[0]->savestate_transfer_id;
+
+    sessions[0]->savestate_transfer_ack_deadline_unix_usec = ulnet__get_unix_time_microseconds() - 1;
+    sessions[0]->core_wants_tick_at_unix_usec = 0;
+    ulnet_poll_session(sessions[0], 0, save_state, sizeof(save_state), 60.0, 0.0);
+    if (sessions[0]->savestate_transfer_awaiting_bitfield != spectator_bit ||
+        sessions[0]->savestate_transfer_retry_count != 1 ||
+        sessions[0]->peer_needs_sync_bitfield != 0 ||
+        sessions[0]->savestate_transfer_id == first_transfer_id) {
+        SAM2_LOG_ERROR("savestate retry test: first timeout did not start retry transfer");
+        status = 1;
+        goto done;
+    }
+    uint8_t second_transfer_id = sessions[0]->savestate_transfer_id;
+
+    sessions[0]->savestate_transfer_ack_deadline_unix_usec = ulnet__get_unix_time_microseconds() - 1;
+    sessions[0]->core_wants_tick_at_unix_usec = 0;
+    ulnet_poll_session(sessions[0], 0, save_state, sizeof(save_state), 60.0, 0.0);
+    if (sessions[0]->savestate_transfer_awaiting_bitfield != spectator_bit ||
+        sessions[0]->savestate_transfer_retry_count != 2 ||
+        sessions[0]->peer_needs_sync_bitfield != 0 ||
+        sessions[0]->savestate_transfer_id == second_transfer_id) {
+        SAM2_LOG_ERROR("savestate retry test: second timeout did not start retry transfer");
+        status = 1;
+        goto done;
+    }
+
+    sessions[0]->savestate_transfer_ack_deadline_unix_usec = ulnet__get_unix_time_microseconds() - 1;
+    sessions[0]->core_wants_tick_at_unix_usec = 0;
+    ulnet_poll_session(sessions[0], 0, save_state, sizeof(save_state), 60.0, 0.0);
+    if (   sessions[0]->savestate_transfer_awaiting_bitfield != 0
+        || sessions[0]->savestate_transfer_retry_count != 0
+        || sessions[0]->peer_needs_sync_bitfield != 0
+        || (sessions[0]->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)
+        || sessions[0]->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] != sessions[0]->our_peer_id
+        || sessions[0]->room_we_are_in.peer_ids[ULNET__TEST_SPECTATOR_PORT] != SAM2_PORT_AVAILABLE
+        || sessions[0]->room_we_are_in.peer_topology != (1ULL << SAM2_AUTHORITY_INDEX)) {
+        SAM2_LOG_ERROR("savestate retry test: terminal failure did not reset to solo room");
+        status = 1;
+        goto done;
+    }
+
+done:
+    ulnet_session_tear_down(sessions[0]);
+    ulnet_session_tear_down(sessions[1]);
+    free(sessions[0]);
+    free(sessions[1]);
+    return status;
+}
+
 static uint32_t ulnet__test_fuzz_next(uint32_t *rng) {
     *rng = *rng * 1664525u + 1013904223u;
     return *rng;
@@ -1897,6 +1966,12 @@ int main (int argc, char **argv) {
     status = ulnet_test_inproc_reliable_ack_unblocks_queue();
     if (status != 0) {
         printf("Inproc reliable ACK unblock test failed with status: %d\n", status);
+        return status;
+    }
+
+    status = ulnet_test_inproc_savestate_retry_failure_goes_solo();
+    if (status != 0) {
+        printf("Inproc savestate retry/failure test failed with status: %d\n", status);
         return status;
     }
 
