@@ -535,7 +535,9 @@ static int ulnet__test_ice_join(sam2_server_t *server, ulnet_session_t **session
     ulnet_session_t *authority = sessions[authority_idx];
     ulnet_session_t *joiner = sessions[joiner_idx];
 
+    ulnet_session_tear_down(joiner);
     joiner->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = authority->our_peer_id;
+    joiner->next_room = joiner->room_we_are_in;
     joiner->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
     ulnet_startup_nat_for_peer(joiner, authority->our_peer_id, SAM2_AUTHORITY_INDEX, NULL);
 

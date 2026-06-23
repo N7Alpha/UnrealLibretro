@@ -4125,9 +4125,10 @@ static void ulnet__savestate_tx_poll(ulnet_session_t *session) {
     }
 
     session->savestate_transfer_retry_count++;
+    int64_t retry_bandwidth_bits_per_second =
+        ULNET_SAVESTATE_TRANSFER_DEFAULT_BANDWIDTH_BITS_PER_SECOND / (1LL << session->savestate_transfer_retry_count);
     SAM2_LOG_WARN("Savestate transfer id=%u failed for peers 0x%016" PRIx64 "; retrying at %" PRId64 " bits/s",
-        (unsigned)session->savestate_transfer_id, retry_bitfield,
-        ULNET_SAVESTATE_TRANSFER_DEFAULT_BANDWIDTH_BITS_PER_SECOND / (1LL << session->savestate_transfer_retry_count));
+        (unsigned)session->savestate_transfer_id, retry_bitfield, retry_bandwidth_bits_per_second);
     ulnet__savestate_tx_clear(session);
     session->peer_needs_sync_bitfield = retry_bitfield;
 }
