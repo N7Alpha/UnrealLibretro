@@ -479,7 +479,7 @@ UZSTD_LINKAGE unsigned long long uzstd_frame_content_size(const void *src, size_
 #define ULNET_NAT_SIGNAL_CANDIDATE 'C'
 #define ULNET_NAT_PROBE "ULN1P"
 #define ULNET_NAT_PROBE_ACK "ULN1A"
-#define ULNET_NAT_CANDIDATES_MAX 8
+#define ULNET_NAT_CANDIDATES_MAX 16
 #define ULNET_NAT_POLL_PACKET_MAX 1600
 #define ULNET_NAT_CHECK_PACING_USEC 50000
 #define ULNET_NAT_CONNECT_TIMEOUT_USEC 5000000
@@ -637,12 +637,8 @@ static void ulnet__addr_from_ipv4_mapped(struct sockaddr_storage *addr, uint32_t
     memcpy(&a6->sin6_addr.s6_addr[12], &ipv4_network_order, 4);
 }
 
-static int ulnet__addr_equal(const struct sockaddr_storage *a, socklen_t a_len, const struct sockaddr_storage *b, socklen_t b_len) {
-    (void)a_len;
-    (void)b_len;
-    if (a->ss_family != b->ss_family) {
-        return 0;
-    }
+static int ulnet__addr_equal(const struct sockaddr_storage *a, const struct sockaddr_storage *b) {
+    if (a->ss_family != b->ss_family) return 0;
     if (a->ss_family == AF_INET) {
         const struct sockaddr_in *a4 = (const struct sockaddr_in *)a;
         const struct sockaddr_in *b4 = (const struct sockaddr_in *)b;
@@ -763,9 +759,9 @@ static void ulnet__nat_set_state(ulnet_nat_agent_t *agent, ulnet_nat_state_t sta
     }
 }
 
-static ulnet_nat_candidate_t *ulnet__nat_find_candidate(ulnet_nat_agent_t *agent, const struct sockaddr_storage *addr, socklen_t addr_len) {
+static ulnet_nat_candidate_t *ulnet__nat_find_candidate(ulnet_nat_agent_t *agent, const struct sockaddr_storage *addr) {
     for (int i = 0; i < agent->candidate_count; i++) {
-        if (ulnet__addr_equal(&agent->candidate[i].addr, agent->candidate[i].addr_len, addr, addr_len)) {
+        if (ulnet__addr_equal(&agent->candidate[i].addr, addr)) {
             return &agent->candidate[i];
         }
     }
@@ -791,7 +787,7 @@ static int ulnet__nat_send_control(ulnet_nat_agent_t *agent, const char *control
     const struct sockaddr_storage *addr, socklen_t addr_len);
 
 static int ulnet__nat_add_candidate(ulnet_nat_agent_t *agent, const struct sockaddr_storage *addr, socklen_t addr_len) {
-    if (ulnet__nat_find_candidate(agent, addr, addr_len)) {
+    if (ulnet__nat_find_candidate(agent, addr)) {
         return 0;
     }
 
@@ -830,72 +826,61 @@ static int ulnet__nat_ipv4_is_usable(const struct in_addr *addr) {
 static int ulnet__nat_ipv6_is_usable(const struct in6_addr *addr) {
     return !IN6_IS_ADDR_UNSPECIFIED(addr)
         && !IN6_IS_ADDR_LOOPBACK(addr)
-        && !IN6_IS_ADDR_LINKLOCAL(addr);
+        && !IN6_IS_ADDR_LINKLOCAL(addr)
+        && !IN6_IS_ADDR_SITELOCAL(addr);
 }
 
 typedef struct ulnet_nat_host_candidate_state {
-    struct in_addr seen4[ULNET_NAT_CANDIDATES_MAX];
-    struct in6_addr seen6[ULNET_NAT_CANDIDATES_MAX];
-    int seen4_count;
-    int seen6_count;
+    struct sockaddr_storage seen[ULNET_NAT_CANDIDATES_MAX];
+    int seen_count;
     int sent;
 } ulnet_nat_host_candidate_state_t;
 
+static int ulnet__addr_normalize(const struct sockaddr *addr, uint16_t force_port, struct sockaddr_storage *out) {
+    if (!addr) return -1;
+    if (addr->sa_family == AF_INET) {
+        const struct sockaddr_in *a4 = (const struct sockaddr_in *)addr;
+        if (!ulnet__nat_ipv4_is_usable(&a4->sin_addr)) return -1;
+        ulnet__addr_from_ipv4_mapped(out, a4->sin_addr.s_addr, force_port);
+        return 0;
+    } else if (addr->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *a6 = (const struct sockaddr_in6 *)addr;
+        if (!ulnet__nat_ipv6_is_usable(&a6->sin6_addr)) return -1;
+        memset(out, 0, sizeof(*out));
+        struct sockaddr_in6 *out6 = (struct sockaddr_in6 *)out;
+        out6->sin6_family = AF_INET6;
+        out6->sin6_port = htons(force_port);
+        out6->sin6_addr = a6->sin6_addr;
+        out6->sin6_scope_id = a6->sin6_scope_id;
+        return 0;
+    }
+    return -1;
+}
+
 static int ulnet__nat_send_host_candidate_addr(ulnet_nat_agent_t *agent, uint16_t port,
     const struct sockaddr *addr, ulnet_nat_host_candidate_state_t *state) {
-    if (!addr) {
+    struct sockaddr_storage norm_addr;
+    if (ulnet__addr_normalize(addr, port, &norm_addr) != 0) {
         return 0;
     }
 
-    if (addr->sa_family == AF_INET) {
-        const struct sockaddr_in *addr4 = (const struct sockaddr_in *)addr;
-        if (!ulnet__nat_ipv4_is_usable(&addr4->sin_addr)) {
+    for (int i = 0; i < state->seen_count; i++) {
+        if (ulnet__addr_equal(&state->seen[i], &norm_addr)) {
             return 0;
-        }
-
-        for (int i = 0; i < state->seen4_count; i++) {
-            if (state->seen4[i].s_addr == addr4->sin_addr.s_addr) {
-                return 0;
-            }
-        }
-
-        if (state->seen4_count < SAM2_ARRAY_LENGTH(state->seen4)) {
-            state->seen4[state->seen4_count++] = addr4->sin_addr;
-        }
-
-        char host[INET_ADDRSTRLEN];
-        if (inet_ntop(AF_INET, &addr4->sin_addr, host, sizeof(host))) {
-            if (ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, host, port) == 0) {
-                state->sent++;
-            }
-        }
-        return 0;
-    }
-
-    if (addr->sa_family == AF_INET6) {
-        const struct sockaddr_in6 *addr6 = (const struct sockaddr_in6 *)addr;
-        if (!ulnet__nat_ipv6_is_usable(&addr6->sin6_addr)) {
-            return 0;
-        }
-
-        for (int i = 0; i < state->seen6_count; i++) {
-            if (memcmp(&state->seen6[i], &addr6->sin6_addr, sizeof(addr6->sin6_addr)) == 0) {
-                return 0;
-            }
-        }
-
-        if (state->seen6_count < SAM2_ARRAY_LENGTH(state->seen6)) {
-            state->seen6[state->seen6_count++] = addr6->sin6_addr;
-        }
-
-        char host[INET6_ADDRSTRLEN];
-        if (inet_ntop(AF_INET6, &addr6->sin6_addr, host, sizeof(host))) {
-            if (ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, host, port) == 0) {
-                state->sent++;
-            }
         }
     }
 
+    if (state->seen_count < ULNET_NAT_CANDIDATES_MAX) {
+        state->seen[state->seen_count++] = norm_addr;
+    }
+
+    char host[INET6_ADDRSTRLEN];
+    uint16_t out_port = 0;
+    if (ulnet__format_addr(&norm_addr, host, sizeof(host), &out_port) == 0) {
+        if (ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, host, out_port) == 0) {
+            state->sent++;
+        }
+    }
     return 0;
 }
 
@@ -917,6 +902,9 @@ static int ulnet__nat_send_host_candidates(ulnet_nat_agent_t *agent) {
         return ulnet__nat_send_signal(agent, ULNET_NAT_SIGNAL_CANDIDATE, bound_host, port);
     }
 
+    ulnet_nat_host_candidate_state_t state;
+    memset(&state, 0, sizeof(state));
+
 #ifdef _WIN32
     union {
         SOCKET_ADDRESS_LIST list;
@@ -924,8 +912,6 @@ static int ulnet__nat_send_host_candidates(ulnet_nat_agent_t *agent) {
     } buffer;
     DWORD bytes = 0;
     SOCKET_ADDRESS_LIST *addresses = &buffer.list;
-    ulnet_nat_host_candidate_state_t state;
-    memset(&state, 0, sizeof(state));
 
     if (WSAIoctl(agent->socket, SIO_ADDRESS_LIST_QUERY, NULL, 0,
         buffer.bytes, sizeof(buffer.bytes), &bytes, NULL, NULL) != 0) {
@@ -941,15 +927,9 @@ static int ulnet__nat_send_host_candidates(ulnet_nat_agent_t *agent) {
         return -1;
     }
 
-    ulnet_nat_host_candidate_state_t state;
-    memset(&state, 0, sizeof(state));
     for (struct ifaddrs *ifa = ifas; ifa; ifa = ifa->ifa_next) {
-        if (!ifa->ifa_addr) {
-            continue;
-        }
-        if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK)) {
-            continue;
-        }
+        if (!ifa->ifa_addr) continue;
+        if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK)) continue;
         ulnet__nat_send_host_candidate_addr(agent, port, ifa->ifa_addr, &state);
     }
 
@@ -996,40 +976,41 @@ static int ulnet__nat_send_peer_stun_request(ulnet_nat_agent_t *agent, ulnet_nat
 static int ulnet__nat_send_stun_response(ulnet_nat_agent_t *agent, const uint8_t *request, const struct sockaddr_storage *to, socklen_t to_len) {
     uint8_t response[44];
     memset(response, 0, sizeof(response));
-    ulnet__write_be16(response, ULNET__STUN_BINDING_RESPONSE);
+    ulnet__write_be16(response + 0, ULNET__STUN_BINDING_RESPONSE);
     ulnet__write_be32(response + 4, ULNET__STUN_MAGIC_COOKIE);
-    memcpy(response + 8, request + 8, 12);
+    memcpy(response + 8, request + 8, 12); // Trans ID
     ulnet__write_be16(response + 20, ULNET__STUN_ATTR_XOR_MAPPED_ADDRESS);
 
     int response_size = 0;
     if (to->ss_family == AF_INET) {
         const struct sockaddr_in *to4 = (const struct sockaddr_in *)to;
-        uint16_t xport = (uint16_t)(ntohs(to4->sin_port) ^ (ULNET__STUN_MAGIC_COOKIE >> 16));
+        uint16_t xport = ntohs(to4->sin_port) ^ (uint16_t)(ULNET__STUN_MAGIC_COOKIE >> 16);
         uint32_t xaddr = ntohl(to4->sin_addr.s_addr) ^ ULNET__STUN_MAGIC_COOKIE;
-        ulnet__write_be16(response + 2, 12);
-        ulnet__write_be16(response + 22, 8);
-        response[25] = 0x01;
+
+        ulnet__write_be16(response + 2, 12);  // Msg length
+        ulnet__write_be16(response + 22, 8);  // Attr length
+        response[25] = 0x01;                  // Family ipv4
         ulnet__write_be16(response + 26, xport);
         ulnet__write_be32(response + 28, xaddr);
         response_size = 32;
     } else if (to->ss_family == AF_INET6) {
         const struct sockaddr_in6 *to6 = (const struct sockaddr_in6 *)to;
-        uint16_t xport = (uint16_t)(ntohs(to6->sin6_port) ^ (ULNET__STUN_MAGIC_COOKIE >> 16));
+        uint16_t xport = ntohs(to6->sin6_port) ^ (uint16_t)(ULNET__STUN_MAGIC_COOKIE >> 16);
+
         if (IN6_IS_ADDR_V4MAPPED(&to6->sin6_addr)) {
-            uint32_t mapped_addr = ((uint32_t)to6->sin6_addr.s6_addr[12] << 24)
-                | ((uint32_t)to6->sin6_addr.s6_addr[13] << 16)
-                | ((uint32_t)to6->sin6_addr.s6_addr[14] << 8)
-                | (uint32_t)to6->sin6_addr.s6_addr[15];
-            ulnet__write_be16(response + 2, 12);
-            ulnet__write_be16(response + 22, 8);
-            response[25] = 0x01;
+            uint32_t raw_ip = ulnet__read_be32(&to6->sin6_addr.s6_addr[12]);
+            uint32_t xaddr = raw_ip ^ ULNET__STUN_MAGIC_COOKIE;
+
+            ulnet__write_be16(response + 2, 12);  // Msg length
+            ulnet__write_be16(response + 22, 8);  // Attr length
+            response[25] = 0x01;                  // Family ipv4
             ulnet__write_be16(response + 26, xport);
-            ulnet__write_be32(response + 28, mapped_addr ^ ULNET__STUN_MAGIC_COOKIE);
+            ulnet__write_be32(response + 28, xaddr);
             response_size = 32;
         } else {
-            ulnet__write_be16(response + 2, 24);
-            ulnet__write_be16(response + 22, 20);
-            response[25] = 0x02;
+            ulnet__write_be16(response + 2, 24);  // Msg length
+            ulnet__write_be16(response + 22, 20); // Attr length
+            response[25] = 0x02;                  // Family ipv6
             ulnet__write_be16(response + 26, xport);
             for (int i = 0; i < 16; i++) {
                 response[28 + i] = to6->sin6_addr.s6_addr[i] ^ request[4 + i];
@@ -1194,8 +1175,6 @@ ULNET_LINKAGE ulnet_nat_state_t ulnet_nat_get_state(ulnet_nat_agent_t *agent) {
     return agent ? agent->state : ULNET_NAT_STATE_DISCONNECTED;
 }
 
-// Whether we can send to port p right now. The inproc transport has no NAT handshake (and aliases the
-// agent pointer through a union, so ulnet_nat_get_state would read garbage) -- treat it as always ready.
 static bool ulnet__peer_link_ready(ulnet_session_t *session, int p) {
     if (!session->agent[p]) return false;
     if (session->use_inproc_transport) return true;
@@ -1244,7 +1223,9 @@ static int ulnet__nat_process_signal(ulnet_nat_agent_t *agent, const char *signa
         if (ulnet__parse_addr(host, (uint16_t)port, &addr, &addr_len) != 0) {
             return -1;
         }
-        return ulnet__nat_add_candidate(agent, &addr, addr_len);
+        return ulnet__nat_add_candidate(agent, &addr, addr_len) == 0
+            ? 0
+            : -1;
     }
 
     return -1;
@@ -1305,25 +1286,23 @@ static void ulnet__nat_poll_agent(ulnet_nat_agent_t *agent) {
         int64_t kernel_receive_time_usec = 0;
         int ret = ulnet__recvfrom_with_timestamp(agent->socket, packet, sizeof(packet), &from, &from_len, &kernel_receive_time_usec);
         if (ret < 0) {
+            int err = ULNET_SOCKERRNO;
             if (ulnet__socket_would_block()) {
                 break;
             }
 #ifdef _WIN32
-            int sock_error = ULNET_SOCKERRNO;
-            if (sock_error == WSAECONNRESET || sock_error == WSAENETRESET || sock_error == WSAECONNREFUSED) {
+            if (err == WSAECONNRESET || err == WSAENETRESET || err == WSAECONNREFUSED) {
                 break;
             }
 #else
-            if (errno == EINTR) {
+            if (err == EINTR) {
                 continue;
             }
-            if (errno == ECONNREFUSED || errno == ECONNRESET) {
+            if (err == ECONNREFUSED || err == ECONNRESET) {
                 break;
             }
 #endif
-            {
-                ulnet__nat_set_state(agent, ULNET_NAT_STATE_FAILED);
-            }
+            ulnet__nat_set_state(agent, ULNET_NAT_STATE_FAILED);
             break;
         }
         if (ret == 0) {
@@ -1359,21 +1338,6 @@ static void ulnet__nat_poll_agent(ulnet_nat_agent_t *agent) {
         agent->session->pending_packet_kernel_receive_unix_usec = kernel_receive_time_usec;
         ulnet_receive_packet_callback(agent, packet, (size_t)ret, agent->session);
     }
-}
-
-static void *ulnet__realloc_sized(void *old_ptr, size_t old_size, size_t new_size) {
-    void *new_ptr = ULNET_MALLOC(new_size);
-    if (new_ptr == NULL) {
-        return NULL;
-    }
-
-    if (old_ptr != NULL) {
-        size_t copy_size = old_size < new_size ? old_size : new_size;
-        memcpy(new_ptr, old_ptr, copy_size);
-        ULNET_FREE(old_ptr);
-    }
-
-    return new_ptr;
 }
 #endif
 
@@ -4643,8 +4607,8 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
                 session->next_room.peer_ids[p] = room_signal->peer_id; // topology bit stays clear (spectator)
             }
         } else if (p != -1 && session->agent[p]) {
-            if (ulnet__nat_process_signal(session->agent[p], room_signal->ice_sdp) != 0) {
-                SAM2_LOG_ERROR("Unable to parse NAT signal message '%s'", room_signal->ice_sdp);
+            if (ulnet__nat_process_signal(session->agent[p], room_signal->ice_sdp)) {
+                SAM2_LOG_ERROR("Unable to add NAT candidate '%s'", room_signal->ice_sdp);
             }
         }
     }
