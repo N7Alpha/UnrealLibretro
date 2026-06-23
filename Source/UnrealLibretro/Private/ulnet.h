@@ -4819,7 +4819,9 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
 
         int p = sam2_get_port_of_peer(&session->room_we_are_in, room_signal->peer_id);
 
-        if (p == -1 && ulnet_is_authority(session)) {
+        if (   p == -1
+            && ulnet_is_authority(session)
+            && (session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
             for (p = SAM2_AUTHORITY_INDEX + 1; p < SAM2_TOTAL_PEERS; p++) if (session->room_we_are_in.peer_ids[p] == SAM2_PORT_AVAILABLE) break;
 
             if (p == SAM2_TOTAL_PEERS) {

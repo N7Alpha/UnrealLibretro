@@ -75,6 +75,9 @@ state is harmless because stale frames are dropped.
 
 Transport establishment is out of scope for this document.
 
+Only the authority of a network-hosted room may admit an unknown peer from a transport signal. A
+local solo session MUST NOT admit unknown peer signals.
+
 ## Packet Header
 
 Every ULNET UDP payload starts with one channel byte. The top three bits select a channel.
