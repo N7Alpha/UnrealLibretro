@@ -1141,6 +1141,15 @@ static void sam2__accept_connections(sam2_server_t *server) {
             break;
         }
 
+        sam2__set_nonblocking(client_socket);
+
+        if (setsockopt(client_socket, SOL_SOCKET, SO_SNDBUF, (const char*)&sam2_socket_buffer_size_server_to_client, sizeof(int)) < 0) {
+            SAM2_LOG_WARN("Failed to set socket send buffer size");
+        }
+        if (setsockopt(client_socket, SOL_SOCKET, SO_RCVBUF, (const char*)&sam2_socket_buffer_size_client_to_server, sizeof(int)) < 0) {
+            SAM2_LOG_WARN("Failed to set socket recv buffer size");
+        }
+
         uint16_t peer_id = SAM2_PORT_UNAVAILABLE;
         for (; potential_free_peer_id < SAM2_ARRAY_LENGTH(server->sockets); potential_free_peer_id++) {
             if (server->sockets[potential_free_peer_id] == SAM2_SOCKET_INVALID) {
@@ -1152,30 +1161,17 @@ static void sam2__accept_connections(sam2_server_t *server) {
 
         if (peer_id == SAM2_PORT_UNAVAILABLE) {
             SAM2_LOG_WARN("No peer IDs available");
-            sam2_socket_t rejected_client = client_socket;
-            sam2__set_nonblocking(rejected_client);
-            sam2__write_error(&rejected_client, "No peer IDs available", SAM2_RESPONSE_PORT_NOT_AVAILABLE);
+            sam2__write_error(&client_socket, "No peer IDs available", SAM2_RESPONSE_PORT_NOT_AVAILABLE);
             sam2__close_socket(client_socket);
             continue;
         }
 
-        sam2_socket_t *client = &server->sockets[peer_id];
-        *client = client_socket;
-
-        sam2__set_nonblocking(client_socket);
-
-        if (setsockopt(client_socket, SOL_SOCKET, SO_SNDBUF, (const char*)&sam2_socket_buffer_size_server_to_client, sizeof(int)) < 0) {
-            SAM2_LOG_WARN("Failed to set socket send buffer size");
-        }
-        if (setsockopt(client_socket, SOL_SOCKET, SO_RCVBUF, (const char*)&sam2_socket_buffer_size_client_to_server, sizeof(int)) < 0) {
-            SAM2_LOG_WARN("Failed to set socket recv buffer size");
-        }
-
+        server->sockets[peer_id] = client_socket;
         server->num_client++;
         SAM2_LOG_INFO("Client %05" PRIu16 " connected", peer_id);
 
         sam2_connect_message_t connect_msg = { SAM2_CONN_HEADER, peer_id, {0} };
-        sam2__write_message(server, client, (char *)&connect_msg);
+        sam2__write_message(server, &server->sockets[peer_id], (char *)&connect_msg);
     }
 }
 
@@ -1235,16 +1231,43 @@ SAM2_LINKAGE int sam2_server_poll(sam2_server_t *server) {
     return 0;
 }
 
+// Helper function to handle IPv6 dual-stack socket setup & binding
+static sam2_socket_t sam2__create_and_bind(int type, int proto, int port) {
+    sam2_socket_t s = socket(AF_INET6, type, proto);
+    if (s == SAM2_SOCKET_INVALID) return SAM2_SOCKET_INVALID;
+
+    const int opt_off = 0;
+    const int opt_on = 1;
+
+    // Configure socket options & check for errors (safe on Windows & POSIX platforms)
+    setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&opt_off, sizeof(opt_off));
+
+#if !defined(_WIN32)
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt_on, sizeof(opt_on));
+    setsockopt(s, SOL_SOCKET, SO_REUSEPORT, (const char*)&opt_on, sizeof(opt_on));
+#endif
+
+    sam2__set_nonblocking(s);
+
+    struct sockaddr_in6 addr = {0}; // ::
+    addr.sin6_family = AF_INET6;
+    addr.sin6_port = htons(port);
+
+    if (bind(s, (struct sockaddr*)&addr, sizeof(addr)) == SAM2_SOCKET_ERROR) goto err;
+
+    return s;
+
+err:sam2__close_socket(s);
+    return SAM2_SOCKET_INVALID;
+}
+
 SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     memset(server, 0, sizeof(*server));
     server->stun_socket = SAM2_SOCKET_INVALID;
-
-    // Init sockets to invalid
     for (int i = 0; i < SAM2_ARRAY_LENGTH(server->sockets); i++) {
         server->sockets[i] = SAM2_SOCKET_INVALID;
     }
 
-    // Initialize sockets on Windows
 #ifdef _WIN32
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -1253,75 +1276,18 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
     }
 #endif
 
-    // Create listen socket - IPv6 with IPv4 support
-    server->sockets[0] = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+    // Setup sam2 Listen Socket
+    server->sockets[0] = sam2__create_and_bind(SOCK_STREAM, IPPROTO_TCP, port);
     if (server->sockets[0] == SAM2_SOCKET_INVALID) {
-        SAM2_LOG_ERROR("Failed to create socket: %d", SAM2_SOCKERRNO);
+        SAM2_LOG_ERROR("Failed to establish TCP Server Socket: %d", SAM2_SOCKERRNO);
         goto err;
     }
+    if (listen(server->sockets[0], SAM2_DEFAULT_BACKLOG) == SAM2_SOCKET_ERROR) goto err;
 
-    // Disable IPv6-only to allow IPv4 connections on the same socket
-    int v6only;
-    v6only = 0;
-    if (setsockopt(server->sockets[0], IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&v6only, sizeof(v6only)) == SAM2_SOCKET_ERROR) {
-        SAM2_LOG_ERROR("Failed to set IPV6_V6ONLY: %d", SAM2_SOCKERRNO);
-        goto err;
-    }
-
-#if !defined(_WIN32)
-    // Set socket options for reusability
-    int optval;
-    optval = 1;
-    if (setsockopt(server->sockets[0], SOL_SOCKET, SO_REUSEADDR, (const char*)&optval, sizeof(optval)) == SAM2_SOCKET_ERROR) {
-        SAM2_LOG_ERROR("Failed to set SO_REUSEADDR: %d", SAM2_SOCKERRNO);
-        goto err;
-    }
-    if (setsockopt(server->sockets[0], SOL_SOCKET, SO_REUSEPORT, (const char*)&optval, sizeof(optval)) == SAM2_SOCKET_ERROR) {
-        SAM2_LOG_ERROR("Failed to set SO_REUSEPORT: %d", SAM2_SOCKERRNO);
-        goto err;
-    }
-#endif
-
-    // Set non-blocking
-    if (sam2__set_nonblocking(server->sockets[0]) != 0) {
-        SAM2_LOG_ERROR("Failed to set non-blocking");
-        goto err;
-    }
-
-    // Bind to all interfaces (IPv6 and IPv4)
-    struct sockaddr_in6 addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin6_family = AF_INET6;
-    addr.sin6_port = htons(port);
-    addr.sin6_addr = in6addr_any;
-
-    if (bind(server->sockets[0], (struct sockaddr*)&addr, sizeof(addr)) == SAM2_SOCKET_ERROR) {
-        SAM2_LOG_ERROR("Bind failed on port %d: %d", port, SAM2_SOCKERRNO);
-        goto err;
-    }
-
-    // Listen
-    if (listen(server->sockets[0], SAM2_DEFAULT_BACKLOG) == SAM2_SOCKET_ERROR) {
-        SAM2_LOG_ERROR("Listen failed: %d", SAM2_SOCKERRNO);
-        goto err;
-    }
-
-    server->stun_socket = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
-    if (server->stun_socket != SAM2_SOCKET_INVALID) {
-        int stun_v6only = 0;
-        setsockopt(server->stun_socket, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&stun_v6only, sizeof(stun_v6only));
-#if !defined(_WIN32)
-        int stun_reuse = 1;
-        setsockopt(server->stun_socket, SOL_SOCKET, SO_REUSEADDR, (const char*)&stun_reuse, sizeof(stun_reuse));
-#endif
-        sam2__set_nonblocking(server->stun_socket);
-        if (bind(server->stun_socket, (struct sockaddr*)&addr, sizeof(addr)) == SAM2_SOCKET_ERROR) {
-            SAM2_LOG_WARN("STUN UDP bind failed on port %d: %d", port, SAM2_SOCKERRNO);
-            sam2__close_socket(server->stun_socket);
-            server->stun_socket = SAM2_SOCKET_INVALID;
-        }
-    } else {
-        SAM2_LOG_WARN("Failed to create STUN UDP socket: %d", SAM2_SOCKERRNO);
+    // Setup STUN UDP Socket
+    server->stun_socket = sam2__create_and_bind(SOCK_DGRAM, IPPROTO_UDP, port);
+    if (server->stun_socket == SAM2_SOCKET_INVALID) {
+        SAM2_LOG_WARN("Failed to establish STUN UDP Socket: %d", SAM2_SOCKERRNO);
     }
 
     SAM2_LOG_INFO("Server listening on port %d (IPv4 and IPv6)", port);
@@ -1329,9 +1295,7 @@ SAM2_LINKAGE int sam2_server_init(sam2_server_t *server, int port) {
 
 err:if (server->sockets[0] != SAM2_SOCKET_INVALID) {
         sam2__close_socket(server->sockets[0]);
-    }
-    if (server->stun_socket != SAM2_SOCKET_INVALID) {
-        sam2__close_socket(server->stun_socket);
+        server->sockets[0] = SAM2_SOCKET_INVALID;
     }
 #ifdef _WIN32
     WSACleanup();
