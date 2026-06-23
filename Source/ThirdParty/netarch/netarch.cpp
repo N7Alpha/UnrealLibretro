@@ -1015,6 +1015,7 @@ static bool g_is_refreshing_rooms = false;
 
 static int g_volume = 0;
 static bool g_vsync_enabled = true;
+static int g_foreground_netplay_present_guard_milliseconds = 2;
 
 static ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 static bool g_connected_to_sam2 = false;
@@ -3497,6 +3498,67 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
 }
 
 
+static void handle_ulnet_poll_status(int status, void *rom_data, size_t rom_size) {
+    if (status & ULNET_POLL_SESSION_BUFFERED_INPUT) {
+        memset(&g_ulnet_session.next_core_option, 0, sizeof(g_ulnet_session.next_core_option));
+    }
+
+    if (g_do_compress && (status & ULNET_POLL_SESSION_SAVED_STATE)) {
+        tick_compression_investigation((char *)g_savebuffer[g_save_state_index], g_serialize_size, (char *)rom_data, rom_size);
+
+        g_save_state_index = (g_save_state_index + 1) % MAX_SAVE_STATES;
+    }
+
+    if (status & ULNET_POLL_SESSION_TICKED) {
+        // Keep track of frame-times for plotting purposes
+        static int64_t last_tick_usec = ulnet__get_unix_time_microseconds();
+        int64_t current_time_usec = ulnet__get_unix_time_microseconds();
+        int64_t elapsed_time_milliseconds = (current_time_usec - last_tick_usec) / 1000;
+        g_frame_time_milliseconds[g_ulnet_session.frame_counter % g_sample_size] = elapsed_time_milliseconds;
+        last_tick_usec = current_time_usec;
+    }
+}
+
+static bool ulnet_session_wants_tick_now(ulnet_session_t *session) {
+    return ulnet_session_can_tick(session)
+        && core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec) <= 0.0;
+}
+
+static int poll_foreground_netplay_until_present_guard(int status, void *rom_data, size_t rom_size) {
+    if (   g_headless
+        || !g_vsync_enabled
+        || !(g_ulnet_session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)
+        || (status & ULNET_POLL_SESSION_TICKED)
+        || g_av.timing.fps <= 0.0) {
+        return status;
+    }
+
+    int64_t frame_time_usec = (int64_t)(1000000.0 / g_av.timing.fps);
+    int64_t present_guard_usec = 1000LL * g_foreground_netplay_present_guard_milliseconds;
+    int64_t wait_deadline_usec = ulnet__get_unix_time_microseconds() + SAM2_MAX(0, frame_time_usec - present_guard_usec);
+
+    while (!ulnet_session_wants_tick_now(&g_ulnet_session)) {
+        int64_t now_usec = ulnet__get_unix_time_microseconds();
+        int64_t remaining_usec = wait_deadline_usec - now_usec;
+        int timeout_milliseconds = (int)SAM2_MIN(2, remaining_usec / 1000);
+        if (timeout_milliseconds <= 0) {
+            break;
+        }
+        ulnet_service_network(&g_ulnet_session, timeout_milliseconds);
+    }
+
+    if (ulnet_session_wants_tick_now(&g_ulnet_session)) {
+        int late_status = ulnet_poll_session(&g_ulnet_session, g_do_compress,
+            g_savebuffer[g_save_state_index], sizeof(g_savebuffer[g_save_state_index]),
+            g_av.timing.fps, 0.0);
+        handle_ulnet_poll_status(late_status, rom_data, rom_size);
+        status |= late_status;
+    }
+
+    return status;
+}
+
+
 int main(int argc, char *argv[]) {
     g_argc = argc;
     g_argv = argv;
@@ -3765,7 +3827,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        double max_sleeping_allowed_when_polling_network_seconds = g_headless ? 1.0 : 0.0; // We just use vertical sync for frame-pacing when we have a head
+        double max_sleeping_allowed_when_polling_network_seconds = g_headless ? 1.0 : 0.0;
         g_ulnet_session.retro_run = [](void *user_ptr) {
             if (g_use_shared_context) {
                 SDL_GL_MakeCurrent(g_win, g_core_ctx);
@@ -3787,24 +3849,8 @@ int main(int argc, char *argv[]) {
         int status = ulnet_poll_session(&g_ulnet_session, g_do_compress, g_savebuffer[g_save_state_index], sizeof(g_savebuffer[g_save_state_index]),
             g_av.timing.fps, max_sleeping_allowed_when_polling_network_seconds);
 
-        if (status & ULNET_POLL_SESSION_BUFFERED_INPUT) {
-            memset(&g_ulnet_session.next_core_option, 0, sizeof(g_ulnet_session.next_core_option));
-        }
-
-        if (g_do_compress && (status & ULNET_POLL_SESSION_SAVED_STATE)) {
-            tick_compression_investigation((char *)g_savebuffer[g_save_state_index], g_serialize_size, (char*)rom_data, rom_size);
-
-            g_save_state_index = (g_save_state_index + 1) % MAX_SAVE_STATES;
-        }
-
-        if (status & ULNET_POLL_SESSION_TICKED) {
-            // Keep track of frame-times for plotting purposes
-            static int64_t last_tick_usec = ulnet__get_unix_time_microseconds();
-            int64_t current_time_usec = ulnet__get_unix_time_microseconds();
-            int64_t elapsed_time_milliseconds = (current_time_usec - last_tick_usec) / 1000;
-            g_frame_time_milliseconds[g_ulnet_session.frame_counter % g_sample_size] = elapsed_time_milliseconds;
-            last_tick_usec = current_time_usec;
-        }
+        handle_ulnet_poll_status(status, rom_data, rom_size);
+        status = poll_foreground_netplay_until_present_guard(status, rom_data, rom_size);
 
         if (!g_headless) {
             // The imgui frame is updated at the monitor refresh cadence
@@ -3820,7 +3866,10 @@ int main(int argc, char *argv[]) {
         }
 
         if (!g_headless) {
-            // We hope vsync is disabled or else this will block
+            // Drain packets that arrived while rendering/UI ran. If that unblocks the current frame,
+            // the next loop can see it before the upcoming vsync wait.
+            ulnet_service_network(&g_ulnet_session, 0);
+
             // I think you have to write platform specific code / not use OpenGL if you want this to be non-blocking
             // and still try to update on vertical sync or use another thread, but I don't like threads
             SDL_GL_SwapWindow(g_win);

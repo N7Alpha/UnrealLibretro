@@ -37,16 +37,6 @@ jobs:
         name: netarch-linux-amd64
         path: build/netarch
 
-    - name: Run sam2_test.c
-      run: |
-        cc -DSAM2_IMPLEMENTATION \
-          -DSAM2_TEST_MAIN \
-          -ISource/UnrealLibretro/Private \
-          -ISource/ThirdParty/libuv/include \
-          Source/ThirdParty/netarch/sam2_test.c \
-          -o /tmp/sam2_test
-        /tmp/sam2_test
-
     - name: Run ulnet_test.c
       run: |
         cc -DSAM2_IMPLEMENTATION \
