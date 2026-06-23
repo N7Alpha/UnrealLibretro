@@ -1848,11 +1848,14 @@ void draw_imgui() {
         // One unified list of everyone in the room. A peer's role is decided by its topology bit, not
         // its slot, so any occupied slot can be the authority, a p2p player, or a client-server spectator.
         ImGui::SeparatorText("Room");
-        if (ImGui::BeginTable("RoomPeers", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+        if (ImGui::BeginTable("RoomPeers", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
             ImGui::TableSetupColumn("Port");
             ImGui::TableSetupColumn("Peer ID");
             ImGui::TableSetupColumn("Role");
             ImGui::TableSetupColumn("Connection");
+            ImGui::TableSetupColumn("Kernel Ping");
+            ImGui::TableSetupColumn("Callsite Ping");
+            ImGui::TableSetupColumn("Input->Core");
             ImGui::TableHeadersRow();
 
             for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
@@ -1890,6 +1893,27 @@ void draw_imgui() {
                     }
                 } else {
                     ImGui::TextColored(GREY, "NAT agent not created");
+                }
+
+                ImGui::TableSetColumnIndex(4);
+                if (!is_us && g_ulnet_session.peer_packet_kernel_ping_samples[p] > 0) {
+                    ImGui::Text("%.2f ms", g_ulnet_session.peer_packet_kernel_ping_usec[p] / 1000.0);
+                } else {
+                    ImGui::TextDisabled("--");
+                }
+
+                ImGui::TableSetColumnIndex(5);
+                if (!is_us && g_ulnet_session.peer_packet_ping_samples[p] > 0) {
+                    ImGui::Text("%.2f ms", g_ulnet_session.peer_packet_ping_usec[p] / 1000.0);
+                } else {
+                    ImGui::TextDisabled("--");
+                }
+
+                ImGui::TableSetColumnIndex(6);
+                if (g_ulnet_session.peer_input_to_core_ping_usec[p] > 0) {
+                    ImGui::Text("%.2f ms", g_ulnet_session.peer_input_to_core_ping_usec[p] / 1000.0);
+                } else {
+                    ImGui::TextDisabled("--");
                 }
             }
             ImGui::EndTable();

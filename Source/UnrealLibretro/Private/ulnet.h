@@ -101,6 +101,7 @@ static SAM2_FORCEINLINE bool ulnet__is_input_channel(uint8_t channel_and_flags) 
 
 #define ULNET_MAX_SAMPLE_SIZE 128
 
+// Reliable data is stop-and-wait on the wire; this bounds queued transmit payloads and RX debug history.
 #define ULNET_RELIABLE_ACK_BUFFER_SIZE 128
 
 #define ULNET_RS_GF_SIZE 255
@@ -297,10 +298,10 @@ typedef struct ulnet_session {
     uint8_t packet_history_next[SAM2_TOTAL_PEERS];
     int64_t reliable_retransmit_delay_microseconds;
     int64_t reliable_last_transmit_time[SAM2_TOTAL_PEERS];
-    ulnet_packet_ref_t reliable_tx_packet_history[SAM2_TOTAL_PEERS][ULNET_RELIABLE_ACK_BUFFER_SIZE]; // Indexable by sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE
-    ulnet_packet_ref_t reliable_rx_packet_history[SAM2_TOTAL_PEERS][ULNET_RELIABLE_ACK_BUFFER_SIZE]; // Indexable by sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE
-    uint16_t reliable_tx_next_seq[SAM2_TOTAL_PEERS]; // Greatest sequence we have sent
-    uint16_t reliable_tx_head[SAM2_TOTAL_PEERS];     // Greatest sequence we have sent and received an ack for
+    ulnet_packet_ref_t reliable_tx_packet_history[SAM2_TOTAL_PEERS][ULNET_RELIABLE_ACK_BUFFER_SIZE]; // Queued reliable data, indexed by sequence % size; only tx_head is in flight
+    ulnet_packet_ref_t reliable_rx_packet_history[SAM2_TOTAL_PEERS][ULNET_RELIABLE_ACK_BUFFER_SIZE]; // RX debug/duplicate history, indexed by sequence % size
+    uint16_t reliable_tx_next_seq[SAM2_TOTAL_PEERS]; // Next sequence to assign
+    uint16_t reliable_tx_head[SAM2_TOTAL_PEERS];     // Oldest unacked sequence / transmit queue head
     uint16_t reliable_rx_head[SAM2_TOTAL_PEERS];     // Next sequence we expect to receive
     int64_t peer_last_packet_send_unix_usec[SAM2_TOTAL_PEERS];
     int64_t peer_last_packet_callsite_receive_unix_usec[SAM2_TOTAL_PEERS];
@@ -367,6 +368,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
 ULNET_LINKAGE void ulnet_session_tear_down(ulnet_session_t *session);
 ULNET_LINKAGE int64_t ulnet__get_unix_time_microseconds();
 ULNET_LINKAGE uint32_t ulnet_xxh32(const void* data, size_t len, uint32_t seed);
+ULNET_LINKAGE int64_t ulnet__room_advertise_frame_from_effective_frame(int64_t effective_frame);
 
 ULNET_LINKAGE void ulnet_imgui_show_session(ulnet_session_t *session);
 ULNET_LINKAGE void ulnet_imgui_show_recent_packets_table(ulnet_session_t *session, int p);
@@ -3097,24 +3099,9 @@ ULNET_LINKAGE int ulnet_udp_send(ulnet_session_t *session, int port, const uint8
         break;
     }
 
-    bool is_reliable_data =    (packet[0] & ULNET_CHANNEL_MASK) == ULNET_CHANNEL_RELIABLE
-                            && !(packet[0] & ULNET_RELIABLE_FLAG_ACK_ONLY);
-    uint16_t sequence = is_reliable_data ? (((uint16_t)packet[2] << 8) | packet[1]) : 0;
-
     // packet_history is read only by the imgui debug table; skip the per-packet malloc/copy otherwise
     if (session->flags & ULNET_SESSION_FLAG_DRAW_IMGUI) {
         ulnet_packet_ref_set(&session->packet_history[port][session->packet_history_next[port]++], packet, size, ULNET_PACKET_FLAG_TX);
-    }
-
-    if (is_reliable_data) {
-        ulnet_packet_ref_set(&session->reliable_tx_packet_history[port][sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE], packet, size, ULNET_PACKET_FLAG_TX);
-
-        if (sequence != session->reliable_tx_head[port]) {
-            SAM2_LOG_INFO("Not sending reliable packet since it is not head of queue");
-            return 0; // @todo move this to the reliable send function
-        } else {
-            session->reliable_last_transmit_time[port] = ulnet__get_unix_time_microseconds();
-        }
     }
 
     if (rand() / ((float) RAND_MAX) < session->debug_udp_send_drop_rate) {
@@ -3198,6 +3185,7 @@ static int ulnet__reliable_send_head(ulnet_session_t *session, int port, bool re
     SAM2_LOG_INFO("%s reliable packet with sequence %d",
         retransmit ? "Retransmitting" : "Sending queued", head_sequence);
 
+    session->reliable_last_transmit_time[port] = ulnet__get_unix_time_microseconds();
     int status = ulnet_udp_send(session, port, packet_to_send, packet_size);
     if (status != 0) {
         SAM2_LOG_ERROR("Failed to send reliable packet with sequence %d", head_sequence);
@@ -3213,7 +3201,8 @@ ULNET_LINKAGE int ulnet_reliable_send(ulnet_session_t *session, int port, const 
     uint8_t tmp[ULNET_PACKET_SIZE_BYTES_MAX];
 
     tmp[0] = ULNET_CHANNEL_RELIABLE;
-    if ((uint16_t)(session->reliable_tx_next_seq[port] - session->reliable_tx_head[port]) >= ULNET_RELIABLE_ACK_BUFFER_SIZE) {
+    uint16_t queued_packets = (uint16_t)(session->reliable_tx_next_seq[port] - session->reliable_tx_head[port]);
+    if (queued_packets >= ULNET_RELIABLE_ACK_BUFFER_SIZE) {
         SAM2_LOG_ERROR("Reliable send queue is full for port %d", port);
         return -1;
     }
@@ -3224,10 +3213,21 @@ ULNET_LINKAGE int ulnet_reliable_send(ulnet_session_t *session, int port, const 
     int maybe_wrapped_size = ulnet__wrap_packet(packet, size, sequence, ack_sequence, tmp);
     if (maybe_wrapped_size < 0) {
         return maybe_wrapped_size;
-    } else {
-        session->reliable_tx_next_seq[port]++;
-        return ulnet_udp_send(session, port, tmp, maybe_wrapped_size);
     }
+
+    ulnet_packet_ref_set(
+        &session->reliable_tx_packet_history[port][sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE],
+        tmp,
+        maybe_wrapped_size,
+        ULNET_PACKET_FLAG_TX
+    );
+    session->reliable_tx_next_seq[port]++;
+
+    if (queued_packets == 0) {
+        return ulnet__reliable_send_head(session, port, false);
+    }
+
+    return 0;
 }
 
 ULNET_LINKAGE int ulnet_reliable_send_with_acks_only(ulnet_session_t *session, int port, const uint8_t *packet, int size) {
@@ -3293,7 +3293,7 @@ static void ulnet__memor(void *dst, const void *src, size_t n) {
     }
 }
 
-static int64_t ulnet__room_advertise_frame_from_effective_frame(int64_t effective_frame) {
+ULNET_LINKAGE int64_t ulnet__room_advertise_frame_from_effective_frame(int64_t effective_frame) {
     return effective_frame - ULNET_ROOM_CHANGE_LEAD_FRAMES;
 }
 
@@ -4144,7 +4144,7 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
         uint16_t old_tx_head = session->reliable_tx_head[p];
         uint16_t ack_sequence = (reliable_packet->ack_sequence_le[1] << 8) | reliable_packet->ack_sequence_le[0];
         if (!ulnet__sequence_in_range_inclusive(ack_sequence, old_tx_head, session->reliable_tx_next_seq[p])) {
-            SAM2_LOG_WARN("Ignoring invalid reliable ACK seq=%u from peer %05" PRIu16 " outside tx window [%u, %u]",
+            SAM2_LOG_WARN("Ignoring invalid reliable ACK seq=%u from peer %05" PRIu16 " outside tx queue [%u, %u]",
                 ack_sequence, session->room_we_are_in.peer_ids[p], old_tx_head, session->reliable_tx_next_seq[p]);
             ack_sequence = old_tx_head;
         } else if (ulnet__sequence_greater_than(ack_sequence, old_tx_head)) {
@@ -4923,8 +4923,8 @@ ULNET_LINKAGE void ulnet_imgui_show_session(ulnet_session_t *session) {
 
             if (ImGui::BeginTabItem(tabName)) {
                 if (ImGui::CollapsingHeader("Reliable Protocol State", ImGuiTreeNodeFlags_DefaultOpen)) {
-                    ImGui::Text("Transmit: Next Seq=%u, Greatest Acked=%u", session->reliable_tx_next_seq[p], session->reliable_tx_head[p]);
-                    ImGui::Text("Receive: Greatest Seq=%u", session->reliable_rx_head[p]);
+                    ImGui::Text("Transmit: Next Seq=%u, Head=%u", session->reliable_tx_next_seq[p], session->reliable_tx_head[p]);
+                    ImGui::Text("Receive: Next Expected=%u", session->reliable_rx_head[p]);
                 }
 
                 if (ImGui::CollapsingHeader("Ping Estimates", ImGuiTreeNodeFlags_DefaultOpen)) {

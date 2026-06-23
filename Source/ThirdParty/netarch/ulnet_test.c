@@ -1291,7 +1291,7 @@ int ulnet_test_inproc(ulnet_session_t **session_1_out, ulnet_session_t **session
     sessions[0]->debug_udp_recv_drop_rate = 1.0f;
     ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "HELLO", sizeof("HELLO") - 1); // DROP
     sessions[0]->debug_udp_recv_drop_rate = 0.0f;
-    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "WORLD", sizeof("WORLD") - 1); // (NOT SENT) added to reliable_tx_packet_history
+    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "WORLD", sizeof("WORLD") - 1); // Queued behind HELLO
     ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3); // RETRANSMIT "HELLO"
     ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3); // RECEIVE "HELLO"
     ulnet_reliable_send_with_acks_only(sessions[0], ULNET__TEST_SPECTATOR_PORT, (const uint8_t*) "ACK CARRIER", sizeof("ACK CARRIER") - 1); // ACK "HELLO"
