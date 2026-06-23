@@ -76,8 +76,8 @@ typedef enum ulnet_nat_state {
 #define ULNET_RELIABLE_FLAG_ACK_ONLY             0b00010000
 
 // Bytes ulnet__wrap_packet prepends when a packet is sent over the reliable channel:
-// channel byte + 16-bit sequence + 16-bit ack. State packets are always sent reliably, so their
-// payload must leave room for this or the wrap silently fails (ulnet__wrap_packet returns -1).
+// channel byte + 16-bit sequence + 16-bit ack. State packets are always wrapped to carry ACKs, so
+// their payload must leave room for this or the wrap silently fails (ulnet__wrap_packet returns -1).
 #define ULNET_RELIABLE_WRAPPER_BYTES (ULNET_HEADER_SIZE + 2 * (int)sizeof(uint16_t))
 
 #define ULNET_PACKET_FLAG_TX                     0x1000
@@ -3341,7 +3341,7 @@ static int64_t ulnet__encode_state_packet(ulnet_session_t *session, int state_po
     return sizeof(ulnet_state_packet_t) + encoded_size;
 }
 
-static void ulnet__send_state_packet_to_ready_peers(ulnet_session_t *session, int state_port, bool queued_reliable) {
+static void ulnet__send_state_packet_to_ready_peers(ulnet_session_t *session, int state_port) {
     uint8_t packet[ULNET_PACKET_SIZE_BYTES_MAX];
     int64_t packet_size = ulnet__encode_state_packet(session, state_port, packet, sizeof(packet));
     if (packet_size < 0 || packet_size > ULNET_PACKET_SIZE_BYTES_MAX) {
@@ -3351,19 +3351,13 @@ static void ulnet__send_state_packet_to_ready_peers(ulnet_session_t *session, in
         return;
     }
 
-    if (queued_reliable) {
-        ulnet_update_state_history(session, packet, packet_size);
-    }
+    ulnet_update_state_history(session, packet, packet_size);
 
     bool sent = false;
     for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
         if (!ulnet__peer_link_ready(session, p)) continue;
         ulnet__stamp_state_packet_ping(session, p, packet, ulnet__get_unix_time_microseconds());
-        if (queued_reliable) {
-            ulnet_reliable_send(session, p, packet, packet_size);
-        } else {
-            ulnet_reliable_send_with_acks_only(session, p, packet, packet_size);
-        }
+        ulnet_reliable_send_with_acks_only(session, p, packet, packet_size);
         sent = true;
     }
 
@@ -3429,13 +3423,6 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
         }
 
         ulnet__memor(session->state[our_port].input_state[next_buffer_index], session->next_input_state, sizeof(ulnet_input_state_t[SAM2_PORT_MAX]));
-        // Only send every 8th packet reliably... frame 7, 15, 23, etc.
-        if ((session->state[our_port].frame + 1) % ULNET_DELAY_BUFFER_SIZE == 0) {
-            // Deliver our authoritative state (including the room snapshot) reliably to every link.
-            // Spectators are fine on the reliable channel too: their outgoing spectator-input packets
-            // piggyback ACKs, so the window keeps advancing in both directions.
-            ulnet__send_state_packet_to_ready_peers(session, our_port, true);
-        }
       }
     } else if (we_are_coordinator_only_authority) {
         if (session->state[SAM2_AUTHORITY_INDEX].frame < session->frame_counter) {
@@ -3446,12 +3433,6 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
             memset(session->state[SAM2_AUTHORITY_INDEX].input_state[next_buffer_index], 0,
                 sizeof(session->state[SAM2_AUTHORITY_INDEX].input_state[next_buffer_index]));
             ulnet__publish_authority_room_snapshot(session, SAM2_AUTHORITY_INDEX);
-
-            // Coordinator-only authority still publishes a reliable 8-frame heartbeat. It is not
-            // deterministic input when bit 0 is clear, but peers use it as the room snapshot clock.
-            if ((session->state[SAM2_AUTHORITY_INDEX].frame + 1) % ULNET_DELAY_BUFFER_SIZE == 0) {
-                ulnet__send_state_packet_to_ready_peers(session, SAM2_AUTHORITY_INDEX, true);
-            }
         } else {
             ulnet__publish_authority_room_snapshot(session, SAM2_AUTHORITY_INDEX);
         }
@@ -3470,7 +3451,10 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
             if (we_are_authority) {
                 ulnet__publish_authority_room_snapshot(session, our_port);
             }
-            ulnet__send_state_packet_to_ready_peers(session, our_port, false);
+            // Store every 8th complete state snapshot for spectator reconstruction and diagnostics.
+            // The state stream itself is idempotent latest-state traffic; correctness comes from the
+            // frame gates below, while the wrapper carries ACKs for reliable control messages.
+            ulnet__send_state_packet_to_ready_peers(session, our_port);
         } else {
             packet[0] = ULNET_CHANNEL_SPECTATOR_INPUT;
             memset(packet + 1, 0, sizeof(ulnet_state_packet_t) - 1);
