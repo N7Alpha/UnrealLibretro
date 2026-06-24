@@ -1283,6 +1283,75 @@ done:
     return status;
 }
 
+int ulnet_test_inproc_spectator_recovers_after_state_burst_loss(void) {
+    ulnet_session_t *sessions[2] = {0};
+    ulnet_transport_inproc_t transport = {0};
+    uint8_t save_state[256];
+    int status = 0;
+
+    ulnet__test_inproc_pair_setup(sessions, &transport, 0);
+    sessions[0]->delay_frames = 0;
+    sessions[1]->delay_frames = 0;
+
+    if (ulnet__test_sync_inproc_pair(sessions, save_state, sizeof(save_state)) != 0) {
+        status = 1;
+        goto done;
+    }
+
+    for (int i = 0; i < 16; i++) {
+        ulnet__test_poll_inproc_sessions(sessions, 2, save_state, sizeof(save_state));
+    }
+
+    sessions[1]->debug_udp_recv_drop_rate = 1.0f;
+    for (int i = 0; i < 40; i++) {
+        ulnet__test_poll_inproc_sessions(sessions, 2, save_state, sizeof(save_state));
+    }
+    sessions[1]->debug_udp_recv_drop_rate = 0.0f;
+
+    int64_t outage_gap = sessions[0]->frame_counter - sessions[1]->frame_counter;
+    if (outage_gap < 20) {
+        SAM2_LOG_ERROR("spectator burst-loss recovery test: spectator only fell %" PRId64 " frames behind", outage_gap);
+        status = 1;
+        goto done;
+    }
+
+    int recovered = 0;
+    for (int i = 0; i < 300; i++) {
+        sessions[0]->core_wants_tick_at_unix_usec = 0;
+        ulnet_poll_session(sessions[0], 0, save_state, sizeof(save_state), 60.0, 0.0);
+
+        for (int j = 0; j < 4; j++) {
+            sessions[1]->core_wants_tick_at_unix_usec = 0;
+            ulnet_poll_session(sessions[1], 0, save_state, sizeof(save_state), 60.0, 0.0);
+        }
+
+        if (sessions[0]->frame_counter - sessions[1]->frame_counter <= ULNET_DELAY_BUFFER_SIZE) {
+            recovered = 1;
+            break;
+        }
+    }
+
+    if (!recovered) {
+        SAM2_LOG_ERROR("spectator burst-loss recovery test: spectator did not recover from %" PRId64
+            "-frame gap (authority=%" PRId64 " spectator=%" PRId64 " auth_state=%" PRId64 ")",
+            outage_gap, sessions[0]->frame_counter, sessions[1]->frame_counter,
+            sessions[1]->state[SAM2_AUTHORITY_INDEX].frame);
+        status = 1;
+        goto done;
+    }
+
+done:
+    if (sessions[0]) {
+        ulnet_session_tear_down(sessions[0]);
+        free(sessions[0]);
+    }
+    if (sessions[1]) {
+        ulnet_session_tear_down(sessions[1]);
+        free(sessions[1]);
+    }
+    return status;
+}
+
 int ulnet_test_inproc(ulnet_session_t **session_1_out, ulnet_session_t **session_2_out) {
     ulnet_session_t *sessions[2] = {0};
     ulnet_transport_inproc_t transport = {0};
@@ -2022,6 +2091,12 @@ int main (int argc, char **argv) {
     status = ulnet_test_inproc_high_port_authority_relay();
     if (status != 0) {
         printf("High-port authority relay test failed with status: %d\n", status);
+        return status;
+    }
+
+    status = ulnet_test_inproc_spectator_recovers_after_state_burst_loss();
+    if (status != 0) {
+        printf("Spectator burst-loss recovery test failed with status: %d\n", status);
         return status;
     }
 

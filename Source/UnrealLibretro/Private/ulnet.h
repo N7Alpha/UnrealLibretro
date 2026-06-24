@@ -130,11 +130,19 @@ static SAM2_FORCEINLINE bool ulnet__is_input_channel(uint8_t channel_and_flags) 
 // Setting ULNET_DELAY_BUFFER_SIZE to 2 allows for no frame delay while still handling this scenario.
 // The following constant is set to 8 which yields 3 frames of delay this corresponds to a max RTT PING of 100 ms to not stutter
 #define ULNET_DELAY_BUFFER_SIZE 8
+#define ULNET_PACKET_INPUT_FRAMES 4
+#define ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES 4
 
 #define ULNET_DELAY_FRAMES_MAX (ULNET_DELAY_BUFFER_SIZE/2-1)
 #define ULNET_ROOM_CHANGE_LEAD_FRAMES (ULNET_DELAY_FRAMES_MAX + 1)
 #if ULNET_ROOM_CHANGE_LEAD_FRAMES <= 0 || ULNET_ROOM_CHANGE_LEAD_FRAMES > ULNET_DELAY_BUFFER_SIZE
 #error ULNET_ROOM_CHANGE_LEAD_FRAMES must fit in the input delay buffer
+#endif
+#if ULNET_PACKET_INPUT_FRAMES <= 0 || ULNET_PACKET_INPUT_FRAMES > ULNET_DELAY_BUFFER_SIZE
+#error ULNET_PACKET_INPUT_FRAMES must fit in the input delay buffer
+#endif
+#if ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES <= 0 || ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES > ULNET_DELAY_BUFFER_SIZE
+#error ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES must fit in the input delay buffer
 #endif
 
 #define ULNET_PORT_COUNT 8
@@ -190,6 +198,35 @@ typedef struct {
     uint8_t ping_echo_kernel_receive_unix_usec_le[8]; // Same previous packet's kernel SO_TIMESTAMP T2, if available
     uint8_t coded_state[];
 } ulnet_state_packet_t;
+
+#define ULNET_PACKED_INPUT_MAGIC {'U','L','I','1'}
+#define ULNET_PACKED_INPUT_FLAG_ROOM_PRESENT 0x01
+
+#define ULNET_INPUT_JOYPAD_WORDS 16
+#define ULNET_INPUT_ANALOG_WORDS 6
+#define ULNET_INPUT_ANALOG_FIRST_INDEX 33
+
+typedef struct {
+    uint8_t buttons_le[2];
+    uint8_t analog_le[ULNET_INPUT_ANALOG_WORDS][2];
+} ulnet_packed_input_frame_t;
+SAM2_STATIC_ASSERT(sizeof(ulnet_packed_input_frame_t) == 14, "Packed input frame size changed");
+
+typedef struct {
+    uint8_t magic[4];
+    uint8_t frame_le[8];
+    uint8_t room_effective_frame_le[8];
+    uint8_t save_state_frame_le[8];
+    uint8_t input_poll_unix_usec_le[ULNET_PACKET_INPUT_FRAMES][8];
+    uint8_t save_state_hash_le[ULNET_PACKET_INPUT_FRAMES][4];
+    uint8_t input_state_hash_le[ULNET_PACKET_INPUT_FRAMES][4];
+    uint8_t controller_port;
+    uint8_t frame_count;
+    uint8_t flags;
+    uint8_t core_option_frame_mask;
+    ulnet_packed_input_frame_t input[ULNET_PACKET_INPUT_FRAMES];
+    uint8_t optional[];
+} ulnet_packed_state_payload_t;
 
 typedef struct {
     uint8_t channel_and_flags;
@@ -299,7 +336,7 @@ typedef struct ulnet_session {
 
     int64_t peer_desynced_frame[SAM2_TOTAL_PEERS];
     ulnet_input_state_t spectator_suggested_input_state[SAM2_TOTAL_PEERS][ULNET_PORT_COUNT];
-    ulnet_packet_ref_t state_packet_history[SAM2_TOTAL_PEERS][ULNET_STATE_PACKET_HISTORY_SIZE]; // Indexable by (frame / ULNET_DELAY_BUFFER_SIZE) % ULNET_STATE_PACKET_HISTORY_SIZE
+    ulnet_packet_ref_t state_packet_history[SAM2_TOTAL_PEERS][ULNET_STATE_PACKET_HISTORY_SIZE]; // Indexable by (frame / ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES) % ULNET_STATE_PACKET_HISTORY_SIZE
     ulnet_packet_ref_t packet_history[SAM2_TOTAL_PEERS][256]; // All packets circular buffer in order they were sent/recv
     uint8_t packet_history_next[SAM2_TOTAL_PEERS];
     int64_t reliable_retransmit_delay_microseconds;
@@ -410,6 +447,16 @@ static inline bool ulnet_port_is_active_player(const sam2_room_t *room, int port
     if (!ulnet_port_is_p2p(room, port)) return false;
     if (port < SAM2_PORT_MAX && (room->flags & (SAM2_FLAG_PORT0_PEER_IS_INACTIVE << port))) return false;
     return true;
+}
+
+static inline int ulnet_player_controller_port(const sam2_room_t *room, int peer_port) {
+    int controller_port = 0;
+    for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
+        if (!ulnet_port_is_active_player(room, p)) continue;
+        if (p == peer_port) return controller_port < ULNET_PORT_COUNT ? controller_port : -1;
+        controller_port++;
+    }
+    return -1;
 }
 
 static bool ulnet_is_spectator(ulnet_session_t *session, uint64_t peer_id) {
@@ -559,6 +606,26 @@ static void ulnet__write_be32(uint8_t *p, uint32_t v) {
     p[1] = (uint8_t)(v >> 16);
     p[2] = (uint8_t)(v >> 8);
     p[3] = (uint8_t)v;
+}
+
+static uint16_t ulnet__read_le16(const uint8_t *p) {
+    return (uint16_t)(((uint16_t)p[1] << 8) | p[0]);
+}
+
+static uint32_t ulnet__read_le32(const uint8_t *p) {
+    return ((uint32_t)p[3] << 24) | ((uint32_t)p[2] << 16) | ((uint32_t)p[1] << 8) | p[0];
+}
+
+static void ulnet__write_le16(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+}
+
+static void ulnet__write_le32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
 }
 
 static int64_t ulnet__read_le64s(const uint8_t *p) {
@@ -2984,12 +3051,10 @@ ULNET_LINKAGE void ulnet_input_poll(ulnet_session_t *session, ulnet_input_state_
             assert(session->state[peer_idx].frame <= session->frame_counter + (ULNET_DELAY_BUFFER_SIZE-1));
             assert(session->state[peer_idx].frame >= session->frame_counter);
 
-            // Any player may drive any controller; everyone's input is OR-merged ("anyone controls any
-            // port"). The peer slot indexes state[] (64-wide), the controller is a separate axis, so a
-            // p2p player on any slot contributes correctly without indexing controllers out of bounds.
-            for (int port = 0; port < ULNET_PORT_COUNT; port++) {
-                for (int i = 0; i < SAM2_ARRAY_LENGTH((*input_state)[port]); i++) {
-                    (*input_state)[port][i] |= session->state[peer_idx].input_state[session->frame_counter % ULNET_DELAY_BUFFER_SIZE][port][i];
+            int controller_port = ulnet_player_controller_port(&session->room_we_are_in, peer_idx);
+            if (controller_port >= 0) {
+                for (int i = 0; i < SAM2_ARRAY_LENGTH((*input_state)[controller_port]); i++) {
+                    (*input_state)[controller_port][i] |= session->state[peer_idx].input_state[session->frame_counter % ULNET_DELAY_BUFFER_SIZE][controller_port][i];
                 }
             }
 
@@ -3012,23 +3077,82 @@ double core_wants_tick_in_seconds(int64_t core_wants_tick_at_unix_usec) {
     return seconds;
 }
 
+static size_t ulnet__bounded_strlen(const char *s, size_t capacity) {
+    size_t n = 0;
+    while (n < capacity && s[n] != '\0') n++;
+    return n;
+}
+
+static void ulnet__pack_input_frame(const ulnet_input_state_t input, ulnet_packed_input_frame_t *packed) {
+    uint16_t buttons = 0;
+    memset(packed, 0, sizeof(*packed));
+
+    for (int i = 0; i < ULNET_INPUT_JOYPAD_WORDS; i++) {
+        if (input[i] != 0) {
+            buttons |= (uint16_t)(1u << i);
+        }
+    }
+    ulnet__write_le16(packed->buttons_le, buttons);
+
+    for (int i = 0; i < ULNET_INPUT_ANALOG_WORDS; i++) {
+        ulnet__write_le16(packed->analog_le[i], (uint16_t)input[ULNET_INPUT_ANALOG_FIRST_INDEX + i]);
+    }
+}
+
+static void ulnet__unpack_input_frame(const ulnet_packed_input_frame_t *packed, ulnet_input_state_t input) {
+    uint16_t buttons = ulnet__read_le16(packed->buttons_le);
+    memset(input, 0, sizeof(ulnet_input_state_t));
+
+    for (int i = 0; i < ULNET_INPUT_JOYPAD_WORDS; i++) {
+        input[i] = (buttons & (uint16_t)(1u << i)) ? 1 : 0;
+    }
+
+    for (int i = 0; i < ULNET_INPUT_ANALOG_WORDS; i++) {
+        input[ULNET_INPUT_ANALOG_FIRST_INDEX + i] = (int16_t)ulnet__read_le16(packed->analog_le[i]);
+    }
+}
+
+static bool ulnet__packed_input_magic_matches(const ulnet_packed_state_payload_t *payload) {
+    static const uint8_t magic[4] = ULNET_PACKED_INPUT_MAGIC;
+    return memcmp(payload->magic, magic, sizeof(magic)) == 0;
+}
+
+static int64_t ulnet__get_frame_from_packet(const uint8_t *packet, size_t packet_size) {
+    if (packet_size < sizeof(ulnet_state_packet_t) + sizeof(ulnet_packed_state_payload_t)) {
+        return -1;
+    }
+
+    const ulnet_packed_state_payload_t *payload =
+        (const ulnet_packed_state_payload_t *)&packet[sizeof(ulnet_state_packet_t)];
+    if (!ulnet__packed_input_magic_matches(payload)) {
+        return -1;
+    }
+
+    return ulnet__read_le64s(payload->frame_le);
+}
+
+static bool ulnet__is_state_history_frame(int64_t frame) {
+    return (frame + 1) % ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES == 0;
+}
+
 static void ulnet_update_state_history(ulnet_session_t *session, const uint8_t *packet, size_t packet_size) {
-    // Only store every 8th packet... frame 7, 15, 23, etc.
+    // Only store checkpoint packets... frame 3, 7, 11, etc.
     if (!ulnet__is_input_channel(packet[0])) {
         SAM2_LOG_ERROR("Attempt to store non-input packet in state history");
         return;
     }
 
     int port = packet[0] & 0b00111111;
-    int64_t frame;
-    rle8_decode(&packet[sizeof(ulnet_state_packet_t)], packet_size - sizeof(ulnet_state_packet_t), (uint8_t *) &frame, sizeof(frame));
-    if ((frame + 1) % ULNET_DELAY_BUFFER_SIZE == 0) {
-        int history_idx = (frame / ULNET_DELAY_BUFFER_SIZE) % ULNET_STATE_PACKET_HISTORY_SIZE;
+    int64_t frame = ulnet__get_frame_from_packet(packet, packet_size);
+    if (frame >= 0 && ulnet__is_state_history_frame(frame)) {
+        int history_idx = (frame / ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES) % ULNET_STATE_PACKET_HISTORY_SIZE;
 
         SAM2_LOG_DEBUG("Storing state packet for port %d at history index %d for frame %lld", port, history_idx, (long long)frame);
         ulnet_packet_ref_set(&session->state_packet_history[port][history_idx], packet, packet_size, 0);
     }
 }
+
+static int ulnet__validate_packed_state_packet(const uint8_t *packet, size_t packet_size);
 
 // Returns a negative number on error
 ULNET_LINKAGE int ulnet_udp_send(ulnet_session_t *session, int port, const uint8_t *packet, size_t size) {
@@ -3046,30 +3170,9 @@ ULNET_LINKAGE int ulnet_udp_send(ulnet_session_t *session, int port, const uint8
     }
     case ULNET_CHANNEL_INPUT_HI:
     case ULNET_CHANNEL_INPUT: {
-        if (size < sizeof(ulnet_state_packet_t)) {
-            SAM2_LOG_ERROR("Input packet too small: %zu bytes", size);
+        if (ulnet__validate_packed_state_packet(packet, size) != 0) {
+            SAM2_LOG_ERROR("Input packet has invalid packed state payload");
             return -1;
-        }
-
-        ulnet_state_packet_t *state_packet = (ulnet_state_packet_t *)packet;
-        int64_t encoded_state_size = size - sizeof(ulnet_state_packet_t);
-        int64_t decoded_size = rle8_decode_size(state_packet->coded_state, encoded_state_size);
-
-        if (decoded_size < 0) {
-            SAM2_LOG_ERROR("Input packet has invalid RLE encoding");
-            return -1;
-        }
-
-        if (decoded_size > sizeof(ulnet_state_t)) {
-            SAM2_LOG_ERROR("Input packet would decode to %" PRId64 " bytes, exceeding destination buffer size %zu",
-                            decoded_size, sizeof(ulnet_state_t));
-            return -1;
-        }
-
-        if (decoded_size < sizeof(ulnet_state_t)) {
-            SAM2_LOG_WARN("Input packet would decode to only %" PRId64 " bytes, expected %zu",
-                        decoded_size, sizeof(ulnet_state_t));
-            // Allow undersized packets as they might be partial updates
         }
         break;
     }
@@ -3272,12 +3375,6 @@ ULNET_LINKAGE int ulnet_message_send(ulnet_session_t *session, int port, const u
     return ulnet_reliable_send(session, port, message, metadata->message_size);
 }
 
-static SAM2_FORCEINLINE int64_t ulnet__get_frame_from_packet(const uint8_t *packet) {
-    int64_t frame;
-    rle8_decode(&packet[sizeof(ulnet_state_packet_t)], sizeof(frame), (uint8_t *) &frame, sizeof(frame));
-    return frame;
-}
-
 static void ulnet__stamp_state_packet_ping(ulnet_session_t *session, int peer_port, uint8_t *packet, int64_t send_time_usec) {
     if (!ulnet__is_input_channel(packet[0])) return;
 
@@ -3322,6 +3419,135 @@ static bool ulnet__authority_has_pending_room_change(ulnet_session_t *session) {
            && memcmp(&session->next_room, &session->room_we_are_in, sizeof(sam2_room_t)) != 0;
 }
 
+static int ulnet__append_packed_core_option(uint8_t **cursor, uint8_t *end, uint8_t frame_offset,
+    const ulnet_core_option_t *option) {
+    size_t key_len = ulnet__bounded_strlen(option->key, sizeof(option->key) - 1);
+    size_t value_len = ulnet__bounded_strlen(option->value, sizeof(option->value) - 1);
+
+    if (key_len == 0) {
+        return 0;
+    }
+
+    if (key_len > 255 || value_len > 255 || (size_t)(end - *cursor) < 3 + key_len + value_len) {
+        return -1;
+    }
+
+    *(*cursor)++ = frame_offset;
+    *(*cursor)++ = (uint8_t)key_len;
+    *(*cursor)++ = (uint8_t)value_len;
+    memcpy(*cursor, option->key, key_len);
+    *cursor += key_len;
+    memcpy(*cursor, option->value, value_len);
+    *cursor += value_len;
+
+    return 0;
+}
+
+static int ulnet__validate_packed_state_packet(const uint8_t *packet, size_t packet_size) {
+    if (packet_size < sizeof(ulnet_state_packet_t) + sizeof(ulnet_packed_state_payload_t)) {
+        return -1;
+    }
+
+    const ulnet_packed_state_payload_t *payload =
+        (const ulnet_packed_state_payload_t *)&packet[sizeof(ulnet_state_packet_t)];
+    const uint8_t *cursor = payload->optional;
+    const uint8_t *end = packet + packet_size;
+
+    if (!ulnet__packed_input_magic_matches(payload)) {
+        return -1;
+    }
+    if (payload->frame_count == 0 || payload->frame_count > ULNET_PACKET_INPUT_FRAMES) {
+        return -1;
+    }
+    if (payload->controller_port >= ULNET_PORT_COUNT && payload->controller_port != 0xff) {
+        return -1;
+    }
+
+    if (payload->flags & ULNET_PACKED_INPUT_FLAG_ROOM_PRESENT) {
+        if ((size_t)(end - cursor) < sizeof(sam2_room_t)) {
+            return -1;
+        }
+        cursor += sizeof(sam2_room_t);
+    }
+
+    for (int bit = 0; bit < ULNET_PACKET_INPUT_FRAMES; bit++) {
+        if (!(payload->core_option_frame_mask & (1u << bit))) continue;
+        if ((size_t)(end - cursor) < 3) {
+            return -1;
+        }
+        uint8_t frame_offset = cursor[0];
+        uint8_t key_len = cursor[1];
+        uint8_t value_len = cursor[2];
+        cursor += 3;
+        if (frame_offset >= payload->frame_count || key_len == 0 || (size_t)(end - cursor) < (size_t)key_len + value_len) {
+            return -1;
+        }
+        cursor += key_len + value_len;
+    }
+
+    return cursor == end ? 0 : -1;
+}
+
+static int ulnet__decode_packed_state_packet(ulnet_session_t *session, int state_port, const uint8_t *packet, size_t packet_size) {
+    if (ulnet__validate_packed_state_packet(packet, packet_size) != 0) {
+        return -1;
+    }
+
+    const ulnet_packed_state_payload_t *payload =
+        (const ulnet_packed_state_payload_t *)&packet[sizeof(ulnet_state_packet_t)];
+    const uint8_t *cursor = payload->optional;
+    ulnet_state_t *state = &session->state[state_port];
+    int64_t frame = ulnet__read_le64s(payload->frame_le);
+    int frame_count = payload->frame_count;
+    int controller_port = payload->controller_port == 0xff ? -1 : payload->controller_port;
+
+    state->room_effective_frame = ulnet__read_le64s(payload->room_effective_frame_le);
+    state->save_state_frame = ulnet__read_le64s(payload->save_state_frame_le);
+
+    if (payload->flags & ULNET_PACKED_INPUT_FLAG_ROOM_PRESENT) {
+        memcpy(&state->room, cursor, sizeof(state->room));
+        cursor += sizeof(state->room);
+    }
+
+    for (int i = 0; i < frame_count; i++) {
+        int64_t input_frame = frame - (frame_count - 1 - i);
+        if (input_frame < 0) continue;
+
+        int frame_index = (int)(input_frame % ULNET_DELAY_BUFFER_SIZE);
+        memset(state->input_state[frame_index], 0, sizeof(state->input_state[frame_index]));
+        memset(&state->core_option[frame_index], 0, sizeof(state->core_option[frame_index]));
+        state->input_poll_unix_usec[frame_index] = ulnet__read_le64s(payload->input_poll_unix_usec_le[i]);
+        state->save_state_hash[frame_index] = ulnet__read_le32(payload->save_state_hash_le[i]);
+        state->input_state_hash[frame_index] = ulnet__read_le32(payload->input_state_hash_le[i]);
+
+        if (controller_port >= 0) {
+            ulnet__unpack_input_frame(&payload->input[i], state->input_state[frame_index][controller_port]);
+        }
+    }
+
+    for (int bit = 0; bit < ULNET_PACKET_INPUT_FRAMES; bit++) {
+        if (!(payload->core_option_frame_mask & (1u << bit))) continue;
+
+        uint8_t frame_offset = cursor[0];
+        uint8_t key_len = cursor[1];
+        uint8_t value_len = cursor[2];
+        cursor += 3;
+
+        int64_t option_frame = frame - (frame_count - 1 - frame_offset);
+        if (option_frame >= 0) {
+            ulnet_core_option_t *option = &state->core_option[option_frame % ULNET_DELAY_BUFFER_SIZE];
+            memcpy(option->key, cursor, key_len);
+            option->key[key_len] = '\0';
+            memcpy(option->value, cursor + key_len, value_len);
+            option->value[value_len] = '\0';
+        }
+        cursor += key_len + value_len;
+    }
+
+    state->frame = frame;
+    return 0;
+}
+
 static int64_t ulnet__encode_state_packet(ulnet_session_t *session, int state_port, uint8_t *packet, size_t packet_capacity) {
     packet[0] = ULNET_CHANNEL_INPUT_HI | state_port;
     ulnet_state_packet_t *state_packet = (ulnet_state_packet_t *) packet;
@@ -3330,21 +3556,63 @@ static int64_t ulnet__encode_state_packet(ulnet_session_t *session, int state_po
     memset(state_packet->ping_echo_callsite_receive_unix_usec_le, 0, sizeof(state_packet->ping_echo_callsite_receive_unix_usec_le));
     memset(state_packet->ping_echo_kernel_receive_unix_usec_le, 0, sizeof(state_packet->ping_echo_kernel_receive_unix_usec_le));
 
-    // Reserve room for the reliable wrapper: these state packets are always sent through the reliable
-    // channel (ulnet_reliable_send / ..._with_acks_only), and a payload that fits unwrapped but not
-    // wrapped would be silently dropped by ulnet__wrap_packet.
-    int64_t encoded_size = rle8_encode_capped(
-        (uint8_t *) &session->state[state_port],
-        sizeof(session->state[0]),
-        &packet[sizeof(ulnet_state_packet_t)],
-        packet_capacity - sizeof(ulnet_state_packet_t) - ULNET_RELIABLE_WRAPPER_BYTES
-    );
-
-    if (encoded_size < 0) {
-        return encoded_size;
+    if (packet_capacity < sizeof(ulnet_state_packet_t) + sizeof(ulnet_packed_state_payload_t) + ULNET_RELIABLE_WRAPPER_BYTES) {
+        return -1;
     }
 
-    return sizeof(ulnet_state_packet_t) + encoded_size;
+    ulnet_state_t *state = &session->state[state_port];
+    ulnet_packed_state_payload_t *payload = (ulnet_packed_state_payload_t *)&packet[sizeof(ulnet_state_packet_t)];
+    uint8_t *cursor = payload->optional;
+    uint8_t *end = packet + packet_capacity - ULNET_RELIABLE_WRAPPER_BYTES;
+    static const uint8_t magic[4] = ULNET_PACKED_INPUT_MAGIC;
+    int controller_port = ulnet_player_controller_port(&session->room_we_are_in, state_port);
+    int frame_count = ULNET_PACKET_INPUT_FRAMES;
+
+    memset(payload, 0, sizeof(*payload));
+    memcpy(payload->magic, magic, sizeof(magic));
+    ulnet__write_le64s(payload->frame_le, state->frame);
+    ulnet__write_le64s(payload->room_effective_frame_le, state->room_effective_frame);
+    ulnet__write_le64s(payload->save_state_frame_le, state->save_state_frame);
+    payload->controller_port = controller_port >= 0 ? (uint8_t)controller_port : 0xff;
+
+    if (state->frame + 1 < frame_count) {
+        frame_count = (int)(state->frame + 1);
+    }
+    if (frame_count < 1) {
+        frame_count = 1;
+    }
+    payload->frame_count = (uint8_t)frame_count;
+
+    if (state_port == SAM2_AUTHORITY_INDEX) {
+        if ((size_t)(end - cursor) < sizeof(state->room)) {
+            return -1;
+        }
+        payload->flags |= ULNET_PACKED_INPUT_FLAG_ROOM_PRESENT;
+        memcpy(cursor, &state->room, sizeof(state->room));
+        cursor += sizeof(state->room);
+    }
+
+    for (int i = 0; i < frame_count; i++) {
+        int64_t frame = state->frame - (frame_count - 1 - i);
+        int frame_index = (int)(frame % ULNET_DELAY_BUFFER_SIZE);
+
+        ulnet__write_le64s(payload->input_poll_unix_usec_le[i], state->input_poll_unix_usec[frame_index]);
+        ulnet__write_le32(payload->save_state_hash_le[i], state->save_state_hash[frame_index]);
+        ulnet__write_le32(payload->input_state_hash_le[i], state->input_state_hash[frame_index]);
+
+        if (controller_port >= 0) {
+            ulnet__pack_input_frame(state->input_state[frame_index][controller_port], &payload->input[i]);
+        }
+
+        if (state->core_option[frame_index].key[0] != '\0') {
+            payload->core_option_frame_mask |= (uint8_t)(1u << i);
+            if (ulnet__append_packed_core_option(&cursor, end, (uint8_t)i, &state->core_option[frame_index]) != 0) {
+                return -1;
+            }
+        }
+    }
+
+    return cursor - packet;
 }
 
 static void ulnet__send_state_packet_to_ready_peers(ulnet_session_t *session, int state_port) {
@@ -3358,12 +3626,16 @@ static void ulnet__send_state_packet_to_ready_peers(ulnet_session_t *session, in
     }
 
     ulnet_update_state_history(session, packet, packet_size);
+    int64_t frame = session->state[state_port].frame;
 
     bool sent = false;
     for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
         if (!ulnet__peer_link_ready(session, p)) continue;
         ulnet__stamp_state_packet_ping(session, p, packet, ulnet__get_unix_time_microseconds());
         ulnet_reliable_send_with_acks_only(session, p, packet, packet_size);
+        if (ulnet__is_state_history_frame(frame)) {
+            ulnet_reliable_send(session, p, packet, packet_size);
+        }
         sent = true;
     }
 
@@ -3620,19 +3892,25 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
             session->state[our_port].room_effective_frame = 0;
         }
 
+        int controller_port = ulnet_player_controller_port(&session->room_we_are_in, our_port);
+
         // Incoporate input from spectators into our input. This has the drawback of round trip latency but requires a single connection to the server
         memset(session->state[our_port].input_state[next_buffer_index], 0, sizeof(session->state[our_port].input_state[next_buffer_index]));
-        for (int i = 0; i < SAM2_ARRAY_LENGTH(session->agent); i++) {
-            if (session->agent[i]) {
-                for (int p = 0; p < SAM2_PORT_MAX; p++) {
-                    for (int j = 0; j < SAM2_ARRAY_LENGTH(session->state[our_port].input_state[next_buffer_index][p]); j++) {
-                        session->state[our_port].input_state[next_buffer_index][p][j] |= session->spectator_suggested_input_state[i][p][j];
+        if (controller_port >= 0) {
+            for (int i = 0; i < SAM2_ARRAY_LENGTH(session->agent); i++) {
+                if (session->agent[i]) {
+                    for (int j = 0; j < SAM2_ARRAY_LENGTH(session->state[our_port].input_state[next_buffer_index][controller_port]); j++) {
+                        session->state[our_port].input_state[next_buffer_index][controller_port][j] |= session->spectator_suggested_input_state[i][controller_port][j];
                     }
                 }
             }
-        }
 
-        ulnet__memor(session->state[our_port].input_state[next_buffer_index], session->next_input_state, sizeof(ulnet_input_state_t[SAM2_PORT_MAX]));
+            ulnet__memor(
+                session->state[our_port].input_state[next_buffer_index][controller_port],
+                session->next_input_state[controller_port],
+                sizeof(ulnet_input_state_t)
+            );
+        }
       }
     } else if (we_are_coordinator_only_authority) {
         if (session->state[SAM2_AUTHORITY_INDEX].frame < session->frame_counter) {
@@ -3661,7 +3939,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
             if (we_are_authority) {
                 ulnet__publish_authority_room_snapshot(session, our_port);
             }
-            // Store every 8th complete state snapshot for spectator reconstruction and diagnostics.
+            // Store checkpoint snapshots for spectator reconstruction and diagnostics.
             // The state stream itself is idempotent latest-state traffic; correctness comes from the
             // frame gates below, while the wrapper carries ACKs for reliable control messages.
             ulnet__send_state_packet_to_ready_peers(session, our_port);
@@ -3692,32 +3970,13 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
     }
 
     // @todo This timing code is messy I should formally model the problem and then create a solution based on that
-    bool ignore_frame_pacing_so_we_can_catch_up = false;
     int64_t poll_entry_time_usec = ulnet__get_unix_time_microseconds();
 
     int debug_loop_count = 0;
     do {
-        if (ulnet_is_spectator(session, session->our_peer_id)) {
-            int64_t authority_frame = -1;
-
-            // The number of packets we check here is reasonable, since if we miss ULNET_DELAY_BUFFER_SIZE consecutive packets our connection is irrecoverable anyway
-            for (int i = 0; i < ULNET_DELAY_BUFFER_SIZE; i++) {
-                int64_t frame = -1;
-                ulnet_packet_ref_t state_packet_ref = session->state_packet_history[SAM2_AUTHORITY_INDEX][(session->frame_counter + i) % ULNET_STATE_PACKET_HISTORY_SIZE];
-                uint8_t *state_packet = state_packet_ref.data;
-
-                if (state_packet) {
-                    rle8_decode(&state_packet[sizeof(ulnet_state_packet_t)], state_packet_ref.size - sizeof(ulnet_state_packet_t), (uint8_t *) &frame, sizeof(frame));
-                    authority_frame = SAM2_MAX(authority_frame, frame);
-                }
-            }
-
-            ignore_frame_pacing_so_we_can_catch_up = false; // authority_frame - session->frame_counter > 1;
-        }
-
         double timeout_milliseconds = 1e3 * core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec);
 
-        if (timeout_milliseconds < 0.0 || ignore_frame_pacing_so_we_can_catch_up) {
+        if (timeout_milliseconds < 0.0) {
             timeout_milliseconds = 0.0; // No blocking
         } else if (timeout_milliseconds < 1.0) {
             timeout_milliseconds = 1.0; // Preempt ourselves otherwise we'll be busy waiting when 0 < timeout < 1 due to truncation
@@ -3728,8 +3987,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
 
         debug_loop_count++;
     } while (   core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec) > 0.0
-             && ulnet__get_unix_time_microseconds() - poll_entry_time_usec < 1e6 * max_sleeping_allowed_when_polling_network_seconds
-             && !ignore_frame_pacing_so_we_can_catch_up);
+             && ulnet__get_unix_time_microseconds() - poll_entry_time_usec < 1e6 * max_sleeping_allowed_when_polling_network_seconds);
 
     if (debug_loop_count > 20) {
         SAM2_LOG_WARN("ulnet NAT poll loop ran %d times. This is inefficent", debug_loop_count);
@@ -3739,7 +3997,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
     if (ulnet_is_spectator(session, session->our_peer_id)) {
         for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
             if (ulnet_port_is_active_player(&session->room_we_are_in, p)) {
-                int history_index_for_frame = (session->frame_counter / ULNET_DELAY_BUFFER_SIZE) % ULNET_STATE_PACKET_HISTORY_SIZE;
+                int history_index_for_frame = (session->frame_counter / ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES) % ULNET_STATE_PACKET_HISTORY_SIZE;
                 ulnet_packet_ref_t ref = session->state_packet_history[p][history_index_for_frame];
                 uint8_t *packet_data = ref.data;
 
@@ -3747,17 +4005,10 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
                     continue; // We don't have this packet
                 }
 
-                ulnet_state_packet_t *maybe_state_packet_for_frame = (ulnet_state_packet_t *) packet_data;
+                int64_t frame = ulnet__get_frame_from_packet(packet_data, ref.size);
 
-                int64_t frame = -1;
-                rle8_decode(maybe_state_packet_for_frame->coded_state, ref.size - sizeof(ulnet_state_packet_t),
-                           (uint8_t *) &frame, sizeof(frame));
-
-                if (SAM2_ABS(frame - session->frame_counter) < ULNET_DELAY_BUFFER_SIZE) {
-                    rle8_decode(
-                        maybe_state_packet_for_frame->coded_state, ref.size - sizeof(ulnet_state_packet_t),
-                        (uint8_t *) &session->state[p], sizeof(session->state[p])
-                    );
+                if (frame >= 0 && SAM2_ABS(frame - session->frame_counter) < ULNET_DELAY_BUFFER_SIZE) {
+                    ulnet__decode_packed_state_packet(session, p, packet_data, ref.size);
                 }
 
                 if (session->state[p].frame - session->frame_counter > ULNET_STATE_PACKET_HISTORY_SIZE * ULNET_DELAY_BUFFER_SIZE) {
@@ -3815,8 +4066,7 @@ IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_S
     }
 
     if (   netplay_ready_to_tick
-        && (core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec) <= 0.0
-        || ignore_frame_pacing_so_we_can_catch_up)) {
+        && core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec) <= 0.0) {
         status |= ULNET_POLL_SESSION_TICKED;
 
         int64_t target_frame_time_usec = 1000000 / frame_rate - 1000; // @todo There is a leftover millisecond bias here for some reason
@@ -4380,7 +4630,6 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
 
         int64_t receive_time_usec = ulnet__get_unix_time_microseconds();
 
-        ulnet_state_packet_t *input_packet = (ulnet_state_packet_t *) data; // @todo Violates strict aliasing rule
         int original_sender_port = data[0] & 0b00111111;
 
         if (   p != original_sender_port
@@ -4409,31 +4658,28 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
                 session->pending_packet_kernel_receive_unix_usec);
         }
 
-        int64_t coded_state_size = size - sizeof(ulnet_state_packet_t);
-
-        int64_t frame;
-        rle8_decode(input_packet->coded_state, coded_state_size, (uint8_t *) &frame, sizeof(frame));
+        int64_t frame = ulnet__get_frame_from_packet(data, size);
+        if (frame < 0) {
+            SAM2_LOG_WARN("Received invalid packed input packet from peer_ids[%d]=%05" PRId16,
+                original_sender_port, session->room_we_are_in.peer_ids[original_sender_port]);
+            return;
+        }
 
         SAM2_LOG_DEBUG("Recv input packet for frame %" PRId64 " from peer_ids[%d]=%05" PRId16 "",
             frame, original_sender_port, session->room_we_are_in.peer_ids[original_sender_port]);
 
-        if (frame < session->state[original_sender_port].frame) {
+        if (   frame < session->state[original_sender_port].frame
+            || (frame == session->state[original_sender_port].frame && frame > 0)) {
+            if (ulnet__is_state_history_frame(frame)) {
+                ulnet_update_state_history(session, data, size);
+            }
             // UDP packets can arrive out of order this is normal
             SAM2_LOG_DEBUG("Received outdated input packet for frame %" PRId64 ". We are already on frame %" PRId64 ". Dropping it",
                 frame, session->state[original_sender_port].frame);
         } else {
-            int64_t input_consumed = 0;
-            int64_t output_produced = rle8_decode_extra(
-                input_packet->coded_state, coded_state_size,
-                &input_consumed,
-                (uint8_t *) &session->state[original_sender_port],
-                sizeof(ulnet_state_t)
-            );
-
-            if (input_consumed != coded_state_size) {
-                SAM2_LOG_WARN("Received input packet with oversize payload %" PRId64 " bytes left to decode", input_consumed - coded_state_size);
-            } else if (output_produced != sizeof(ulnet_state_t)) {
-                SAM2_LOG_WARN("Received input packet with insuffcient size %" PRId64 " bytes produced", output_produced);
+            if (ulnet__decode_packed_state_packet(session, original_sender_port, data, size) != 0) {
+                SAM2_LOG_WARN("Failed to decode packed input packet for frame %" PRId64, frame);
+                return;
             }
 
             ulnet_update_state_history(session, data, size);
@@ -4449,6 +4695,9 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
                     memcpy(relayed_packet, data, size);
                     ulnet__stamp_state_packet_ping(session, s, relayed_packet, ulnet__get_unix_time_microseconds());
                     ulnet_reliable_send_with_acks_only(session, s, relayed_packet, size);
+                    if (ulnet__is_state_history_frame(frame)) {
+                        ulnet_reliable_send(session, s, relayed_packet, size);
+                    }
                 }
             }
         }
@@ -5095,15 +5344,9 @@ ULNET_LINKAGE void ulnet_imgui_plot_history(ulnet_session_t *session) {
                 if (state_packet == NULL) {
                     ImGui::TextDisabled("---");
                 } else {
-                    int64_t frame;
-                    int decode_result = rle8_decode(
-                        state_packet->coded_state,
-                        packet_ref.size - sizeof(ulnet_state_packet_t),
-                        (uint8_t *)&frame,
-                        sizeof(frame)
-                    );
+                    int64_t frame = ulnet__get_frame_from_packet(packet_ref.data, packet_ref.size);
 
-                    if (decode_result < 0) {
+                    if (frame < 0) {
                         ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "ERROR");
                     } else {
                         int64_t frame_diff = frame - session->frame_counter;
@@ -5152,7 +5395,7 @@ ULNET_LINKAGE void ulnet_imgui_show_session(ulnet_session_t *session) {
             for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
                 if (session->room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
 
-                ulnet_packet_ref_t ref = session->state_packet_history[p][session->frame_counter % ULNET_STATE_PACKET_HISTORY_SIZE];
+                ulnet_packet_ref_t ref = session->state_packet_history[p][(session->frame_counter / ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES) % ULNET_STATE_PACKET_HISTORY_SIZE];
                 uint8_t *peer_packet = ref.data;
                 session->input_packet_size[p][session->frame_counter % ULNET_MAX_SAMPLE_SIZE] = peer_packet ? ref.size : 0;
 
@@ -5348,9 +5591,7 @@ void ulnet_imgui_show_recent_packets_table(ulnet_session_t *session, int p) {
         if (pos > 0) pos += snprintf(details + pos, sizeof(details) - pos, " | ");
 
         if (ulnet__is_input_channel(payload_start[0]) && payload_size > sizeof(ulnet_state_packet_t)) {
-            int64_t frame = 0;
-            rle8_decode(&payload_start[sizeof(ulnet_state_packet_t)],
-                        payload_size - sizeof(ulnet_state_packet_t), (uint8_t *)&frame, sizeof(frame));
+            int64_t frame = ulnet__get_frame_from_packet(payload_start, payload_size);
             pos += snprintf(details + pos, sizeof(details) - pos, "Port %d Frame %" PRId64,
                 payload_start[0] & 0b00111111, frame);
         } else if (channel == ULNET_CHANNEL_SAVESTATE_TRANSFER && payload_size >= sizeof(ulnet_save_state_packet_header_t)) {

@@ -25,8 +25,11 @@ ULNET_PORT_COUNT              = 8
 ULNET_DELAY_BUFFER_SIZE       = 8
 ULNET_DELAY_FRAMES_MAX        = 3
 ULNET_ROOM_CHANGE_LEAD_FRAMES = 4
-SAVESTATE_DEFAULT_RATE        = 8 Mibit/s
-SAVESTATE_MAX_RETRIES         = 2
+ULNET_STATE_PACKET_HISTORY_SIZE                   = 64 snapshots
+ULNET_RELIABLE_ACK_BUFFER_SIZE                    = 128 packets
+ULNET_SAVESTATE_TRANSFER_DEFAULT_BANDWIDTH        = 8 Mibit/s
+ULNET_SAVESTATE_TRANSFER_MAX_RETRIES              = 2
+ULNET_SAVESTATE_TRANSFER_ACK_TIMEOUT_MICROSECONDS = 2000000
 ```
 
 ## Room Model
@@ -51,6 +54,7 @@ Roles:
 - Authority: the peer in port 0. It owns room consensus and publishes authoritative room snapshots.
 - Player: an occupied p2p port. Players publish deterministic input state.
 - Active player: a player not marked inactive by room flags. Only active players gate frame advance.
+  Inactive flags are defined only for ports `0..7`; an occupied p2p port above that range is active.
 - Spectator: an occupied non-authority port whose topology bit is clear. Spectators suggest input but
   do not directly contribute deterministic input state.
 - Coordinator-only authority: authority with topology bit 0 clear. It is not an active player, but it
@@ -102,8 +106,8 @@ Defined channels:
 0x60  spectator input
 0x80  savestate transfer
 0xa0  reliable wrapper
-0xc0  input/state, low port range
-0xe0  input/state, high port range
+0xc0  input/state, ports 0..31
+0xe0  input/state, ports 32..63
 ```
 
 For input/state packets, the low six bits encode the original sender port:
@@ -120,6 +124,8 @@ port = byte & 0x3f
 ```
 
 The current encoder emits `0xc0 | port`; ports 32..63 therefore use the `0xe0` channel range.
+The implementation names for the two input/state channel masks are historical; receivers identify
+input/state packets by masking the top three bits and accepting either `0xc0` or `0xe0`.
 
 ## Reliable Wrapper
 
@@ -158,8 +164,10 @@ Reliable data delivery rules:
 
 Current state traffic usage:
 
-- Every 8th state packet is reliable data.
-- Other per-frame state packets are ACK-only payloads.
+- Every 8th state packet, where `(frame + 1) % 8 == 0`, is queued reliable data on recovery-sensitive
+  links: player-to-authority, authority-to-spectator, and the authority's own state stream.
+- Other state packets are ACK-only payloads. They carry reliable ACKs but do not consume reliable
+  sequence numbers and are not retransmitted by the reliable queue.
 - Spectator input packets are ACK-only payloads.
 - ASCII control messages use reliable data.
 
@@ -203,21 +211,27 @@ Only the authority port's `room` and `room_effective_frame` are authoritative fo
 Non-authority state packets may carry local room fields, but peers MUST NOT use them to adopt room
 changes.
 
+Only the authority port's `core_option[F % 8]` is authoritative for simulation frame `F`. At most one
+core option key/value is advertised per frame. The `netplay_delay_frames` key updates the input delay;
+other keys update matching synchronized core options.
+
 State packet acceptance rules:
 
 - If the immediate transport sender is not the original sender port, the immediate sender MUST be the
   authority.
 - A spectator MUST NOT send state packets.
 - The original sender port MUST be the authority or a current p2p player.
-- A receiver MUST drop a state packet whose decoded `frame` is older than the receiver's stored frame
-  for that original sender port.
+- A receiver MUST NOT replace stored live state with a state packet whose decoded `frame` is older
+  than the receiver's stored frame for that original sender port. If the old packet is an every-8th
+  history frame, the receiver MAY still retain it in state history.
 - A receiver MAY accept an equal or newer state packet and replace stored state for that port.
 - The authority SHOULD relay accepted player state to other linked peers while preserving the original
   sender port in the state packet header.
 
-Every 8th state frame, where `(frame + 1) % 8 == 0`, is stored as state history and sent as reliable
-data. This history is used by spectators to reconstruct state and by the reliable path to recover from
-loss. Other state packets are sent frequently as ACK-only payloads.
+Every 8th state frame, where `(frame + 1) % 8 == 0`, is stored as local state history and sent as
+queued reliable data on recovery-sensitive links. This history is used by spectators to reconstruct
+player state and by diagnostics. Non-history state frames are sent frequently as ACK-only
+reliable-wrapper payloads and are not queued for reliable resend.
 
 ## Spectator Input Packet
 
@@ -357,19 +371,21 @@ active-player input, but they MUST NOT run beyond the authority room-snapshot fr
 ASCII control messages are carried as reliable data. The core ULNET room-control messages are:
 
 ```text
-EXIT...   peer intends to leave
-JOIN...   peer requests a room/topology change
+EXIT1.0r  peer intends to leave
+JOIN1.0r  peer requests a room/topology change
 ```
 
-Only the authority handles room-change requests. Requests to move a peer to a different port are
-unsupported. Transport signaling and room-list/make/connect messages are auxiliary and are not
-specified here.
+Message matching currently uses the four-byte tag plus major version; the eight-byte forms above are
+the emitted headers. `JOIN1.0r` carries a `sam2_room_join_message` body. Only the authority handles
+room-change requests. Requests to move a peer to a different port are unsupported. Transport
+signaling and room-list/make/connect messages are auxiliary and are not specified here.
 
 ## Savestate Sync
 
-Savestate sync is an auxiliary mechanism for bringing a peer to a known frame and room. A peer may be
-held at `WAITING_FOR_SAVE_STATE` until it installs a savestate. The savestate payload includes a frame
-counter and room snapshot, after which normal frame-advance and room-snapshot rules resume.
+Savestate sync is an auxiliary mechanism for bringing a peer to a known frame, room, and core-option
+set. A peer may be held at `WAITING_FOR_SAVE_STATE` until it installs a savestate. The savestate
+payload includes a frame counter, room snapshot, and core options, after which normal frame-advance
+and room-snapshot rules resume.
 
 Savestate transfer is authority-originated. A non-authority peer MUST NOT send savestate data packets.
 The authority MUST have at most one active savestate transfer at a time. The active transfer has a
@@ -407,6 +423,27 @@ Savestate transfer ACK
 +2   u8   reserved_zero
 ```
 
+The decoded transfer payload is an `xxh32`-checked byte stream:
+
+```text
+Savestate transfer payload
+
++0    i64  total_size_bytes_le
++8    i64  frame_counter_le
++16   room room
++...  u32  checksum_le
++...  i32  compressed_options_size_le
++...  i32  compressed_savestate_size_le
++...  i32  decompressed_savestate_size_le
++...  u8[] compressed_savestate_data
++...  u8[] compressed_core_options_data
+```
+
+The checksum is computed over the payload with the checksum field set to zero. A receiver MUST reject
+a payload whose checksum, compressed sizes, or decompressed savestate size are invalid. After a
+successful install, the receiver replaces its frame counter, committed room, and core-option table
+with the payload values and sends one transfer ACK for that transfer ID.
+
 The transfer is divided into packet groups. A packet group is the smallest transmission-control unit:
 all packets in a group are sent together. The sender SHOULD pace packet groups against the assumed
 total outbound savestate rate. The default rate is 8 Mibit/s.
@@ -429,27 +466,27 @@ Each retry uses a new transfer ID and halves the previous savestate rate for the
 set. After two retries, remaining failures are terminal for the network session; the peer handling
 policy is to leave network play and continue solo.
 
-The compression format, FEC layout, fragmentation payload contents, checksums, and zstd details are
-out of scope.
+The compression format and Reed-Solomon coding internals are implementation choices, but the packet
+headers, transfer ID, checksum requirement, payload fields, packet grouping, ACK, retry, and install
+semantics above are part of the current protocol.
 
 ## Blindspots And Open Protocol Questions
 
 - Identity is trusted. There is no signature or cryptographic binding between a transport peer,
   claimed sender port, and peer ID.
-- ACK-only state packets are not retransmitted. Correctness relies on frequent state plus every-8th
-  reliable state history.
+- Non-history state packets are not retransmitted. Correctness relies on frequent latest-state traffic
+  plus queued reliable every-8th state history for spectator catchup.
 - Reliable delivery is head-of-line with a small fixed history. Queue saturation or overwritten
   reliable history is fatal or lossy depending on path.
 - If a state packet cannot fit after compression, it is skipped. Repeated poor compression could
-  starve room snapshots or reliable history.
+  starve room snapshots or local state history.
 - Overlapping active-set room changes are ignored rather than queued or rejected with a protocol
   response visible to the requester.
-- Spectator input uses state-header-sized padding. This should be either specified intentionally or
-  replaced by a compact packet format.
 - The RLE8 stream and native-layout state structs are de facto wire format, but the protocol does not
   yet define a standalone portable encoding.
 - Out-of-order reliable data is treated as a protocol error but does not currently mandate disconnect
   or resync.
-- Desync hash fields exist, but input hash production appears incomplete.
-- Savestate installation directly sets frame and room state; the exact reconciliation required after
-  install is not fully specified here.
+- Desync hash fields exist. Savestate hashes are produced and compared, while input hash production is
+  still incomplete.
+- Savestate installation directly sets frame, room, and core options; the exact reconciliation
+  required after install is still not fully specified here.
