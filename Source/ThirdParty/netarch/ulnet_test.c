@@ -16,7 +16,10 @@
 extern ulnet_nat_agent_t *ulnet__nat_create(ulnet_session_t *session, int peer_port);
 extern void ulnet__process_udp_packet(ulnet_session_t *session, int p, const uint8_t *data, size_t size);
 
+static const char *g_test_name = "";
+
 int ulnet__test_forward_messages(sam2_server_t *server, ulnet_session_t *session, sam2_socket_t socket) {
+    g_test_name = __func__;
     int status;
     sam2_message_u message;
 
@@ -81,6 +84,7 @@ int ulnet__test_discard_send_callback(void *user_ptr, char *message) {
 // A port is a fixed peer identity: promoting the same peer in place keeps its agent and per-port
 // state, while a change of occupant fully reconstructs the agent (it is never swapped or reused).
 static int ulnet_test_no_slot_swap(void) {
+    g_test_name = __func__;
     ulnet_session_t session;
     memset(&session, 0, sizeof(session));
     ulnet_session_init_defaulted(&session);
@@ -131,6 +135,7 @@ static int ulnet_test_no_slot_swap(void) {
 }
 
 static int ulnet_test_room_change_scheduling_guards(void) {
+    g_test_name = __func__;
     ulnet_session_t session;
     memset(&session, 0, sizeof(session));
     ulnet_session_init_defaulted(&session);
@@ -279,6 +284,7 @@ static int ulnet__test_expect_room_change_lead(ulnet_session_t *authority, const
 }
 
 int ulnet_test_ice(ulnet_session_t **session_1_out, ulnet_session_t **session_2_out) {
+    g_test_name = __func__;
     sam2_server_t *server = 0;
     ulnet_session_t *sessions[2] = {0};
     sam2_socket_t sockets[2] = {0};
@@ -518,6 +524,7 @@ static int ulnet__test_slot_not_clear(ulnet_session_t *s, int slot) {
 }
 
 static int ulnet__test_ice_pump(sam2_server_t *server, ulnet_session_t **sessions, sam2_socket_t *sockets, int count) {
+    g_test_name = __func__;
     for (int i = 0; i < count; i++) {
         if (!sessions[i]) continue;
         int status = ulnet_poll_session(sessions[i], 0, 0, 0, 60.0, 5e-3);
@@ -532,6 +539,7 @@ static int ulnet__test_ice_pump(sam2_server_t *server, ulnet_session_t **session
 // has finished its savestate sync. Returns the slot the authority placed it on via *out_slot.
 static int ulnet__test_ice_join(sam2_server_t *server, ulnet_session_t **sessions, sam2_socket_t *sockets, int count,
     int authority_idx, int joiner_idx, int *out_slot) {
+    g_test_name = __func__;
     ulnet_session_t *authority = sessions[authority_idx];
     ulnet_session_t *joiner = sessions[joiner_idx];
 
@@ -562,6 +570,7 @@ static int ulnet__test_ice_join(sam2_server_t *server, ulnet_session_t **session
 // Real-ICE version of the GUI "Become Player" flow. This specifically verifies the authority's
 // desired room (`next_room`) was initialized from the MAKE response before it handles the JOIN toggle.
 int ulnet_test_ice_promote_spectator(void) {
+    g_test_name = __func__;
     enum { A = 0, B = 1, SESSION_COUNT = 2 };
     sam2_server_t *server = (sam2_server_t *) malloc(sizeof(sam2_server_t));
     ulnet_session_t *sessions[SESSION_COUNT] = {0};
@@ -753,6 +762,7 @@ static int ulnet__test_ice_leave(sam2_server_t *server, ulnet_session_t **sessio
 // the authority fully zeroes a departed peer's per-port state, never swaps slots, and never disturbs
 // the peers that stay. This used to be done by hand in the GUI to flush out connection-management bugs.
 int ulnet_test_ice_churn(void) {
+    g_test_name = __func__;
     enum { A = 0, B = 1, C = 2, D = 3, SESSION_COUNT = 4 };
     sam2_server_t *server = (sam2_server_t *) malloc(sizeof(sam2_server_t));
     ulnet_session_t *sessions[SESSION_COUNT] = {0};
@@ -891,6 +901,7 @@ done:
 // Reproduces the GUI "Become Player" flow over inproc: a connected spectator promotes itself by
 // toggling its own topology bit; the change must take effect for both the authority and the spectator.
 int ulnet_test_inproc_promote_spectator(void) {
+    g_test_name = __func__;
     ulnet_session_t *sessions[2] = {0};
     ulnet_transport_inproc_t transport = {0};
     uint8_t save_state[256];
@@ -958,6 +969,7 @@ done:
 }
 
 int ulnet_test_inproc_coordinator_only_authority(void) {
+    g_test_name = __func__;
     ulnet_session_t *sessions[2] = {0};
     ulnet_transport_inproc_t transport = {0};
     uint8_t save_state[256];
@@ -1115,6 +1127,7 @@ done:
 }
 
 int ulnet_test_inproc_coordinator_two_player_mesh(void) {
+    g_test_name = __func__;
     enum { A = 0, B = 1, C = 2, SESSION_COUNT = 3 };
     ulnet_session_t *sessions[SESSION_COUNT] = {0};
     ulnet_transport_inproc_t transport_ab = {0};
@@ -1209,6 +1222,7 @@ done:
 }
 
 int ulnet_test_inproc_high_port_authority_relay(void) {
+    g_test_name = __func__;
     enum { A = 0, B = 1, C = 2, SESSION_COUNT = 3 };
     ulnet_session_t *sessions[SESSION_COUNT] = {0};
     ulnet_transport_inproc_t transport_ab = {0};
@@ -1284,6 +1298,7 @@ done:
 }
 
 int ulnet_test_inproc_spectator_recovers_after_state_burst_loss(void) {
+    g_test_name = __func__;
     ulnet_session_t *sessions[2] = {0};
     ulnet_transport_inproc_t transport = {0};
     uint8_t save_state[256];
@@ -1353,6 +1368,7 @@ done:
 }
 
 int ulnet_test_inproc(ulnet_session_t **session_1_out, ulnet_session_t **session_2_out) {
+    g_test_name = __func__;
     ulnet_session_t *sessions[2] = {0};
     ulnet_transport_inproc_t transport = {0};
     int status = 0;
@@ -1390,6 +1406,7 @@ int ulnet_test_inproc(ulnet_session_t **session_1_out, ulnet_session_t **session
 }
 
 int ulnet_test_inproc_reliable_ack_unblocks_queue(void) {
+    g_test_name = __func__;
     ulnet_session_t *sessions[2] = {0};
     ulnet_transport_inproc_t transport = {0};
     int status = 0;
@@ -1422,6 +1439,7 @@ int ulnet_test_inproc_reliable_ack_unblocks_queue(void) {
 }
 
 int ulnet_test_inproc_savestate_retry_failure_goes_solo(void) {
+    g_test_name = __func__;
     ulnet_session_t *sessions[2] = {0};
     ulnet_transport_inproc_t transport = {0};
     uint8_t save_state[256];
@@ -1500,6 +1518,7 @@ static uint32_t ulnet__test_fuzz_next(uint32_t *rng) {
 // fixed-slot invariant after every step: a peer never moves slots, an unchanged occupant keeps its
 // exact agent and per-port state, and changing a slot's occupant fully reconstructs its agent.
 int ulnet_test_inproc_room_switch_fuzz(void) {
+    g_test_name = __func__;
     enum { ITERATIONS = 400 };
     ulnet_session_t session;
     // The per-slot transports are ~0.5MB each; keep the 64-wide array off the stack
@@ -1580,6 +1599,7 @@ int ulnet_test_inproc_room_switch_fuzz(void) {
 }
 
 int ulnet_test_reliable_rejects_bad_sequence_state(void) {
+    g_test_name = __func__;
     ulnet_session_t session = {0};
     uint8_t packet[ULNET_PACKET_SIZE_BYTES_MAX] = {0};
     uint8_t ack_packet[sizeof(ulnet_reliable_packet_t)] = {0};
@@ -1632,6 +1652,7 @@ static void ulnet__test_fill_zstd_buffer(uint8_t *data, size_t size, int pattern
 }
 
 int ulnet_test_zstd_codec(void) {
+    g_test_name = __func__;
     const size_t test_sizes[] = {0, 1, 2, 3, 31, 4096, 65536};
     uint8_t empty_sentinel = 0;
 
@@ -1709,6 +1730,7 @@ static int ulnet__test_append_text_file(const char *path, const char *text) {
 }
 
 static int ulnet__test_file_signal_send_callback(void *user_ptr, char *message) {
+    g_test_name = __func__;
     ulnet__test_file_signal_context_t *ctx = (ulnet__test_file_signal_context_t *)user_ptr;
     sam2_signal_message_t *signal = (sam2_signal_message_t *)message;
     char path[1024];
@@ -1717,6 +1739,7 @@ static int ulnet__test_file_signal_send_callback(void *user_ptr, char *message) 
 }
 
 static int ulnet__test_apply_remote_file_signals(ulnet_nat_agent_t *agent, const char *dir, const char *remote_name, long *offset) {
+    g_test_name = __func__;
     char path[1024];
     char line[256];
     ulnet__test_signal_path(path, sizeof(path), dir, remote_name);
@@ -1749,6 +1772,7 @@ static int ulnet__test_apply_remote_file_signals(ulnet_nat_agent_t *agent, const
 
 static int ulnet__test_nat_matrix_file_peer(const char *stun_host, int stun_port, const char *dir,
     const char *name, const char *remote_name, int timeout_seconds) {
+    g_test_name = __func__;
     mkdir(dir, 0777);
 
     ulnet__test_file_signal_context_t signal_ctx;
@@ -1789,6 +1813,7 @@ static int ulnet__test_nat_matrix_file_peer(const char *stun_host, int stun_port
 }
 
 static int ulnet__test_poll_client_messages(ulnet_session_t *session, sam2_socket_t socket) {
+    g_test_name = __func__;
     for (;;) {
         sam2_message_u message;
         int status = sam2_client_poll(socket, &message);
@@ -1809,6 +1834,7 @@ static int ulnet__test_poll_client_messages(ulnet_session_t *session, sam2_socke
 }
 
 static int ulnet__test_connect_client(ulnet_session_t *session, sam2_socket_t *socket, const char *host, int port, int timeout_seconds) {
+    g_test_name = __func__;
     int status = sam2_client_connect(socket, host, port);
     if (status) {
         SAM2_LOG_ERROR("Error while connecting to SAM2 server %s:%d", host, port);
@@ -1833,6 +1859,7 @@ static int ulnet__test_connect_client(ulnet_session_t *session, sam2_socket_t *s
 }
 
 static int ulnet__test_nat_matrix_server(int port, int timeout_seconds) {
+    g_test_name = __func__;
     sam2_server_t *server = (sam2_server_t *)calloc(1, sizeof(*server));
     if (!server) {
         return 1;
@@ -1861,6 +1888,7 @@ static int ulnet__test_nat_matrix_server(int port, int timeout_seconds) {
 }
 
 static int ulnet__test_nat_matrix_authority(const char *host, int port, const char *ready_path, int timeout_seconds) {
+    g_test_name = __func__;
     ulnet_session_t session;
     sam2_socket_t socket = SAM2_SOCKET_INVALID;
     memset(&session, 0, sizeof(session));
@@ -1923,6 +1951,7 @@ static int ulnet__test_nat_matrix_authority(const char *host, int port, const ch
 }
 
 static int ulnet__test_nat_matrix_spectator(const char *host, int port, uint16_t authority_peer_id, int timeout_seconds) {
+    g_test_name = __func__;
     ulnet_session_t session;
     sam2_socket_t socket = SAM2_SOCKET_INVALID;
     memset(&session, 0, sizeof(session));
@@ -1971,9 +2000,9 @@ static int ulnet__test_nat_matrix_spectator(const char *host, int port, uint16_t
 
 void sam2_log_write(int level, const char *file, int line, const char *format, ...) {
     if (level == 2) {
-        printf("WARN %s:%d | ", file, line);
+        printf("WARN %s:%d | %s | ", file, line, g_test_name);
     } else if (level > 2) {
-        printf("ERROR %s:%d | ", file, line);
+        printf("ERROR %s:%d | %s | ", file, line, g_test_name);
     }
 
     va_list args;
