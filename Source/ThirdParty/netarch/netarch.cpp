@@ -1957,6 +1957,9 @@ void draw_imgui() {
             int our_port = sam2_get_port_of_peer(&g_ulnet_session.room_we_are_in, g_ulnet_session.our_peer_id);
             if (our_port == SAM2_AUTHORITY_INDEX) {
                 if (ImGui::Button("Abandon")) {
+                    sam2_room_make_message_t delete_request = { SAM2_MAKE_HEADER };
+                    g_libretro_context.SAM2Send((char *) &delete_request);
+
                     sam2_room_join_message_t message = { SAM2_JOIN_HEADER };
                     message.room = g_ulnet_session.room_we_are_in;
                     message.room.flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;

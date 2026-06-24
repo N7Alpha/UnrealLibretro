@@ -5003,6 +5003,7 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
 
         session->our_peer_id = connect_message->peer_id;
         session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
+        session->room_we_are_in.peer_topology |= (1ULL << SAM2_AUTHORITY_INDEX);
     } else if (sam2_header_matches(response, sam2_make_header)) {
         sam2_room_make_message_t *room_make = (sam2_room_make_message_t *) response;
 

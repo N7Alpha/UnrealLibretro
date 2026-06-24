@@ -134,6 +134,38 @@ static int ulnet_test_no_slot_swap(void) {
     return 0;
 }
 
+// Regression: a freshly connected solo session must be an active p2p player so the core gets real
+// input. The connect handler seats us at the authority port; if it forgets the topology bit we fall
+// into the coordinator-only-authority path and feed the core zeroed input ("input doesn't work until
+// you make a room"). See the solo-room fix in ulnet_process_message's sam2_conn_header branch.
+static int ulnet_test_solo_connect_is_active_player(void) {
+    g_test_name = __func__;
+    ulnet_session_t session;
+    memset(&session, 0, sizeof(session));
+    ulnet_session_init_defaulted(&session);
+    session.sam2_send_callback = ulnet__test_discard_send_callback;
+
+    const uint16_t peer_id = 10001;
+    sam2_connect_message_t connect = { SAM2_CONN_HEADER, peer_id, {0} };
+    if (ulnet_process_message(&session, (const char *) &connect) != 0) {
+        SAM2_LOG_ERROR("Failed to process connect message");
+        return 1;
+    }
+
+    int failed = 0;
+    failed |= session.our_peer_id != peer_id;
+    failed |= sam2_get_port_of_peer(&session.room_we_are_in, peer_id) != SAM2_AUTHORITY_INDEX;
+    // The crux: the solo authority must be a player, not a coordinator-only authority.
+    failed |= !ulnet_port_is_p2p(&session.room_we_are_in, SAM2_AUTHORITY_INDEX);
+    failed |= !ulnet_port_is_active_player(&session.room_we_are_in, SAM2_AUTHORITY_INDEX);
+    if (failed) {
+        SAM2_LOG_ERROR("Solo connect must seat us as an active p2p player at the authority port");
+        return 1;
+    }
+
+    return 0;
+}
+
 static int ulnet_test_room_change_scheduling_guards(void) {
     g_test_name = __func__;
     ulnet_session_t session;
@@ -2090,6 +2122,12 @@ int main (int argc, char **argv) {
     status = ulnet_test_no_slot_swap();
     if (status != 0) {
         printf("No-slot-swap reconstruct test failed with status: %d\n", status);
+        return status;
+    }
+
+    status = ulnet_test_solo_connect_is_active_player();
+    if (status != 0) {
+        printf("Solo connect active-player test failed with status: %d\n", status);
         return status;
     }
 
