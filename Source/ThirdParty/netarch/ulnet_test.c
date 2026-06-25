@@ -539,7 +539,7 @@ static int ulnet__test_slot_not_clear(ulnet_session_t *s, int slot) {
         { "reliable_tx_head",    s->reliable_tx_head[slot] },
         { "reliable_tx_next_seq",s->reliable_tx_next_seq[slot] },
         { "packet_history_next", s->packet_history_next[slot] },
-        { "reliable_last_tx",    s->reliable_last_transmit_time[slot] },
+        { "reliable_tx_last_send",s->reliable_tx_last_send_usec[slot][0] },
         { "peer_desynced_frame", s->peer_desynced_frame[slot] },
         { "needs_sync bit",      (s->peer_needs_sync_bitfield >> slot) & 1ULL },
         { "pending_disc bit",    (s->peer_pending_disconnect_bitfield >> slot) & 1ULL },
@@ -1399,33 +1399,70 @@ done:
     return status;
 }
 
+// Returns the payload of the reliable packet the authority recorded for `sequence`, or NULL.
+static const uint8_t *ulnet__test_rx_payload(ulnet_session_t *authority, uint16_t sequence) {
+    ulnet_reliable_packet_t *rx = (ulnet_reliable_packet_t *)
+        authority->reliable_rx_packet_history[ULNET__TEST_SPECTATOR_PORT][sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE].data;
+    return rx ? rx->payload : NULL;
+}
+
+// Exercise the reliable channel directly (no ticking / savestate): the sliding window must keep multiple
+// packets in flight and the receiver must deliver them in order.
 int ulnet_test_inproc(ulnet_session_t **session_1_out, ulnet_session_t **session_2_out) {
     g_test_name = __func__;
     ulnet_session_t *sessions[2] = {0};
     ulnet_transport_inproc_t transport = {0};
     int status = 0;
+    const uint8_t *p0, *p1, *p2;
 
     ulnet__test_inproc_pair_setup(sessions, &transport, 0);
+    sessions[0]->peer_needs_sync_bitfield = 0; // Reliable-channel only: no savestate sync / ticking
+    sessions[1]->frame_counter = 0;
 
-    sessions[0]->debug_udp_recv_drop_rate = 1.0f;
-    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "HELLO", sizeof("HELLO") - 1); // DROP
-    sessions[0]->debug_udp_recv_drop_rate = 0.0f;
-    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "WORLD", sizeof("WORLD") - 1); // Queued behind HELLO
-    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3); // RETRANSMIT "HELLO"
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3); // RECEIVE "HELLO"
-    ulnet_reliable_send_with_acks_only(sessions[0], ULNET__TEST_SPECTATOR_PORT, (const uint8_t*) "ACK CARRIER", sizeof("ACK CARRIER") - 1); // ACK "HELLO"
-    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3); // RETRANSMIT "WORLD"
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3); // RECEIVE "WORLD"
+    // Three reliable messages with no ACK in between -- a stop-and-wait sender could only put one in
+    // flight; the sliding window puts all three out at once.
+    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "AAA", 3);
+    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "BBB", 3);
+    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "CCC", 3);
 
-    ulnet_reliable_packet_t *msg1 = (ulnet_reliable_packet_t *) sessions[0]->reliable_rx_packet_history[ULNET__TEST_SPECTATOR_PORT][0].data;
-    ulnet_reliable_packet_t *msg2 = (ulnet_reliable_packet_t *) sessions[0]->reliable_rx_packet_history[ULNET__TEST_SPECTATOR_PORT][1].data;
+    if ((uint16_t)(sessions[1]->reliable_tx_next_seq[SAM2_AUTHORITY_INDEX]
+                 - sessions[1]->reliable_tx_head[SAM2_AUTHORITY_INDEX]) != 3) {
+        SAM2_LOG_ERROR("Expected three unacked reliable packets in flight");
+        status = 1;
+        goto done;
+    }
 
-    if (!(   msg1 && memcmp(msg1->payload, "HELLO", sizeof("HELLO") - 1) == 0
-          && msg2 && memcmp(msg2->payload, "WORLD", sizeof("WORLD") - 1) == 0)) {
-        SAM2_LOG_ERROR("Failed to send reliable messages");
+    ulnet_service_network(sessions[0], 0); // Authority drains all three
+
+    if (sessions[0]->reliable_rx_head[ULNET__TEST_SPECTATOR_PORT] != 3) {
+        SAM2_LOG_ERROR("Authority did not deliver all three reliable packets (rx_head=%u)",
+            sessions[0]->reliable_rx_head[ULNET__TEST_SPECTATOR_PORT]);
+        status = 1;
+        goto done;
+    }
+
+    p0 = ulnet__test_rx_payload(sessions[0], 0);
+    p1 = ulnet__test_rx_payload(sessions[0], 1);
+    p2 = ulnet__test_rx_payload(sessions[0], 2);
+    if (!(   p0 && memcmp(p0, "AAA", 3) == 0
+          && p1 && memcmp(p1, "BBB", 3) == 0
+          && p2 && memcmp(p2, "CCC", 3) == 0)) {
+        SAM2_LOG_ERROR("Reliable packets did not arrive in order");
+        status = 1;
+        goto done;
+    }
+
+    // A single cumulative ACK should free the sender's entire window.
+    ulnet_reliable_send_with_acks_only(sessions[0], ULNET__TEST_SPECTATOR_PORT, (const uint8_t*) "", 0);
+    ulnet_service_network(sessions[1], 0);
+
+    if (sessions[1]->reliable_tx_head[SAM2_AUTHORITY_INDEX] != 3) {
+        SAM2_LOG_ERROR("Cumulative ACK did not free the transmit window (tx_head=%u)",
+            sessions[1]->reliable_tx_head[SAM2_AUTHORITY_INDEX]);
         status = 1;
     }
 
+done:
     ulnet_session_tear_down(sessions[0]);
     ulnet_session_tear_down(sessions[1]);
     if (!session_1_out) free(sessions[0]);
@@ -1437,31 +1474,73 @@ int ulnet_test_inproc(ulnet_session_t **session_1_out, ulnet_session_t **session
     return status;
 }
 
+// Drop a middle sequence, deliver later sequences out of order, then retransmit the missing one and
+// confirm the buffered packets drain in order.
 int ulnet_test_inproc_reliable_ack_unblocks_queue(void) {
     g_test_name = __func__;
     ulnet_session_t *sessions[2] = {0};
     ulnet_transport_inproc_t transport = {0};
     int status = 0;
+    const uint8_t *p0, *p1, *p2;
 
-    ulnet__test_inproc_pair_setup(sessions, &transport, 10 * 1000 * 1000);
+    ulnet__test_inproc_pair_setup(sessions, &transport, 0);
+    sessions[0]->peer_needs_sync_bitfield = 0;
+    sessions[1]->frame_counter = 0;
 
-    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "HELLO", sizeof("HELLO") - 1);
-    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "WORLD", sizeof("WORLD") - 1);
+    // s1 has the larger peer_id, so its packets toward the authority queue in buf2.
+    ulnet_inproc_buf_t *to_authority = &transport.buf2;
 
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
-    ulnet_reliable_send_with_acks_only(sessions[0], ULNET__TEST_SPECTATOR_PORT, (const uint8_t*) "ACK CARRIER", sizeof("ACK CARRIER") - 1);
-    ulnet_poll_session(sessions[1], 0, 0, 0, 60.0, 16e-3);
-    ulnet_poll_session(sessions[0], 0, 0, 0, 60.0, 16e-3);
+    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "AAA", 3); // seq 0
+    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "BBB", 3); // seq 1 (dropped in transit)
+    ulnet_reliable_send(sessions[1], SAM2_AUTHORITY_INDEX, (const uint8_t*) "CCC", 3); // seq 2
 
-    ulnet_reliable_packet_t *msg1 = (ulnet_reliable_packet_t *) sessions[0]->reliable_rx_packet_history[ULNET__TEST_SPECTATOR_PORT][0].data;
-    ulnet_reliable_packet_t *msg2 = (ulnet_reliable_packet_t *) sessions[0]->reliable_rx_packet_history[ULNET__TEST_SPECTATOR_PORT][1].data;
+    if (to_authority->count != 3) {
+        SAM2_LOG_ERROR("Expected three queued reliable packets in transport (got %d)", to_authority->count);
+        status = 1;
+        goto done;
+    }
 
-    if (!(   msg1 && memcmp(msg1->payload, "HELLO", sizeof("HELLO") - 1) == 0
-          && msg2 && memcmp(msg2->payload, "WORLD", sizeof("WORLD") - 1) == 0)) {
-        SAM2_LOG_ERROR("Reliable ACK did not immediately unblock the queued packet");
+    // Drop the middle packet (seq 1) by removing it from the transport queue.
+    memcpy(to_authority->msg[1], to_authority->msg[2], to_authority->msg_size[2]);
+    to_authority->msg_size[1] = to_authority->msg_size[2];
+    to_authority->count = 2;
+
+    ulnet_service_network(sessions[0], 0); // Receives seq 0 (delivered) and seq 2 (buffered out of order)
+
+    if (sessions[0]->reliable_rx_head[ULNET__TEST_SPECTATOR_PORT] != 1) {
+        SAM2_LOG_ERROR("Out-of-order packet was delivered early (rx_head=%u)",
+            sessions[0]->reliable_rx_head[ULNET__TEST_SPECTATOR_PORT]);
+        status = 1;
+        goto done;
+    }
+    if (sessions[0]->reliable_rx_pending[ULNET__TEST_SPECTATOR_PORT][2 % ULNET_RELIABLE_ACK_BUFFER_SIZE].data == NULL) {
+        SAM2_LOG_ERROR("Out-of-order packet was not buffered in the reorder buffer");
+        status = 1;
+        goto done;
+    }
+
+    // Retransmit (delay is 0) redelivers seq 1; seq 2 then drains behind it.
+    ulnet_service_network(sessions[1], 0);
+    ulnet_service_network(sessions[0], 0);
+
+    if (sessions[0]->reliable_rx_head[ULNET__TEST_SPECTATOR_PORT] != 3) {
+        SAM2_LOG_ERROR("Reorder buffer did not drain after retransmit (rx_head=%u)",
+            sessions[0]->reliable_rx_head[ULNET__TEST_SPECTATOR_PORT]);
+        status = 1;
+        goto done;
+    }
+
+    p0 = ulnet__test_rx_payload(sessions[0], 0);
+    p1 = ulnet__test_rx_payload(sessions[0], 1);
+    p2 = ulnet__test_rx_payload(sessions[0], 2);
+    if (!(   p0 && memcmp(p0, "AAA", 3) == 0
+          && p1 && memcmp(p1, "BBB", 3) == 0
+          && p2 && memcmp(p2, "CCC", 3) == 0)) {
+        SAM2_LOG_ERROR("Reliable packets did not drain in order after retransmit");
         status = 1;
     }
 
+done:
     ulnet_session_tear_down(sessions[0]);
     ulnet_session_tear_down(sessions[1]);
     free(sessions[0]);
@@ -1732,6 +1811,306 @@ int ulnet_test_zstd_codec(void) {
 
     return 0;
 }
+
+// These exercise ulnet.h's internal (static) packed encode/decode/validate helpers, so they only build
+// when the implementation is in this same translation unit (the preferred tcc/ULNET_TEST_MAIN command).
+// The cmake netarch build compiles ulnet_test.c separately from the implementation, so it skips them.
+#if defined(ULNET_IMPLEMENTATION)
+
+// Encode one frame of state for a player at SAM2_AUTHORITY_INDEX, then decode it into a fresh session and
+// confirm every field (input, hashes, ping header, optional room, optional core option) round trips.
+int ulnet_test_packed_state_round_trip(void) {
+    g_test_name = __func__;
+    ulnet_session_t *enc = (ulnet_session_t *)calloc(1, sizeof(ulnet_session_t));
+    ulnet_session_t *dec = (ulnet_session_t *)calloc(1, sizeof(ulnet_session_t));
+    int status = 0;
+
+    ulnet_session_init_defaulted(enc);
+    ulnet_session_init_defaulted(dec);
+
+    sam2_room_t room = {0};
+    room.flags = SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+    room.peer_ids[SAM2_AUTHORITY_INDEX] = 12345;
+    room.peer_topology = (1ULL << SAM2_AUTHORITY_INDEX); // Authority is a p2p player -> controller port 0
+    enc->room_we_are_in = room;
+    dec->room_we_are_in = room;
+
+    int port = SAM2_AUTHORITY_INDEX;
+    int cport = ulnet_player_controller_port(&room, port);
+    if (cport < 0) {
+        SAM2_LOG_ERROR("packed state round trip: authority has no controller port");
+        status = 1;
+        goto done;
+    }
+
+    int64_t frame = 1000;
+    int fi = (int)(frame % ULNET_DELAY_BUFFER_SIZE);
+    ulnet_state_t *st = &enc->state[port];
+    st->frame = frame;
+    st->room_effective_frame = 1234;
+    st->save_state_frame = 999;
+    st->room = room;
+    st->input_poll_unix_usec[fi] = 0x1122334455667788LL;
+    st->save_state_hash[fi] = 0xDEADBEEFu;
+    st->input_state_hash[fi] = 0xCAFEBABEu;
+    st->input_state[fi][cport][0] = 1; // joypad bit 0
+    st->input_state[fi][cport][5] = 1; // joypad bit 5
+    st->input_state[fi][cport][ULNET_INPUT_ANALOG_FIRST_INDEX] = -1234;
+    strcpy(st->core_option[fi].key, "netplay_delay_frames");
+    strcpy(st->core_option[fi].value, "3");
+
+    uint8_t packet[ULNET_PACKET_SIZE_BYTES_MAX];
+    int64_t size = ulnet__encode_state_packet(enc, port, packet, sizeof(packet));
+    if (size < 0) {
+        SAM2_LOG_ERROR("packed state round trip: encode failed");
+        status = 1;
+        goto done;
+    }
+
+    // Ping header fields ride alongside the payload.
+    enc->peer_last_packet_send_unix_usec[port] = 0x4242;
+    ulnet__stamp_state_packet_ping(enc, port, packet, 0x9999);
+    ulnet_state_packet_t *hdr = (ulnet_state_packet_t *) packet;
+    if (ulnet__read_le64s(hdr->ping_send_unix_usec_le) != 0x9999
+        || ulnet__read_le64s(hdr->ping_echo_send_unix_usec_le) != 0x4242) {
+        SAM2_LOG_ERROR("packed state round trip: ping fields not preserved");
+        status = 1;
+        goto done;
+    }
+
+    if (ulnet__validate_packed_state_packet(packet, size) != 0) {
+        SAM2_LOG_ERROR("packed state round trip: validation rejected a valid packet");
+        status = 1;
+        goto done;
+    }
+
+    if (ulnet__decode_packed_state_packet(dec, port, packet, size) != 0) {
+        SAM2_LOG_ERROR("packed state round trip: decode failed");
+        status = 1;
+        goto done;
+    }
+
+    ulnet_state_t *got = &dec->state[port];
+    if (   got->frame != frame
+        || got->room_effective_frame != 1234
+        || got->save_state_frame != 999
+        || got->input_poll_unix_usec[fi] != 0x1122334455667788LL
+        || got->save_state_hash[fi] != 0xDEADBEEFu
+        || got->input_state_hash[fi] != 0xCAFEBABEu) {
+        SAM2_LOG_ERROR("packed state round trip: scalar field mismatch");
+        status = 1;
+        goto done;
+    }
+    if (   got->input_state[fi][cport][0] != 1
+        || got->input_state[fi][cport][5] != 1
+        || got->input_state[fi][cport][1] != 0
+        || got->input_state[fi][cport][ULNET_INPUT_ANALOG_FIRST_INDEX] != -1234) {
+        SAM2_LOG_ERROR("packed state round trip: input did not round trip");
+        status = 1;
+        goto done;
+    }
+    if (   strcmp(got->core_option[fi].key, "netplay_delay_frames") != 0
+        || strcmp(got->core_option[fi].value, "3") != 0) {
+        SAM2_LOG_ERROR("packed state round trip: core option did not round trip");
+        status = 1;
+        goto done;
+    }
+    if (memcmp(&got->room, &room, sizeof(room)) != 0) {
+        SAM2_LOG_ERROR("packed state round trip: room snapshot did not round trip");
+        status = 1;
+        goto done;
+    }
+
+done:
+    ulnet_session_tear_down(enc);
+    ulnet_session_tear_down(dec);
+    free(enc);
+    free(dec);
+    return status;
+}
+
+// Pack suggested input for every controller port and confirm it round trips, and that decode clears
+// stale state first.
+int ulnet_test_packed_spectator_round_trip(void) {
+    g_test_name = __func__;
+    ulnet_input_state_t in[ULNET_PORT_COUNT];
+    ulnet_input_state_t out[ULNET_PORT_COUNT];
+    ulnet_packed_spectator_input_t packet;
+    int status = 0;
+
+    memset(in, 0, sizeof(in));
+    for (int port = 0; port < ULNET_PORT_COUNT; port++) {
+        in[port][0] = 1;                                          // joypad bit 0 on every port
+        in[port][port % ULNET_INPUT_JOYPAD_WORDS] = 1;            // a port-specific joypad bit
+        in[port][ULNET_INPUT_ANALOG_FIRST_INDEX] = (int16_t)(100 + port);
+    }
+
+    ulnet__encode_spectator_input(in, &packet);
+
+    if (packet.channel_and_flags != ULNET_CHANNEL_SPECTATOR_INPUT) {
+        SAM2_LOG_ERROR("spectator round trip: wrong channel byte");
+        status = 1;
+        goto done;
+    }
+
+    // Pre-fill the destination with garbage to prove decode clears it first.
+    for (int port = 0; port < ULNET_PORT_COUNT; port++) {
+        for (int i = 0; i < (int)(sizeof(ulnet_input_state_t) / sizeof(int16_t)); i++) {
+            out[port][i] = 0x5a5a;
+        }
+    }
+
+    ulnet__decode_spectator_input(&packet, out);
+
+    for (int port = 0; port < ULNET_PORT_COUNT; port++) {
+        if (   out[port][0] != 1
+            || out[port][port % ULNET_INPUT_JOYPAD_WORDS] != 1
+            || out[port][ULNET_INPUT_ANALOG_FIRST_INDEX] != (int16_t)(100 + port)) {
+            SAM2_LOG_ERROR("spectator round trip: port %d input did not round trip", port);
+            status = 1;
+            goto done;
+        }
+        // A joypad bit we never set must have been cleared (proves decode zeroes stale state).
+        if (out[port][7] != 0 && (port % ULNET_INPUT_JOYPAD_WORDS) != 7 && port != 7) {
+            SAM2_LOG_ERROR("spectator round trip: port %d stale state not cleared", port);
+            status = 1;
+            goto done;
+        }
+    }
+
+done:
+    return status;
+}
+
+// Spectator input normally rides inside an ACK-only reliable wrapper. This catches regressions where
+// ACK-only packets are treated as empty control packets and their latest-only payload is dropped.
+int ulnet_test_packed_spectator_ack_only_delivery(void) {
+    g_test_name = __func__;
+    ulnet_session_t *sessions[2] = {0};
+    ulnet_transport_inproc_t transport = {0};
+    ulnet_packed_spectator_input_t packet;
+    int status = 0;
+
+    ulnet__test_inproc_pair_setup(sessions, &transport, 0);
+    sessions[0]->peer_needs_sync_bitfield = 0;
+    sessions[1]->frame_counter = 0;
+
+    memset(sessions[1]->spectator_suggested_input_state[63], 0,
+        sizeof(sessions[1]->spectator_suggested_input_state[63]));
+    sessions[1]->spectator_suggested_input_state[63][0][0] = 1;
+    sessions[1]->spectator_suggested_input_state[63][3][5] = 1;
+    sessions[1]->spectator_suggested_input_state[63][3][ULNET_INPUT_ANALOG_FIRST_INDEX] = -321;
+    ulnet__encode_spectator_input(sessions[1]->spectator_suggested_input_state[63], &packet);
+
+    if (ulnet_reliable_send_with_acks_only(sessions[1], SAM2_AUTHORITY_INDEX,
+            (const uint8_t *)&packet, sizeof(packet)) != 0) {
+        SAM2_LOG_ERROR("spectator ack-only delivery: send failed");
+        status = 1;
+        goto done;
+    }
+
+    ulnet_service_network(sessions[0], 0);
+
+    if (   sessions[0]->spectator_suggested_input_state[ULNET__TEST_SPECTATOR_PORT][0][0] != 1
+        || sessions[0]->spectator_suggested_input_state[ULNET__TEST_SPECTATOR_PORT][3][5] != 1
+        || sessions[0]->spectator_suggested_input_state[ULNET__TEST_SPECTATOR_PORT][3][ULNET_INPUT_ANALOG_FIRST_INDEX] != -321) {
+        SAM2_LOG_ERROR("spectator ack-only delivery: payload was not delivered through wrapper");
+        status = 1;
+    }
+
+done:
+    if (sessions[0]) {
+        ulnet_session_tear_down(sessions[0]);
+        free(sessions[0]);
+    }
+    if (sessions[1]) {
+        ulnet_session_tear_down(sessions[1]);
+        free(sessions[1]);
+    }
+    return status;
+}
+
+// Validation must reject truncated packets, bad controller ports, malformed optional data, and trailing bytes.
+int ulnet_test_packed_state_validation(void) {
+    g_test_name = __func__;
+    ulnet_session_t *enc = (ulnet_session_t *)calloc(1, sizeof(ulnet_session_t));
+    int status = 0;
+
+    ulnet_session_init_defaulted(enc);
+
+    sam2_room_t room = {0};
+    room.flags = SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+    room.peer_ids[SAM2_AUTHORITY_INDEX] = 777;
+    room.peer_topology = (1ULL << SAM2_AUTHORITY_INDEX);
+    enc->room_we_are_in = room;
+
+    int port = SAM2_AUTHORITY_INDEX;
+    enc->state[port].frame = 5;
+    enc->state[port].room = room;
+    strcpy(enc->state[port].core_option[5 % ULNET_DELAY_BUFFER_SIZE].key, "k");
+    strcpy(enc->state[port].core_option[5 % ULNET_DELAY_BUFFER_SIZE].value, "v");
+
+    uint8_t packet[ULNET_PACKET_SIZE_BYTES_MAX];
+    int64_t size = ulnet__encode_state_packet(enc, port, packet, sizeof(packet));
+    if (size < 0 || ulnet__validate_packed_state_packet(packet, size) != 0) {
+        SAM2_LOG_ERROR("validation test: baseline packet was not valid");
+        status = 1;
+        goto done;
+    }
+
+    // Truncated below the fixed header/payload.
+    if (ulnet__validate_packed_state_packet(packet, sizeof(ulnet_state_packet_t)) == 0) {
+        SAM2_LOG_ERROR("validation test: accepted a truncated packet");
+        status = 1;
+        goto done;
+    }
+
+    // Trailing byte beyond the encoded optional data.
+    if (ulnet__validate_packed_state_packet(packet, size + 1) == 0) {
+        SAM2_LOG_ERROR("validation test: accepted trailing bytes");
+        status = 1;
+        goto done;
+    }
+
+    {
+        // Bad controller port (>= ULNET_PORT_COUNT and != 0xff).
+        uint8_t bad[ULNET_PACKET_SIZE_BYTES_MAX];
+        memcpy(bad, packet, size);
+        ulnet_packed_state_payload_t *payload = (ulnet_packed_state_payload_t *)&bad[sizeof(ulnet_state_packet_t)];
+        payload->controller_port = ULNET_PORT_COUNT + 3;
+        if (ulnet__validate_packed_state_packet(bad, size) == 0) {
+            SAM2_LOG_ERROR("validation test: accepted a bad controller port");
+            status = 1;
+            goto done;
+        }
+    }
+
+    {
+        // Malformed optional: claim a core option is present but provide no key/value bytes.
+        uint8_t bad[ULNET_PACKET_SIZE_BYTES_MAX];
+        ulnet_session_t *plain = (ulnet_session_t *)calloc(1, sizeof(ulnet_session_t));
+        ulnet_session_init_defaulted(plain);
+        // No room/core option -> a minimal packet; flip on the core-option flag without appending data.
+        int64_t plain_size = ulnet__encode_state_packet(plain, ULNET__TEST_PLAYER1_PORT, bad, sizeof(bad));
+        ulnet_packed_state_payload_t *payload = (ulnet_packed_state_payload_t *)&bad[sizeof(ulnet_state_packet_t)];
+        payload->flags |= ULNET_PACKED_STATE_FLAG_CORE_OPTION_PRESENT;
+        int reject = ulnet__validate_packed_state_packet(bad, plain_size) != 0;
+        ulnet_session_tear_down(plain);
+        free(plain);
+        if (plain_size < 0 || !reject) {
+            SAM2_LOG_ERROR("validation test: accepted malformed optional data");
+            status = 1;
+            goto done;
+        }
+    }
+
+done:
+    ulnet_session_tear_down(enc);
+    free(enc);
+    return status;
+}
+
+#endif // ULNET_IMPLEMENTATION
 
 #if defined(ULNET_TEST_MAIN)
 #include <stdarg.h>
@@ -2097,7 +2476,31 @@ int main (int argc, char **argv) {
 
     status = ulnet_test_inproc_reliable_ack_unblocks_queue();
     if (status != 0) {
-        printf("Inproc reliable ACK unblock test failed with status: %d\n", status);
+        printf("Inproc reliable reorder/retransmit test failed with status: %d\n", status);
+        return status;
+    }
+
+    status = ulnet_test_packed_state_round_trip();
+    if (status != 0) {
+        printf("Packed state round trip test failed with status: %d\n", status);
+        return status;
+    }
+
+    status = ulnet_test_packed_spectator_round_trip();
+    if (status != 0) {
+        printf("Packed spectator round trip test failed with status: %d\n", status);
+        return status;
+    }
+
+    status = ulnet_test_packed_spectator_ack_only_delivery();
+    if (status != 0) {
+        printf("Packed spectator ACK-only delivery test failed with status: %d\n", status);
+        return status;
+    }
+
+    status = ulnet_test_packed_state_validation();
+    if (status != 0) {
+        printf("Packed state validation test failed with status: %d\n", status);
         return status;
     }
 

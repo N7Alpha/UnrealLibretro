@@ -150,30 +150,39 @@ Reliable wrapper
 Each directed peer pair has an independent 16-bit sequence space. `ack_sequence_le` is the receiver's
 next expected reliable data sequence from the peer, not the last received sequence.
 
+Reliable data delivery uses a cumulative-ACK sliding window. The sender may have up to
+`ULNET_RELIABLE_TX_WINDOW_SIZE` (32) unacked packets in flight; the transmit queue and receive reorder
+buffer each hold `ULNET_RELIABLE_ACK_BUFFER_SIZE` (128) slots, indexed by `sequence % size`.
+
 Reliable data delivery rules:
 
 - A sender MUST assign monotonically increasing 16-bit sequence numbers to reliable data packets.
-- A sender MUST send or retransmit only the current transmit head until it is acknowledged.
-- A receiver MUST process reliable data only when `sequence == expected_rx_sequence`.
-- A receiver MUST advance `expected_rx_sequence` after processing in-order reliable data.
-- A receiver MUST ignore old reliable data.
-- A receiver MUST NOT process future reliable data before missing earlier reliable data.
-- An ACK outside the sender's current transmit window MUST be ignored.
-- When an ACK advances the transmit head, the sender SHOULD immediately try to send the next queued
-  reliable data packet.
+- A sender MAY have multiple packets in flight: it transmits every unsent packet in
+  `[tx_head, tx_head + window)` and retransmits any whose per-slot timer has expired.
+- `ack_sequence` is cumulative: receiving it frees every sender slot below it and slides the window,
+  after which newly window-eligible queued packets are sent immediately.
+- An ACK outside `[tx_head, tx_next]` MUST be ignored.
+- A receiver MUST deliver reliable data payloads to the application strictly in sequence order.
+- A receiver buffers out-of-order packets in a reorder buffer and drains them in order once the gap is
+  filled, advancing `expected_rx_sequence` (the cumulative ACK) as it delivers.
+- A receiver MUST treat `sequence < expected_rx_sequence` as a duplicate and reply with an empty
+  ACK-only wrapper so the sender stops retransmitting it.
+- A receiver MUST drop (and let retransmission redeliver) any `sequence` too far ahead to fit the
+  reorder buffer.
 
-Current state traffic usage:
+Current traffic usage:
 
-- Every 8th state packet, where `(frame + 1) % 8 == 0`, is queued reliable data on recovery-sensitive
-  links: player-to-authority, authority-to-spectator, and the authority's own state stream.
-- Other state packets are ACK-only payloads. They carry reliable ACKs but do not consume reliable
-  sequence numbers and are not retransmitted by the reliable queue.
-- Spectator input packets are ACK-only payloads.
+- Every state packet is queued reliable data on links that need deterministic or relayed state:
+  player-to-authority, authority-to-spectator, and the authority's relay of player state.
+- Spectator input packets are latest-only ACK-only payloads: they carry reliable ACKs but do not
+  consume sequence numbers and are not retransmitted.
 - ASCII control messages use reliable data.
 
 ## State Packet
 
-State packets carry a complete compressed logical state for one port.
+A state packet carries exactly one simulation frame of packed state for one port. There is no
+compression and no magic/version marker; the channel byte plus structural validation gate it, and the
+SAM2 protocol-major version rejects incompatible peers.
 
 ```text
 State packet inner payload
@@ -183,37 +192,34 @@ State packet inner payload
 +9    i64   ping_echo_send_unix_usec_le
 +17   i64   ping_echo_callsite_receive_unix_usec_le
 +25   i64   ping_echo_kernel_receive_unix_usec_le
-+33   ...   rle8(ulnet_state)
++33   ...   packed_state_payload
 ```
 
 The ping fields are auxiliary timing metadata. They do not affect deterministic simulation.
 
-Logical decoded state:
-
 ```text
-ulnet_state
+packed_state_payload (one frame)
 
-int64   frame
-int64   room_effective_frame
-i16     input_state[8][8][64]
-room    room
-option  core_option[8]
-int64   save_state_frame
-u32     save_state_hash[8]
-u32     input_state_hash[8]
-int64   input_poll_unix_usec[8]
+i64     frame_le
+i64     room_effective_frame_le
+i64     save_state_frame_le
+i64     input_poll_unix_usec_le
+u32     save_state_hash_le
+u32     input_state_hash_le
+u8      controller_port            ; 0xff = no controller-input payload
+u8      flags                      ; bit0 ROOM_PRESENT, bit1 CORE_OPTION_PRESENT
+14B     packed_input_frame         ; buttons bitfield + analog words for controller_port
+...     optional                   ; room snapshot (if ROOM_PRESENT), then one core option
+                                   ; (key_len u8, value_len u8, key, value) if CORE_OPTION_PRESENT
 ```
 
-`frame` is the newest frame for which this port has buffered state. Input for simulation frame `F`
-is read from `input_state[F % ULNET_DELAY_BUFFER_SIZE]`.
+`frame` is the single simulation frame this packet describes. Decoding writes exactly
+`state[port].input_state[frame % ULNET_DELAY_BUFFER_SIZE]` and the matching per-frame metadata.
 
-Only the authority port's `room` and `room_effective_frame` are authoritative for room consensus.
-Non-authority state packets may carry local room fields, but peers MUST NOT use them to adopt room
-changes.
-
-Only the authority port's `core_option[F % 8]` is authoritative for simulation frame `F`. At most one
-core option key/value is advertised per frame. The `netplay_delay_frames` key updates the input delay;
-other keys update matching synchronized core options.
+Only the authority port carries a room snapshot (`ROOM_PRESENT`); `room` and `room_effective_frame`
+are authoritative for room consensus only from the authority. At most one core option key/value is
+advertised per frame. The `netplay_delay_frames` key updates the input delay; other keys update
+matching synchronized core options.
 
 State packet acceptance rules:
 
@@ -222,16 +228,16 @@ State packet acceptance rules:
 - A spectator MUST NOT send state packets.
 - The original sender port MUST be the authority or a current p2p player.
 - A receiver MUST NOT replace stored live state with a state packet whose decoded `frame` is older
-  than the receiver's stored frame for that original sender port. If the old packet is an every-8th
-  history frame, the receiver MAY still retain it in state history.
-- A receiver MAY accept an equal or newer state packet and replace stored state for that port.
+  than the receiver's stored frame for that original sender port.
+- A receiver MAY accept an equal or newer state packet and replace stored state for that port, unless
+  the frame is too far ahead of the receiver's `frame_counter` (a lagging spectator), in which case it
+  defers live decode and reconstructs the exact frame from history instead.
 - The authority SHOULD relay accepted player state to other linked peers while preserving the original
-  sender port in the state packet header.
+  sender port in the state packet header, queued reliably every frame.
 
-Every 8th state frame, where `(frame + 1) % 8 == 0`, is stored as local state history and sent as
-queued reliable data on recovery-sensitive links. This history is used by spectators to reconstruct
-player state and by diagnostics. Non-history state frames are sent frequently as ACK-only
-reliable-wrapper payloads and are not queued for reliable resend.
+Every state packet is stored as local state history, indexed by `frame % ULNET_STATE_PACKET_HISTORY_SIZE`
+(one stored packet per frame). Spectators use this history to reconstruct the exact frame they are about
+to tick.
 
 ## Spectator Input Packet
 
@@ -239,21 +245,19 @@ Spectator input is advisory. It is not deterministic state by itself. A player o
 spectator suggestions into that player's next published input state, at which point the player state
 becomes authoritative for deterministic simulation.
 
-Current spectator input payload:
+Current spectator input payload is a fixed packed frame for every controller port (no compression, no
+magic; the channel byte and exact size gate it):
 
 ```text
 Spectator input inner payload
 
-+0    u8    channel = 0x60
-+1    u8[32] reserved_zero_padding
-+33   ...   rle8(suggested_input_state[8][64])
++0    u8     channel = 0x60
++1    14B[8] packed_input_frame[ULNET_PORT_COUNT]
 ```
 
-On receipt, the payload is stored under the immediate transport sender's port. Players OR-merge
-suggestions from connected peers into the next local input frame before publishing state.
-
-The reserved padding exists because the current sender and receiver use the state-packet header size
-as the encoded-input offset. The protocol SHOULD treat bytes 1..32 as reserved and set them to zero.
+The packet size is fixed at `1 + 8 * sizeof(packed_input_frame)`. On receipt, the decoder clears the
+stored suggestion for the immediate transport sender's port, then unpacks all controller ports. Players
+OR-merge suggestions from connected peers into the next local input frame before publishing state.
 
 ## Input Semantics
 
@@ -474,18 +478,19 @@ semantics above are part of the current protocol.
 
 - Identity is trusted. There is no signature or cryptographic binding between a transport peer,
   claimed sender port, and peer ID.
-- Non-history state packets are not retransmitted. Correctness relies on frequent latest-state traffic
-  plus queued reliable every-8th state history for spectator catchup.
-- Reliable delivery is head-of-line with a small fixed history. Queue saturation or overwritten
-  reliable history is fatal or lossy depending on path.
-- If a state packet cannot fit after compression, it is skipped. Repeated poor compression could
+- Every state packet is queued reliably, so the per-link transmit queue can saturate
+  (`ULNET_RELIABLE_ACK_BUFFER_SIZE` packets) if a peer stops acknowledging; an overwritten in-flight
+  slot is fatal.
+- Reliable delivery is in-order with a fixed window/reorder buffer. A sequence too far ahead of the
+  receiver is dropped and relies on retransmission.
+- If a state packet cannot fit, it is skipped. Repeated oversized packets could
   starve room snapshots or local state history.
 - Overlapping active-set room changes are ignored rather than queued or rejected with a protocol
   response visible to the requester.
-- The RLE8 stream and native-layout state structs are de facto wire format, but the protocol does not
-  yet define a standalone portable encoding.
-- Out-of-order reliable data is treated as a protocol error but does not currently mandate disconnect
-  or resync.
+- Spectator catch-up is limited by fixed state history; once `frame % ULNET_STATE_PACKET_HISTORY_SIZE`
+  is overwritten, recovery requires savestate resync rather than packet replay.
+- Reliable data too far ahead of the receive reorder buffer is dropped and left for retransmission;
+  repeated impossible gaps do not currently mandate disconnect or resync.
 - Desync hash fields exist. Savestate hashes are produced and compared, while input hash production is
   still incomplete.
 - Savestate installation directly sets frame, room, and core options; the exact reconciliation

@@ -101,8 +101,14 @@ static SAM2_FORCEINLINE bool ulnet__is_input_channel(uint8_t channel_and_flags) 
 
 #define ULNET_MAX_SAMPLE_SIZE 128
 
-// Reliable data is stop-and-wait on the wire; this bounds queued transmit payloads and RX debug history.
+// Reliable data uses a cumulative-ACK sliding window. ULNET_RELIABLE_ACK_BUFFER_SIZE bounds the queued
+// transmit payloads / RX reorder slots (indexed by sequence % size); ULNET_RELIABLE_TX_WINDOW_SIZE is
+// how many unacked packets may be in flight at once.
 #define ULNET_RELIABLE_ACK_BUFFER_SIZE 128
+#define ULNET_RELIABLE_TX_WINDOW_SIZE 32
+#if ULNET_RELIABLE_TX_WINDOW_SIZE > ULNET_RELIABLE_ACK_BUFFER_SIZE
+#error ULNET_RELIABLE_TX_WINDOW_SIZE must not exceed ULNET_RELIABLE_ACK_BUFFER_SIZE
+#endif
 
 #define ULNET_RS_GF_SIZE 255
 #define ULNET_RS_GF_ORDER 256
@@ -110,39 +116,12 @@ static SAM2_FORCEINLINE bool ulnet__is_input_channel(uint8_t channel_and_flags) 
 #define ULNET_RS_TOTAL_BLOCKS_MAX 255
 
 // This constant defines the maximum number of frames that can be buffered before blocking.
-// A value of 2 implies no delay can be accomidated.
-//```
-// Consider the following scenario:
-// logical-time | peer a        | peer b
-// --------------------------------------------
-// 0            | send input 0a | send input 0b
-// 1            | recv input 0b | recv input 0a
-// 2            | ------------- | tick frame 0
-// 3            | ------------- | send input 1b
-// 4            | recv input 1b | -------------
-// 5            | tick frame 0  | -------------
-//```
-// The issue occurs at logical-time 4 when peer a receives input 1 before ticking frame 0.
-// If the input buffer only holds 1 frame, the input packet for frame 0 would be overwritten.
-// To handle the case where a peer immediately ticks and sends an input after receiving,
-// the input buffer needs to hold at least 2 frames.
-//
-// Setting ULNET_DELAY_BUFFER_SIZE to 2 allows for no frame delay while still handling this scenario.
-// The following constant is set to 8 which yields 3 frames of delay this corresponds to a max RTT PING of 100 ms to not stutter
 #define ULNET_DELAY_BUFFER_SIZE 8
-#define ULNET_PACKET_INPUT_FRAMES 4
-#define ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES 4
 
 #define ULNET_DELAY_FRAMES_MAX (ULNET_DELAY_BUFFER_SIZE/2-1)
 #define ULNET_ROOM_CHANGE_LEAD_FRAMES (ULNET_DELAY_FRAMES_MAX + 1)
 #if ULNET_ROOM_CHANGE_LEAD_FRAMES <= 0 || ULNET_ROOM_CHANGE_LEAD_FRAMES > ULNET_DELAY_BUFFER_SIZE
 #error ULNET_ROOM_CHANGE_LEAD_FRAMES must fit in the input delay buffer
-#endif
-#if ULNET_PACKET_INPUT_FRAMES <= 0 || ULNET_PACKET_INPUT_FRAMES > ULNET_DELAY_BUFFER_SIZE
-#error ULNET_PACKET_INPUT_FRAMES must fit in the input delay buffer
-#endif
-#if ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES <= 0 || ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES > ULNET_DELAY_BUFFER_SIZE
-#error ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES must fit in the input delay buffer
 #endif
 
 #define ULNET_PORT_COUNT 8
@@ -199,8 +178,8 @@ typedef struct {
     uint8_t coded_state[];
 } ulnet_state_packet_t;
 
-#define ULNET_PACKED_INPUT_MAGIC {'U','L','I','1'}
-#define ULNET_PACKED_INPUT_FLAG_ROOM_PRESENT 0x01
+#define ULNET_PACKED_STATE_FLAG_ROOM_PRESENT        0x01
+#define ULNET_PACKED_STATE_FLAG_CORE_OPTION_PRESENT  0x02
 
 #define ULNET_INPUT_JOYPAD_WORDS 16
 #define ULNET_INPUT_ANALOG_WORDS 6
@@ -213,20 +192,26 @@ typedef struct {
 SAM2_STATIC_ASSERT(sizeof(ulnet_packed_input_frame_t) == 14, "Packed input frame size changed");
 
 typedef struct {
-    uint8_t magic[4];
     uint8_t frame_le[8];
     uint8_t room_effective_frame_le[8];
     uint8_t save_state_frame_le[8];
-    uint8_t input_poll_unix_usec_le[ULNET_PACKET_INPUT_FRAMES][8];
-    uint8_t save_state_hash_le[ULNET_PACKET_INPUT_FRAMES][4];
-    uint8_t input_state_hash_le[ULNET_PACKET_INPUT_FRAMES][4];
+    uint8_t input_poll_unix_usec_le[8];
+    uint8_t save_state_hash_le[4];
+    uint8_t input_state_hash_le[4];
     uint8_t controller_port;
-    uint8_t frame_count;
     uint8_t flags;
-    uint8_t core_option_frame_mask;
-    ulnet_packed_input_frame_t input[ULNET_PACKET_INPUT_FRAMES];
+    ulnet_packed_input_frame_t input;
     uint8_t optional[];
 } ulnet_packed_state_payload_t;
+SAM2_STATIC_ASSERT(sizeof(ulnet_packed_state_payload_t) == 56, "Packed state payload size changed");
+
+// Latest-only spectator input on ULNET_CHANNEL_SPECTATOR_INPUT: a fixed payload of every controller
+// port's packed input. No magic; the channel byte and the exact size gate it.
+typedef struct {
+    uint8_t channel_and_flags;
+    ulnet_packed_input_frame_t input[ULNET_PORT_COUNT];
+} ulnet_packed_spectator_input_t;
+SAM2_STATIC_ASSERT(sizeof(ulnet_packed_spectator_input_t) == 113, "Packed spectator input size changed");
 
 typedef struct {
     uint8_t channel_and_flags;
@@ -336,16 +321,17 @@ typedef struct ulnet_session {
 
     int64_t peer_desynced_frame[SAM2_TOTAL_PEERS];
     ulnet_input_state_t spectator_suggested_input_state[SAM2_TOTAL_PEERS][ULNET_PORT_COUNT];
-    ulnet_packet_ref_t state_packet_history[SAM2_TOTAL_PEERS][ULNET_STATE_PACKET_HISTORY_SIZE]; // Indexable by (frame / ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES) % ULNET_STATE_PACKET_HISTORY_SIZE
+    ulnet_packet_ref_t state_packet_history[SAM2_TOTAL_PEERS][ULNET_STATE_PACKET_HISTORY_SIZE]; // One stored packet per simulation frame, indexed by frame % ULNET_STATE_PACKET_HISTORY_SIZE
     ulnet_packet_ref_t packet_history[SAM2_TOTAL_PEERS][256]; // All packets circular buffer in order they were sent/recv
     uint8_t packet_history_next[SAM2_TOTAL_PEERS];
     int64_t reliable_retransmit_delay_microseconds;
-    int64_t reliable_last_transmit_time[SAM2_TOTAL_PEERS];
-    ulnet_packet_ref_t reliable_tx_packet_history[SAM2_TOTAL_PEERS][ULNET_RELIABLE_ACK_BUFFER_SIZE]; // Queued reliable data, indexed by sequence % size; only tx_head is in flight
+    ulnet_packet_ref_t reliable_tx_packet_history[SAM2_TOTAL_PEERS][ULNET_RELIABLE_ACK_BUFFER_SIZE]; // Queued reliable data, indexed by sequence % size; up to a window's worth are in flight
+    int64_t reliable_tx_last_send_usec[SAM2_TOTAL_PEERS][ULNET_RELIABLE_ACK_BUFFER_SIZE]; // Per-slot last (re)transmit time; 0 means the slot is queued but unsent
     ulnet_packet_ref_t reliable_rx_packet_history[SAM2_TOTAL_PEERS][ULNET_RELIABLE_ACK_BUFFER_SIZE]; // RX debug/duplicate history, indexed by sequence % size
+    ulnet_packet_ref_t reliable_rx_pending[SAM2_TOTAL_PEERS][ULNET_RELIABLE_ACK_BUFFER_SIZE]; // RX reorder buffer for out-of-order delivery, indexed by sequence % size
     uint16_t reliable_tx_next_seq[SAM2_TOTAL_PEERS]; // Next sequence to assign
     uint16_t reliable_tx_head[SAM2_TOTAL_PEERS];     // Oldest unacked sequence / transmit queue head
-    uint16_t reliable_rx_head[SAM2_TOTAL_PEERS];     // Next sequence we expect to receive
+    uint16_t reliable_rx_head[SAM2_TOTAL_PEERS];     // Next sequence we expect to deliver in order
     int64_t peer_last_packet_send_unix_usec[SAM2_TOTAL_PEERS];
     int64_t peer_last_packet_callsite_receive_unix_usec[SAM2_TOTAL_PEERS];
     int64_t peer_last_packet_kernel_receive_unix_usec[SAM2_TOTAL_PEERS];
@@ -3112,9 +3098,22 @@ static void ulnet__unpack_input_frame(const ulnet_packed_input_frame_t *packed, 
     }
 }
 
-static bool ulnet__packed_input_magic_matches(const ulnet_packed_state_payload_t *payload) {
-    static const uint8_t magic[4] = ULNET_PACKED_INPUT_MAGIC;
-    return memcmp(payload->magic, magic, sizeof(magic)) == 0;
+// Pack every controller port's suggested input into a fixed latest-only spectator packet.
+static void ulnet__encode_spectator_input(const ulnet_input_state_t suggested[ULNET_PORT_COUNT],
+    ulnet_packed_spectator_input_t *packet) {
+    packet->channel_and_flags = ULNET_CHANNEL_SPECTATOR_INPUT;
+    for (int port = 0; port < ULNET_PORT_COUNT; port++) {
+        ulnet__pack_input_frame(suggested[port], &packet->input[port]);
+    }
+}
+
+// Clear the destination then unpack every controller port from a packed spectator packet.
+static void ulnet__decode_spectator_input(const ulnet_packed_spectator_input_t *packet,
+    ulnet_input_state_t suggested[ULNET_PORT_COUNT]) {
+    memset(suggested, 0, sizeof(ulnet_input_state_t) * ULNET_PORT_COUNT);
+    for (int port = 0; port < ULNET_PORT_COUNT; port++) {
+        ulnet__unpack_input_frame(&packet->input[port], suggested[port]);
+    }
 }
 
 static int64_t ulnet__get_frame_from_packet(const uint8_t *packet, size_t packet_size) {
@@ -3124,19 +3123,11 @@ static int64_t ulnet__get_frame_from_packet(const uint8_t *packet, size_t packet
 
     const ulnet_packed_state_payload_t *payload =
         (const ulnet_packed_state_payload_t *)&packet[sizeof(ulnet_state_packet_t)];
-    if (!ulnet__packed_input_magic_matches(payload)) {
-        return -1;
-    }
-
     return ulnet__read_le64s(payload->frame_le);
 }
 
-static bool ulnet__is_state_history_frame(int64_t frame) {
-    return (frame + 1) % ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES == 0;
-}
-
 static void ulnet_update_state_history(ulnet_session_t *session, const uint8_t *packet, size_t packet_size) {
-    // Only store checkpoint packets... frame 3, 7, 11, etc.
+    // One stored packet per simulation frame, indexed by frame % size.
     if (!ulnet__is_input_channel(packet[0])) {
         SAM2_LOG_ERROR("Attempt to store non-input packet in state history");
         return;
@@ -3144,8 +3135,8 @@ static void ulnet_update_state_history(ulnet_session_t *session, const uint8_t *
 
     int port = packet[0] & 0b00111111;
     int64_t frame = ulnet__get_frame_from_packet(packet, packet_size);
-    if (frame >= 0 && ulnet__is_state_history_frame(frame)) {
-        int history_idx = (frame / ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES) % ULNET_STATE_PACKET_HISTORY_SIZE;
+    if (frame >= 0) {
+        int history_idx = (int)(frame % ULNET_STATE_PACKET_HISTORY_SIZE);
 
         SAM2_LOG_DEBUG("Storing state packet for port %d at history index %d for frame %lld", port, history_idx, (long long)frame);
         ulnet_packet_ref_set(&session->state_packet_history[port][history_idx], packet, packet_size, 0);
@@ -3178,23 +3169,9 @@ ULNET_LINKAGE int ulnet_udp_send(ulnet_session_t *session, int port, const uint8
     }
 
     case ULNET_CHANNEL_SPECTATOR_INPUT: {
-        if (size < sizeof(ulnet_state_packet_t)) {
-            SAM2_LOG_ERROR("Spectator input packet too small: %zu bytes", size);
-            return -1;
-        }
-
-        // Skip the header (1 byte) to get to the encoded data
-        int64_t encoded_size = size - 1;
-        int64_t decoded_size = rle8_decode_size((const uint8_t*)packet + 1, encoded_size);
-
-        if (decoded_size < 0) {
-            SAM2_LOG_ERROR("Spectator input packet has invalid RLE encoding");
-            return -1;
-        }
-
-        if (decoded_size > sizeof(session->spectator_suggested_input_state[0])) {
-            SAM2_LOG_ERROR("Spectator input would decode to %" PRId64 " bytes, exceeding buffer size %zu",
-                            decoded_size, sizeof(session->spectator_suggested_input_state[0]));
+        if (size != sizeof(ulnet_packed_spectator_input_t)) {
+            SAM2_LOG_ERROR("Spectator input packet has wrong size: %zu bytes (expected %zu)",
+                            size, sizeof(ulnet_packed_spectator_input_t));
             return -1;
         }
         break;
@@ -3263,25 +3240,23 @@ static int ulnet__wrap_packet(const uint8_t packet[/* size */], int size, uint16
         return -1;
     }
 
-    memcpy(&wrapped_packet[offset], packet, size);
+    if (size > 0) {
+        memcpy(&wrapped_packet[offset], packet, size);
+    }
 
     return offset + size;
 }
 
-static int ulnet__reliable_send_head(ulnet_session_t *session, int port, bool retransmit) {
-    uint16_t head_sequence = session->reliable_tx_head[port];
-    uint16_t next_sequence = session->reliable_tx_next_seq[port];
-
-    if (!ulnet__sequence_less_than(head_sequence, next_sequence)) {
-        return 0;
-    }
-
-    ulnet_packet_ref_t packet_ref = session->reliable_tx_packet_history[port][head_sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE];
+// Transmit the queued reliable packet at `sequence`, refreshing its piggybacked ACK and per-slot send
+// timestamp. `sequence` must already hold a queued packet. `retransmit` only affects logging/debug tagging.
+static int ulnet__reliable_transmit_slot(ulnet_session_t *session, int port, uint16_t sequence, bool retransmit) {
+    int slot = sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE;
+    ulnet_packet_ref_t packet_ref = session->reliable_tx_packet_history[port][slot];
     ulnet_reliable_packet_t *packet = (ulnet_reliable_packet_t *) packet_ref.data;
     int packet_size = packet_ref.size;
 
-    if (!packet || memcmp(&packet->sequence_le, &head_sequence, sizeof(head_sequence)) != 0) {
-        SAM2_LOG_FATAL("Head of queue packet overwritten");
+    if (!packet || memcmp(&packet->sequence_le, &sequence, sizeof(sequence)) != 0) {
+        SAM2_LOG_FATAL("Reliable TX slot for sequence %u was overwritten", sequence);
         return -1;
     }
 
@@ -3291,13 +3266,13 @@ static int ulnet__reliable_send_head(ulnet_session_t *session, int port, bool re
 
     memcpy(&packet->ack_sequence_le, &session->reliable_rx_head[port], sizeof(packet->ack_sequence_le));
 
-    SAM2_LOG_INFO("%s reliable packet with sequence %d",
-        retransmit ? "Retransmitting" : "Sending queued", head_sequence);
+    SAM2_LOG_DEBUG("%s reliable packet with sequence %u",
+        retransmit ? "Retransmitting" : "Sending queued", sequence);
 
-    session->reliable_last_transmit_time[port] = ulnet__get_unix_time_microseconds();
+    session->reliable_tx_last_send_usec[port][slot] = ulnet__get_unix_time_microseconds();
     int status = ulnet_udp_send(session, port, packet_to_send, packet_size);
     if (status != 0) {
-        SAM2_LOG_ERROR("Failed to send reliable packet with sequence %d", head_sequence);
+        SAM2_LOG_ERROR("Failed to send reliable packet with sequence %u", sequence);
     } else if (retransmit && (session->flags & ULNET_SESSION_FLAG_DRAW_IMGUI)) {
         session->packet_history[port][(uint8_t)(session->packet_history_next[port] - 1)].flags |= ULNET_PACKET_FLAG_TX_RELIABLE_RETRANSMIT;
     }
@@ -3305,7 +3280,23 @@ static int ulnet__reliable_send_head(ulnet_session_t *session, int port, bool re
     return status;
 }
 
-// Simplified reliable send
+// Send every queued-but-unsent packet that currently fits in the transmit window.
+static void ulnet__reliable_pump_window(ulnet_session_t *session, int port) {
+    uint16_t tx_head = session->reliable_tx_head[port];
+    uint16_t tx_next = session->reliable_tx_next_seq[port];
+
+    for (uint16_t sequence = tx_head;
+         ulnet__sequence_less_than(sequence, tx_next) && (uint16_t)(sequence - tx_head) < ULNET_RELIABLE_TX_WINDOW_SIZE;
+         sequence++) {
+        if (session->reliable_tx_last_send_usec[port][sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE] == 0) {
+            ulnet__reliable_transmit_slot(session, port, sequence, false);
+        }
+    }
+}
+
+// Enqueue a reliable payload and pump the window. Multiple packets may be in flight at once (sliding
+// window); the receiver reassembles them in order. Returns negative if the payload can't be wrapped or
+// the queue is full.
 ULNET_LINKAGE int ulnet_reliable_send(ulnet_session_t *session, int port, const uint8_t *packet, int size) {
     uint8_t tmp[ULNET_PACKET_SIZE_BYTES_MAX];
 
@@ -3324,17 +3315,12 @@ ULNET_LINKAGE int ulnet_reliable_send(ulnet_session_t *session, int port, const 
         return maybe_wrapped_size;
     }
 
-    ulnet_packet_ref_set(
-        &session->reliable_tx_packet_history[port][sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE],
-        tmp,
-        maybe_wrapped_size,
-        ULNET_PACKET_FLAG_TX
-    );
+    int slot = sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE;
+    ulnet_packet_ref_set(&session->reliable_tx_packet_history[port][slot], tmp, maybe_wrapped_size, ULNET_PACKET_FLAG_TX);
+    session->reliable_tx_last_send_usec[port][slot] = 0; // Queued but not yet transmitted
     session->reliable_tx_next_seq[port]++;
 
-    if (queued_packets == 0) {
-        return ulnet__reliable_send_head(session, port, false);
-    }
+    ulnet__reliable_pump_window(session, port);
 
     return 0;
 }
@@ -3419,30 +3405,6 @@ static bool ulnet__authority_has_pending_room_change(ulnet_session_t *session) {
            && memcmp(&session->next_room, &session->room_we_are_in, sizeof(sam2_room_t)) != 0;
 }
 
-static int ulnet__append_packed_core_option(uint8_t **cursor, uint8_t *end, uint8_t frame_offset,
-    const ulnet_core_option_t *option) {
-    size_t key_len = ulnet__bounded_strlen(option->key, sizeof(option->key) - 1);
-    size_t value_len = ulnet__bounded_strlen(option->value, sizeof(option->value) - 1);
-
-    if (key_len == 0) {
-        return 0;
-    }
-
-    if (key_len > 255 || value_len > 255 || (size_t)(end - *cursor) < 3 + key_len + value_len) {
-        return -1;
-    }
-
-    *(*cursor)++ = frame_offset;
-    *(*cursor)++ = (uint8_t)key_len;
-    *(*cursor)++ = (uint8_t)value_len;
-    memcpy(*cursor, option->key, key_len);
-    *cursor += key_len;
-    memcpy(*cursor, option->value, value_len);
-    *cursor += value_len;
-
-    return 0;
-}
-
 static int ulnet__validate_packed_state_packet(const uint8_t *packet, size_t packet_size) {
     if (packet_size < sizeof(ulnet_state_packet_t) + sizeof(ulnet_packed_state_payload_t)) {
         return -1;
@@ -3453,33 +3415,25 @@ static int ulnet__validate_packed_state_packet(const uint8_t *packet, size_t pac
     const uint8_t *cursor = payload->optional;
     const uint8_t *end = packet + packet_size;
 
-    if (!ulnet__packed_input_magic_matches(payload)) {
-        return -1;
-    }
-    if (payload->frame_count == 0 || payload->frame_count > ULNET_PACKET_INPUT_FRAMES) {
-        return -1;
-    }
     if (payload->controller_port >= ULNET_PORT_COUNT && payload->controller_port != 0xff) {
         return -1;
     }
 
-    if (payload->flags & ULNET_PACKED_INPUT_FLAG_ROOM_PRESENT) {
+    if (payload->flags & ULNET_PACKED_STATE_FLAG_ROOM_PRESENT) {
         if ((size_t)(end - cursor) < sizeof(sam2_room_t)) {
             return -1;
         }
         cursor += sizeof(sam2_room_t);
     }
 
-    for (int bit = 0; bit < ULNET_PACKET_INPUT_FRAMES; bit++) {
-        if (!(payload->core_option_frame_mask & (1u << bit))) continue;
-        if ((size_t)(end - cursor) < 3) {
+    if (payload->flags & ULNET_PACKED_STATE_FLAG_CORE_OPTION_PRESENT) {
+        if ((size_t)(end - cursor) < 2) {
             return -1;
         }
-        uint8_t frame_offset = cursor[0];
-        uint8_t key_len = cursor[1];
-        uint8_t value_len = cursor[2];
-        cursor += 3;
-        if (frame_offset >= payload->frame_count || key_len == 0 || (size_t)(end - cursor) < (size_t)key_len + value_len) {
+        uint8_t key_len = cursor[0];
+        uint8_t value_len = cursor[1];
+        cursor += 2;
+        if (key_len == 0 || (size_t)(end - cursor) < (size_t)key_len + value_len) {
             return -1;
         }
         cursor += key_len + value_len;
@@ -3498,49 +3452,37 @@ static int ulnet__decode_packed_state_packet(ulnet_session_t *session, int state
     const uint8_t *cursor = payload->optional;
     ulnet_state_t *state = &session->state[state_port];
     int64_t frame = ulnet__read_le64s(payload->frame_le);
-    int frame_count = payload->frame_count;
     int controller_port = payload->controller_port == 0xff ? -1 : payload->controller_port;
+    int frame_index = (int)(frame % ULNET_DELAY_BUFFER_SIZE);
 
     state->room_effective_frame = ulnet__read_le64s(payload->room_effective_frame_le);
     state->save_state_frame = ulnet__read_le64s(payload->save_state_frame_le);
 
-    if (payload->flags & ULNET_PACKED_INPUT_FLAG_ROOM_PRESENT) {
+    if (payload->flags & ULNET_PACKED_STATE_FLAG_ROOM_PRESENT) {
         memcpy(&state->room, cursor, sizeof(state->room));
         cursor += sizeof(state->room);
     }
 
-    for (int i = 0; i < frame_count; i++) {
-        int64_t input_frame = frame - (frame_count - 1 - i);
-        if (input_frame < 0) continue;
+    memset(state->input_state[frame_index], 0, sizeof(state->input_state[frame_index]));
+    memset(&state->core_option[frame_index], 0, sizeof(state->core_option[frame_index]));
+    state->input_poll_unix_usec[frame_index] = ulnet__read_le64s(payload->input_poll_unix_usec_le);
+    state->save_state_hash[frame_index] = ulnet__read_le32(payload->save_state_hash_le);
+    state->input_state_hash[frame_index] = ulnet__read_le32(payload->input_state_hash_le);
 
-        int frame_index = (int)(input_frame % ULNET_DELAY_BUFFER_SIZE);
-        memset(state->input_state[frame_index], 0, sizeof(state->input_state[frame_index]));
-        memset(&state->core_option[frame_index], 0, sizeof(state->core_option[frame_index]));
-        state->input_poll_unix_usec[frame_index] = ulnet__read_le64s(payload->input_poll_unix_usec_le[i]);
-        state->save_state_hash[frame_index] = ulnet__read_le32(payload->save_state_hash_le[i]);
-        state->input_state_hash[frame_index] = ulnet__read_le32(payload->input_state_hash_le[i]);
-
-        if (controller_port >= 0) {
-            ulnet__unpack_input_frame(&payload->input[i], state->input_state[frame_index][controller_port]);
-        }
+    if (controller_port >= 0) {
+        ulnet__unpack_input_frame(&payload->input, state->input_state[frame_index][controller_port]);
     }
 
-    for (int bit = 0; bit < ULNET_PACKET_INPUT_FRAMES; bit++) {
-        if (!(payload->core_option_frame_mask & (1u << bit))) continue;
+    if (payload->flags & ULNET_PACKED_STATE_FLAG_CORE_OPTION_PRESENT) {
+        uint8_t key_len = cursor[0];
+        uint8_t value_len = cursor[1];
+        cursor += 2;
 
-        uint8_t frame_offset = cursor[0];
-        uint8_t key_len = cursor[1];
-        uint8_t value_len = cursor[2];
-        cursor += 3;
-
-        int64_t option_frame = frame - (frame_count - 1 - frame_offset);
-        if (option_frame >= 0) {
-            ulnet_core_option_t *option = &state->core_option[option_frame % ULNET_DELAY_BUFFER_SIZE];
-            memcpy(option->key, cursor, key_len);
-            option->key[key_len] = '\0';
-            memcpy(option->value, cursor + key_len, value_len);
-            option->value[value_len] = '\0';
-        }
+        ulnet_core_option_t *option = &state->core_option[frame_index];
+        memcpy(option->key, cursor, key_len);
+        option->key[key_len] = '\0';
+        memcpy(option->value, cursor + key_len, value_len);
+        option->value[value_len] = '\0';
         cursor += key_len + value_len;
     }
 
@@ -3564,51 +3506,48 @@ static int64_t ulnet__encode_state_packet(ulnet_session_t *session, int state_po
     ulnet_packed_state_payload_t *payload = (ulnet_packed_state_payload_t *)&packet[sizeof(ulnet_state_packet_t)];
     uint8_t *cursor = payload->optional;
     uint8_t *end = packet + packet_capacity - ULNET_RELIABLE_WRAPPER_BYTES;
-    static const uint8_t magic[4] = ULNET_PACKED_INPUT_MAGIC;
     int controller_port = ulnet_player_controller_port(&session->room_we_are_in, state_port);
-    int frame_count = ULNET_PACKET_INPUT_FRAMES;
+    int64_t frame = state->frame;
+    int frame_index = (int)(frame % ULNET_DELAY_BUFFER_SIZE);
 
     memset(payload, 0, sizeof(*payload));
-    memcpy(payload->magic, magic, sizeof(magic));
-    ulnet__write_le64s(payload->frame_le, state->frame);
+    ulnet__write_le64s(payload->frame_le, frame);
     ulnet__write_le64s(payload->room_effective_frame_le, state->room_effective_frame);
     ulnet__write_le64s(payload->save_state_frame_le, state->save_state_frame);
+    ulnet__write_le64s(payload->input_poll_unix_usec_le, state->input_poll_unix_usec[frame_index]);
+    ulnet__write_le32(payload->save_state_hash_le, state->save_state_hash[frame_index]);
+    ulnet__write_le32(payload->input_state_hash_le, state->input_state_hash[frame_index]);
     payload->controller_port = controller_port >= 0 ? (uint8_t)controller_port : 0xff;
 
-    if (state->frame + 1 < frame_count) {
-        frame_count = (int)(state->frame + 1);
+    if (controller_port >= 0) {
+        ulnet__pack_input_frame(state->input_state[frame_index][controller_port], &payload->input);
     }
-    if (frame_count < 1) {
-        frame_count = 1;
-    }
-    payload->frame_count = (uint8_t)frame_count;
 
     if (state_port == SAM2_AUTHORITY_INDEX) {
         if ((size_t)(end - cursor) < sizeof(state->room)) {
             return -1;
         }
-        payload->flags |= ULNET_PACKED_INPUT_FLAG_ROOM_PRESENT;
+        payload->flags |= ULNET_PACKED_STATE_FLAG_ROOM_PRESENT;
         memcpy(cursor, &state->room, sizeof(state->room));
         cursor += sizeof(state->room);
     }
 
-    for (int i = 0; i < frame_count; i++) {
-        int64_t frame = state->frame - (frame_count - 1 - i);
-        int frame_index = (int)(frame % ULNET_DELAY_BUFFER_SIZE);
+    if (state->core_option[frame_index].key[0] != '\0') {
+        const ulnet_core_option_t *option = &state->core_option[frame_index];
+        size_t key_len = ulnet__bounded_strlen(option->key, sizeof(option->key) - 1);
+        size_t value_len = ulnet__bounded_strlen(option->value, sizeof(option->value) - 1);
 
-        ulnet__write_le64s(payload->input_poll_unix_usec_le[i], state->input_poll_unix_usec[frame_index]);
-        ulnet__write_le32(payload->save_state_hash_le[i], state->save_state_hash[frame_index]);
-        ulnet__write_le32(payload->input_state_hash_le[i], state->input_state_hash[frame_index]);
-
-        if (controller_port >= 0) {
-            ulnet__pack_input_frame(state->input_state[frame_index][controller_port], &payload->input[i]);
-        }
-
-        if (state->core_option[frame_index].key[0] != '\0') {
-            payload->core_option_frame_mask |= (uint8_t)(1u << i);
-            if (ulnet__append_packed_core_option(&cursor, end, (uint8_t)i, &state->core_option[frame_index]) != 0) {
+        if (key_len > 0) {
+            if (key_len > 255 || value_len > 255 || (size_t)(end - cursor) < 2 + key_len + value_len) {
                 return -1;
             }
+            payload->flags |= ULNET_PACKED_STATE_FLAG_CORE_OPTION_PRESENT;
+            *cursor++ = (uint8_t)key_len;
+            *cursor++ = (uint8_t)value_len;
+            memcpy(cursor, option->key, key_len);
+            cursor += key_len;
+            memcpy(cursor, option->value, value_len);
+            cursor += value_len;
         }
     }
 
@@ -3626,16 +3565,13 @@ static void ulnet__send_state_packet_to_ready_peers(ulnet_session_t *session, in
     }
 
     ulnet_update_state_history(session, packet, packet_size);
-    int64_t frame = session->state[state_port].frame;
 
     bool sent = false;
     for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
         if (!ulnet__peer_link_ready(session, p)) continue;
+        // Every frame's state is queued reliably so deterministic/relayed state can't be lost.
         ulnet__stamp_state_packet_ping(session, p, packet, ulnet__get_unix_time_microseconds());
-        ulnet_reliable_send_with_acks_only(session, p, packet, packet_size);
-        if (ulnet__is_state_history_frame(frame)) {
-            ulnet_reliable_send(session, p, packet, packet_size);
-        }
+        ulnet_reliable_send(session, p, packet, packet_size);
         sent = true;
     }
 
@@ -3723,10 +3659,17 @@ static int ulnet__cap_service_timeout_milliseconds(ulnet_session_t *session, uln
 
     for (int port = 0; port < SAM2_TOTAL_PEERS; port++) {
         if (!session->agent[port]) continue;
-        if (!ulnet__sequence_less_than(session->reliable_tx_head[port], session->reliable_tx_next_seq[port])) continue;
 
-        timeout_milliseconds = ulnet__cap_timeout_to_deadline(timeout_milliseconds, now_usec,
-            session->reliable_last_transmit_time[port] + session->reliable_retransmit_delay_microseconds);
+        // Earliest retransmit/first-send deadline across the in-flight window.
+        uint16_t tx_head = session->reliable_tx_head[port];
+        uint16_t tx_next = session->reliable_tx_next_seq[port];
+        for (uint16_t sequence = tx_head;
+             ulnet__sequence_less_than(sequence, tx_next) && (uint16_t)(sequence - tx_head) < ULNET_RELIABLE_TX_WINDOW_SIZE;
+             sequence++) {
+            int64_t last_send = session->reliable_tx_last_send_usec[port][sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE];
+            int64_t deadline = last_send == 0 ? now_usec : last_send + session->reliable_retransmit_delay_microseconds;
+            timeout_milliseconds = ulnet__cap_timeout_to_deadline(timeout_milliseconds, now_usec, deadline);
+        }
     }
 
     if (session->savestate_transfer_awaiting_bitfield) {
@@ -3846,10 +3789,20 @@ ULNET_LINKAGE int ulnet_service_network(ulnet_session_t *session, int timeout_mi
 
     for (int port = 0; port < SAM2_TOTAL_PEERS; port++) {
         if (!session->agent[port]) continue;
-        if (!ulnet__sequence_less_than(session->reliable_tx_head[port], session->reliable_tx_next_seq[port])) continue;
-        if (ulnet__get_unix_time_microseconds() < session->reliable_last_transmit_time[port] + session->reliable_retransmit_delay_microseconds) continue;
 
-        ulnet__reliable_send_head(session, port, true);
+        int64_t now_usec = ulnet__get_unix_time_microseconds();
+        uint16_t tx_head = session->reliable_tx_head[port];
+        uint16_t tx_next = session->reliable_tx_next_seq[port];
+        for (uint16_t sequence = tx_head;
+             ulnet__sequence_less_than(sequence, tx_next) && (uint16_t)(sequence - tx_head) < ULNET_RELIABLE_TX_WINDOW_SIZE;
+             sequence++) {
+            int64_t last_send = session->reliable_tx_last_send_usec[port][sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE];
+            if (last_send == 0) {
+                ulnet__reliable_transmit_slot(session, port, sequence, false); // Queued but never sent (e.g. a prior send failed)
+            } else if (now_usec >= last_send + session->reliable_retransmit_delay_microseconds) {
+                ulnet__reliable_transmit_slot(session, port, sequence, true);
+            }
+        }
     }
     ulnet__savestate_tx_poll(session);
 
@@ -3930,39 +3883,24 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
     }
 
     if (our_port != -1) {
-        uint8_t packet[ULNET_PACKET_SIZE_BYTES_MAX];
-        int64_t packet_size;
-
         // A coordinator-only authority sits on SAM2_AUTHORITY_INDEX, so its state port is just our_port.
         bool we_send_authoritative_state = we_are_player || we_are_coordinator_only_authority;
         if (we_send_authoritative_state) {
             if (we_are_authority) {
                 ulnet__publish_authority_room_snapshot(session, our_port);
             }
-            // Store checkpoint snapshots for spectator reconstruction and diagnostics.
-            // The state stream itself is idempotent latest-state traffic; correctness comes from the
-            // frame gates below, while the wrapper carries ACKs for reliable control messages.
+            // Queue this frame's state reliably to every ready peer; spectators reconstruct from the
+            // per-frame history and players consume the deterministic input directly.
             ulnet__send_state_packet_to_ready_peers(session, our_port);
         } else {
-            packet[0] = ULNET_CHANNEL_SPECTATOR_INPUT;
-            memset(packet + 1, 0, sizeof(ulnet_state_packet_t) - 1);
-            packet_size = sizeof(ulnet_state_packet_t) + rle8_encode_capped(
-                (uint8_t *) &session->spectator_suggested_input_state[63],
-                sizeof(session->spectator_suggested_input_state[63]),
-                &packet[sizeof(ulnet_state_packet_t)],
-                sizeof(packet) - sizeof(ulnet_state_packet_t)
-            );
+            // Latest-only advisory input on its own channel; piggybacks ACKs but is not queued reliably.
+            ulnet_packed_spectator_input_t spectator_packet;
+            ulnet__encode_spectator_input(session->spectator_suggested_input_state[63], &spectator_packet);
 
-            if (packet_size < 0 || packet_size > ULNET_PACKET_SIZE_BYTES_MAX) {
-                // Recoverable: skip this frame's send rather than crashing on a state that won't fit
-                SAM2_LOG_WARN("Outgoing packet too large to send this frame; skipping");
-                packet_size = -1;
-            }
-
-            for (int p = 0; packet_size >= 0 && p < SAM2_ARRAY_LENGTH(session->agent); p++) {
+            for (int p = 0; p < SAM2_ARRAY_LENGTH(session->agent); p++) {
                 // Wait until we can send netplay messages to everyone without fail
                 if (ulnet__peer_link_ready(session, p)) {
-                    ulnet_reliable_send_with_acks_only(session, p, packet, packet_size);
+                    ulnet_reliable_send_with_acks_only(session, p, (const uint8_t *)&spectator_packet, sizeof(spectator_packet));
                     SAM2_LOG_DEBUG("Sent spectator input packet dest peer_ids[%d]=%05" PRId16, p, session->room_we_are_in.peer_ids[p]);
                 }
             }
@@ -3997,7 +3935,8 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
     if (ulnet_is_spectator(session, session->our_peer_id)) {
         for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
             if (ulnet_port_is_active_player(&session->room_we_are_in, p)) {
-                int history_index_for_frame = (session->frame_counter / ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES) % ULNET_STATE_PACKET_HISTORY_SIZE;
+                // One stored packet per frame: decode exactly the frame we are about to tick.
+                int history_index_for_frame = (int)(session->frame_counter % ULNET_STATE_PACKET_HISTORY_SIZE);
                 ulnet_packet_ref_t ref = session->state_packet_history[p][history_index_for_frame];
                 uint8_t *packet_data = ref.data;
 
@@ -4007,7 +3946,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
 
                 int64_t frame = ulnet__get_frame_from_packet(packet_data, ref.size);
 
-                if (frame >= 0 && SAM2_ABS(frame - session->frame_counter) < ULNET_DELAY_BUFFER_SIZE) {
+                if (frame == session->frame_counter) {
                     ulnet__decode_packed_state_packet(session, p, packet_data, ref.size);
                 }
 
@@ -4242,7 +4181,7 @@ static void ulnet_peer_init_defaulted(ulnet_session_t *session, int peer_port) {
     session->reliable_rx_head[peer_port] = 0;
     session->peer_desynced_frame[peer_port] = 0;
     session->packet_history_next[peer_port] = 0;
-    session->reliable_last_transmit_time[peer_port] = 0;
+    memset(session->reliable_tx_last_send_usec[peer_port], 0, sizeof(session->reliable_tx_last_send_usec[peer_port]));
     session->peer_last_packet_send_unix_usec[peer_port] = 0;
     session->peer_last_packet_callsite_receive_unix_usec[peer_port] = 0;
     session->peer_last_packet_kernel_receive_unix_usec[peer_port] = 0;
@@ -4267,6 +4206,7 @@ static void ulnet_clear_peer_packet_history(ulnet_session_t *session, int peer_p
     ulnet_packet_ref_clear_many(session->packet_history[peer_port], 256);
     ulnet_packet_ref_clear_many(session->reliable_tx_packet_history[peer_port], ULNET_RELIABLE_ACK_BUFFER_SIZE);
     ulnet_packet_ref_clear_many(session->reliable_rx_packet_history[peer_port], ULNET_RELIABLE_ACK_BUFFER_SIZE);
+    ulnet_packet_ref_clear_many(session->reliable_rx_pending[peer_port], ULNET_RELIABLE_ACK_BUFFER_SIZE);
 }
 
 ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port) {
@@ -4589,38 +4529,81 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
 
         ulnet_reliable_packet_t *reliable_packet = (ulnet_reliable_packet_t *) data;
 
+        // --- Cumulative ACK: free every TX slot the peer has acknowledged, then pump newly window-eligible packets.
         uint16_t old_tx_head = session->reliable_tx_head[p];
         uint16_t ack_sequence = (reliable_packet->ack_sequence_le[1] << 8) | reliable_packet->ack_sequence_le[0];
+        bool ack_advanced = false;
         if (!ulnet__sequence_in_range_inclusive(ack_sequence, old_tx_head, session->reliable_tx_next_seq[p])) {
             SAM2_LOG_WARN("Ignoring invalid reliable ACK seq=%u from peer %05" PRIu16 " outside tx queue [%u, %u]",
                 ack_sequence, session->room_we_are_in.peer_ids[p], old_tx_head, session->reliable_tx_next_seq[p]);
-            ack_sequence = old_tx_head;
         } else if (ulnet__sequence_greater_than(ack_sequence, old_tx_head)) {
-            session->reliable_tx_head[p] = ack_sequence;
-        }
-
-        bool process_payload = true;
-        uint16_t rx_sequence;
-        if (!(channel_and_flags & ULNET_RELIABLE_FLAG_ACK_ONLY)) {
-            memcpy(&rx_sequence, &reliable_packet->sequence_le, sizeof(rx_sequence));
-
-            if (rx_sequence == session->reliable_rx_head[p]) {
-                session->reliable_rx_head[p]++;
-            } else if (ulnet__sequence_greater_than(rx_sequence, session->reliable_rx_head[p])) {
-                SAM2_LOG_ERROR("Received out-of-order reliable packet seq=%d, expecting %d",
-                    rx_sequence, session->reliable_rx_head[p]); // @todo This is a protocol violation, we should disconnect the peer
-                process_payload = false;
-            } else {
-                SAM2_LOG_DEBUG("Received old reliable packet seq=%d, already processed", rx_sequence);
-                process_payload = false;
+            for (uint16_t sequence = old_tx_head; ulnet__sequence_less_than(sequence, ack_sequence); sequence++) {
+                int slot = sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE;
+                ulnet_packet_ref_clear(&session->reliable_tx_packet_history[p][slot]);
+                session->reliable_tx_last_send_usec[p][slot] = 0;
             }
+            session->reliable_tx_head[p] = ack_sequence;
+            ack_advanced = true;
         }
 
-        if (ulnet__sequence_greater_than(ack_sequence, old_tx_head)) {
-            ulnet__reliable_send_head(session, p, false);
+        // ACK-only wrappers do not consume a sequence number. They may still carry a latest-only
+        // payload, such as spectator input, and an empty payload is just an ACK.
+        if (channel_and_flags & ULNET_RELIABLE_FLAG_ACK_ONLY) {
+            if (size > sizeof(ulnet_reliable_packet_t)) {
+                ulnet__process_udp_packet(session, p,
+                    data + sizeof(ulnet_reliable_packet_t),
+                    size - sizeof(ulnet_reliable_packet_t));
+            }
+            if (ack_advanced) {
+                ulnet__reliable_pump_window(session, p);
+            }
+            break;
         }
-        if (process_payload) {
-            ulnet__process_udp_packet(session, p, data + sizeof(ulnet_reliable_packet_t), size - sizeof(ulnet_reliable_packet_t));
+
+        uint16_t rx_sequence;
+        memcpy(&rx_sequence, &reliable_packet->sequence_le, sizeof(rx_sequence));
+        uint16_t rx_head = session->reliable_rx_head[p];
+
+        if (ulnet__sequence_less_than(rx_sequence, rx_head)) {
+            // Already delivered; re-ACK so the sender stops retransmitting this sequence.
+            SAM2_LOG_DEBUG("Received duplicate reliable packet seq=%u (already delivered up to %u)", rx_sequence, rx_head);
+            ulnet_reliable_send_with_acks_only(session, p, NULL, 0);
+            break;
+        }
+
+        if ((uint16_t)(rx_sequence - rx_head) >= ULNET_RELIABLE_ACK_BUFFER_SIZE) {
+            // Too far ahead to fit the reorder buffer; drop and let retransmission redeliver it later.
+            SAM2_LOG_WARN("Dropping reliable packet seq=%u too far ahead of expected %u", rx_sequence, rx_head);
+            break;
+        }
+
+        // Buffer (possibly out of order), then deliver everything contiguous from rx_head in order.
+        // Our advanced rx_head rides back to the sender on the regular per-frame state/spectator stream
+        // (every reliable packet stamps ack_sequence = reliable_rx_head); the duplicate path above is the
+        // safety net that re-ACKs promptly if the sender is still retransmitting.
+        ulnet_packet_ref_set(&session->reliable_rx_pending[p][rx_sequence % ULNET_RELIABLE_ACK_BUFFER_SIZE], data, size, 0);
+
+        for (;;) {
+            int slot = session->reliable_rx_head[p] % ULNET_RELIABLE_ACK_BUFFER_SIZE;
+            ulnet_packet_ref_t pending = session->reliable_rx_pending[p][slot];
+            if (pending.data == NULL) break;
+
+            uint16_t pending_seq;
+            memcpy(&pending_seq, &((ulnet_reliable_packet_t *) pending.data)->sequence_le, sizeof(pending_seq));
+            if (pending_seq != session->reliable_rx_head[p]) break;
+
+            uint8_t inner[ULNET_PACKET_SIZE_BYTES_MAX];
+            int inner_size = pending.size - (int)sizeof(ulnet_reliable_packet_t);
+            memcpy(inner, pending.data + sizeof(ulnet_reliable_packet_t), inner_size);
+
+            ulnet_packet_ref_clear(&session->reliable_rx_pending[p][slot]);
+            session->reliable_rx_head[p]++;
+
+            ulnet__process_udp_packet(session, p, inner, inner_size);
+        }
+
+        if (ack_advanced) {
+            ulnet__reliable_pump_window(session, p);
         }
         break;
     }
@@ -4668,25 +4651,31 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
         SAM2_LOG_DEBUG("Recv input packet for frame %" PRId64 " from peer_ids[%d]=%05" PRId16 "",
             frame, original_sender_port, session->room_we_are_in.peer_ids[original_sender_port]);
 
+        // Always keep every received state packet in history so spectators can reconstruct the exact frame.
+        ulnet_update_state_history(session, data, size);
+
         if (   frame < session->state[original_sender_port].frame
             || (frame == session->state[original_sender_port].frame && frame > 0)) {
-            if (ulnet__is_state_history_frame(frame)) {
-                ulnet_update_state_history(session, data, size);
-            }
             // UDP packets can arrive out of order this is normal
             SAM2_LOG_DEBUG("Received outdated input packet for frame %" PRId64 ". We are already on frame %" PRId64 ". Dropping it",
                 frame, session->state[original_sender_port].frame);
         } else {
-            if (ulnet__decode_packed_state_packet(session, original_sender_port, data, size) != 0) {
+            // Live state too far ahead of us (we're a lagging spectator): keep it in history and let the
+            // reconstruction path decode the exact frame_counter packet rather than jumping the state ahead.
+            bool defer_live_decode = frame - session->frame_counter >= ULNET_DELAY_BUFFER_SIZE;
+
+            if (defer_live_decode) {
+                SAM2_LOG_DEBUG("Deferring live decode of far-future frame %" PRId64 " (we are on %" PRId64 ")",
+                    frame, session->frame_counter);
+            } else if (ulnet__decode_packed_state_packet(session, original_sender_port, data, size) != 0) {
                 SAM2_LOG_WARN("Failed to decode packed input packet for frame %" PRId64, frame);
                 return;
             }
 
-            ulnet_update_state_history(session, data, size);
-
-            // Relay this player's input to every other peer (the always-on client-server path).
-            // Spectators depend on this; p2p players may also receive it directly -- duplicate
-            // frame-stamped input is harmless (older frames are dropped above).
+            // Relay this player's input to every other peer (the always-on client-server path), preserving
+            // the original sender port in the channel byte and queuing it reliably every frame. Spectators
+            // depend on this; p2p players may also receive it directly -- duplicate frame-stamped input is
+            // harmless (older frames are dropped above).
             if (ulnet_is_authority(session)) {
                 for (int s = 0; s < SAM2_TOTAL_PEERS; s++) {
                     if (s == p) continue; // Don't echo back to the sender
@@ -4694,10 +4683,7 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
                     uint8_t relayed_packet[ULNET_PACKET_SIZE_BYTES_MAX];
                     memcpy(relayed_packet, data, size);
                     ulnet__stamp_state_packet_ping(session, s, relayed_packet, ulnet__get_unix_time_microseconds());
-                    ulnet_reliable_send_with_acks_only(session, s, relayed_packet, size);
-                    if (ulnet__is_state_history_frame(frame)) {
-                        ulnet_reliable_send(session, s, relayed_packet, size);
-                    }
+                    ulnet_reliable_send(session, s, relayed_packet, size);
                 }
             }
         }
@@ -4717,10 +4703,14 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
         break;
     }
     case ULNET_CHANNEL_SPECTATOR_INPUT: {
-        rle8_decode(
-            (const uint8_t *) &data[sizeof(ulnet_state_packet_t)], size - sizeof(ulnet_state_packet_t),
-            (uint8_t *) &session->spectator_suggested_input_state[p], sizeof(session->spectator_suggested_input_state[p])
-        );
+        if (size != sizeof(ulnet_packed_spectator_input_t)) {
+            SAM2_LOG_WARN("Received spectator input packet with wrong size: %zu bytes (expected %zu)",
+                size, sizeof(ulnet_packed_spectator_input_t));
+            break;
+        }
+
+        ulnet__decode_spectator_input((const ulnet_packed_spectator_input_t *) data,
+            session->spectator_suggested_input_state[p]);
 
         break;
     }
@@ -5396,7 +5386,7 @@ ULNET_LINKAGE void ulnet_imgui_show_session(ulnet_session_t *session) {
             for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
                 if (session->room_we_are_in.peer_ids[p] <= SAM2_PORT_SENTINELS_MAX) continue;
 
-                ulnet_packet_ref_t ref = session->state_packet_history[p][(session->frame_counter / ULNET_INPUT_RELIABLE_CHECKPOINT_FRAMES) % ULNET_STATE_PACKET_HISTORY_SIZE];
+                ulnet_packet_ref_t ref = session->state_packet_history[p][session->frame_counter % ULNET_STATE_PACKET_HISTORY_SIZE];
                 uint8_t *peer_packet = ref.data;
                 session->input_packet_size[p][session->frame_counter % ULNET_MAX_SAMPLE_SIZE] = peer_packet ? ref.size : 0;
 

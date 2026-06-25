@@ -999,7 +999,6 @@ static int64_t g_main_loop_cyclic_offset = 0;
 static size_t g_serialize_size = 0;
 static bool g_do_compress = true;
 static bool g_do_delta_compress = false;
-static bool g_use_rle = false;
 
 static int g_lost_packets = 0;
 
@@ -1340,8 +1339,7 @@ void draw_imgui() {
         ImGui::Text("retro_serialize average cycle count: %.2f %s", display_count, unit);
         ImGui::Checkbox("Compress serialized data", &g_do_compress);
         if (g_do_compress) {
-            const char *algorithm_name = g_use_rle ? "rle" : "uzstd";
-            ImGui::Checkbox("Use RLE", &g_use_rle);
+            const char *algorithm_name = "uzstd";
             ImGui::Checkbox("Delta Compression", &g_do_delta_compress);
 
             strcpy(unit, "bits");
@@ -1361,9 +1359,7 @@ void draw_imgui() {
         }
 
         ImGui::SliderInt("Sample size", &g_sample_size, 1, MAX_SAMPLE_SIZE);
-        if (!g_use_rle) {
-            ImGui::SliderInt("Compression level", &g_compression_level, 1, 8);
-        }
+        ImGui::SliderInt("Compression level", &g_compression_level, 1, 9);
 
         { // Show a graph of one of the data sets
             // Add a combo box for buffer selection
@@ -3390,19 +3386,9 @@ void tick_compression_investigation(char *save_state, size_t save_state_size, ch
     }
 
     static unsigned char savebuffer_compressed[2 * sizeof(g_savebuffer[0])]; // Double the savestate size just cause degenerate run length encoding could make it about 1.5x I think
-    if (g_use_rle) {
-        // If we're 4 byte aligned use the 4-byte wordsize rle that gives us the highest gains in 32-bit consoles (where we need it the most)
-        if (g_serialize_size % 4 == 0) {
-            rle_encode32(buffer, g_serialize_size / 4, savebuffer_compressed, &g_compress_size[g_ulnet_session.frame_counter % g_sample_size]);
-            g_compress_size[g_ulnet_session.frame_counter % g_sample_size] *= 4;
-        } else {
-            g_compress_size[g_ulnet_session.frame_counter % g_sample_size] = rle8_encode_capped(buffer, g_serialize_size, savebuffer_compressed, sizeof(savebuffer_compressed)); // @todo Technically this can overflow I don't really plan to use it though and I find the odds unlikely
-        }
-    } else {
-        int64_t compressed_size = ULNET_ZSTD_COMPRESS(savebuffer_compressed, sizeof(savebuffer_compressed),
-                                                      buffer, g_serialize_size, g_compression_level);
-        g_compress_size[g_ulnet_session.frame_counter % g_sample_size] = compressed_size < 0 ? 0 : (size_t)compressed_size;
-    }
+    int64_t compressed_size = ULNET_ZSTD_COMPRESS(savebuffer_compressed, sizeof(savebuffer_compressed),
+                                                    buffer, g_serialize_size, g_compression_level);
+    g_compress_size[g_ulnet_session.frame_counter % g_sample_size] = compressed_size < 0 ? 0 : (size_t)compressed_size;
 
     g_compress_cycle_count[g_ulnet_session.frame_counter % g_sample_size] = ulnet__rdtsc() - start;
 

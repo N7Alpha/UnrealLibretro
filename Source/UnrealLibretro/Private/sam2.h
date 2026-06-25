@@ -285,11 +285,6 @@ SAM2_LINKAGE int sam2_client_poll_connection(sam2_socket_t sockfd, int timeout_m
 SAM2_LINKAGE int sam2_client_poll(sam2_socket_t sockfd, sam2_message_u *message);
 SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message);
 
-SAM2_LINKAGE int64_t rle8_encode_capped(const uint8_t *input, int64_t input_size, uint8_t *output, int64_t output_capacity);
-SAM2_LINKAGE int64_t rle8_decode_extra(const uint8_t* input, int64_t input_size, int64_t *input_consumed, uint8_t* output, int64_t output_capacity);
-SAM2_LINKAGE int64_t rle8_decode(const uint8_t* input, int64_t input_size, uint8_t* output, int64_t output_capacity);
-SAM2_LINKAGE int64_t rle8_decode_size(const uint8_t* input, int64_t input_size);
-
 #if defined(__GNUC__) || defined(__clang__)
     #define SAM2_FORMAT_ATTRIBUTE(format_idx, arg_idx) __attribute__((format(printf, format_idx, arg_idx)))
 #else
@@ -359,108 +354,6 @@ SAM2_LINKAGE void sam2_log_write(int level, const char *file, int line, const ch
 
 int sam2_socket_buffer_size_client_to_server = 8192;
 int sam2_socket_buffer_size_server_to_client = 8192;
-
-#define RLE8_ENCODE_UPPER_BOUND(N) (3 * ((N+1) / 2) + (N) / 2)
-
-int64_t rle8_encode_capped(const uint8_t *input, int64_t input_size, uint8_t *output, int64_t output_capacity) {
-    int64_t output_size = 0;
-    for (int64_t i = 0; i < input_size; ++i) {
-        if (input[i] == 0) {
-            uint16_t count = 1;
-            while (i + 1 < input_size && input[i + 1] == 0) {
-                count++;
-                i++;
-            }
-
-            if (output_size >= output_capacity-2) goto err;
-            output[output_size++] = 0; // Mark the start of a zero run
-            // Encode count as little endian
-            output[output_size++] = (uint8_t)(count & 0xFF);
-            output[output_size++] = (uint8_t)((count >> 8) & 0xFF);
-        } else {
-            if (output_size >= output_capacity) goto err;
-            output[output_size++] = input[i]; // Copy non-zero values directly
-        }
-    }
-
-    return output_size; // Return the size of the encoded data
-err:return -1;
-}
-
-int64_t rle8_decode_extra(const uint8_t* input, int64_t input_size, int64_t *input_consumed, uint8_t* output, int64_t output_capacity) {
-    int64_t output_index = 0;
-    while (*input_consumed < input_size) {
-        if (output_index >= output_capacity) return output_index;
-        if (input[*input_consumed] == 0) {
-            if (input_size - *input_consumed < 3) return output_index;
-            (*input_consumed)++; // Move past the zero marker
-            uint16_t count = input[*input_consumed] | (input[*input_consumed + 1] << 8); // Decode count as little endian
-            (*input_consumed) += 2; // Move past the count bytes
-
-            while (count-- > 0) {
-                if (output_index >= output_capacity) return output_index;
-                output[output_index++] = 0;
-            }
-        } else {
-            output[output_index++] = input[(*input_consumed)++];
-        }
-    }
-    return output_index; // Return the size of the decoded data
-}
-
-// Decodes the encoded byte stream back into uint8_t values.
-int64_t rle8_decode(const uint8_t* input, int64_t input_size, uint8_t* output, int64_t output_capacity) {
-    int64_t input_consumed = 0;
-    return rle8_decode_extra(input, input_size, &input_consumed, output, output_capacity);
-}
-
-int64_t rle8_decode_size(const uint8_t* input, int64_t input_size) {
-    int64_t output_size = 0;
-    int64_t input_consumed = 0;
-
-    while (input_consumed < input_size) {
-        if (input[input_consumed] == 0) {
-            // Need at least 3 bytes for a run-length encoding (zero marker + 2 bytes for count)
-            if (input_size - input_consumed < 3) {
-                return -1; // Incomplete/truncated encoding
-            }
-
-            input_consumed++; // Skip zero marker
-            // Extract 16-bit count in little-endian format
-            uint16_t count = input[input_consumed] | (input[input_consumed + 1] << 8);
-            input_consumed += 2;
-
-            output_size += count; // Add zeros to output size
-        } else {
-            // Regular byte - copied directly
-            output_size++;
-            input_consumed++;
-        }
-    }
-
-    return output_size;
-}
-
-int64_t rle8_pack_message(const void *message, int64_t message_size, void *packed) {
-    int64_t message_size_rle8 = rle8_encode_capped((const uint8_t *)message, message_size, (uint8_t *)packed, message_size - 1);
-
-    if (message_size_rle8 == -1) {
-        memcpy(packed, message, message_size);
-        ((char *) packed)[7] = 'r';
-        return message_size;
-    } else {
-        ((char *) packed)[7] = 'z';
-        return message_size_rle8;
-    }
-}
-
-void rle8_unpack_message(uint8_t *message, int64_t message_size, void *message_rle8, int64_t message_size_rle8) {
-    if (((char *) message)[7] == 'z' || ((char *) message)[7] == 'Z') {
-        rle8_decode(message, message_size, (uint8_t *) message_rle8, message_size_rle8);
-    }
-
-    ((char *) message)[7] = 'R';
-}
 
 #ifdef _WIN32
     #define SAM2_SOCKET_ERROR (SOCKET_ERROR)
@@ -698,32 +591,15 @@ static int sam2__frame_message(sam2_message_u *message, char *buffer, int length
     if (metadata == NULL)                      return SAM2_RESPONSE_INVALID_HEADER;
     if (buffer[4] != SAM2_VERSION_MAJOR + '0') return SAM2_RESPONSE_VERSION_MISMATCH;
 
-    int64_t message_bytes_read = 0;
-    int64_t input_consumed = 0;
-
-    if (buffer[7] == 'z') {
-        message_bytes_read = rle8_decode_extra(
-            (uint8_t *) buffer,
-            length,
-            &input_consumed,
-            (uint8_t *) message,
-            metadata->message_size
-        );
-    } else if (buffer[7] == 'r') {
-            if (length < metadata->message_size) return 0;
-
-            memcpy(message, buffer, metadata->message_size);
-            message_bytes_read = metadata->message_size;
-            input_consumed = metadata->message_size;
-    } else {
-            return SAM2_RESPONSE_INVALID_ENCODE_TYPE;
+    // Messages are sent as fixed-size raw structs; the only valid encode marker is 'r'.
+    if (buffer[7] != 'r') {
+        return SAM2_RESPONSE_INVALID_ENCODE_TYPE;
     }
 
-    if (message_bytes_read != metadata->message_size) {
-        return 0;
-    } else {
-        return (int)input_consumed;
-    }
+    if (length < metadata->message_size) return 0;
+
+    memcpy(message, buffer, metadata->message_size);
+    return metadata->message_size;
 }
 
 #define SAM2__SANITIZE_STRING(string) do { \
@@ -804,12 +680,12 @@ SAM2_LINKAGE int sam2_client_send(sam2_socket_t sockfd, char *message) {
     sam2_message_metadata_t *message_metadata = sam2_get_metadata(message);
     if (message_metadata == NULL) return -1;
 
-    sam2_message_u packed;
-    int message_size = (int)rle8_pack_message(message, message_metadata->message_size, &packed);
+    int message_size = message_metadata->message_size;
+    message[7] = 'r';
 
-    int bytes_written = send(sockfd, (char *)&packed, message_size, 0);
+    int bytes_written = send(sockfd, message, message_size, 0);
     if (bytes_written == message_size) {
-        SAM2_LOG_INFO("Message with header '%.8s' and size %d bytes sent successfully", (char *)&packed, message_size);
+        SAM2_LOG_INFO("Message with header '%.8s' and size %d bytes sent successfully", message, message_size);
         return 0;
     } else if (bytes_written < 0 && (SAM2_SOCKERRNO == SAM2_EAGAIN || SAM2_SOCKERRNO == EWOULDBLOCK)) {
         SAM2_LOG_DEBUG("Socket is non-blocking and the requested operation would block");
@@ -981,11 +857,11 @@ static int sam2__write_message(sam2_server_t *server, sam2_socket_t *client, cha
         return -1;
     }
 
-    sam2_message_u packed;
-    int message_size = (int)rle8_pack_message(message, metadata->message_size, &packed);
+    int message_size = metadata->message_size;
+    message[7] = 'r';
 
     // Try to send immediately - OS will buffer if needed
-    int n = send(*client, (char *)&packed, message_size, 0);
+    int n = send(*client, message, message_size, 0);
 
     if (n == message_size) {
         // Success - entire message sent
