@@ -1883,10 +1883,10 @@ void draw_imgui() {
                     } else if (g_ulnet_session.peer_desynced_frame[p]) {
                         ImGui::TextColored(RED, "desynced @ %" PRId64, g_ulnet_session.peer_desynced_frame[p]);
                     } else {
-                        char buffer_depth[ULNET_DELAY_BUFFER_SIZE] = {0};
-                        int64_t peer_num_frames_ahead = g_ulnet_session.state[p].frame - g_ulnet_session.frame_counter;
+                        char buffer_depth[ULNET_DELAY_FRAMES_MAX + 2] = {0};
+                        int64_t peer_num_frames_ahead = g_ulnet_session.peer_state[p].frame - g_ulnet_session.frame_counter;
                         for (int f = 0; f < (int)sizeof(buffer_depth)-1; f++) buffer_depth[f] = f < peer_num_frames_ahead ? 'X' : 'O';
-                        ImGui::TextColored(color, "ready  Queue: %s Frame: %" PRId64, buffer_depth, g_ulnet_session.state[p].frame);
+                        ImGui::TextColored(color, "ready  Queue: %s Frame: %" PRId64, buffer_depth, g_ulnet_session.peer_state[p].frame);
                     }
                 } else {
                     ImGui::TextColored(GREY, "NAT agent not created");
@@ -2223,7 +2223,7 @@ finished_drawing_sam2_interface:
 
         {
             int64_t min_delay_frames = 0;
-            int64_t max_delay_frames = ULNET_DELAY_BUFFER_SIZE/2-1;
+            int64_t max_delay_frames = ULNET_DELAY_FRAMES_MAX;
             if (ImGui::SliderScalar("Network Buffered Frames", ImGuiDataType_S64, &g_ulnet_session.delay_frames, &min_delay_frames, &max_delay_frames, "%lld", ImGuiSliderFlags_None)) {
                 strcpy(g_ulnet_session.next_core_option.key, "netplay_delay_frames");
                 snprintf(g_ulnet_session.next_core_option.value, sizeof(g_ulnet_session.next_core_option.value), "%" PRIx64, g_ulnet_session.delay_frames);
