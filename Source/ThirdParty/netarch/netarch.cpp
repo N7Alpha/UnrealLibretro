@@ -1723,60 +1723,6 @@ void draw_imgui() {
                 }
             }
 
-            static ulnet_session_t *test_session1 = NULL;
-            static ulnet_session_t *test_session2 = NULL;
-            static bool show_test_sessions = false;
-
-            if (ImGui::Button("Run ICE connection tests")) {
-                SAM2_LOG_INFO("\033[1;32m=========================================");
-                SAM2_LOG_INFO("\033[1;32m====== Running ulnet ICE tests ==========");
-                SAM2_LOG_INFO("\033[1;32m=========================================");
-                if (ulnet_test_ice(&test_session1, &test_session2)) {
-                    SAM2_LOG_ERROR("ICE tests failed");
-                    show_test_sessions = true;
-                } else {
-                    SAM2_LOG_INFO("ICE tests passed");
-                }
-            }
-
-            if (ImGui::Button("Run ulnet in-process tests")) {
-                SAM2_LOG_INFO("\033[1;32m=========================================");
-                SAM2_LOG_INFO("\033[1;32m====== Running ulnet in-process tests ===");
-                SAM2_LOG_INFO("\033[1;32m=========================================");
-                if (ulnet_test_inproc(&test_session1, &test_session2)) {
-                    SAM2_LOG_ERROR("In process tests failed");
-                    show_test_sessions = true;
-                } else {
-                    SAM2_LOG_INFO("In process tests passed");
-                }
-            }
-
-            if (ImGui::Button("Show sessions") && (test_session1 || test_session2)) {
-                show_test_sessions = !show_test_sessions;
-            }
-
-            // Only show the sessions window if we have sessions and the show flag is true
-            if (show_test_sessions && (test_session1 || test_session2)) {
-                ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.8f, 0.1f, 0.1f, 1.0f));
-                ImGui::Begin("Failed Test");
-                if (ImGui::BeginTabBar("SessionTabs")) {
-                    if (test_session1 && ImGui::BeginTabItem("Session 1")) {
-                        ulnet_imgui_show_session(test_session1);
-                        ImGui::EndTabItem();
-                    }
-
-                    if (test_session2 && ImGui::BeginTabItem("Session 2")) {
-                        ulnet_imgui_show_session(test_session2);
-                        ImGui::EndTabItem();
-                    }
-
-                    ImGui::EndTabBar();
-                }
-                ImGui::End();
-                ImGui::PopStyleColor();
-            }
-
-
             if (ImGui::Button("Ask for equivalent peer id")) {
                 sam2_connect_message_t message = { SAM2_CONN_HEADER };
                 message.peer_id = g_ulnet_session.our_peer_id;
@@ -1860,7 +1806,8 @@ void draw_imgui() {
                 if (peer_id <= SAM2_PORT_SENTINELS_MAX) continue; // skip empty / unavailable slots
 
                 bool is_us = (peer_id == g_ulnet_session.our_peer_id);
-                ImVec4 color = g_ulnet_session.peer_desynced_frame[p] ? RED : (is_us ? GOLD : WHITE);
+                ulnet_peer_t *peer = g_ulnet_session.peer[p];
+                ImVec4 color = peer && peer->desynced_frame ? RED : (is_us ? GOLD : WHITE);
 
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0); ImGui::Text("%d", p);
@@ -1876,39 +1823,39 @@ void draw_imgui() {
                 ImGui::TableSetColumnIndex(3);
                 if (is_us) {
                     ImGui::TextColored(color, "(you) Frame %" PRId64, g_ulnet_session.frame_counter);
-                } else if (g_ulnet_session.agent[p]) {
-                    ulnet_nat_state_t connection_state = ulnet_nat_get_state(g_ulnet_session.agent[p]);
-                    if (connection_state != ULNET_NAT_STATE_READY) {
-                        ImGui::TextColored(GREY, "%s %c", ulnet_nat_state_to_string(connection_state), spinnerGlyph);
-                    } else if (g_ulnet_session.peer_desynced_frame[p]) {
-                        ImGui::TextColored(RED, "desynced @ %" PRId64, g_ulnet_session.peer_desynced_frame[p]);
+                } else if (peer && peer->transport) {
+                    ulnet_transport_state_t connection_state = ulnet_transport_state(peer->transport);
+                    if (connection_state != ULNET_TRANSPORT_READY) {
+                        ImGui::TextColored(GREY, "%s %c", connection_state == ULNET_TRANSPORT_FAILED ? "FAILED" : "CONNECTING", spinnerGlyph);
+                    } else if (peer->desynced_frame) {
+                        ImGui::TextColored(RED, "desynced @ %" PRId64, peer->desynced_frame);
                     } else {
                         char buffer_depth[ULNET_DELAY_FRAMES_MAX + 2] = {0};
-                        int64_t peer_num_frames_ahead = g_ulnet_session.peer_state[p].frame - g_ulnet_session.frame_counter;
+                        int64_t peer_num_frames_ahead = peer->state.frame - g_ulnet_session.frame_counter;
                         for (int f = 0; f < (int)sizeof(buffer_depth)-1; f++) buffer_depth[f] = f < peer_num_frames_ahead ? 'X' : 'O';
-                        ImGui::TextColored(color, "ready  Queue: %s Frame: %" PRId64, buffer_depth, g_ulnet_session.peer_state[p].frame);
+                        ImGui::TextColored(color, "ready  Queue: %s Frame: %" PRId64, buffer_depth, peer->state.frame);
                     }
                 } else {
                     ImGui::TextColored(GREY, "NAT agent not created");
                 }
 
                 ImGui::TableSetColumnIndex(4);
-                if (!is_us && g_ulnet_session.peer_packet_kernel_ping_samples[p] > 0) {
-                    ImGui::Text("%.2f ms", g_ulnet_session.peer_packet_kernel_ping_usec[p] / 1000.0);
+                if (!is_us && peer && peer->packet_kernel_ping_samples > 0) {
+                    ImGui::Text("%.2f ms", peer->packet_kernel_ping_usec / 1000.0);
                 } else {
                     ImGui::TextDisabled("--");
                 }
 
                 ImGui::TableSetColumnIndex(5);
-                if (!is_us && g_ulnet_session.peer_packet_ping_samples[p] > 0) {
-                    ImGui::Text("%.2f ms", g_ulnet_session.peer_packet_ping_usec[p] / 1000.0);
+                if (!is_us && peer && peer->packet_ping_samples > 0) {
+                    ImGui::Text("%.2f ms", peer->packet_ping_usec / 1000.0);
                 } else {
                     ImGui::TextDisabled("--");
                 }
 
                 ImGui::TableSetColumnIndex(6);
-                if (g_ulnet_session.peer_input_to_core_ping_usec[p] > 0) {
-                    ImGui::Text("%.2f ms", g_ulnet_session.peer_input_to_core_ping_usec[p] / 1000.0);
+                if (peer && peer->input_to_core_ping_usec > 0) {
+                    ImGui::Text("%.2f ms", peer->input_to_core_ping_usec / 1000.0);
                 } else {
                     ImGui::TextDisabled("--");
                 }
@@ -1965,6 +1912,7 @@ void draw_imgui() {
             } else if (our_port != -1) {
                 if (ImGui::Button("Leave")) {
                     ulnet_session_tear_down(&g_ulnet_session);
+                    ulnet_session_init_defaulted(&g_ulnet_session);
                     g_ulnet_session.room_we_are_in = g_new_room_set_through_gui;
                 }
             }
@@ -3558,19 +3506,6 @@ int main(int argc, char *argv[]) {
             g_headless = true;
         } else if (0 == strcmp("--no-netimgui", argv[i])) {
             no_netimgui = true;
-        } else if (0 == strcmp("--test", argv[i])) {
-            int num_failed_tests = 0;
-
-            SAM2_LOG_INFO("Running tests...");
-            num_failed_tests += ulnet_test_inproc(NULL, NULL);
-            num_failed_tests += ulnet_test_inproc_reliable_ack_unblocks_queue();
-            if (num_failed_tests > 0) {
-                SAM2_LOG_ERROR("Failed to run all inproc tests, please fix them before running the core");
-            } else {
-                SAM2_LOG_INFO("Tests passed");
-            }
-
-            return num_failed_tests > 0;
         } else if (argv[i][0] == '-') {
             SAM2_LOG_FATAL("Unknown option: %s", argv[i]);
         }
