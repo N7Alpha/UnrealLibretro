@@ -171,6 +171,17 @@ bool ulnet__test_retro_unserialize(void *user_ptr, const void *data, size_t size
     return memcmp(data, g_serialize_test_data, size) == 0;
 }
 
+static const uint8_t *g_large_savestate;
+static size_t g_large_savestate_size;
+static bool g_large_savestate_received;
+
+static bool ulnet__test_large_retro_unserialize(void *user_ptr, const void *data, size_t size) {
+    (void)user_ptr;
+    g_large_savestate_received =
+        size == g_large_savestate_size && memcmp(data, g_large_savestate, size) == 0;
+    return g_large_savestate_received;
+}
+
 int ulnet__test_discard_send_callback(void *user_ptr, char *message) {
     (void)user_ptr;
     (void)message;
@@ -1060,6 +1071,35 @@ int ulnet_test_inproc_promote_spectator(void) {
     }
     SAM2_LOG_INFO("promote test: spectator synced at frame %" PRId64 " (slot %d)", sessions[1]->frame_counter, spec_slot);
 
+    // While still spectating, drive port 0 and verify the authority folds the suggestion into its
+    // deterministic player state.
+    sessions[1]->next_input_state[0][0] = 1;
+    sessions[1]->next_input_state[0][ULNET_INPUT_ANALOG_FIRST_INDEX] = 4321;
+    sessions[1]->next_input_state[3][3] = 1;
+    int spectator_input_forwarded = 0;
+    for (int i = 0; i < 120 && !spectator_input_forwarded; i++) {
+        sessions[1]->next_input_state[0][0] = 1;
+        sessions[1]->next_input_state[0][ULNET_INPUT_ANALOG_FIRST_INDEX] = 4321;
+        sessions[1]->next_input_state[3][3] = 1;
+        ulnet__test_poll_inproc_sessions(sessions, 2, save_state, sizeof(save_state));
+        ulnet_input_state_t received;
+        int64_t authority_state_frame =
+            sessions[0]->peer[SAM2_AUTHORITY_INDEX]->state.frame;
+        ulnet__state_history_unpack_input(sessions[0], SAM2_AUTHORITY_INDEX,
+            authority_state_frame, 0, received);
+        spectator_input_forwarded =
+               received[0] == 1
+            && received[ULNET_INPUT_ANALOG_FIRST_INDEX] == 4321;
+        ulnet__state_history_unpack_input(sessions[0], SAM2_AUTHORITY_INDEX,
+            authority_state_frame, 3, received);
+        spectator_input_forwarded &= received[3] == 1;
+    }
+    if (!spectator_input_forwarded) {
+        SAM2_LOG_ERROR("promote test: spectator input was not folded into authority state");
+        status = 1;
+        goto done;
+    }
+
     // The spectator promotes itself -- exactly what the GUI "Become Player" button does
     {
         sam2_room_join_message_t req = { SAM2_JOIN_HEADER };
@@ -1093,7 +1133,12 @@ int ulnet_test_inproc_promote_spectator(void) {
     if (status == 0) {
         int64_t authority_frame = sessions[0]->frame_counter;
         int64_t player_frame = sessions[1]->frame_counter;
+        int input_port = 0; // netarch/debug default: every peer modifies emulated port 0
+        sessions[1]->next_input_state[0][0] = 1;
+        sessions[1]->next_input_state[0][ULNET_INPUT_ANALOG_FIRST_INDEX] = 1234;
         for (int i = 0; i < 120; i++) {
+            sessions[1]->next_input_state[0][0] = 1;
+            sessions[1]->next_input_state[0][ULNET_INPUT_ANALOG_FIRST_INDEX] = 1234;
             ulnet__test_poll_inproc_sessions(sessions, 2, save_state, sizeof(save_state));
         }
         if (   sessions[0]->frame_counter <= authority_frame + ULNET_DELAY_FRAMES_MAX
@@ -1103,6 +1148,22 @@ int ulnet_test_inproc_promote_spectator(void) {
                 authority_frame, sessions[0]->frame_counter,
                 player_frame, sessions[1]->frame_counter);
             status = 1;
+        } else {
+            // The loop polls authority then player, so deliver the player's final packet before
+            // inspecting the exact frame the authority is waiting to run.
+            ulnet_service_network(sessions[0], 0);
+            ulnet_input_state_t received;
+            ulnet__state_history_unpack_input(sessions[0], spec_slot,
+                sessions[0]->frame_counter, input_port, received);
+            if (received[0] != 1
+                || received[ULNET_INPUT_ANALOG_FIRST_INDEX] != 1234) {
+                SAM2_LOG_ERROR("promote test: player input was not forwarded "
+                    "(controller=%d button=%d analog=%d frame=%" PRId64 ")",
+                    input_port, received[0],
+                    received[ULNET_INPUT_ANALOG_FIRST_INDEX],
+                    sessions[0]->frame_counter);
+                status = 1;
+            }
         }
     }
     if (status == 0) SAM2_LOG_INFO("promote test: spectator successfully became a ticking player");
@@ -1741,6 +1802,65 @@ done:
     return status;
 }
 
+int ulnet_test_inproc_multigroup_savestate(void) {
+    enum { SAVESTATE_SIZE = 700000 };
+    ulnet_session_t *sessions[2] = {0};
+    ulnet_transport_inproc_t transport = {0};
+    uint8_t *save_state = (uint8_t *)malloc(SAVESTATE_SIZE);
+    int status = 1;
+    if (!save_state) return 1;
+
+    uint32_t random = 1;
+    for (int i = 0; i < SAVESTATE_SIZE; i++) {
+        random ^= random << 13;
+        random ^= random >> 17;
+        random ^= random << 5;
+        save_state[i] = (uint8_t)random;
+    }
+
+    ulnet__test_inproc_pair_setup(sessions, &transport, 0);
+    g_large_savestate = save_state;
+    g_large_savestate_size = SAVESTATE_SIZE;
+    g_large_savestate_received = false;
+    sessions[1]->retro_unserialize = ulnet__test_large_retro_unserialize;
+
+    uint64_t spectator_bit = 1ULL << ULNET__TEST_SPECTATOR_PORT;
+    if (ulnet__send_save_state_to_peers(sessions[0], spectator_bit,
+            save_state, SAVESTATE_SIZE, 0) != 0
+        || !sessions[0]->savestate_tx_payload) {
+        SAM2_LOG_ERROR("multigroup savestate test: transfer did not remain pending after its first group");
+        goto done_multigroup;
+    }
+
+    for (int i = 0; i < FEC_PACKET_GROUPS_MAX + 1 && !g_large_savestate_received; i++) {
+        ulnet_service_network(sessions[1], 0);
+        if (sessions[0]->savestate_tx_payload) {
+            sessions[0]->savestate_tx_next_group_unix_usec = 0;
+            ulnet_service_network(sessions[0], 0);
+        }
+    }
+    ulnet_service_network(sessions[1], 0);
+    ulnet_service_network(sessions[0], 0);
+
+    if (!g_large_savestate_received
+        || sessions[0]->savestate_tx_payload
+        || sessions[0]->savestate_transfer_awaiting_bitfield) {
+        SAM2_LOG_ERROR("multigroup savestate test: transfer did not complete");
+        goto done_multigroup;
+    }
+    status = 0;
+
+done_multigroup:
+    ulnet_session_tear_down(sessions[0]);
+    ulnet_session_tear_down(sessions[1]);
+    free(sessions[0]);
+    free(sessions[1]);
+    free(save_state);
+    g_large_savestate = NULL;
+    g_large_savestate_size = 0;
+    return status;
+}
+
 static uint32_t ulnet__test_fuzz_next(uint32_t *rng) {
     *rng = *rng * 1664525u + 1013904223u;
     return *rng;
@@ -1953,17 +2073,11 @@ int ulnet_test_packed_state_round_trip(void) {
     sam2_room_t room = {0};
     room.flags = SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
     room.peer_ids[SAM2_AUTHORITY_INDEX] = 12345;
-    room.peer_topology = (1ULL << SAM2_AUTHORITY_INDEX); // Authority is a p2p player -> controller port 0
+    room.peer_topology = (1ULL << SAM2_AUTHORITY_INDEX);
     enc->room_we_are_in = room;
     dec->room_we_are_in = room;
 
     int port = SAM2_AUTHORITY_INDEX;
-    int cport = ulnet_player_controller_port(&room, port);
-    if (cport < 0) {
-        SAM2_LOG_ERROR("packed state round trip: authority has no controller port");
-        status = 1;
-        goto done;
-    }
 
     int64_t frame = 1000;
     ulnet_peer_state_t *st = &enc->peer[port]->state;
@@ -1973,15 +2087,17 @@ int ulnet_test_packed_state_round_trip(void) {
     st->room = room;
     st->save_state_hash = 0xDEADBEEFu;
     st->input_state_hash = 0xCAFEBABEu;
-    ulnet_input_state_t input = {0};
-    input[0] = 1; // joypad bit 0
-    input[5] = 1; // joypad bit 5
-    input[ULNET_INPUT_ANALOG_FIRST_INDEX] = -1234;
+    ulnet_input_state_t input[ULNET_PORT_COUNT] = {{0}};
+    input[0][0] = 1; // joypad bit 0
+    input[0][5] = 1; // joypad bit 5
+    input[0][ULNET_INPUT_ANALOG_FIRST_INDEX] = -1234;
+    input[7][7] = 1;
+    input[7][ULNET_INPUT_ANALOG_FIRST_INDEX] = 2345;
     strcpy(enc->next_core_option.key, "netplay_delay_frames");
     strcpy(enc->next_core_option.value, "3");
 
     uint8_t packet[ULNET_PACKET_SIZE_BYTES_MAX];
-    int64_t size = ulnet__encode_state_packet(enc, port, input, 0x1122334455667788LL,
+    int64_t size = ulnet__encode_state_packet(enc, port, input, 0xff, 0x1122334455667788LL,
         &enc->next_core_option, packet, sizeof(packet));
     if (size < 0) {
         SAM2_LOG_ERROR("packed state round trip: encode failed");
@@ -2026,12 +2142,19 @@ int ulnet_test_packed_state_round_trip(void) {
         goto done;
     }
     ulnet_input_state_t roundtrip_input;
-    ulnet__state_history_unpack_input(dec, port, frame, cport, roundtrip_input);
+    ulnet__state_history_unpack_input(dec, port, frame, 0, roundtrip_input);
     if (   roundtrip_input[0] != 1
         || roundtrip_input[5] != 1
         || roundtrip_input[1] != 0
         || roundtrip_input[ULNET_INPUT_ANALOG_FIRST_INDEX] != -1234) {
         SAM2_LOG_ERROR("packed state round trip: input did not round trip");
+        status = 1;
+        goto done;
+    }
+    ulnet__state_history_unpack_input(dec, port, frame, 7, roundtrip_input);
+    if (roundtrip_input[7] != 1
+        || roundtrip_input[ULNET_INPUT_ANALOG_FIRST_INDEX] != 2345) {
+        SAM2_LOG_ERROR("packed state round trip: all-port input did not round trip");
         status = 1;
         goto done;
     }
@@ -2063,7 +2186,7 @@ int ulnet_test_packed_spectator_round_trip(void) {
     g_test_name = __func__;
     ulnet_input_state_t in[ULNET_PORT_COUNT];
     ulnet_input_state_t out[ULNET_PORT_COUNT];
-    ulnet_packed_spectator_input_t packet;
+    uint8_t packet[ULNET_PACKED_SPECTATOR_INPUT_SIZE_MAX];
     int status = 0;
 
     memset(in, 0, sizeof(in));
@@ -2073,9 +2196,10 @@ int ulnet_test_packed_spectator_round_trip(void) {
         in[port][ULNET_INPUT_ANALOG_FIRST_INDEX] = (int16_t)(100 + port);
     }
 
-    ulnet__encode_spectator_input(in, &packet);
+    int packet_size = ulnet__encode_spectator_input(in, packet, sizeof(packet));
 
-    if (packet.channel_and_flags != ULNET_CHANNEL_SPECTATOR_INPUT) {
+    if (packet_size != ULNET_PACKED_SPECTATOR_INPUT_SIZE_MAX
+        || packet[0] != ULNET_CHANNEL_SPECTATOR_INPUT) {
         SAM2_LOG_ERROR("spectator round trip: wrong channel byte");
         status = 1;
         goto done;
@@ -2088,7 +2212,11 @@ int ulnet_test_packed_spectator_round_trip(void) {
         }
     }
 
-    ulnet__decode_spectator_input(&packet, out);
+    if (ulnet__decode_spectator_input(packet, packet_size, out) < 0) {
+        SAM2_LOG_ERROR("spectator round trip: decode failed");
+        status = 1;
+        goto done;
+    }
 
     for (int port = 0; port < ULNET_PORT_COUNT; port++) {
         if (   out[port][0] != 1
@@ -2116,7 +2244,7 @@ int ulnet_test_packed_spectator_ack_only_delivery(void) {
     g_test_name = __func__;
     ulnet_session_t *sessions[2] = {0};
     ulnet_transport_inproc_t transport = {0};
-    ulnet_packed_spectator_input_t packet;
+    uint8_t packet[ULNET_PACKED_SPECTATOR_INPUT_SIZE_MAX];
     int status = 0;
 
     ulnet__test_inproc_pair_setup(sessions, &transport, 0);
@@ -2127,10 +2255,12 @@ int ulnet_test_packed_spectator_ack_only_delivery(void) {
     sessions[1]->peer[63]->spectator_suggested_input_state[0][0] = 1;
     sessions[1]->peer[63]->spectator_suggested_input_state[3][5] = 1;
     sessions[1]->peer[63]->spectator_suggested_input_state[3][ULNET_INPUT_ANALOG_FIRST_INDEX] = -321;
-    ulnet__encode_spectator_input(sessions[1]->peer[63]->spectator_suggested_input_state, &packet);
+    int packet_size = ulnet__encode_spectator_input(
+        sessions[1]->peer[63]->spectator_suggested_input_state,
+        packet, sizeof(packet));
 
     if (ulnet_reliable_send_with_acks_only(sessions[1], SAM2_AUTHORITY_INDEX,
-            (const uint8_t *)&packet, sizeof(packet)) != 0) {
+            packet, packet_size) != 0) {
         SAM2_LOG_ERROR("spectator ack-only delivery: send failed");
         status = 1;
         goto done;
@@ -2178,8 +2308,8 @@ int ulnet_test_packed_state_validation(void) {
     strcpy(enc->next_core_option.value, "v");
 
     uint8_t packet[ULNET_PACKET_SIZE_BYTES_MAX];
-    ulnet_input_state_t input = {0};
-    int64_t size = ulnet__encode_state_packet(enc, port, input, 0,
+    ulnet_input_state_t input[ULNET_PORT_COUNT] = {{0}};
+    int64_t size = ulnet__encode_state_packet(enc, port, input, 0x01, 0,
         &enc->next_core_option, packet, sizeof(packet));
     if (size < 0 || ulnet__validate_packed_state_packet(packet, size) != 0) {
         SAM2_LOG_ERROR("validation test: baseline packet was not valid");
@@ -2202,13 +2332,13 @@ int ulnet_test_packed_state_validation(void) {
     }
 
     {
-        // Bad controller port (>= ULNET_PORT_COUNT and != 0xff).
+        // Claim all eight input ports without appending the additional packed frames.
         uint8_t bad[ULNET_PACKET_SIZE_BYTES_MAX];
         memcpy(bad, packet, size);
         ulnet_packed_state_payload_t *payload = (ulnet_packed_state_payload_t *)&bad[sizeof(ulnet_state_packet_t)];
-        payload->controller_port = ULNET_PORT_COUNT + 3;
+        payload->variable[0] = 0xff;
         if (ulnet__validate_packed_state_packet(bad, size) == 0) {
-            SAM2_LOG_ERROR("validation test: accepted a bad controller port");
+            SAM2_LOG_ERROR("validation test: accepted truncated packed input fields");
             status = 1;
             goto done;
         }
@@ -2220,9 +2350,9 @@ int ulnet_test_packed_state_validation(void) {
         ulnet_session_t *plain = (ulnet_session_t *)calloc(1, sizeof(ulnet_session_t));
         ulnet_session_init_defaulted(plain);
         // No room/core option -> a minimal packet; flip on the core-option flag without appending data.
-        ulnet_input_state_t input = {0};
+        ulnet_input_state_t input[ULNET_PORT_COUNT] = {{0}};
         int64_t plain_size = ulnet__encode_state_packet(plain, ULNET__TEST_PLAYER1_PORT,
-            input, 0, NULL, bad, sizeof(bad));
+            input, 0, 0, NULL, bad, sizeof(bad));
         ulnet_packed_state_payload_t *payload = (ulnet_packed_state_payload_t *)&bad[sizeof(ulnet_state_packet_t)];
         payload->flags |= ULNET_PACKED_STATE_FLAG_CORE_OPTION_PRESENT;
         int reject = ulnet__validate_packed_state_packet(bad, plain_size) != 0;
@@ -2689,6 +2819,12 @@ int main (int argc, char **argv) {
     status = ulnet_test_inproc_savestate_retry_failure_goes_solo();
     if (status != 0) {
         printf("Inproc savestate retry/failure test failed with status: %d\n", status);
+        return status;
+    }
+
+    status = ulnet_test_inproc_multigroup_savestate();
+    if (status != 0) {
+        printf("Inproc multigroup savestate test failed with status: %d\n", status);
         return status;
     }
 

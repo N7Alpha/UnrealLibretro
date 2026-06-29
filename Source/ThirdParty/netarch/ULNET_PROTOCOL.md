@@ -206,15 +206,24 @@ i64     save_state_frame_le
 i64     input_poll_unix_usec_le
 u32     save_state_hash_le
 u32     input_state_hash_le
-u8      controller_port            ; 0xff = no controller-input payload
 u8      flags                      ; bit0 ROOM_PRESENT, bit1 CORE_OPTION_PRESENT
-14B     packed_input_frame         ; buttons bitfield + analog words for controller_port
+...     packed_input_block
 ...     optional                   ; room snapshot (if ROOM_PRESENT), then one core option
                                    ; (key_len u8, value_len u8, key, value) if CORE_OPTION_PRESENT
 ```
 
-`frame` is the single simulation frame this packet describes. Decoding writes exactly
-`state[port].input_state[frame % ULNET_DELAY_BUFFER_SIZE]` and the matching per-frame metadata.
+Both state and spectator packets use the same input subformat:
+
+```text
+packed_input_block
+
+u8      input_port_mask            ; bit N means emulated input port N is present
+14B[N]  packed_input_frame         ; N = popcount(mask), ordered by ascending port
+```
+
+`frame` is the single simulation frame this packet describes. A mask of `0x01` carries only port 0,
+while `0xff` carries all eight ports. The receiver derives the packed-frame index for a port by
+counting the lower set bits in the mask. Decoding stores the packet in exact-frame history.
 
 Only the authority port carries a room snapshot (`ROOM_PRESENT`); `room` and `room_effective_frame`
 are authoritative for room consensus only from the authority. At most one core option key/value is
@@ -245,24 +254,26 @@ Spectator input is advisory. It is not deterministic state by itself. A player o
 spectator suggestions into that player's next published input state, at which point the player state
 becomes authoritative for deterministic simulation.
 
-Current spectator input payload is a fixed packed frame for every controller port (no compression, no
-magic; the channel byte and exact size gate it):
-
 ```text
 Spectator input inner payload
 
-+0    u8     channel = 0x60
-+1    14B[8] packed_input_frame[ULNET_PORT_COUNT]
++0    u8    channel = 0x60
++1    ...   packed_input_block
 ```
 
-The packet size is fixed at `1 + 8 * sizeof(packed_input_frame)`. On receipt, the decoder clears the
-stored suggestion for the immediate transport sender's port, then unpacks all controller ports. Players
-OR-merge suggestions from connected peers into the next local input frame before publishing state.
+Spectators omit zero-valued ports; decoding clears the sender's previous suggestion before unpacking
+the masked ports, so releases remain unambiguous. Players OR-merge suggestions from connected peers
+into the next local input frame before publishing state; suggested ports are added to the player's
+published input mask even when absent from its local mask. Because spectators connect only to the
+authority, a coordinator-only authority OR-combines their latest suggestions and forwards the aggregate
+to each active player.
 
 ## Input Semantics
 
-For each simulation frame, deterministic input is the bitwise OR of all active players' buffered
-input for that frame. Any active player may drive any of the eight controller ports.
+For each simulation frame, deterministic input is the bitwise OR of all active players' packed input
+for that frame. Any active player may drive any subset of the eight controller ports. The standalone
+`netarch` default uses `local_input_port_mask = 0x01`, so every peer drives emulated port 0 for easier
+debugging; setting it to `0xff` publishes all ports.
 
 ```text
 for each active player P:
