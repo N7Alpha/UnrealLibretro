@@ -2577,14 +2577,6 @@ fail:
 #define ULNET__XXH32_PRIME4  668265263u
 #define ULNET__XXH32_PRIME5  374761393u
 
-static uint32_t ulnet__read32le(const void *p) {
-    const uint8_t *b = (const uint8_t *)p;
-    return ((uint32_t)b[0])
-         | ((uint32_t)b[1] << 8)
-         | ((uint32_t)b[2] << 16)
-         | ((uint32_t)b[3] << 24);
-}
-
 static uint32_t ulnet__rotl32(uint32_t x, int r) {
     return (x << r) | (x >> (32 - r));
 }
@@ -2602,13 +2594,13 @@ ULNET_LINKAGE uint32_t ulnet_xxh32(const void* data, size_t len, uint32_t seed) 
         uint32_t v4 = seed - ULNET__XXH32_PRIME1;
 
         do {
-            v1 = ulnet__rotl32(v1 + ulnet__read32le(p) * ULNET__XXH32_PRIME2, 13) * ULNET__XXH32_PRIME1;
+            v1 = ulnet__rotl32(v1 + ulnet__read_le32(p) * ULNET__XXH32_PRIME2, 13) * ULNET__XXH32_PRIME1;
             p += 4;
-            v2 = ulnet__rotl32(v2 + ulnet__read32le(p) * ULNET__XXH32_PRIME2, 13) * ULNET__XXH32_PRIME1;
+            v2 = ulnet__rotl32(v2 + ulnet__read_le32(p) * ULNET__XXH32_PRIME2, 13) * ULNET__XXH32_PRIME1;
             p += 4;
-            v3 = ulnet__rotl32(v3 + ulnet__read32le(p) * ULNET__XXH32_PRIME2, 13) * ULNET__XXH32_PRIME1;
+            v3 = ulnet__rotl32(v3 + ulnet__read_le32(p) * ULNET__XXH32_PRIME2, 13) * ULNET__XXH32_PRIME1;
             p += 4;
-            v4 = ulnet__rotl32(v4 + ulnet__read32le(p) * ULNET__XXH32_PRIME2, 13) * ULNET__XXH32_PRIME1;
+            v4 = ulnet__rotl32(v4 + ulnet__read_le32(p) * ULNET__XXH32_PRIME2, 13) * ULNET__XXH32_PRIME1;
             p += 4;
         } while (p <= limit);
 
@@ -2620,7 +2612,7 @@ ULNET_LINKAGE uint32_t ulnet_xxh32(const void* data, size_t len, uint32_t seed) 
     h32 += (uint32_t)len;
 
     while (p + 4 <= end) {
-        h32 += ulnet__read32le(p) * ULNET__XXH32_PRIME3;
+        h32 += ulnet__read_le32(p) * ULNET__XXH32_PRIME3;
         h32 = ulnet__rotl32(h32, 17) * ULNET__XXH32_PRIME4;
         p += 4;
     }
