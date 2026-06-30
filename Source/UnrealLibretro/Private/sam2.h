@@ -86,14 +86,6 @@
 // @todo move some of these into the UDP netcode file
 #define SAM2_FLAG_ROOM_IS_NETWORK_HOSTED   0b01000000U
 
-#define SAM2_FLAG_PORT0_CAN_SET_ALL_INPUTS (0b00000001U << 8)
-//#define SAM2_FLAG_PORT1_CAN_SET_ALL_INPUTS (0b00000010U << 8)
-// etc...
-
-#define SAM2_FLAG_PORT0_PEER_IS_INACTIVE (0b00000001U << 16)
-//#define SAM2_FLAG_PORT1_PEER_IS_INACTIVE (0b00000010U << 16)
-// etc...
-
 #define SAM2_FLAG_AUTHORITY_IS_INACTIVE (0b00000001U << 24)
 
 #define SAM2_RESPONSE_SUCCESS                  0

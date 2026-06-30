@@ -452,15 +452,6 @@ static inline bool ulnet_port_is_p2p(const sam2_room_t *room, int port) {
     return (room->peer_topology & (1ULL << port)) != 0;
 }
 
-// A port contributes deterministic input when it hosts a p2p player that is not flagged inactive.
-// The per-port inactive flags only have bits for the low ports (the uint32 flags field can't hold 64);
-// higher ports are always considered active.
-static inline bool ulnet_port_is_active_player(const sam2_room_t *room, int port) {
-    if (!ulnet_port_is_p2p(room, port)) return false;
-    if (port < SAM2_PORT_MAX && (room->flags & (SAM2_FLAG_PORT0_PEER_IS_INACTIVE << port))) return false;
-    return true;
-}
-
 static bool ulnet_is_spectator(ulnet_session_t *session, uint64_t peer_id) {
     int port = sam2_get_port_of_peer(&session->room_we_are_in, peer_id);
 
@@ -3083,7 +3074,7 @@ ULNET_LINKAGE void ulnet_input_poll(ulnet_session_t *session, ulnet_input_state_
     int64_t input_digest_time_usec = ulnet__get_unix_time_microseconds();
 
     for (int peer_idx = 0; peer_idx < SAM2_TOTAL_PEERS; peer_idx++) {
-        if (ulnet_port_is_active_player(&session->room_we_are_in, peer_idx)) {
+        if (ulnet_port_is_p2p(&session->room_we_are_in, peer_idx)) {
 
             if (!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
                 assert(peer_idx == SAM2_AUTHORITY_INDEX);
@@ -3840,7 +3831,7 @@ ULNET_LINKAGE bool ulnet_session_can_tick(ulnet_session_t *session) {
     bool we_are_authority = ulnet_is_authority(session);
 
     for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
-        if (!ulnet_port_is_active_player(&session->room_we_are_in, p)) continue;
+        if (!ulnet_port_is_p2p(&session->room_we_are_in, p)) continue;
         if (!ulnet__state_history_has_frame(session, p, session->frame_counter)) return false;
     }
 
@@ -4102,7 +4093,7 @@ IMH(ImGui::SeparatorText("Things We are Waiting on Before we can Tick");)
 IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) { ImGui::Text("Waiting for savestate"); })
     bool netplay_ready_to_tick = !(session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL);
     for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
-        if (!ulnet_port_is_active_player(&session->room_we_are_in, p)) continue;
+        if (!ulnet_port_is_p2p(&session->room_we_are_in, p)) continue;
         bool has_frame = ulnet__state_history_has_frame(session, p, session->frame_counter);
     IMH(if                      (!has_frame) { ImGui::Text("Missing input state on port %d for frame %" PRId64, p, session->frame_counter); })
         netplay_ready_to_tick &= has_frame;
@@ -4926,7 +4917,7 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
             int aggregate_packet_size = ulnet__encode_spectator_input(
                 aggregate, aggregate_packet, sizeof(aggregate_packet));
             for (int player_port = 0; player_port < SAM2_TOTAL_PEERS; player_port++) {
-                if (!ulnet_port_is_active_player(&session->room_we_are_in, player_port)) continue;
+                if (!ulnet_port_is_p2p(&session->room_we_are_in, player_port)) continue;
                 if (!ulnet__peer_link_ready(session, player_port)) continue;
                 if (aggregate_packet_size > 0) {
                     ulnet_reliable_send_with_acks_only(
