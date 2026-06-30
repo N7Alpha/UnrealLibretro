@@ -2125,6 +2125,42 @@ done:
     return status;
 }
 
+int ulnet_test_solo_authority_input(void) {
+    g_test_name = __func__;
+    ulnet_session_t session;
+    memset(&session, 0, sizeof(session));
+    ulnet_session_init_defaulted(&session);
+    session.delay_frames = 2;
+    session.retro_run = ulnet__test_retro_run;
+    session.retro_serialize_size = ulnet__test_retro_serialize_size;
+    session.retro_serialize = ulnet__test_retro_serialize;
+    session.retro_unserialize = ulnet__test_retro_unserialize;
+
+    session.next_input_state[0][0] = 1;
+    session.next_input_state[7][7] = 1;
+    session.next_input_state[7][ULNET_INPUT_ANALOG_FIRST_INDEX] = 2345;
+
+    int status = ulnet_poll_session(&session, 0, 0, 0, 60.0, 0.0);
+    if (!(status & ULNET_POLL_SESSION_BUFFERED_INPUT)) {
+        SAM2_LOG_ERROR("solo authority did not buffer local input");
+        ulnet_session_tear_down(&session);
+        return 1;
+    }
+
+    ulnet_input_state_t input[ULNET_PORT_COUNT] = {{0}};
+    ulnet_input_poll(&session, &input);
+    if (input[0][0] != 1
+        || input[7][7] != 1
+        || input[7][ULNET_INPUT_ANALOG_FIRST_INDEX] != 2345) {
+        SAM2_LOG_ERROR("solo authority input was not read back from its state packet");
+        ulnet_session_tear_down(&session);
+        return 1;
+    }
+
+    ulnet_session_tear_down(&session);
+    return 0;
+}
+
 // Pack suggested input for every controller port and confirm it round trips, and that decode clears
 // stale state first.
 int ulnet_test_packed_spectator_round_trip(void) {
@@ -2734,6 +2770,12 @@ int main (int argc, char **argv) {
     status = ulnet_test_packed_state_round_trip();
     if (status != 0) {
         printf("Packed state round trip test failed with status: %d\n", status);
+        return status;
+    }
+
+    status = ulnet_test_solo_authority_input();
+    if (status != 0) {
+        printf("Solo authority input test failed with status: %d\n", status);
         return status;
     }
 

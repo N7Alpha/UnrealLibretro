@@ -454,6 +454,13 @@ static inline bool ulnet_port_is_p2p(const sam2_room_t *room, int port) {
     return (room->peer_topology & (1ULL << port)) != 0;
 }
 
+static bool ulnet_port_contributes_input(ulnet_session_t *session, int port) {
+    if (ulnet_port_is_p2p(&session->room_we_are_in, port)) return true;
+    return    port == SAM2_AUTHORITY_INDEX
+           && !(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)
+           && ulnet_is_authority(session);
+}
+
 static bool ulnet_is_spectator(ulnet_session_t *session, uint64_t peer_id) {
     int port = sam2_get_port_of_peer(&session->room_we_are_in, peer_id);
 
@@ -3066,7 +3073,7 @@ ULNET_LINKAGE void ulnet_input_poll(ulnet_session_t *session, ulnet_input_state_
     int64_t input_digest_time_usec = ulnet__get_unix_time_microseconds();
 
     for (int peer_idx = 0; peer_idx < SAM2_TOTAL_PEERS; peer_idx++) {
-        if (ulnet_port_is_p2p(&session->room_we_are_in, peer_idx)) {
+        if (ulnet_port_contributes_input(session, peer_idx)) {
 
             if (!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
                 assert(peer_idx == SAM2_AUTHORITY_INDEX);
@@ -3823,11 +3830,11 @@ ULNET_LINKAGE bool ulnet_session_can_tick(ulnet_session_t *session) {
     bool we_are_authority = ulnet_is_authority(session);
 
     for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
-        if (!ulnet_port_is_p2p(&session->room_we_are_in, p)) continue;
+        if (!ulnet_port_contributes_input(session, p)) continue;
         if (!ulnet__state_history_has_frame(session, p, session->frame_counter)) return false;
     }
 
-    if (our_port != -1 && ulnet_port_is_p2p(&session->room_we_are_in, our_port)) {
+    if (our_port != -1 && ulnet_port_contributes_input(session, our_port)) {
         int64_t frames_buffered = session->peer[our_port]->state.frame - session->frame_counter + 1;
         if (frames_buffered < session->delay_frames) return false;
     }
@@ -3954,7 +3961,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
     int status = 0;
 
     bool we_are_authority = ulnet_is_authority(session);
-    bool we_are_player = our_port != -1 && ulnet_port_is_p2p(&session->room_we_are_in, our_port);
+    bool we_are_player = our_port != -1 && ulnet_port_contributes_input(session, our_port);
     bool we_are_coordinator_only_authority = we_are_authority && our_port == SAM2_AUTHORITY_INDEX && !we_are_player;
 
     // Poll input with buffering for netplay
@@ -3978,7 +3985,9 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
 
         // Incoporate input from spectators into our input. This has the drawback of round trip latency but requires a single connection to the server
         ulnet_input_state_t input[ULNET_PORT_COUNT] = {0};
-        uint8_t input_port_mask = session->local_input_port_mask;
+        uint8_t input_port_mask = we_are_authority
+            ? (uint8_t)((1u << ULNET_PORT_COUNT) - 1u)
+            : session->local_input_port_mask;
         for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
             if (!session->transport[i]) continue;
             for (int input_port = 0; input_port < ULNET_PORT_COUNT; input_port++) {
@@ -4085,13 +4094,13 @@ IMH(ImGui::SeparatorText("Things We are Waiting on Before we can Tick");)
 IMH(if                            (session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) { ImGui::Text("Waiting for savestate"); })
     bool netplay_ready_to_tick = !(session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL);
     for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
-        if (!ulnet_port_is_p2p(&session->room_we_are_in, p)) continue;
+        if (!ulnet_port_contributes_input(session, p)) continue;
         bool has_frame = ulnet__state_history_has_frame(session, p, session->frame_counter);
     IMH(if                      (!has_frame) { ImGui::Text("Missing input state on port %d for frame %" PRId64, p, session->frame_counter); })
         netplay_ready_to_tick &= has_frame;
     }
 
-    if (!(session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) && our_port != -1 && ulnet_port_is_p2p(&session->room_we_are_in, our_port)) {
+    if (!(session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL) && our_port != -1 && ulnet_port_contributes_input(session, our_port)) {
         int64_t frames_buffered = session->peer[our_port]->state.frame - session->frame_counter + 1;
         assert(frames_buffered <= ULNET_DELAY_FRAMES_MAX + 1);
         assert(frames_buffered >= 0);
