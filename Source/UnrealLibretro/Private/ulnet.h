@@ -4360,16 +4360,6 @@ ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port
     ulnet__peer_release(session, peer_port);
 }
 
-// The authority's desired room (next_room) is what new join/leave/topology decisions edit.
-// For a non-authority peer it always mirrors the committed room.
-static sam2_room_t *ulnet__authority_desired_room(ulnet_session_t *session) {
-    if (ulnet_is_authority(session)) {
-        return &session->next_room;
-    }
-    session->next_room = session->room_we_are_in;
-    return &session->next_room;
-}
-
 static void ulnet__schedule_active_set_change(ulnet_session_t *session) {
     assert(ulnet_is_authority(session));
 
@@ -4702,7 +4692,7 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
             session->peer_pending_disconnect_bitfield |= (1ULL << p);
 
             if (ulnet_is_authority(session)) {
-                ulnet__authority_remove_peer(session, ulnet__authority_desired_room(session), p, leaver_is_player);
+                ulnet__authority_remove_peer(session, &session->next_room, p, leaver_is_player);
             }
         } else if (sam2_header_matches((const char *) data, sam2_join_header)) {
             if (ulnet_process_message(session, (const char *) data, session->room_we_are_in.peer_ids[p]) != 0) {
@@ -5348,7 +5338,7 @@ int ulnet_process_message(ulnet_session_t *session, const char *response, uint16
             return -1;
         }
 
-        sam2_room_t *desired = ulnet__authority_desired_room(session); // &next_room
+        sam2_room_t *desired = &session->next_room;
         uint16_t peer_id = sender_peer_id;
         int current_port   = sam2_get_port_of_peer(desired, peer_id);
         int requested_port = sam2_get_port_of_peer(&room_join->room, peer_id);
@@ -5357,8 +5347,7 @@ int ulnet_process_message(ulnet_session_t *session, const char *response, uint16
 
         // The authority may toggle room-level flags on itself (e.g. abandon the room)
         if (peer_id == session->our_peer_id) {
-            desired->flags = room_join->room.flags;
-            session->room_we_are_in.flags = room_join->room.flags;
+            desired->flags = session->room_we_are_in.flags = room_join->room.flags;
         }
 
         if (current_port == -1) {
@@ -5373,16 +5362,13 @@ int ulnet_process_message(ulnet_session_t *session, const char *response, uint16
             // Same port: maybe a player<->spectator topology change
             bool wants_player = (room_join->room.peer_topology >> current_port) & 1ULL;
             bool is_player    = ulnet_port_is_p2p(desired, current_port);
-            if (wants_player != is_player) {
-                if (ulnet__authority_has_pending_room_change(session)) {
-                    SAM2_LOG_WARN("Ignoring active-set change from peer %05" PRId16 " while another room change is pending", peer_id);
-                } else {
-                    if (wants_player) desired->peer_topology |=  (1ULL << current_port);
-                    else              desired->peer_topology &= ~(1ULL << current_port);
-                    ulnet__schedule_active_set_change(session);
-                }
-            } else {
+            if (wants_player == is_player) {
                 SAM2_LOG_WARN("Join request from peer %05" PRId16 " changed nothing", peer_id);
+            } else if (ulnet__authority_has_pending_room_change(session)) {
+                SAM2_LOG_WARN("Ignoring active-set change from peer %05" PRId16 " while another room change is pending", peer_id);
+            } else {
+                desired->peer_topology ^= (1ULL << current_port);
+                ulnet__schedule_active_set_change(session);
             }
         }
     }  else if (sam2_header_matches(response, sam2_sign_header)) {
