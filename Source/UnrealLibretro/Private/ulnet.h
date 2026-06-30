@@ -865,6 +865,9 @@ static ulnet_nat_candidate_t *ulnet__nat_find_candidate(ulnet_nat_agent_t *agent
 }
 
 static void ulnet__nat_select_candidate(ulnet_nat_agent_t *agent, const struct sockaddr_storage *addr, socklen_t addr_len) {
+    // Candidate checks run concurrently. The first validated path wins and remains stable; later
+    // STUN responses must not replace a working direct/LAN/IPv6 path.
+    if (agent->state >= ULNET_TRANSPORT_READY || agent->selected_addr_len != 0) return;
     agent->selected_addr = *addr;
     agent->selected_addr_len = addr_len;
     ulnet__nat_set_state(agent, ULNET_TRANSPORT_READY);
