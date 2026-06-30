@@ -280,7 +280,6 @@ typedef struct ulnet_peer_diagnostics {
 
 typedef struct ulnet_peer {
     ulnet_peer_state_t state;
-    ulnet_transport_conn_t *transport; // Opaque backend connection to room_we_are_in.peer_ids[port]; NULL until opened
     int64_t desynced_frame;
     int64_t last_state_frame_sent;
     ulnet_input_state_t spectator_suggested_input_state[ULNET_PORT_COUNT];
@@ -330,6 +329,7 @@ typedef struct ulnet_session {
     uint64_t peer_needs_sync_bitfield;
     uint64_t peer_pending_disconnect_bitfield;
     ulnet_peer_t *peer[SAM2_TOTAL_PEERS]; // Indexed by stable protocol port.
+    ulnet_transport_conn_t *transport[SAM2_TOTAL_PEERS]; // Opaque backend connection to room_we_are_in.peer_ids[port]; NULL until opened. Parallel to peer[]; outlives peer[] allocation/release.
     int64_t reliable_retransmit_delay_microseconds;
     int64_t pending_packet_kernel_receive_unix_usec;
 
@@ -374,7 +374,9 @@ static_assert(std::is_trivially_default_constructible<ulnet_session_t>::value &&
     "ulnet_session_t must be a POD type for safe memory operations");
 #endif
 
-ULNET_LINKAGE int ulnet_process_message(ulnet_session_t *session, const char *response);
+// sender_peer_id identifies who sent `response`; only the sam2_join_header case uses it (other
+// headers carry their own peer_id, or none -- e.g. coordinator messages have no peer sender).
+ULNET_LINKAGE int ulnet_process_message(ulnet_session_t *session, const char *response, uint16_t sender_peer_id);
 ULNET_LINKAGE void ulnet_startup_nat_for_peer(ulnet_session_t *session, uint64_t peer_id, int p, const char *remote_signal);
 ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port);
 ULNET_LINKAGE void ulnet__reconcile_connections(ulnet_session_t *session, const sam2_room_t *new_room);
@@ -1263,16 +1265,6 @@ err:ulnet__nat_destroy(agent);
 
 ULNET_LINKAGE ulnet_transport_state_t ulnet_nat_get_state(ulnet_nat_agent_t *agent) {
     return agent ? agent->state : ULNET_TRANSPORT_DISCONNECTED;
-}
-
-// A peer slot has an active connection once it has been allocated and given a transport.
-static bool ulnet__peer_connected(ulnet_session_t *session, int p) {
-    return session->peer[p] && session->peer[p]->transport;
-}
-
-static bool ulnet__peer_link_ready(ulnet_session_t *session, int p) {
-    if (!ulnet__peer_connected(session, p)) return false;
-    return ulnet_transport_state(session->peer[p]->transport) == ULNET_TRANSPORT_READY;
 }
 
 ULNET_LINKAGE const char *ulnet_transport_state_to_string(ulnet_transport_state_t state) {
@@ -3463,7 +3455,7 @@ ULNET_LINKAGE int ulnet_udp_send(ulnet_session_t *session, int port, const uint8
         return 0;
     }
 
-    return ulnet_transport_send(session->peer[port]->transport, packet, size);
+    return ulnet_transport_send(session->transport[port], packet, size);
 }
 
 // Simplified wrap packet function
@@ -3769,7 +3761,7 @@ static void ulnet__send_state_packet_to_ready_peers(ulnet_session_t *session, in
 
     bool sent = false;
     for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
-        if (!ulnet__peer_link_ready(session, p)) continue;
+        if (ulnet_transport_state(session->transport[p]) != ULNET_TRANSPORT_READY) continue;
         int64_t send_frame = session->peer[p]->last_state_frame_sent + 1;
         if (send_frame > frame) continue;
 
@@ -3875,7 +3867,7 @@ static int ulnet__cap_timeout_for_reliability(ulnet_session_t *session, int time
 
     for (int port = 0; port < SAM2_TOTAL_PEERS; port++) {
         ulnet_peer_t *peer = session->peer[port];
-        if (!peer || !peer->transport) continue;
+        if (!peer || !session->transport[port]) continue;
 
         // Earliest retransmit/first-send deadline across the in-flight window.
         uint16_t tx_head = peer->reliable_tx_head;
@@ -3908,8 +3900,8 @@ ULNET_LINKAGE int ulnet_service_network(ulnet_session_t *session, int timeout_mi
 
     // Tear down connections that failed or whose peer is leaving (transport-agnostic via state query).
     for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
-        if (!ulnet__peer_connected(session, p)) continue;
-        if (   ulnet_transport_state(session->peer[p]->transport) == ULNET_TRANSPORT_FAILED
+        if (!session->transport[p]) continue;
+        if (   ulnet_transport_state(session->transport[p]) == ULNET_TRANSPORT_FAILED
             || (session->peer_pending_disconnect_bitfield & (1ULL << p))) {
             if (!ulnet_port_is_p2p(&session->room_we_are_in, p)) {
                 SAM2_LOG_INFO("%s %05" PRId16 " left",
@@ -3928,7 +3920,7 @@ ULNET_LINKAGE int ulnet_service_network(ulnet_session_t *session, int timeout_mi
 
     for (int port = 0; port < SAM2_TOTAL_PEERS; port++) {
         ulnet_peer_t *peer = session->peer[port];
-        if (!peer || !peer->transport) continue;
+        if (!peer || !session->transport[port]) continue;
 
         int64_t now_usec = ulnet__get_unix_time_microseconds();
         uint16_t tx_head = peer->reliable_tx_head;
@@ -3988,7 +3980,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
         ulnet_input_state_t input[ULNET_PORT_COUNT] = {0};
         uint8_t input_port_mask = session->local_input_port_mask;
         for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
-            if (!ulnet__peer_connected(session, i)) continue;
+            if (!session->transport[i]) continue;
             for (int input_port = 0; input_port < ULNET_PORT_COUNT; input_port++) {
                 for (int j = 0; j < SAM2_ARRAY_LENGTH(input[input_port]); j++) {
                     if (session->peer[i]->spectator_suggested_input_state[input_port][j] != 0) {
@@ -4001,7 +3993,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
         for (int input_port = 0; input_port < ULNET_PORT_COUNT; input_port++) {
           if (input_port_mask & (1u << input_port)) {
             for (int i = 0; i < SAM2_TOTAL_PEERS; i++) {
-                if (ulnet__peer_connected(session, i)) {
+                if (session->transport[i]) {
                     for (int j = 0; j < SAM2_ARRAY_LENGTH(input[input_port]); j++) {
                         input[input_port][j] |=
                             session->peer[i]->spectator_suggested_input_state[input_port][j];
@@ -4051,7 +4043,7 @@ ULNET_LINKAGE int ulnet_poll_session(ulnet_session_t *session, bool force_save_s
 
             for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
                 // Wait until we can send netplay messages to everyone without fail
-                if (spectator_packet_size > 0 && ulnet__peer_link_ready(session, p)) {
+                if (spectator_packet_size > 0 && ulnet_transport_state(session->transport[p]) == ULNET_TRANSPORT_READY) {
                     ulnet_reliable_send_with_acks_only(
                         session, p, spectator_packet, spectator_packet_size);
                     SAM2_LOG_DEBUG("Sent spectator input packet dest peer_ids[%d]=%05" PRId16, p, session->room_we_are_in.peer_ids[p]);
@@ -4294,12 +4286,12 @@ ULNET_LINKAGE void ulnet__reconcile_connections(ulnet_session_t *session, const 
         // The committed topology needs a record for every port we keep; allocate it up front.
         if (keep && !session->peer[p]) ulnet__peer_alloc(session, p);
 
-        if (want && !session->peer[p]->transport) {
+        if (want && !session->transport[p]) {
             // Convention: the lesser peer id initiates the connection
             if (session->our_peer_id < session->room_we_are_in.peer_ids[p]) {
                 ulnet_startup_nat_for_peer(session, session->room_we_are_in.peer_ids[p], p, NULL);
             }
-        } else if (!want && ulnet__peer_connected(session, p)) {
+        } else if (!want && session->transport[p]) {
             ulnet_disconnect_peer(session, p);
         }
 
@@ -4320,16 +4312,20 @@ ULNET_LINKAGE void ulnet__reconcile_connections(ulnet_session_t *session, const 
         }
 
         // Reclaim the lazily-allocated record for a port we no longer keep.
-        if (!keep && session->peer[p] && !session->peer[p]->transport) {
+        if (!keep && session->peer[p] && !session->transport[p]) {
             ulnet__peer_release(session, p);
         }
     }
 }
 
 ULNET_LINKAGE void ulnet__peer_release(ulnet_session_t *session, int peer_port) {
+    if (session->transport[peer_port]) {
+        ulnet_transport_close(session->transport[peer_port]);
+        session->transport[peer_port] = NULL;
+    }
+
     ulnet_peer_t *peer = session->peer[peer_port];
     if (!peer) return;
-    if (peer->transport) ulnet_transport_close(peer->transport);
     ulnet_packet_ref_clear_many(peer->state_packet_history, ULNET_STATE_PACKET_HISTORY_SIZE);
     ulnet_packet_ref_clear_many(peer->reliable_tx_packet_history, ULNET_RELIABLE_ACK_BUFFER_SIZE);
     ulnet_packet_ref_clear_many(peer->reliable_rx_pending, ULNET_RELIABLE_ACK_BUFFER_SIZE);
@@ -4351,8 +4347,7 @@ ULNET_LINKAGE void ulnet_disconnect_peer(ulnet_session_t *session, int peer_port
         ulnet_port_is_p2p(&session->room_we_are_in, peer_port) ? "p2p player" : "spectator",
         session->room_we_are_in.peer_ids[peer_port], peer_port);
 
-    ulnet_peer_t *peer = session->peer[peer_port];
-    assert(peer && peer->transport != NULL);
+    assert(session->peer[peer_port] && session->transport[peer_port] != NULL);
     ulnet__peer_release(session, peer_port);
 }
 
@@ -4467,7 +4462,7 @@ static void ulnet__savestate_tx_send_group(ulnet_session_t *session) {
 
         for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
             if (   (session->savestate_transfer_awaiting_bitfield & (1ULL << p))
-                && ulnet__peer_link_ready(session, p)) {
+                && ulnet_transport_state(session->transport[p]) == ULNET_TRANSPORT_READY) {
                 ulnet_udp_send(session, p, (const uint8_t *)&packet,
                     sizeof(ulnet_save_state_packet_header_t) + packet_payload_size_bytes);
             }
@@ -4540,7 +4535,7 @@ static void ulnet__reset_to_local_solo(ulnet_session_t *session) {
 }
 
 ULNET_LINKAGE void ulnet_session_tear_down(ulnet_session_t *session) {
-    if (session->peer[SAM2_AUTHORITY_INDEX] && session->peer[SAM2_AUTHORITY_INDEX]->transport) {
+    if (session->peer[SAM2_AUTHORITY_INDEX] && session->transport[SAM2_AUTHORITY_INDEX]) {
         ulnet_message_send(session, SAM2_AUTHORITY_INDEX, (const uint8_t *) ulnet_exit_header);
     }
 
@@ -4701,11 +4696,7 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
                 ulnet__authority_remove_peer(session, ulnet__authority_desired_room(session), p, leaver_is_player);
             }
         } else if (sam2_header_matches((const char *) data, sam2_join_header)) {
-            // @todo This can be much simpler
-            sam2_room_join_message_t join_message;
-            memcpy(&join_message, data, sizeof(join_message));
-            join_message.peer_id = session->room_we_are_in.peer_ids[p];
-            if (ulnet_process_message(session, (const char *) &join_message) != 0) {
+            if (ulnet_process_message(session, (const char *) data, session->room_we_are_in.peer_ids[p]) != 0) {
                 SAM2_LOG_ERROR("Failed to process join message");
             }
         }
@@ -4868,7 +4859,7 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
             if (ulnet_is_authority(session)) {
                 for (int s = 0; s < SAM2_TOTAL_PEERS; s++) {
                     if (s == p) continue; // Don't echo back to the sender
-                    if (!ulnet__peer_connected(session, s)) continue;
+                    if (!session->transport[s]) continue;
                     uint8_t relayed_packet[ULNET_PACKET_SIZE_BYTES_MAX];
                     memcpy(relayed_packet, data, size);
                     ulnet__stamp_state_packet_ping(session, s, relayed_packet, ulnet__get_unix_time_microseconds());
@@ -4904,7 +4895,7 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
         if (ulnet_is_authority(session) && !ulnet_port_is_p2p(&session->room_we_are_in, p)) {
             ulnet_input_state_t aggregate[ULNET_PORT_COUNT] = {{0}};
             for (int spectator_port = 0; spectator_port < SAM2_TOTAL_PEERS; spectator_port++) {
-                if (!ulnet__peer_connected(session, spectator_port)) continue;
+                if (!session->transport[spectator_port]) continue;
                 if (ulnet_port_is_p2p(&session->room_we_are_in, spectator_port)) continue;
                 for (int input_port = 0; input_port < ULNET_PORT_COUNT; input_port++) {
                     for (int j = 0; j < SAM2_ARRAY_LENGTH(aggregate[input_port]); j++) {
@@ -4918,7 +4909,7 @@ ULNET_LINKAGE void ulnet__process_udp_packet(ulnet_session_t *session, int p, co
                 aggregate, aggregate_packet, sizeof(aggregate_packet));
             for (int player_port = 0; player_port < SAM2_TOTAL_PEERS; player_port++) {
                 if (!ulnet_port_is_p2p(&session->room_we_are_in, player_port)) continue;
-                if (!ulnet__peer_link_ready(session, player_port)) continue;
+                if (ulnet_transport_state(session->transport[player_port]) != ULNET_TRANSPORT_READY) continue;
                 if (aggregate_packet_size > 0) {
                     ulnet_reliable_send_with_acks_only(
                         session, player_port, aggregate_packet, aggregate_packet_size);
@@ -5224,8 +5215,8 @@ ULNET_LINKAGE int ulnet_icelite_service(ulnet_session_t *session, int timeout_mi
     ulnet_nat_agent_t *agent[SAM2_TOTAL_PEERS];
     int agent_count = 0;
     for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
-        if (ulnet__peer_connected(session, p)) {
-            agent[agent_count++] = (ulnet_nat_agent_t *) session->peer[p]->transport;
+        if (session->transport[p]) {
+            agent[agent_count++] = (ulnet_nat_agent_t *) session->transport[p];
         }
     }
 
@@ -5279,6 +5270,7 @@ ULNET_LINKAGE int ulnet_transport_send(ulnet_transport_conn_t *conn, const uint8
 }
 
 ULNET_LINKAGE ulnet_transport_state_t ulnet_transport_state(const ulnet_transport_conn_t *conn) {
+    if (!conn) return ULNET_TRANSPORT_DISCONNECTED;
     return ulnet_icelite_state(conn);
 }
 
@@ -5305,15 +5297,14 @@ ULNET_LINKAGE void ulnet_startup_nat_for_peer(ulnet_session_t *session, uint64_t
     session->room_we_are_in.peer_ids[p] = peer_id;
 
     if (!session->peer[p]) ulnet__peer_alloc(session, p);
-    ulnet_peer_t *peer = session->peer[p];
-    assert(peer->transport == NULL);
-    peer->transport = ulnet_transport_open(session, p, remote_signal);
-    if (!peer->transport) {
+    assert(session->transport[p] == NULL);
+    session->transport[p] = ulnet_transport_open(session, p, remote_signal);
+    if (!session->transport[p]) {
         SAM2_LOG_ERROR("Failed to open transport for peer %05" PRId64, peer_id);
     }
 }
 
-int ulnet_process_message(ulnet_session_t *session, const char *response) {
+int ulnet_process_message(ulnet_session_t *session, const char *response, uint16_t sender_peer_id) {
 
     if (sam2_get_metadata((char *) response) == NULL) {
         return -1;
@@ -5327,7 +5318,7 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
         session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = session->our_peer_id;
         session->room_we_are_in.peer_topology |= (1ULL << SAM2_AUTHORITY_INDEX);
     } else if (sam2_header_matches(response, sam2_make_header)) {
-        sam2_room_make_message_t *room_make = (sam2_room_make_message_t *) response;
+        sam2_room_message_t *room_make = (sam2_room_message_t *) response;
 
         if (!(session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
             session->room_we_are_in = room_make->room;
@@ -5338,7 +5329,7 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
         // A peer (or the local GUI) requests a room change: leave, or toggle player<->spectator at its
         // own port. Peers never move ports -- a slot is a fixed identity. The authority edits its desired
         // room (next_room); active-set changes are scheduled ahead, spectator edits are immediate.
-        sam2_room_join_message_t *room_join = (sam2_room_join_message_t *) response;
+        sam2_room_message_t *room_join = (sam2_room_message_t *) response;
         if (!ulnet_is_authority(session)) {
             SAM2_LOG_WARN("Only the authority handles join requests");
             return -1;
@@ -5349,7 +5340,7 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
         }
 
         sam2_room_t *desired = ulnet__authority_desired_room(session); // &next_room
-        uint16_t peer_id = (uint16_t) room_join->peer_id;
+        uint16_t peer_id = sender_peer_id;
         int current_port   = sam2_get_port_of_peer(desired, peer_id);
         int requested_port = sam2_get_port_of_peer(&room_join->room, peer_id);
 
@@ -5421,8 +5412,7 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
         }
 
         if (p != -1) {
-            ulnet_peer_t *peer = session->peer[p];
-            if (!peer || !peer->transport) {
+            if (!session->transport[p]) {
                 SAM2_LOG_INFO("Opening transport for peer %05" PRId16 " at slot %d", room_signal->peer_id, p);
                 ulnet_startup_nat_for_peer(session, room_signal->peer_id, p, room_signal->ice_sdp);
 
@@ -5430,7 +5420,7 @@ int ulnet_process_message(ulnet_session_t *session, const char *response) {
                 if (ulnet_is_authority(session)) {
                     session->next_room.peer_ids[p] = room_signal->peer_id; // topology bit stays clear (spectator)
                 }
-            } else if (ulnet_transport_signal(peer->transport, room_signal->ice_sdp)) {
+            } else if (ulnet_transport_signal(session->transport[p], room_signal->ice_sdp)) {
                 SAM2_LOG_ERROR("Unable to add transport signal '%s'", room_signal->ice_sdp);
             }
         }
@@ -5449,7 +5439,7 @@ static int ulnet__send_save_state_to_peers(ulnet_session_t *session, uint64_t pe
     }
     int peer_count = 0;
     for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
-        if ((peer_bitfield & (1ULL << p)) && !ulnet__peer_link_ready(session, p)) {
+        if ((peer_bitfield & (1ULL << p)) && ulnet_transport_state(session->transport[p]) != ULNET_TRANSPORT_READY) {
             peer_bitfield &= ~(1ULL << p);
             session->peer_needs_sync_bitfield |= (1ULL << p);
         }
@@ -5721,12 +5711,12 @@ ULNET_LINKAGE void ulnet_imgui_show_session(ulnet_session_t *session) {
 
     int active_connections = 0;
     for (int p = 0; p < SAM2_TOTAL_PEERS; p++)
-        if (ulnet__peer_connected(session, p)) active_connections++;
+        if (session->transport[p]) active_connections++;
     ImGui::Text("Active connections: %d", active_connections);
 
     if (ImGui::BeginTabBar("PeerTabs")) {
         for (int p = 0; p < SAM2_TOTAL_PEERS; p++) {
-            if (!ulnet__peer_connected(session, p)) continue;
+            if (!session->transport[p]) continue;
 
             char tabName[32];
             snprintf(tabName, sizeof(tabName),

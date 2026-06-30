@@ -102,7 +102,7 @@ void ULibretroCoreInstance::NetplayHost(int PeerId)
         }
     }
 
-    sam2_room_make_message_t HostRoomRequest = { SAM2_MAKE_HEADER };
+    sam2_room_message_t HostRoomRequest = { SAM2_MAKE_HEADER };
 
     FString RoomName = GetOwner() ? GetOwner()->GetName() : GetName();
     FTCHARToUTF8 RoomNameUTF8{ *RoomName };

@@ -138,22 +138,13 @@ static int sam2_get_port_of_peer(sam2_room_t *room, uint16_t peer_id) {
     return -1;
 }
 
-typedef struct sam2_room_make_message {
+// Shared shape for MAKE/LIST/JOIN: a room snapshot, request or response, discriminated by header.
+// There is no sender peer_id field -- the sender is always known implicitly from the connection
+// the message arrived on (the socket for sam2<->client, the slot's transport for peer<->peer).
+typedef struct sam2_room_message {
     char header[8];
-    sam2_room_t room;
-} sam2_room_make_message_t;
-
-typedef struct sam2_room_list_message {
-    char header[8];
-    sam2_room_t room; // Request/response for the room hosted by room.peer_ids[SAM2_AUTHORITY_INDEX] or greater peer id
-} sam2_room_list_message_t;
-
-typedef struct sam2_room_join_message {
-    char header[8];
-    uint64_t peer_id; // Peer id of sender set by sam2 server
-
-    sam2_room_t room;
-} sam2_room_join_message_t;
+    sam2_room_t room; // For LIST: request/response for the room hosted by room.peer_ids[SAM2_AUTHORITY_INDEX] or greater peer id
+} sam2_room_message_t;
 
 typedef struct sam2_connect_message {
     char header[8];
@@ -178,9 +169,7 @@ typedef struct sam2_error_message {
 } sam2_error_message_t;
 
 typedef union sam2_message {
-    sam2_room_make_message_t room_make_response;
-    sam2_room_list_message_t room_list_response;
-    sam2_room_join_message_t room_join_response;
+    sam2_room_message_t room_message;
     sam2_connect_message_t connect_message;
     sam2_signal_message_t signal_message;
     sam2_error_message_t error_message;
@@ -192,9 +181,9 @@ typedef struct sam2_message_metadata {
 } sam2_message_metadata_t;
 
 static sam2_message_metadata_t sam2__message_metadata[] = {
-    {sam2_make_header, sizeof(sam2_room_make_message_t)},
-    {sam2_list_header, sizeof(sam2_room_list_message_t)},
-    {sam2_join_header, sizeof(sam2_room_join_message_t)},
+    {sam2_make_header, sizeof(sam2_room_message_t)},
+    {sam2_list_header, sizeof(sam2_room_message_t)},
+    {sam2_join_header, sizeof(sam2_room_message_t)},
     {sam2_conn_header, sizeof(sam2_connect_message_t)},
     {sam2_sign_header, sizeof(sam2_signal_message_t)},
     {sam2_fail_header, sizeof(sam2_error_message_t)},
@@ -604,15 +593,11 @@ static void sam2__sanitize_message(const char *message) {
     if (!message) return;
 
     // Sanitize C-Strings. This will also clear extra uninitialized bytes past the null terminator
-    if (sam2_header_matches(message, sam2_make_header)) {
-        sam2_room_make_message_t *make_message = (sam2_room_make_message_t *)message;
-        SAM2__SANITIZE_STRING(make_message->room.name);
-    } else if (sam2_header_matches(message, sam2_list_header)) {
-        sam2_room_list_message_t *list_message = (sam2_room_list_message_t *)message;
-        SAM2__SANITIZE_STRING(list_message->room.name);
-    } else if (sam2_header_matches(message, sam2_join_header)) {
-        sam2_room_join_message_t *join_message = (sam2_room_join_message_t *)message;
-        SAM2__SANITIZE_STRING(join_message->room.name);
+    if (   sam2_header_matches(message, sam2_make_header)
+        || sam2_header_matches(message, sam2_list_header)
+        || sam2_header_matches(message, sam2_join_header)) {
+        sam2_room_message_t *room_message = (sam2_room_message_t *)message;
+        SAM2__SANITIZE_STRING(room_message->room.name);
     } else if (sam2_header_matches(message, sam2_sign_header)) {
         sam2_signal_message_t *signal_message = (sam2_signal_message_t *)message;
         SAM2__SANITIZE_STRING(signal_message->ice_sdp);
@@ -924,9 +909,9 @@ static sam2_socket_t *sam2__process_message(sam2_server_t *server, sam2_socket_t
         if (*client == SAM2_SOCKET_INVALID) return NULL;
 
     } else if (sam2_header_matches((const char *)message, sam2_list_header)) {
-        sam2_room_list_message_t *request = &message->room_list_response;
+        sam2_room_message_t *request = &message->room_message;
         uint16_t authority_peer_id_min = request->room.peer_ids[SAM2_AUTHORITY_INDEX];
-        sam2_room_list_message_t response = { SAM2_LIST_HEADER, {0} };
+        sam2_room_message_t response = { SAM2_LIST_HEADER, {0} };
 
         for (int i = authority_peer_id_min; i < SAM2_ARRAY_LENGTH(server->rooms); i++) {
             if (server->rooms[i].flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
@@ -939,13 +924,13 @@ static sam2_socket_t *sam2__process_message(sam2_server_t *server, sam2_socket_t
         if (*client == SAM2_SOCKET_INVALID) return NULL;
 
     } else if (sam2_header_matches((const char*)message, sam2_make_header)) {
-        sam2_room_make_message_t *request = &message->room_make_response;
+        sam2_room_message_t *request = &message->room_message;
         request->room.peer_ids[SAM2_AUTHORITY_INDEX] = sam2__client_get_peer_id(server, client);
         server->rooms[sam2__client_get_peer_id(server, client)] = request->room;
 
         SAM2_LOG_INFO("Client %05d updated room '%s'", sam2__client_get_peer_id(server, client), request->room.name);
 
-        sam2_room_make_message_t response = { SAM2_MAKE_HEADER, request->room };
+        sam2_room_message_t response = { SAM2_MAKE_HEADER, request->room };
         sam2__write_message(server, client, (char *)&response);
         if (*client == SAM2_SOCKET_INVALID) return NULL;
 
@@ -1250,6 +1235,4 @@ SAM2_LINKAGE void sam2_server_destroy(sam2_server_t *server) {
 // Resort to packing pragmas until these succeed if you run into this issue yourself
 SAM2_STATIC_ASSERT(SAM2_BYTEORDER_ENDIAN == SAM2_BYTEORDER_LITTLE_ENDIAN, "Platform is big-endian which is unsupported");
 SAM2_STATIC_ASSERT(sizeof(sam2_room_t) == sizeof(char[64]) + sizeof(char[32]) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint16_t[SAM2_TOTAL_PEERS]) + sizeof(uint64_t), "sam2_room_t is not packed");
-SAM2_STATIC_ASSERT(sizeof(sam2_room_make_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_make_message_t is not packed");
-SAM2_STATIC_ASSERT(sizeof(sam2_room_list_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_list_message_t is not packed");
-SAM2_STATIC_ASSERT(sizeof(sam2_room_join_message_t) == 8 + 8 + sizeof(sam2_room_t), "sam2_room_join_message_t is not packed");
+SAM2_STATIC_ASSERT(sizeof(sam2_room_message_t) == 8 + sizeof(sam2_room_t), "sam2_room_message_t is not packed");

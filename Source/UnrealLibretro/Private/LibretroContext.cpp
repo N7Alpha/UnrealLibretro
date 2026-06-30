@@ -1535,7 +1535,8 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                                 else {
                                     status = ulnet_process_message(
                                         l->netplay_session,
-                                        (char *)&l->latest_sam2_message
+                                        (char *)&l->latest_sam2_message,
+                                        0 // Messages from the coordinator are never sam2_join_header (peer-relayed only); sender is unused.
                                     );
 
                                     if (memcmp(&l->latest_sam2_message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {

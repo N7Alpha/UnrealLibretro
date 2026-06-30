@@ -979,7 +979,7 @@ static sam2_room_t g_new_room_set_through_gui = {
 static sam2_room_t g_sam2_rooms[MAX_ROOMS];
 static int64_t g_sam2_room_count = 0;
 static uint16_t g_sam2_room_list_cursor = SAM2_PORT_SENTINELS_MAX + 1;
-sam2_room_list_message_t last_sam2_room_list_response;
+sam2_room_message_t last_sam2_room_list_response;
 int64_t sam2_room_count;
 sam2_room_t sam2_rooms[1024];
 
@@ -1276,7 +1276,7 @@ void draw_imgui() {
             ImGui::Text("Peer ID: %05" PRId16, signal_message->peer_id);
             ImGui::InputTextMultiline("ICE SDP", signal_message->ice_sdp, sizeof(signal_message->ice_sdp), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 16), ImGuiInputTextFlags_ReadOnly);
         } else if (sam2_header_matches(message, sam2_make_header)) {
-            sam2_room_make_message_t *make_message = (sam2_room_make_message_t *) message;
+            sam2_room_message_t *make_message = (sam2_room_message_t *) message;
             ImGui::Separator();
             ulnet_imgui_show_room(make_message->room, g_ulnet_session.our_peer_id);
         } else if (sam2_header_matches(message, sam2_list_header)) {
@@ -1285,13 +1285,12 @@ void draw_imgui() {
                 ImGui::Text("Room List Request");
             } else {
                 // Response
-                sam2_room_list_message_t *list_response = (sam2_room_list_message_t *) message;
+                sam2_room_message_t *list_response = (sam2_room_message_t *) message;
                 ImGui::Separator();
                 ulnet_imgui_show_room(list_response->room, g_ulnet_session.our_peer_id);
             }
         } else if (sam2_header_matches(message, sam2_join_header)) {
-            sam2_room_join_message_t *join_message = (sam2_room_join_message_t *) message;
-            ImGui::Text("Peer ID: %05" PRId16, (uint16_t) join_message->peer_id);
+            sam2_room_message_t *join_message = (sam2_room_message_t *) message;
             ImGui::Separator();
             ulnet_imgui_show_room(join_message->room, g_ulnet_session.our_peer_id);
         } else if (sam2_header_matches(message, sam2_conn_header)) {
@@ -1686,11 +1685,10 @@ void draw_imgui() {
                         uint16_t peer_id = 0;
                         if (strncmp(header, sam2_make_header, 4) == 0 ||
                             strncmp(header, sam2_list_header, 4) == 0 ||
+                            strncmp(header, sam2_join_header, 4) == 0 || // Sender is implicit (connection identity), not on the wire
                             strncmp(header, sam2_fail_header, 4) == 0 ||
                             strncmp(header, sam2_conn_header, 4) == 0) {
                             origin = g_sam2_address;
-                        } else if (strncmp(header, sam2_join_header, 4) == 0) {
-                            peer_id = ((sam2_room_join_message_t*)message)->peer_id;
                         } else if (strncmp(header, sam2_sign_header, 4) == 0) {
                             peer_id = ((sam2_signal_message_t*)message)->peer_id;
                         }
@@ -1714,7 +1712,7 @@ void draw_imgui() {
         if (ImGui::CollapsingHeader("Tests")) {
             if (ImGui::Button("Stress test message framing")) {
                 for (int i = 0; i < 1000; ++i) {
-                    sam2_room_make_message_t message = { SAM2_MAKE_HEADER };
+                    sam2_room_message_t message = { SAM2_MAKE_HEADER };
                     message.room.peer_ids[SAM2_AUTHORITY_INDEX] = g_ulnet_session.our_peer_id;
                     message.room.flags |= SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
                     message.room.peer_topology |= (1ULL << SAM2_AUTHORITY_INDEX);
@@ -1732,12 +1730,11 @@ void draw_imgui() {
 
             if (ulnet_is_authority(&g_libretro_context.ulnet_session)) {
                 if (ImGui::Button("Test Authority Join Self")) {
-                    sam2_room_join_message_t joinMsg = { 0 };
+                    sam2_room_message_t joinMsg = { 0 };
                     memcpy(joinMsg.header, sam2_join_header, SAM2_HEADER_SIZE);
-                    joinMsg.peer_id = g_ulnet_session.our_peer_id;
                     joinMsg.room = g_ulnet_session.room_we_are_in;
 
-                    int result = ulnet_process_message(&g_ulnet_session, (char *)&joinMsg);
+                    int result = ulnet_process_message(&g_ulnet_session, (char *)&joinMsg, g_ulnet_session.our_peer_id);
                     if (result == -1) {
                         SAM2_LOG_INFO("Test Authority Join Self passed: join request rejected.");
                     } else {
@@ -1823,8 +1820,8 @@ void draw_imgui() {
                 ImGui::TableSetColumnIndex(3);
                 if (is_us) {
                     ImGui::TextColored(color, "(you) Frame %" PRId64, g_ulnet_session.frame_counter);
-                } else if (peer && peer->transport) {
-                    ulnet_transport_state_t connection_state = ulnet_transport_state(peer->transport);
+                } else if (peer && g_ulnet_session.transport[p]) {
+                    ulnet_transport_state_t connection_state = ulnet_transport_state(g_ulnet_session.transport[p]);
                     if (connection_state != ULNET_TRANSPORT_READY) {
                         ImGui::TextColored(GREY, "%s %c", connection_state == ULNET_TRANSPORT_FAILED ? "FAILED" : "CONNECTING", spinnerGlyph);
                     } else if (peer->desynced_frame) {
@@ -1874,17 +1871,16 @@ void draw_imgui() {
                     ? (we_are_player ? "Become Coordinator" : "Join Mesh")
                     : (we_are_player ? "Become Spectator" : "Become Player");
                 if (ImGui::Button(button_label)) {
-                    sam2_room_join_message_t request = { SAM2_JOIN_HEADER };
+                    sam2_room_message_t request = { SAM2_JOIN_HEADER };
                     request.room = g_ulnet_session.room_we_are_in;
                     request.room.peer_topology ^= (1ULL << our_port); // Toggle our own topology bit at our current slot
-                    request.peer_id = g_ulnet_session.our_peer_id;
                     const char *role_change =
                         our_port == SAM2_AUTHORITY_INDEX
                         ? (we_are_player ? "authority player -> coordinator" : "coordinator -> authority player")
                         : (we_are_player ? "player -> spectator" : "spectator -> player");
                     SAM2_LOG_INFO("Requesting role change at port %d: %s", our_port, role_change);
                     if (our_port == SAM2_AUTHORITY_INDEX) {
-                        if (ulnet_process_message(&g_ulnet_session, (const char *) &request) != 0) {
+                        if (ulnet_process_message(&g_ulnet_session, (const char *) &request, g_ulnet_session.our_peer_id) != 0) {
                             SAM2_LOG_ERROR("Failed to process local authority role-change request");
                         }
                     } else if (ulnet_message_send(&g_ulnet_session, SAM2_AUTHORITY_INDEX, (unsigned char *) &request) != 0) {
@@ -1900,14 +1896,13 @@ void draw_imgui() {
             int our_port = sam2_get_port_of_peer(&g_ulnet_session.room_we_are_in, g_ulnet_session.our_peer_id);
             if (our_port == SAM2_AUTHORITY_INDEX) {
                 if (ImGui::Button("Abandon")) {
-                    sam2_room_make_message_t delete_request = { SAM2_MAKE_HEADER };
+                    sam2_room_message_t delete_request = { SAM2_MAKE_HEADER };
                     g_libretro_context.SAM2Send((char *) &delete_request);
 
-                    sam2_room_join_message_t message = { SAM2_JOIN_HEADER };
+                    sam2_room_message_t message = { SAM2_JOIN_HEADER };
                     message.room = g_ulnet_session.room_we_are_in;
                     message.room.flags &= ~SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
-                    message.peer_id = g_ulnet_session.our_peer_id;
-                    ulnet_process_message(&g_ulnet_session, (const char *) &message); // *Send* a message to ourselves
+                    ulnet_process_message(&g_ulnet_session, (const char *) &message, g_ulnet_session.our_peer_id); // *Send* a message to ourselves
                 }
             } else if (our_port != -1) {
                 if (ImGui::Button("Leave")) {
@@ -1920,7 +1915,7 @@ void draw_imgui() {
     } else {
         // Create a "Make" button that sends a make room request when clicked
         if (ImGui::Button("Make")) {
-            sam2_room_make_message_t request = { SAM2_MAKE_HEADER };
+            sam2_room_message_t request = { SAM2_MAKE_HEADER };
             request.room = g_new_room_set_through_gui;
             request.room.flags |= SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
             request.room.peer_topology |= (1ULL << SAM2_AUTHORITY_INDEX);
@@ -1932,7 +1927,7 @@ void draw_imgui() {
             if (g_is_refreshing_rooms) {
                 g_sam2_room_count = 0;
                 g_sam2_room_list_cursor = SAM2_PORT_SENTINELS_MAX + 1;
-                sam2_room_list_message_t request = { SAM2_LIST_HEADER };
+                sam2_room_message_t request = { SAM2_LIST_HEADER };
                 request.room.peer_ids[SAM2_AUTHORITY_INDEX] = g_sam2_room_list_cursor;
                 g_libretro_context.SAM2Send((char *) &request);
             } else {
@@ -3835,14 +3830,15 @@ int main(int argc, char *argv[]) {
 
                     status = ulnet_process_message(
                         &g_ulnet_session,
-                        (const char *) &latest_sam2_message
+                        (const char *) &latest_sam2_message,
+                        0 // Messages from the coordinator are never sam2_join_header; sender is unused.
                     );
 
                     if (sam2_header_matches((const char*)&latest_sam2_message, sam2_fail_header)) {
                         g_last_sam2_error = latest_sam2_message.error_message;
                         SAM2_LOG_ERROR("Received error response from SAM2 (%" PRId64 "): %s", g_last_sam2_error.code, g_last_sam2_error.description);
                     } else if (sam2_header_matches((const char*)&latest_sam2_message, sam2_list_header)) {
-                        sam2_room_list_message_t *room_list = (sam2_room_list_message_t *) &latest_sam2_message;
+                        sam2_room_message_t *room_list = (sam2_room_message_t *) &latest_sam2_message;
 
                         if (!(room_list->room.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)) {
                             g_is_refreshing_rooms = false;
@@ -3852,7 +3848,7 @@ int main(int argc, char *argv[]) {
                             }
                             g_sam2_room_list_cursor = room_list->room.peer_ids[SAM2_AUTHORITY_INDEX] + 1;
 
-                            sam2_room_list_message_t request = { SAM2_LIST_HEADER };
+                            sam2_room_message_t request = { SAM2_LIST_HEADER };
                             request.room.peer_ids[SAM2_AUTHORITY_INDEX] = g_sam2_room_list_cursor;
                             g_libretro_context.SAM2Send((char *) &request);
                         }
