@@ -219,8 +219,15 @@ protected:
         
         struct
         {
-            FCriticalSection CriticalSection;
-            void* ClientBuffer{ nullptr };
+            // Ringbuffer of frames in flight to the RHI thread. Unreal's render queue can be more
+            // than one frame deep, so a single pending-frame slot drops frames; instead every frame
+            // is dispatched unconditionally in its own buffer and the libretro thread blocks in
+            // acquire_frame_upload_buffer until the RHI thread retires the oldest one (issue #35)
+            enum { BUFFER_COUNT = 3 };
+            void* Buffers[BUFFER_COUNT];
+            int32 NextBufferIndex; // Only touched by the libretro thread
+            FThreadSafeCounter InFlightCount;
+            FEvent* BufferFreedEvent;
         } FrameUpload;
     } Unreal = {0};
 
@@ -260,10 +267,6 @@ protected:
             GLuint pixel_format;
             GLuint bits_per_pixel;
         } gl;
-
-        struct {
-            void* bgra_buffers[2];
-        } software;
 
         bool free_framebuffer_index;
 

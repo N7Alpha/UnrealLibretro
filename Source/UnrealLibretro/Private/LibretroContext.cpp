@@ -566,12 +566,13 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
             }
             glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
         }
-    } else {
-        for (auto i : { 0, 1 }) {
-            core.software.bgra_buffers[i] = FMemory::Malloc(4 * core.av.geometry.max_width
-                                                              * core.av.geometry.max_height, PLATFORM_CACHE_LINE_SIZE);
-        }
     }
+
+    for (int i = 0; i < Unreal.FrameUpload.BUFFER_COUNT; i++) {
+        Unreal.FrameUpload.Buffers[i] = FMemory::Malloc(4 * core.av.geometry.max_width
+                                                          * core.av.geometry.max_height, PLATFORM_CACHE_LINE_SIZE);
+    }
+    Unreal.FrameUpload.BufferFreedEvent = FPlatformProcess::GetSynchEventFromPool();
 
     core.hw.context_reset();
     return 0;
@@ -584,34 +585,37 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
 
     unsigned SrcPitch = 4 * core.av.geometry.max_width;
 
-    auto prepare_frame_for_upload_to_unreal_RHI = [&](void* const buffer)
+    // Unreal's render queue can be more than one frame deep, so a single pending-frame slot drops
+    // frames when the render thread falls behind. Instead each frame gets its own ringbuffer entry
+    // and its own unconditionally dispatched upload; when every buffer is in flight we block here
+    // until the RHI thread retires the oldest one (issue #35)
+    auto acquire_frame_upload_buffer = [&]() -> void*
     {
-        void* old_buffer;
+        while (Unreal.FrameUpload.InFlightCount.GetValue() >= Unreal.FrameUpload.BUFFER_COUNT)
         {
-            FScopeLock SwapPointer(&this->Unreal.FrameUpload.CriticalSection);
-            old_buffer = this->Unreal.FrameUpload.ClientBuffer;
-            this->Unreal.FrameUpload.ClientBuffer = buffer;
+            Unreal.FrameUpload.BufferFreedEvent->Wait();
         }
 
-        if (!old_buffer)
-        {
-            ENQUEUE_RENDER_COMMAND(CopyToUnrealFramebufferTask)( // @todo this triggers an assert on MacOS you can get around it by enqueuing through the TaskGraph instead no idea why this is the case
-                [this,
-                MipIndex = 0,
-                SrcPitch,
-                Region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height)]
-            (FRHICommandListImmediate& RHICmdList)
-            {
-                if (!this->Unreal.TextureRHI.GetReference()) {
-                    ErrorMessage = TEXT("Texture RHI reference is null");
-                    UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
-                    return;
-                }
+        // Uploads retire in FIFO order, so with fewer than BUFFER_COUNT in flight the next ring slot is free
+        void* buffer = Unreal.FrameUpload.Buffers[Unreal.FrameUpload.NextBufferIndex];
+        Unreal.FrameUpload.NextBufferIndex = (Unreal.FrameUpload.NextBufferIndex + 1) % Unreal.FrameUpload.BUFFER_COUNT;
+        return buffer;
+    };
 
-                RHICmdList.EnqueueLambda([=, this](FRHICommandList& RHICmdList)
-                    {
-                        // Potentially this should be a TryLock() so you don't preempt the render thread although it's unlikely that would happen
-                        FScopeLock UploadTextureToRenderHardware(&this->Unreal.FrameUpload.CriticalSection);
+    auto dispatch_frame_upload_to_unreal_RHI = [&](void* const buffer)
+    {
+        Unreal.FrameUpload.InFlightCount.Increment();
+        ENQUEUE_RENDER_COMMAND(CopyToUnrealFramebufferTask)( // @todo this triggers an assert on MacOS you can get around it by enqueuing through the TaskGraph instead no idea why this is the case
+            [this,
+            buffer,
+            MipIndex = 0,
+            SrcPitch,
+            Region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height)]
+        (FRHICommandListImmediate& RHICmdList)
+        {
+            RHICmdList.EnqueueLambda([=, this](FRHICommandList& RHICmdList)
+                {
+                    if (this->Unreal.TextureRHI.GetReference()) {
                         GDynamicRHI->RHIUpdateTexture2D(
 #if    ENGINE_MAJOR_VERSION == 5 \
     && ENGINE_MINOR_VERSION >= 2
@@ -621,19 +625,25 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
                             MipIndex,
                             Region,
                             SrcPitch,
-                            (uint8*)this->Unreal.FrameUpload.ClientBuffer);
-                        this->Unreal.FrameUpload.ClientBuffer = nullptr;
+                            (uint8*)buffer);
+                    } else {
+                        ErrorMessage = TEXT("Texture RHI reference is null");
+                        UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
                     }
-                );
-            }
+
+                    // Retire the buffer even when the upload is skipped or the libretro thread blocks forever
+                    this->Unreal.FrameUpload.InFlightCount.Decrement();
+                    this->Unreal.FrameUpload.BufferFreedEvent->Trigger();
+                }
             );
         }
+        );
     };
 
     if (data && data != RETRO_HW_FRAME_BUFFER_VALID) {
         DECLARE_SCOPE_CYCLE_COUNTER(TEXT("CPUConvertAndCopyFramebuffer"), STAT_LibretroCPUConvertAndCopyFramebuffer, STATGROUP_UnrealLibretro);
 
-        auto bgra_buffer = core.software.bgra_buffers[core.free_framebuffer_index = !core.free_framebuffer_index];
+        auto bgra_buffer = acquire_frame_upload_buffer();
 
         if (core.gl.pixel_format == GL_BGRA) {
         switch (core.gl.pixel_type) {
@@ -675,7 +685,7 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
             }
         }
 
-        prepare_frame_for_upload_to_unreal_RHI(bgra_buffer);
+        dispatch_frame_upload_to_unreal_RHI(bgra_buffer);
     }
     else if (data == RETRO_HW_FRAME_BUFFER_VALID) {
         check(core.using_opengl && core.gl.pixel_type == GL_UNSIGNED_BYTE);
@@ -708,7 +718,11 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
                             UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
                             return;
                         }
-                        prepare_frame_for_upload_to_unreal_RHI(frame_buffer);
+                        // Copy out of the mapped PBO so it can be unmapped and reused for the next
+                        // readback while this frame's upload is still queued behind the RHI thread
+                        void* upload_buffer = acquire_frame_upload_buffer();
+                        FMemory::Memcpy(upload_buffer, frame_buffer, (SIZE_T)SrcPitch * height);
+                        dispatch_frame_upload_to_unreal_RHI(upload_buffer);
                     }
 
                     { // Download Libretro Core frame from OpenGL asynchronously
@@ -1668,12 +1682,17 @@ cleanup:
                     {
                         RHICmdList.EnqueueLambda([l](FRHICommandList&)
                             {
-                                for (int i : {0, 1})
+                                for (void* buffer : l->Unreal.FrameUpload.Buffers)
                                 {
-                                    if (l->core.software.bgra_buffers[i])
+                                    if (buffer)
                                     {
-                                        FMemory::Free(l->core.software.bgra_buffers[i]);
+                                        FMemory::Free(buffer);
                                     }
+                                }
+
+                                if (l->Unreal.FrameUpload.BufferFreedEvent)
+                                {
+                                    FPlatformProcess::ReturnSynchEventToPool(l->Unreal.FrameUpload.BufferFreedEvent);
                                 }
 #if PLATFORM_WINDOWS
                                 if (l->core.gl.context)
