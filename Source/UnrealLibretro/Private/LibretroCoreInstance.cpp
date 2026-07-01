@@ -582,6 +582,18 @@ void ULibretroCoreInstance::WriteMemory(ERetroMemoryType MemoryType, int64 Addre
 
 void ULibretroCoreInstance::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
+    if (CoreInstance.IsSet())
+    {
+        CoreInstance.GetValue()->SetSynchronousTickMode(bSynchronousTickMode);
+        if (bSynchronousTickMode)
+        {
+            // Blocks until the emulator has advanced (at most one frame, gated by its native pacing)
+            // and its framebuffer upload is dispatched, so the emulated frame lands in the Unreal
+            // frame we're currently building
+            CoreInstance.GetValue()->RunFrameSynchronously();
+        }
+    }
+
     if (   CoreInstance.IsSet()
         && KeyboardInputSourcePlayerController)
     {

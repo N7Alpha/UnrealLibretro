@@ -834,6 +834,33 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
         if (core.gl.rhi_interop_memory) {
             // @todo I make no attempt to synchronize the core's drawing operations with RHI reads, some cores will work but others have synchronization issues
             //       It seems like a good reference resource on how to do this is either ITextureShareItem Engine/Source/Programs/TextureShare/TextureShareSDK
+            //       The real fix is pairing the shared memory with shared semaphores (GL_EXT_semaphore_win32 + a shared ID3D12Fence)
+            if (bSynchronousTickMode.load(std::memory_order_relaxed)) {
+                // Hard sync: the shared memory holds the finished frame before this tick returns
+                LogGLErrors(glFinish());
+            }
+        } else if (bSynchronousTickMode.load(std::memory_order_relaxed)) {
+            // Hard GPU sync (RetroArch's name for this trade): stall until the core's GL work
+            // completes and read the frame straight back to client memory. Costs GPU/CPU
+            // parallelism, buys the lowest latency; by the time this tick returns to
+            // RunFrameSynchronously the frame's pixels are dispatched to the render thread.
+            // The async PBO ping-pong state below is left parked, so toggling modes mid-session
+            // only costs one stale frame when switching back
+            DECLARE_SCOPE_CYCLE_COUNTER(TEXT("HardGPUSyncReadback"), STAT_LibretroHardGPUSyncReadback, STATGROUP_UnrealLibretro);
+
+            void* upload_buffer = acquire_frame_upload_buffer();
+            LogGLErrors(glBindFramebuffer(GL_READ_FRAMEBUFFER, core.gl.framebuffer));
+            LogGLErrors(glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)); // Read back to client memory, not a PBO, which forces the synchronous path
+            LogGLErrors(glReadBuffer(GL_COLOR_ATTACHMENT0));
+            LogGLErrors(glReadPixels(0, 0,
+                width,
+                height,
+                core.gl.pixel_format,
+                core.gl.pixel_type,
+                upload_buffer));
+            LogGLErrors(glBindFramebuffer(GL_FRAMEBUFFER, 0));
+
+            dispatch_frame_upload_to_unreal_RHI(upload_buffer, width, height, 4 * width, false);
         } else {
         // OpenGL is asynchronous and because of GPU driver reasons (work is executed FIFO for some drivers)
         // if we try reading the framebuffer we'll block here and consequently the framerate will be capped by Unreal Engines framerate
@@ -1426,6 +1453,8 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
     static TBitArray<TInlineAllocator<(max_instances / 8) + 1>> AllocatedInstances(false, max_instances);
 
     FLibretroContext *l = new FLibretroContext();
+    l->TickRequestedEvent = FPlatformProcess::GetSynchEventFromPool();
+    l->TickCompletedEvent = FPlatformProcess::GetSynchEventFromPool();
 
     // Grab a statically generated callback structure
     int32 InstanceNumber;
@@ -1615,6 +1644,15 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
                     if (l->CoreState.load(std::memory_order_relaxed) == ECoreState::Running)
                     {
+                        // In synchronous tick mode the core only advances inside a RunFrameSynchronously
+                        // handshake so ticks are deterministic with respect to the game thread's frame.
+                        // The short wait keeps request latency low while letting this loop keep pumping
+                        // tasks, sam2 messages, and network service between requests
+                        bool synchronous_tick = l->bSynchronousTickMode.load(std::memory_order_acquire);
+                        bool tick_requested = !synchronous_tick || l->TickRequestedEvent->Wait(FTimespan::FromMilliseconds(1));
+
+                        if (tick_requested)
+                        {
 #if UNREALLIBRETRO_NETIMGUI
                         NetImgui::NewFrame();
 #endif
@@ -1643,7 +1681,27 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                             FLibretroContext* l = (FLibretroContext*)user_ptr;
                             return l->libretro_api.unserialize(data, size);
                         };
-                        ulnet_poll_session(l->netplay_session, false, NULL, 0, l->core.av.timing.fps, 1.0);
+                        // In synchronous mode don't sleep waiting on the network; the game thread is
+                        // blocked on this pass. The core's native frame pacing still gates the tick,
+                        // so a caller at a higher rate than the core just gets unticked passes
+                        int SynchronousTickStatus = ulnet_poll_session(l->netplay_session, false, NULL, 0, l->core.av.timing.fps,
+                            synchronous_tick ? 0.0 : 1.0);
+
+                        if (synchronous_tick)
+                        {
+                            l->SynchronousTickStatus.store(SynchronousTickStatus, std::memory_order_release);
+                            l->TickCompletedEvent->Trigger();
+                        }
+#if UNREALLIBRETRO_NETIMGUI
+                        NetImgui::EndFrame();
+#endif
+                        }
+                        else
+                        {
+                            // No tick was requested this iteration; keep the reliable/ACK machinery
+                            // alive so netplay peers aren't stalled by a hitching game thread
+                            ulnet_service_network(l->netplay_session, 0);
+                        }
 
                         if (!l->connected_to_sam2 && l->sam_socket != SAM2_SOCKET_INVALID) {
                             l->connected_to_sam2 = static_cast<bool>(sam2_client_poll_connection(l->sam_socket, 0));
@@ -1713,9 +1771,6 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                                 }
                             }
                         }
-#if UNREALLIBRETRO_NETIMGUI
-                        NetImgui::EndFrame();
-#endif
                     }
 
                     if (l->ErrorMessage.Len() > 0)
@@ -1876,7 +1931,12 @@ cleanup:
                                 {
                                     delete l->LambdaRunnable; /** This will block the render thread if for some reason the thread we were running on hasn't exited yet */
                                 }
-                            
+
+                                // The libretro thread has exited and Shutdown is initiated from the game
+                                // thread, so no one can be waiting on these anymore
+                                FPlatformProcess::ReturnSynchEventToPool(l->TickRequestedEvent);
+                                FPlatformProcess::ReturnSynchEventToPool(l->TickCompletedEvent);
+
                                 delete l; /** Task queue released */
                             });
                     }
@@ -1895,6 +1955,31 @@ void FLibretroContext::Shutdown(FLibretroContext* Instance)
         {
             Instance->CoreState.store(ECoreState::Shutdown, std::memory_order_relaxed);
         });
+}
+
+void FLibretroContext::SetSynchronousTickMode(bool bEnabled)
+{
+    bSynchronousTickMode.store(bEnabled, std::memory_order_release);
+}
+
+int FLibretroContext::RunFrameSynchronously(uint32 TimeoutMilliseconds)
+{
+    if (CoreState.load(std::memory_order_acquire) != ECoreState::Running) return 0;
+    if (!bSynchronousTickMode.load(std::memory_order_acquire)) return 0;
+
+    SynchronousTickStatus.store(0, std::memory_order_release);
+    TickRequestedEvent->Trigger();
+
+    if (!TickCompletedEvent->Wait(TimeoutMilliseconds))
+    {
+        // The libretro thread is stalled or transitioning out of Running. The completion for this
+        // request may fire late and be consumed by the next call, which then returns one pass early;
+        // that's benign since these passes are idempotent from the caller's perspective
+        UE_LOG(Libretro, Warning, TEXT("RunFrameSynchronously timed out after %ums"), TimeoutMilliseconds);
+        return 0;
+    }
+
+    return SynchronousTickStatus.load(std::memory_order_acquire);
 }
 
 void FLibretroContext::Pause(bool ShouldPause)

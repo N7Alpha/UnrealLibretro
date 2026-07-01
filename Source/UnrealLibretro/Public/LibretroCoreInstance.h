@@ -209,6 +209,17 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro)
     UTextureRenderTarget2D* RenderTarget;
 
+    /**
+     * When true the emulator only advances inside this component's tick, synchronously. Input
+     * applied before the tick is deterministically the input for that emulated frame, and for
+     * OpenGL cores the framebuffer is read back with a hard GPU sync, so the emulated frame is
+     * visible in the same Unreal frame that ticked it (lowest latency). Costs game thread time
+     * (the emulated frame runs inside your tick) and GPU parallelism. The emulator still paces
+     * itself at its native framerate; ticking faster than the core just runs empty passes.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Libretro)
+    bool bSynchronousTickMode = false;
+
     UPROPERTY(BlueprintReadWrite, Category = Libretro)
     UAudioComponent* AudioComponent;
 

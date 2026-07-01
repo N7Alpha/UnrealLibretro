@@ -81,6 +81,7 @@ DECLARE_STATS_GROUP(TEXT("UnrealLibretro"), STATGROUP_UnrealLibretro, STATCAT_Ad
         EnumMacro(PFNGLUNMAPBUFFERPROC, glUnmapBuffer) \
         EnumMacro(PFNGLBUFFERDATAPROC, glBufferData) \
         EnumMacro(PFNGLREADBUFFERPROC, glReadBuffer) \
+        EnumMacro(PFNGLFINISHPROC, glFinish) \
 
 struct libretro_api_t {
     void* handle;
@@ -128,6 +129,29 @@ public:
      * Queued tasks will still execute even if paused
      */
     void Pause(bool ShouldPause);
+
+    /**
+     * When enabled the libretro thread stops free-running: the core only gets a chance to advance
+     * inside a RunFrameSynchronously handshake, so ticks and the input they consume are
+     * deterministic with respect to the caller's frame. Between handshakes the libretro thread
+     * still services the network so netplay ACKs/retransmits don't stall.
+     */
+    void SetSynchronousTickMode(bool bEnabled);
+
+    /**
+     * Blocks the calling thread (intended: the game thread, early in the frame) until the libretro
+     * thread performs one pass: netplay poll plus at most one core tick, gated by the core's native
+     * frame pacing. For OpenGL cores the pass uses a hard GPU sync, so by the time this returns the
+     * emulated frame's pixels have been read back and their upload dispatched to the render thread,
+     * i.e. input applied before this call is visible in the frame Unreal is currently building.
+     *
+     * Only meaningful in synchronous tick mode while the core is Running; returns 0 otherwise.
+     * A timeout also returns 0 (the next call may then consume one stale completion).
+     * Do not call concurrently with, or after initiating, Shutdown.
+     *
+     * @return ULNET_POLL_SESSION_* status flags from the pass (e.g. whether the core ticked)
+     */
+    int RunFrameSynchronously(uint32 TimeoutMilliseconds = 100);
     
     /**
      * @post Everything queued before calling shutdown will be executed
@@ -177,6 +201,12 @@ public:
     };
     
     std::atomic<ECoreState> CoreState{ ECoreState::Starting };
+
+    // Synchronous tick mode handshake (see RunFrameSynchronously)
+    std::atomic<bool> bSynchronousTickMode{ false };
+    std::atomic<int>  SynchronousTickStatus{ 0 };
+    FEvent* TickRequestedEvent{ nullptr };
+    FEvent* TickCompletedEvent{ nullptr };
 
     EPixelFormat UnrealPixelFormat{PF_B8G8R8A8};
 
