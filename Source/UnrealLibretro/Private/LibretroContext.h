@@ -48,6 +48,12 @@ DECLARE_STATS_GROUP(TEXT("UnrealLibretro"), STATGROUP_UnrealLibretro, STATCAT_Ad
         EnumMacro(PFNGLDELETEMEMORYOBJECTSEXTPROC, glDeleteMemoryObjectsEXT) \
         EnumMacro(PFNGLTEXTURESTORAGEMEM2DEXTPROC, glTextureStorageMem2DEXT) \
         EnumMacro(PFNGLCREATETEXTURESPROC, glCreateTextures) \
+        EnumMacro(PFNGLGENSEMAPHORESEXTPROC, glGenSemaphoresEXT) \
+        EnumMacro(PFNGLDELETESEMAPHORESEXTPROC, glDeleteSemaphoresEXT) \
+        EnumMacro(PFNGLIMPORTSEMAPHOREWIN32HANDLEEXTPROC, glImportSemaphoreWin32HandleEXT) \
+        EnumMacro(PFNGLSEMAPHOREPARAMETERUI64VEXTPROC, glSemaphoreParameterui64vEXT) \
+        EnumMacro(PFNGLSIGNALSEMAPHOREEXTPROC, glSignalSemaphoreEXT) \
+        EnumMacro(PFNGLWAITSEMAPHOREEXTPROC, glWaitSemaphoreEXT) \
 
 #define ENUM_GL_PROCEDURES(EnumMacro) \
         EnumMacro(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer) \
@@ -82,6 +88,7 @@ DECLARE_STATS_GROUP(TEXT("UnrealLibretro"), STATGROUP_UnrealLibretro, STATCAT_Ad
         EnumMacro(PFNGLBUFFERDATAPROC, glBufferData) \
         EnumMacro(PFNGLREADBUFFERPROC, glReadBuffer) \
         EnumMacro(PFNGLFINISHPROC, glFinish) \
+        EnumMacro(PFNGLFLUSHPROC, glFlush) \
 
 struct libretro_api_t {
     void* handle;
@@ -290,6 +297,14 @@ protected:
             GLuint framebuffer;
             GLuint renderbuffer;
             GLuint rhi_interop_memory;
+#if PLATFORM_WINDOWS
+            // GL<->D3D12 frame-completion handshake for the rhi_interop_memory path: GL signals the
+            // shared timeline fence (imported as interop_semaphore) when a frame's rendering
+            // completes and UE's graphics queue waits on it GPU-side, so neither CPU ever stalls
+            GLuint interop_semaphore;
+            GLuint64 interop_fence_value;
+            struct ID3D12Fence* d3d12_interop_fence;
+#endif
 
             GLuint pixel_buffer_objects[2];
             // Dimensions of the readback in flight into the free PBO; recorded when glReadPixels is

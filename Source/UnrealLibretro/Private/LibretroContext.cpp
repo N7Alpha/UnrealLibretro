@@ -370,7 +370,9 @@ int FLibretroContext::create_window() {
     }
 
     ENUM_GL_WIN32_INTEROP_PROCEDURES(CHECK_GL_PROCEDURES);
-    this->gl_win32_interop_supported_by_driver = false; // bFoundAllEntryPoints; Not ready
+    // Re-enabled now that the shared D3D12 fence handshake gives the interop path real
+    // synchronization (it was disabled for having none). Set false to fall back to PBO readback
+    this->gl_win32_interop_supported_by_driver = bFoundAllEntryPoints;
 
     glGetError = (PFNGLGETERRORPROC)GL_GET_PROC_ADDRESS("glGetError");
     if (!glGetError) {
@@ -414,6 +416,7 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
 
     // Unreal Resource init
     void *SharedHandle = nullptr;
+    void *FenceSharedHandle = nullptr;
 
     uint64_t SizeInBytes, MipLevels;
     GLenum handleType;
@@ -486,6 +489,23 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
                                         MipLevels = TextureAttributes.MipLevels;
                                         SizeInBytes = TextureMemoryUsage.SizeInBytes;
                                         handleType = GL_HANDLE_TYPE_D3D12_RESOURCE_EXT;
+
+#if ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 1)
+                                        // Shared timeline fence paired with the shared memory above; GL signals it when a
+                                        // frame's rendering completes and our graphics queue waits on it GPU-side.
+                                        // Engines before RHIGetNativeGraphicsQueue (5.1) fall back to glFinish in sync mode
+                                        ID3D12Fence* InteropFence = nullptr;
+                                        if (!FAILED(UE4D3DDevice->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&InteropFence))))
+                                        {
+                                            if (FAILED(UE4D3DDevice->CreateSharedHandle(InteropFence, NULL, GENERIC_ALL, NULL, &FenceSharedHandle)))
+                                            {
+                                                InteropFence->Release();
+                                                InteropFence = nullptr;
+                                                FenceSharedHandle = nullptr;
+                                            }
+                                        }
+                                        this->core.gl.d3d12_interop_fence = InteropFence;
+#endif
                                     }
 #endif
                                 }
@@ -517,6 +537,14 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
             if ((FString)GDynamicRHI->GetName() == TEXT("D3D12"))
             {
                 verify(CloseHandle(SharedHandle));
+            }
+
+            if (FenceSharedHandle != nullptr)
+            {
+                glGenSemaphoresEXT(1, &core.gl.interop_semaphore);
+                // Per EXT_external_objects_win32 a successful import transfers ownership of the NT
+                // handle to the GL implementation, so unlike the memory handle above no CloseHandle
+                glImportSemaphoreWin32HandleEXT(core.gl.interop_semaphore, GL_HANDLE_TYPE_D3D12_FENCE_EXT, FenceSharedHandle);
             }
 #endif
         } else { // RHI Interop not supported fallback to creating OpenGL framebuffer
@@ -832,11 +860,38 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
         check(core.using_opengl && core.gl.pixel_type == GL_UNSIGNED_BYTE);
 
         if (core.gl.rhi_interop_memory) {
-            // @todo I make no attempt to synchronize the core's drawing operations with RHI reads, some cores will work but others have synchronization issues
-            //       It seems like a good reference resource on how to do this is either ITextureShareItem Engine/Source/Programs/TextureShare/TextureShareSDK
-            //       The real fix is pairing the shared memory with shared semaphores (GL_EXT_semaphore_win32 + a shared ID3D12Fence)
+#if PLATFORM_WINDOWS && (ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 1))
+            if (core.gl.interop_semaphore) {
+                // GL signals the shared D3D12 fence from the GPU when this frame's rendering
+                // completes; UE's graphics queue waits on it GPU-side before executing subsequently
+                // submitted work (which includes the scene passes sampling the rendertarget).
+                // Neither CPU blocks, so unlike glFinish this can't stall the libretro thread
+                // behind Unreal's GPU work or vice versa
+                core.gl.interop_fence_value++;
+                GLuint64 fence_value = core.gl.interop_fence_value;
+                glSemaphoreParameterui64vEXT(core.gl.interop_semaphore, GL_D3D12_FENCE_VALUE_EXT, &fence_value);
+                GLenum dst_layout = GL_LAYOUT_SHADER_READ_ONLY_EXT;
+                LogGLErrors(glSignalSemaphoreEXT(core.gl.interop_semaphore, 0, nullptr, 1, &core.gl.texture, &dst_layout));
+                glFlush(); // The signal has to actually reach the GPU or the D3D12 queue waits forever
+
+                ENQUEUE_RENDER_COMMAND(LibretroInteropFenceWait)([this, fence_value](FRHICommandListImmediate& RHICmdList)
+                {
+                    RHICmdList.EnqueueLambda([this, fence_value](FRHICommandList&)
+                    {
+                        ID3D12CommandQueue* Queue = (ID3D12CommandQueue*)GDynamicRHI->RHIGetNativeGraphicsQueue();
+                        if (Queue && core.gl.d3d12_interop_fence)
+                        {
+                            Queue->Wait(core.gl.d3d12_interop_fence, fence_value);
+                        }
+                    });
+                });
+            } else
+#endif
             if (bSynchronousTickMode.load(std::memory_order_relaxed)) {
-                // Hard sync: the shared memory holds the finished frame before this tick returns
+                // No shared fence available (UE4 or import failed); brute force. Note glFinish only
+                // waits for this GL context's commands, but drivers may schedule them behind other
+                // work on the same hardware queue so under GPU contention this can inherit Unreal's
+                // GPU frame time
                 LogGLErrors(glFinish());
             }
         } else if (bSynchronousTickMode.load(std::memory_order_relaxed)) {
@@ -1926,6 +1981,16 @@ cleanup:
 
                                 l->Unreal.TextureRHI.SafeRelease();
                                 l->Unreal.SourceRGB565TextureRHI.SafeRelease();
+#if PLATFORM_WINDOWS
+                                if (l->core.gl.d3d12_interop_fence)
+                                {
+                                    // Any queue waits on this fence were enqueued before this cleanup command
+                                    // (render commands are FIFO) and their matching GL signals were flushed,
+                                    // so the queue can't be left waiting on a released fence
+                                    l->core.gl.d3d12_interop_fence->Release();
+                                    l->core.gl.d3d12_interop_fence = nullptr;
+                                }
+#endif
                             
                                 if (l->LambdaRunnable)
                                 {
