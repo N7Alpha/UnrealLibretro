@@ -212,8 +212,10 @@ protected:
         // These are all ThreadSafe shared pointers that are the main bridge between and unreal
 #if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 1
         FTextureRHIRef TextureRHI;
+        FTextureRHIRef SourceRGB565TextureRHI; // Raw RGB565 frames are uploaded here then expanded into TextureRHI on the GPU
 #else
         FTexture2DRHIRef TextureRHI;
+        FTexture2DRHIRef SourceRGB565TextureRHI;
 #endif
         TSharedPtr<TCircularQueue<int32>, ESPMode::ThreadSafe> AudioQueue;
         
@@ -260,6 +262,10 @@ protected:
             GLuint rhi_interop_memory;
 
             GLuint pixel_buffer_objects[2];
+            // Dimensions of the readback in flight into the free PBO; recorded when glReadPixels is
+            // issued and consumed when that PBO is mapped and handed off the following frame. Zero
+            // until the first readback completes
+            unsigned pbo_readback_width, pbo_readback_height;
             GLsync fence;
 
             GLuint pitch;

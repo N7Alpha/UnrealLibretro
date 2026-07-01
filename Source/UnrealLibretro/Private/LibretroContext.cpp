@@ -35,6 +35,18 @@ THIRD_PARTY_INCLUDES_END
 #include "RenderingThread.h"
 #include "Runtime/Launch/Resources/Version.h"
 
+// For the GPU RGB565 conversion pass in core_video_refresh
+#include "RHI.h"
+#include "RHIStaticStates.h"
+#include "PipelineStateCache.h"
+#include "ScreenRendering.h"       // Engine's FScreenVS/FScreenPS screen copy shaders
+#include "CommonRenderResources.h" // GFilterVertexDeclaration
+#include "RendererInterface.h"     // IRendererModule::DrawRectangle
+#include "Modules/ModuleManager.h"
+#if ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 3)
+#include "ShaderParameterStruct.h" // SetShaderParametersLegacyPS
+#endif
+
 #if PLATFORM_APPLE
 #include <dispatch/dispatch.h>
 #endif
@@ -583,8 +595,6 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
  void FLibretroContext::core_video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
     DECLARE_SCOPE_CYCLE_COUNTER(TEXT("PrepareFrameBufferForRenderThread"), STAT_LibretroPrepareFrameBufferForRenderThread, STATGROUP_UnrealLibretro);
 
-    unsigned SrcPitch = 4 * core.av.geometry.max_width;
-
     // Unreal's render queue can be more than one frame deep, so a single pending-frame slot drops
     // frames when the render thread falls behind. Instead each frame gets its own ringbuffer entry
     // and its own unconditionally dispatched upload; when every buffer is in flight we block here
@@ -602,29 +612,66 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
         return buffer;
     };
 
-    auto dispatch_frame_upload_to_unreal_RHI = [&](void* const buffer)
+    // Uploads are sized to the frame the core actually produced rather than the max potential
+    // geometry so we don't waste memory and PCIe bandwidth moving rows and columns of stale pixels.
+    // RGB565 frames are uploaded raw (2 instead of 4 bytes per pixel) and expanded to the render
+    // target format on the GPU with the engine's screen copy shaders
+    auto dispatch_frame_upload_to_unreal_RHI = [&](void* const buffer, unsigned upload_width, unsigned upload_height,
+                                                   unsigned upload_pitch, bool upload_is_rgb565)
     {
         Unreal.FrameUpload.InFlightCount.Increment();
         ENQUEUE_RENDER_COMMAND(CopyToUnrealFramebufferTask)( // @todo this triggers an assert on MacOS you can get around it by enqueuing through the TaskGraph instead no idea why this is the case
             [this,
             buffer,
+            upload_pitch,
+            upload_is_rgb565,
             MipIndex = 0,
-            SrcPitch,
-            Region = FUpdateTextureRegion2D(0, 0, 0, 0, width, height)]
+            Region = FUpdateTextureRegion2D(0, 0, 0, 0, upload_width, upload_height)]
         (FRHICommandListImmediate& RHICmdList)
         {
+            if (upload_is_rgb565 && !this->Unreal.SourceRGB565TextureRHI.GetReference())
+            {
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 2
+                FRHITextureCreateDesc TextureDesc;
+                TextureDesc.Extent = FIntPoint(core.av.geometry.max_width, core.av.geometry.max_height);
+                TextureDesc.Format = PF_R5G6B5;
+                TextureDesc.NumMips = 1;
+                TextureDesc.NumSamples = 1;
+                TextureDesc.Flags = ETextureCreateFlags::ShaderResource | ETextureCreateFlags::Dynamic;
+                TextureDesc.Dimension = ETextureDimension::Texture2D;
+
+                TextureDesc.DebugName = TEXT("LibretroSourceRGB565");
+
+                this->Unreal.SourceRGB565TextureRHI = RHICreateTexture(TextureDesc);
+#else
+                FRHIResourceCreateInfo Info{ TEXT("LibretroSourceRGB565") };
+
+                this->Unreal.SourceRGB565TextureRHI =
+                    RHICreateTexture2D(core.av.geometry.max_width,
+                        core.av.geometry.max_height,
+                        PF_R5G6B5,
+                        1,
+                        1,
+                        TexCreate_ShaderResource | TexCreate_Dynamic,
+                        Info);
+#endif
+            }
+
             RHICmdList.EnqueueLambda([=, this](FRHICommandList& RHICmdList)
                 {
-                    if (this->Unreal.TextureRHI.GetReference()) {
+                    auto* UpdateTexture = upload_is_rgb565
+                        ? this->Unreal.SourceRGB565TextureRHI.GetReference()
+                        : this->Unreal.TextureRHI.GetReference();
+                    if (UpdateTexture) {
                         GDynamicRHI->RHIUpdateTexture2D(
 #if    ENGINE_MAJOR_VERSION == 5 \
     && ENGINE_MINOR_VERSION >= 2
                             RHICmdList,
 #endif
-                            this->Unreal.TextureRHI.GetReference(),
+                            UpdateTexture,
                             MipIndex,
                             Region,
-                            SrcPitch,
+                            upload_pitch,
                             (uint8*)buffer);
                     } else {
                         ErrorMessage = TEXT("Texture RHI reference is null");
@@ -636,6 +683,87 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
                     this->Unreal.FrameUpload.BufferFreedEvent->Trigger();
                 }
             );
+
+            if (upload_is_rgb565)
+            {
+                // Sample the RGB565 texture into the render target. This is recorded after the
+                // EnqueueLambda above and the immediate command list executes FIFO, so the
+                // intermediate texture holds this frame's pixels by the time the draw samples it
+                auto* RenderTarget = this->Unreal.TextureRHI.GetReference();
+                auto* SourceTexture = this->Unreal.SourceRGB565TextureRHI.GetReference();
+#if ENGINE_MAJOR_VERSION > 4 || ENGINE_MINOR_VERSION >= 26
+                bool render_target_drawable = RenderTarget && EnumHasAnyFlags(RenderTarget->GetFlags(), TexCreate_RenderTargetable);
+#else
+                bool render_target_drawable = RenderTarget && (RenderTarget->GetFlags() & TexCreate_RenderTargetable) != 0;
+#endif
+                if (!SourceTexture || !render_target_drawable) {
+                    UE_LOG(Libretro, Verbose, TEXT("Skipping RGB565 conversion pass render target isn't drawable"));
+                    return;
+                }
+
+                FIntPoint TargetSize(RenderTarget->GetSizeX(), RenderTarget->GetSizeY());
+
+#if ENGINE_MAJOR_VERSION > 4 || ENGINE_MINOR_VERSION >= 26
+                RHICmdList.Transition(FRHITransitionInfo(RenderTarget, ERHIAccess::Unknown, ERHIAccess::RTV));
+#else
+                RHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, RenderTarget);
+#endif
+
+                FRHIRenderPassInfo RPInfo(RenderTarget, ERenderTargetActions::Load_Store);
+                RHICmdList.BeginRenderPass(RPInfo, TEXT("LibretroRGB565Convert"));
+                {
+                    RHICmdList.SetViewport(0, 0, 0.0f, TargetSize.X, TargetSize.Y, 1.0f);
+
+                    FGraphicsPipelineStateInitializer GraphicsPSOInit;
+                    RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+                    GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
+                    GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
+                    GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+                    GraphicsPSOInit.PrimitiveType = PT_TriangleList;
+
+                    auto ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
+                    TShaderMapRef<FScreenVS> VertexShader(ShaderMap);
+                    TShaderMapRef<FScreenPS> PixelShader(ShaderMap);
+
+                    GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
+#if ENGINE_MAJOR_VERSION > 4 || ENGINE_MINOR_VERSION >= 25
+                    GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+                    GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
+#else
+                    GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
+                    GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+#endif
+
+#if ENGINE_MAJOR_VERSION >= 5
+                    SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+#else
+                    SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+#endif
+
+#if ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 3)
+                    SetShaderParametersLegacyPS(RHICmdList, PixelShader, TStaticSamplerState<SF_Point>::GetRHI(), SourceTexture);
+#else
+                    PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), SourceTexture);
+#endif
+
+                    IRendererModule& RendererModule = FModuleManager::GetModuleChecked<IRendererModule>("Renderer");
+                    RendererModule.DrawRectangle(
+                        RHICmdList,
+                        0, 0,                        // Dest X, Y
+                        Region.Width, Region.Height, // Dest Width, Height
+                        0, 0,                        // Source U, V
+                        Region.Width, Region.Height, // Source USize, VSize
+                        TargetSize,                  // Target buffer size
+                        FIntPoint(SourceTexture->GetSizeX(), SourceTexture->GetSizeY()),
+                        VertexShader,
+                        EDRF_Default);
+                }
+                RHICmdList.EndRenderPass();
+
+#if ENGINE_MAJOR_VERSION > 4 || ENGINE_MINOR_VERSION >= 26
+                RHICmdList.Transition(FRHITransitionInfo(RenderTarget, ERHIAccess::RTV, ERHIAccess::SRVMask));
+#endif
+            }
         }
         );
     };
@@ -643,49 +771,62 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
     if (data && data != RETRO_HW_FRAME_BUFFER_VALID) {
         DECLARE_SCOPE_CYCLE_COUNTER(TEXT("CPUConvertAndCopyFramebuffer"), STAT_LibretroCPUConvertAndCopyFramebuffer, STATGROUP_UnrealLibretro);
 
-        auto bgra_buffer = acquire_frame_upload_buffer();
+        if (core.gl.pixel_type == GL_UNSIGNED_SHORT_5_6_5 && GPixelFormats[PF_R5G6B5].Supported) {
+            // Skip the CPU conversion and hand the core's raw RGB565 rows to the GPU conversion
+            // pass: half the copy and PCIe traffic of expanding to 32-bit here
+            unsigned dst_pitch = 2 * width;
+            uint8* rgb565_buffer = (uint8*)acquire_frame_upload_buffer();
+            for (unsigned y = 0; y < height; y++) {
+                FMemory::Memcpy(rgb565_buffer + y * dst_pitch, (const uint8*)data + y * pitch, dst_pitch);
+            }
 
-        if (core.gl.pixel_format == GL_BGRA) {
-        switch (core.gl.pixel_type) {
-            case GL_UNSIGNED_SHORT_5_6_5: {
-                conv_rgb565_argb8888(bgra_buffer, data,
-                    width, height,
-                    SrcPitch, pitch);
-            }
-            break;
-            case GL_UNSIGNED_SHORT_5_5_5_1: {
-                checkNoEntry();
-            }
-            break;
-            case GL_UNSIGNED_BYTE: {
-                conv_copy(bgra_buffer, data,
-                    width, height,
-                    SrcPitch, pitch);
-            }
-            break;
-            default:
-                checkNoEntry();
-            }
+            dispatch_frame_upload_to_unreal_RHI(rgb565_buffer, width, height, dst_pitch, true);
         } else {
-            switch (core.gl.pixel_type) {
-            case GL_UNSIGNED_SHORT_5_6_5: {
-                conv_rgb565_abgr8888(bgra_buffer, data,
-                    width, height,
-                    SrcPitch, pitch);
-            }
-            break;
-            case GL_UNSIGNED_BYTE: {
-                conv_argb8888_abgr8888(bgra_buffer, data,
-                    width, height,
-                    SrcPitch, pitch);
-            }
-            break;
-            default:
-                checkNoEntry();
-            }
-        }
+            unsigned dst_pitch = 4 * width; // Convert into tightly packed rows; a max_width stride uploads stale pixels past the frame's edge
+            auto bgra_buffer = acquire_frame_upload_buffer();
 
-        dispatch_frame_upload_to_unreal_RHI(bgra_buffer);
+            if (core.gl.pixel_format == GL_BGRA) {
+            switch (core.gl.pixel_type) {
+                case GL_UNSIGNED_SHORT_5_6_5: {
+                    conv_rgb565_argb8888(bgra_buffer, data,
+                        width, height,
+                        dst_pitch, pitch);
+                }
+                break;
+                case GL_UNSIGNED_SHORT_5_5_5_1: {
+                    checkNoEntry();
+                }
+                break;
+                case GL_UNSIGNED_BYTE: {
+                    conv_copy(bgra_buffer, data,
+                        width, height,
+                        dst_pitch, pitch);
+                }
+                break;
+                default:
+                    checkNoEntry();
+                }
+            } else {
+                switch (core.gl.pixel_type) {
+                case GL_UNSIGNED_SHORT_5_6_5: {
+                    conv_rgb565_abgr8888(bgra_buffer, data,
+                        width, height,
+                        dst_pitch, pitch);
+                }
+                break;
+                case GL_UNSIGNED_BYTE: {
+                    conv_argb8888_abgr8888(bgra_buffer, data,
+                        width, height,
+                        dst_pitch, pitch);
+                }
+                break;
+                default:
+                    checkNoEntry();
+                }
+            }
+
+            dispatch_frame_upload_to_unreal_RHI(bgra_buffer, width, height, dst_pitch, false);
+        }
     }
     else if (data == RETRO_HW_FRAME_BUFFER_VALID) {
         check(core.using_opengl && core.gl.pixel_type == GL_UNSIGNED_BYTE);
@@ -718,11 +859,18 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
                             UE_LOG(Libretro, Error, TEXT("%s"), *ErrorMessage);
                             return;
                         }
-                        // Copy out of the mapped PBO so it can be unmapped and reused for the next
-                        // readback while this frame's upload is still queued behind the RHI thread
-                        void* upload_buffer = acquire_frame_upload_buffer();
-                        FMemory::Memcpy(upload_buffer, frame_buffer, (SIZE_T)SrcPitch * height);
-                        dispatch_frame_upload_to_unreal_RHI(upload_buffer);
+                        // The PBO holds the readback issued last frame so it's sized/uploaded with the
+                        // dimensions recorded then, not this frame's. Zero means no readback has
+                        // completed into it yet (the very first frame maps the primed empty PBO)
+                        if (core.gl.pbo_readback_width > 0) {
+                            unsigned readback_pitch = 4 * core.gl.pbo_readback_width;
+                            // Copy out of the mapped PBO so it can be unmapped and reused for the next
+                            // readback while this frame's upload is still queued behind the RHI thread
+                            void* upload_buffer = acquire_frame_upload_buffer();
+                            FMemory::Memcpy(upload_buffer, frame_buffer, (SIZE_T)readback_pitch * core.gl.pbo_readback_height);
+                            dispatch_frame_upload_to_unreal_RHI(upload_buffer,
+                                core.gl.pbo_readback_width, core.gl.pbo_readback_height, readback_pitch, false);
+                        }
                     }
 
                     { // Download Libretro Core frame from OpenGL asynchronously
@@ -738,12 +886,16 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
                             GLint mip_level = 0;
                             void* offset_into_pbo_where_data_is_written = 0x0;
                             // This call is async always and a DMA transfer on most platforms
+                            // Only the region the core actually rendered is read back; the rest of the
+                            // max-geometry framebuffer is stale pixels not worth the bandwidth
                             LogGLErrors(glReadPixels(0, 0,
-                                core.av.geometry.max_width, // @enhancement Only copy the portion of the buffer we need rather than the max possible potential size
-                                core.av.geometry.max_height,
+                                width,
+                                height,
                                 core.gl.pixel_format,
                                 core.gl.pixel_type,
                                 offset_into_pbo_where_data_is_written));
+                            core.gl.pbo_readback_width = width;
+                            core.gl.pbo_readback_height = height;
                         }
                         glDeleteSync(core.gl.fence);
                         core.gl.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -1718,6 +1870,7 @@ cleanup:
 #endif
 
                                 l->Unreal.TextureRHI.SafeRelease();
+                                l->Unreal.SourceRGB565TextureRHI.SafeRelease();
                             
                                 if (l->LambdaRunnable)
                                 {

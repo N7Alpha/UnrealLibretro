@@ -75,6 +75,10 @@ public class UnrealLibretro : ModuleRules
 			PrivateDependencyModuleNames.Add("AudioExtensions");
 		}
 
+		// For the engine's screen copy shaders (FScreenVS/FScreenPS) and IRendererModule::DrawRectangle
+		// used to expand RGB565 frames to the render target format on the GPU
+		PrivateDependencyModuleNames.Add("Renderer");
+
 		// MARK: ThirdParty Libraries
 		// netarch
 		PrivateDefinitions.Add("SAM2_ENABLE_LOGGING");
