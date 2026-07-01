@@ -73,7 +73,7 @@ void ULibretroCoreInstance::NetplaySync(int PeerId)
         {
             if (CoreInstance->netplay_session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)
             {
-                SAM2_LOG_INFO("Disconnecting from peer %05d room and connecting to peer %05d room", PeerId);
+                SAM2_LOG_INFO("Leaving the current room and connecting to peer %05d", PeerId);
                 ulnet_session_tear_down(CoreInstance->netplay_session);
             }
 
@@ -111,6 +111,7 @@ void ULibretroCoreInstance::NetplayHost(int PeerId)
     FMemory::Memcpy(HostRoomRequest.room.name, RoomNameUTF8.Get(), EndOfRoomNameIndex);
     HostRoomRequest.room.name[EndOfRoomNameIndex] = '\0';
     HostRoomRequest.room.flags |= SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+    HostRoomRequest.room.peer_topology |= (1ULL << SAM2_AUTHORITY_INDEX);
     CoreInstance.GetValue()->NetplayTasks.Enqueue([CoreInstance = this->CoreInstance.GetValue(), HostRoomRequest, PeerId](libretro_api_t& libretro_api)
         mutable {
             HostRoomRequest.room.rom_hash = CoreInstance->rom_hash;

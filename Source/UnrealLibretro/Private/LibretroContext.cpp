@@ -1,3 +1,6 @@
+#define SAM2_IMPLEMENTATION
+#define ULNET_IMPLEMENTATION
+
 #include "LibretroContext.h"
 extern "C"
 {
@@ -5,11 +8,9 @@ extern "C"
 }
 
 #include "UnrealLibretro.h" // For Libretro debug log category
-#define ULNET_IMPLEMENTATION
 #if UNREALLIBRETRO_NETIMGUI
 #define ULNET_IMGUI
 #endif
-#define SAM2_IMPLEMENTATION
 
 THIRD_PARTY_INCLUDES_START
 #include "sam2.h"
@@ -1193,7 +1194,7 @@ int FLibretroContext::load_game(const char* filename) {
         return 1;
     }
 
-    rom_hash = ulnet_crc32(gameBinary.GetData(), gameBinary.Num(), 0);
+    rom_hash = ulnet_xxh32(gameBinary.GetData(), gameBinary.Num(), 0);
 
     if (filename && !system.need_fullpath) {
         info.data = gameBinary.GetData();
@@ -1451,11 +1452,9 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 #if UNREALLIBRETRO_NETIMGUI
                         NetImgui::NewFrame();
 #endif
-                        ulnet_core_option_t option = { 0 };
-                        auto state = ulnet_query_generate_next_input(l->netplay_session, &option);
-                        if (state) {
-                            memor(state, l->NextInputState, sizeof(*state));
-                        }
+                        static_assert(sizeof(l->netplay_session->next_input_state) == sizeof(l->NextInputState),
+                            "Unreal and ULNET input state layouts must match");
+                        memcpy(l->netplay_session->next_input_state, l->NextInputState, sizeof(l->NextInputState));
                         l->netplay_session->retro_run = [](void* user_ptr) {
                             FLibretroContext* l = (FLibretroContext*)user_ptr;
                             if (l->core.gl.shared_context) {
@@ -1519,11 +1518,9 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
                                 if (status < 0) {
                                     SAM2_LOG_ERROR("Error polling sam2 server: %d", status);
-                                    if (status == SAM2_RESPONSE_VERSION_MISMATCH) {
-                                        l->connected_to_sam2 = false;
-                                        sam2_client_disconnect(l->sam_socket);
-                                        l->sam_socket = SAM2_SOCKET_INVALID;
-                                    }
+                                    l->connected_to_sam2 = false;
+                                    sam2_client_disconnect(l->sam_socket);
+                                    l->sam_socket = SAM2_SOCKET_INVALID;
                                     break;
                                 }
                                 else if (status == 0) {
@@ -1536,7 +1533,7 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                                         0 // Messages from the coordinator are never sam2_join_header (peer-relayed only); sender is unused.
                                     );
 
-                                    if (memcmp(&l->latest_sam2_message, sam2_fail_header, SAM2_HEADER_TAG_SIZE) == 0) {
+                                    if (sam2_header_matches((const char*)&l->latest_sam2_message, sam2_fail_header)) {
                                         FFunctionGraphTask::CreateAndDispatchWhenReady([WeakLibretroCoreInstance, ErrorMessage = l->latest_sam2_message.error_message]
                                             {
                                                 if (WeakLibretroCoreInstance.IsValid())

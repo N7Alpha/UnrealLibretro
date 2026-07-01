@@ -180,7 +180,7 @@ public:
 
     EPixelFormat UnrealPixelFormat{PF_B8G8R8A8};
 
-    sam2_socket_t sam_socket = 0;
+    sam2_socket_t sam_socket = SAM2_SOCKET_INVALID;
     int netimgui_port = 0;
     bool connected_to_sam2 = false;
     sam2_message_u latest_sam2_message;
