@@ -1359,9 +1359,6 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                 goto cleanup;
             }
 
-            // This does load the game but does many other things as well. If hardware rendering is needed it loads OpenGL resources from the OS and this also initializes the unreal engine resources for audio and video.
-            l->load_game(game.IsEmpty() ? nullptr : TCHAR_TO_UTF8(*game));
-
             for (int Port = 0; Port < PortCount; Port++)
             {
                 unsigned DeviceID = RETRO_DEVICE_DEFAULT;
