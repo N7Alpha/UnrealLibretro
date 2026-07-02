@@ -23,6 +23,9 @@ Unfortunately the full Libretro API is quite complex so I have only partially im
 
 * `sameboy         `
 * `dosbox_pure     ` (This one fails when loading the content)
+* `swanstation     ` (Crashes; reported in issue #27)
+* `pcsx2           ` (Fails when loading the content, possibly just missing [BIOS files](https://docs.libretro.com/library/pcsx2/); reported in issue #27)
+* `mame2003_plus   ` (Some ROMs freeze or fail to load; reported in issue #18)
 
 # Android
 
