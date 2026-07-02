@@ -282,7 +282,10 @@ void ULibretroCoreInstance::Launch()
                                 weakThis->AudioBuffer->SetSampleRate(system_av_info.timing.sample_rate);
                                 weakThis->AudioBuffer->NumChannels = 2;
                                 static_cast<URawAudioSoundWave*>(weakThis->AudioBuffer)->AudioQueue = AudioQueue;
-                                weakThis->AudioComponent->SetSound(weakThis->AudioBuffer);
+                                if (weakThis->AudioComponent) // Not assigned in Blueprint, or running headless
+                                {
+                                    weakThis->AudioComponent->SetSound(weakThis->AudioBuffer);
+                                }
                             }
 
                             weakThis->FrameWidth  = system_av_info.geometry.base_width;
@@ -342,6 +345,25 @@ void ULibretroCoreInstance::Pause(bool ShouldPause)
 void ULibretroCoreInstance::Shutdown()
 {
     NOT_LAUNCHED_GUARD
+
+    // Persist SRAM before the core shuts down. Every teardown funnels through here (PIE end,
+    // BeginDestroy, and relaunching with a different ROM) so saves aren't lost when the
+    // component is torn down without being garbage collected first (issue #7)
+    if (!ResolvedSRAMPath.IsEmpty())
+    {
+        this->CoreInstance.GetValue()->EnqueueTask(
+            [SRAMPath = ResolvedSRAMPath](libretro_api_t& libretro_api)
+            {
+                void*  SRAMData = libretro_api.get_memory_data(RETRO_MEMORY_SAVE_RAM);
+                size_t SRAMSize = libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM);
+
+                // Cores that report no save RAM must not truncate an existing save file to zero bytes
+                if (SRAMData && SRAMSize > 0)
+                {
+                    FFileHelper::SaveArrayToFile(TArrayView<const uint8>((const uint8*)SRAMData, SRAMSize), *SRAMPath);
+                }
+            });
+    }
 
     if (Core)
     {
