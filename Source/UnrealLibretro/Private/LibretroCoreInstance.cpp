@@ -181,8 +181,9 @@ void ULibretroCoreInstance::Launch()
     //RenderTarget->AddressY = TA_Clamp;
 
     Sam2ServerAddress = ULibretroCoreInstance::GetAuthorityIP();
+    ResolvedSRAMPath = FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath);
     this->CoreInstance = FLibretroContext::Launch(this, _CorePath, _RomPath, RenderTarget, static_cast<URawAudioSoundWave*>(AudioBuffer),
-        [weakThis = MakeWeakObjectPtr(this), SRAMPath = FUnrealLibretroModule::ResolveSRAMPath(_RomPath, SRAMPath)]
+        [weakThis = MakeWeakObjectPtr(this), SRAMPath = ResolvedSRAMPath]
         (FLibretroContext *_CoreInstance, libretro_api_t &libretro_api, const FString& ErrorMessage)
         {
             bool bCoreLaunchSucceeded = _CoreInstance->CoreState.load(std::memory_order_relaxed) != FLibretroContext::ECoreState::StartFailed;
@@ -218,10 +219,16 @@ void ULibretroCoreInstance::Launch()
                 // Core has loaded
                 // Load save data into core @todo this is just a weird place to hook this in
                 auto File = IPlatformFile::GetPlatformPhysical().OpenRead(*SRAMPath);
-                if (File && libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM))
+                if (File)
                 {
-                    File->Read((uint8*)libretro_api.get_memory_data(RETRO_MEMORY_SAVE_RAM), 
-                                       libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM));
+                    void*  SRAMData = libretro_api.get_memory_data(RETRO_MEMORY_SAVE_RAM);
+                    size_t SRAMSize = libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM);
+                    if (SRAMData && SRAMSize > 0)
+                    {
+                        // The core and the file on disk can disagree about the save size (different core
+                        // version, or a stale zero-length file) so only read as many bytes as both have
+                        File->Read((uint8*)SRAMData, FMath::Min((int64)SRAMSize, File->Size()));
+                    }
                     File->~IFileHandle(); // must be called explicitly
                 }
             
@@ -238,9 +245,12 @@ void ULibretroCoreInstance::Launch()
                             weakThis->FrameHeight = geometry.base_height;
                         
                             weakThis->OnCoreFrameBufferResize.Broadcast();
-                        
-                            weakThis->AudioComponent->SetSound(weakThis->AudioBuffer);
-                            weakThis->AudioComponent->Play();
+
+                            if (weakThis->AudioComponent) // Not assigned in Blueprint, or running headless
+                            {
+                                weakThis->AudioComponent->SetSound(weakThis->AudioBuffer);
+                                weakThis->AudioComponent->Play();
+                            }
                         }
                     }, TStatId(), nullptr, ENamedThreads::GameThread);
             }
@@ -272,7 +282,10 @@ void ULibretroCoreInstance::Launch()
                                 weakThis->AudioBuffer->SetSampleRate(system_av_info.timing.sample_rate);
                                 weakThis->AudioBuffer->NumChannels = 2;
                                 static_cast<URawAudioSoundWave*>(weakThis->AudioBuffer)->AudioQueue = AudioQueue;
-                                weakThis->AudioComponent->SetSound(weakThis->AudioBuffer);
+                                if (weakThis->AudioComponent) // Not assigned in Blueprint, or running headless
+                                {
+                                    weakThis->AudioComponent->SetSound(weakThis->AudioBuffer);
+                                }
                             }
 
                             weakThis->FrameWidth  = system_av_info.geometry.base_width;
@@ -332,6 +345,25 @@ void ULibretroCoreInstance::Pause(bool ShouldPause)
 void ULibretroCoreInstance::Shutdown()
 {
     NOT_LAUNCHED_GUARD
+
+    // Persist SRAM before the core shuts down. Every teardown funnels through here (PIE end,
+    // BeginDestroy, and relaunching with a different ROM) so saves aren't lost when the
+    // component is torn down without being garbage collected first (issue #7)
+    if (!ResolvedSRAMPath.IsEmpty())
+    {
+        this->CoreInstance.GetValue()->EnqueueTask(
+            [SRAMPath = ResolvedSRAMPath](libretro_api_t& libretro_api)
+            {
+                void*  SRAMData = libretro_api.get_memory_data(RETRO_MEMORY_SAVE_RAM);
+                size_t SRAMSize = libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM);
+
+                // Cores that report no save RAM must not truncate an existing save file to zero bytes
+                if (SRAMData && SRAMSize > 0)
+                {
+                    FFileHelper::SaveArrayToFile(TArrayView<const uint8>((const uint8*)SRAMData, SRAMSize), *SRAMPath);
+                }
+            });
+    }
 
     if (Core)
     {
@@ -425,19 +457,7 @@ void ULibretroCoreInstance::TickComponent(float DeltaTime, enum ELevelTick TickT
 
 void ULibretroCoreInstance::BeginDestroy()
 {
-    if (this->CoreInstance.IsSet())
-    {
-        // Save SRam
-        this->CoreInstance.GetValue()->EnqueueTask(
-            [SRAMPath = FUnrealLibretroModule::ResolveSRAMPath(RomPath, SRAMPath)](auto libretro_api)
-            {
-                auto SRAMBuffer = TArrayView<const uint8>((uint8*)libretro_api.get_memory_data(RETRO_MEMORY_SAVE_RAM),
-                                                                  libretro_api.get_memory_size(RETRO_MEMORY_SAVE_RAM));
-                FFileHelper::SaveArrayToFile(SRAMBuffer, *SRAMPath);
-            });
-
-        Shutdown();
-    }
+    Shutdown(); // Also persists SRAM
 
     Super::BeginDestroy();
 }
