@@ -23,6 +23,7 @@ THIRD_PARTY_INCLUDES_END
 #include "Runtime/Launch/Resources/Version.h"
 
 #include "Misc/FileHelper.h"
+#include "Misc/App.h" // FApp::CanEverRender
 
 #include "LibretroCoreInstance.h"
 #include "LibretroSettings.h"
@@ -427,8 +428,14 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
                 const unsigned CapacityFrames = CapacityMilliseconds * (core.av.timing.sample_rate / 1000.0);
                 Unreal.AudioQueue = MakeShared<TCircularQueue<int32>, ESPMode::ThreadSafe>(CapacityFrames); // @todo move to audio init when the hack below is removed
 
+                if (!FApp::CanEverRender())
+                {
+                    // Dedicated servers, commandlets, and -nullrhi processes have no render thread or
+                    // usable RHI resources. Leave Unreal.TextureRHI null (core_video_refresh drops
+                    // frames) and skip audio wiring; the core still runs input, netplay, and savestates
+                }
                 // Make sure the game objects haven't been GCed
-                if (!UnrealSoundBuffer.IsValid() || !UnrealRenderTarget.IsValid())
+                else if (!UnrealSoundBuffer.IsValid() || !UnrealRenderTarget.IsValid())
                 {   // @hack until we acquire our own resources and don't rely on getting them by proxy through a UObject
                     ENQUEUE_RENDER_COMMAND(LibretroInitDummyRHIFramebuffer)
                         ([this](FRHICommandListImmediate& RHICmdList)
@@ -608,11 +615,13 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
         }
     }
 
-    for (int i = 0; i < Unreal.FrameUpload.BUFFER_COUNT; i++) {
-        Unreal.FrameUpload.Buffers[i] = FMemory::Malloc(4 * core.av.geometry.max_width
-                                                          * core.av.geometry.max_height, PLATFORM_CACHE_LINE_SIZE);
+    if (FApp::CanEverRender()) {
+        for (int i = 0; i < Unreal.FrameUpload.BUFFER_COUNT; i++) {
+            Unreal.FrameUpload.Buffers[i] = FMemory::Malloc(4 * core.av.geometry.max_width
+                                                              * core.av.geometry.max_height, PLATFORM_CACHE_LINE_SIZE);
+        }
+        Unreal.FrameUpload.BufferFreedEvent = FPlatformProcess::GetSynchEventFromPool();
     }
-    Unreal.FrameUpload.BufferFreedEvent = FPlatformProcess::GetSynchEventFromPool();
 
     core.hw.context_reset();
     return 0;
@@ -622,6 +631,10 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
 // Stripped down code for profiling purposes https://godbolt.org/z/c57esx
  void FLibretroContext::core_video_refresh(const void *data, unsigned width, unsigned height, unsigned pitch) {
     DECLARE_SCOPE_CYCLE_COUNTER(TEXT("PrepareFrameBufferForRenderThread"), STAT_LibretroPrepareFrameBufferForRenderThread, STATGROUP_UnrealLibretro);
+
+    if (!FApp::CanEverRender()) {
+        return; // Headless (dedicated server/commandlet/nullrhi): no upload buffers, RHI textures, or render thread exist
+    }
 
     // Unreal's render queue can be more than one frame deep, so a single pending-frame slot drops
     // frames when the render thread falls behind. Instead each frame gets its own ringbuffer entry
@@ -662,7 +675,7 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
 #if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 2
                 FRHITextureCreateDesc TextureDesc;
                 TextureDesc.Extent = FIntPoint(core.av.geometry.max_width, core.av.geometry.max_height);
-                TextureDesc.Format = PF_R5G6B5;
+                TextureDesc.Format = PF_R5G6B5_UNORM;
                 TextureDesc.NumMips = 1;
                 TextureDesc.NumSamples = 1;
                 TextureDesc.Flags = ETextureCreateFlags::ShaderResource | ETextureCreateFlags::Dynamic;
@@ -677,7 +690,7 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
                 this->Unreal.SourceRGB565TextureRHI =
                     RHICreateTexture2D(core.av.geometry.max_width,
                         core.av.geometry.max_height,
-                        PF_R5G6B5,
+                        PF_R5G6B5_UNORM,
                         1,
                         1,
                         TexCreate_ShaderResource | TexCreate_Dynamic,
@@ -799,7 +812,7 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
     if (data && data != RETRO_HW_FRAME_BUFFER_VALID) {
         DECLARE_SCOPE_CYCLE_COUNTER(TEXT("CPUConvertAndCopyFramebuffer"), STAT_LibretroCPUConvertAndCopyFramebuffer, STATGROUP_UnrealLibretro);
 
-        if (core.gl.pixel_type == GL_UNSIGNED_SHORT_5_6_5 && GPixelFormats[PF_R5G6B5].Supported) {
+        if (core.gl.pixel_type == GL_UNSIGNED_SHORT_5_6_5 && GPixelFormats[PF_R5G6B5_UNORM].Supported) {
             // Skip the CPU conversion and hand the core's raw RGB565 rows to the GPU conversion
             // pass: half the copy and PCIe traffic of expanding to 32-bit here
             unsigned dst_pitch = 2 * width;
@@ -1198,7 +1211,21 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
     }
     case RETRO_ENVIRONMENT_SET_HW_RENDER: {
         struct retro_hw_render_callback *hw = (struct retro_hw_render_callback*)data;
-        check(hw->context_type < RETRO_HW_CONTEXT_VULKAN);
+
+        // Refusing here is the libretro-sanctioned negotiation path, and multi-renderer cores
+        // handle it: Dolphin falls back to its Null video backend when every SET_HW_RENDER
+        // attempt is refused, and mupen64plus-next never asks at all with the angrylion
+        // software RDP. Accepting on a platform that can't produce a GL context would only
+        // fail later in video context init, taking the whole core launch down with it.
+        bool gl_context_creation_implemented = PLATFORM_WINDOWS || PLATFORM_ANDROID;
+        if (!FApp::CanEverRender() || !gl_context_creation_implemented) {
+            return false;
+        }
+
+        if (hw->context_type >= RETRO_HW_CONTEXT_VULKAN) {
+            UE_LOG(Libretro, Warning, TEXT("Core requested non-OpenGL hardware context %d which is unsupported; refusing so it can fall back"), (int)hw->context_type);
+            return false;
+        }
         hw->get_current_framebuffer = libretro_callbacks->c_get_current_framebuffer;
 #pragma warning(push)
 #pragma warning(disable:4191)
@@ -1280,6 +1307,12 @@ bool FLibretroContext::core_environment(unsigned cmd, void *data) {
     }
     case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER: {
         unsigned* library = (unsigned*)data;
+        if (!FApp::CanEverRender() || !(PLATFORM_WINDOWS || PLATFORM_ANDROID)) {
+            // Steer cores toward their software/null renderer up front; any SET_HW_RENDER
+            // they try anyway will be refused (see above)
+            *library = RETRO_HW_CONTEXT_NONE;
+            return true;
+        }
 #if PLATFORM_ANDROID | PLATFORM_IOS
         *library = RETRO_HW_CONTEXT_OPENGLES3; // Unreal Engine minimum spec requires OpenGL ES 3.1
 #else
@@ -1499,6 +1532,100 @@ void memor(void *dst, const void *src, size_t n) {
     }
 }
 
+#if PLATFORM_MAC
+// dyld coalesces C++ weak-definition symbols across every loaded image, even under two-level
+// namespaces and RTLD_LOCAL, matching purely by symbol name. Two byte-identical copies of a core
+// therefore share the winner's weak definitions -- and through them its internal statics. Fix:
+// in the per-instance copy, clear MH_WEAK_DEFINES|MH_BINDS_TO_WEAK (so the image neither offers
+// nor seeks coalescing) and zero the LC_DYLD_INFO weak_bind table (whose whole purpose is
+// re-pointing this image's references at the coalescing winner). Build-time bindings all target
+// the image's own definitions, so nothing is left dangling. The edit invalidates the code
+// signature, which arm64 requires, so the copy is re-signed ad hoc afterward.
+static bool MacIsolateWeakBindsForInstancedCore(const FString& DylibPath)
+{
+    TArray<uint8> Binary;
+    if (!FFileHelper::LoadFileToArray(Binary, *DylibPath))
+    {
+        return false;
+    }
+
+    auto PatchMachO = [](uint8* MachO, int64 Size) -> bool
+    {
+        constexpr uint32 MH_MAGIC_64 = 0xfeedfacf;
+        constexpr uint32 MH_WEAK_DEFINES_AND_BINDS_TO_WEAK = 0x8000 | 0x10000;
+        constexpr uint32 LC_DYLD_INFO_ANY = 0x22; // LC_DYLD_INFO; LC_DYLD_INFO_ONLY is 0x22 | LC_REQ_DYLD
+        constexpr int64 HeaderSize = 32;
+
+        if (Size < HeaderSize || *(uint32*)MachO != MH_MAGIC_64)
+        {
+            return false; // 32-bit and big-endian slices don't occur for the platforms we load
+        }
+
+        uint32 CommandCount = *(uint32*)(MachO + 16);
+        *(uint32*)(MachO + 24) &= ~MH_WEAK_DEFINES_AND_BINDS_TO_WEAK;
+
+        int64 Offset = HeaderSize;
+        for (uint32 i = 0; i < CommandCount && Offset + 8 <= Size; i++)
+        {
+            uint32 Command = *(uint32*)(MachO + Offset);
+            uint32 CommandSize = *(uint32*)(MachO + Offset + 4);
+            if ((Command & 0x7fffffff) == LC_DYLD_INFO_ANY && Offset + 32 <= Size)
+            {
+                *(uint32*)(MachO + Offset + 24) = 0; // weak_bind_off
+                *(uint32*)(MachO + Offset + 28) = 0; // weak_bind_size
+            }
+            if (CommandSize == 0)
+            {
+                break;
+            }
+            Offset += CommandSize;
+        }
+        return true;
+    };
+
+    constexpr uint32 FAT_CIGAM = 0xbebafeca; // FAT_MAGIC as read on little-endian
+    bool bPatched = false;
+    if (Binary.Num() >= 8 && *(uint32*)Binary.GetData() == FAT_CIGAM)
+    {
+        auto SwapBE = [](uint32 v) { return (v >> 24) | ((v >> 8) & 0xff00) | ((v << 8) & 0xff0000) | (v << 24); };
+        uint32 SliceCount = SwapBE(*(uint32*)(Binary.GetData() + 4));
+        for (uint32 i = 0; i < SliceCount; i++)
+        {
+            int64 ArchOffset = 8 + (int64)i * 20; // struct fat_arch
+            if (ArchOffset + 20 > Binary.Num()) break;
+            uint32 SliceOffset = SwapBE(*(uint32*)(Binary.GetData() + ArchOffset + 8));
+            uint32 SliceSize   = SwapBE(*(uint32*)(Binary.GetData() + ArchOffset + 12));
+            if ((int64)SliceOffset + SliceSize <= Binary.Num())
+            {
+                bPatched |= PatchMachO(Binary.GetData() + SliceOffset, SliceSize);
+            }
+        }
+    }
+    else
+    {
+        bPatched = PatchMachO(Binary.GetData(), Binary.Num());
+    }
+
+    if (!bPatched || !FFileHelper::SaveArrayToFile(Binary, *DylibPath))
+    {
+        return false;
+    }
+
+    // The byte edits invalidated the code signature; arm64 refuses to load unsigned images
+    int32 ReturnCode = -1;
+    FString StdOut, StdErr;
+    FPlatformProcess::ExecProcess(TEXT("/usr/bin/codesign"),
+        *FString::Printf(TEXT("-f -s - \"%s\""), *DylibPath), &ReturnCode, &StdOut, &StdErr);
+    if (ReturnCode != 0)
+    {
+        UE_LOG(Libretro, Warning, TEXT("codesign failed (%d): %s"), ReturnCode, *StdErr);
+        return false;
+    }
+
+    return true;
+}
+#endif
+
 FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreInstance, FString core, FString game, UTextureRenderTarget2D* RenderTarget, URawAudioSoundWave* SoundBuffer, TUniqueFunction<void(FLibretroContext*, libretro_api_t&, const FString&)> LoadedCallback)
 {
 
@@ -1546,7 +1673,37 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
     l->netplay_session = (ulnet_session_t *) ULNET_MALLOC(sizeof(ulnet_session_t));
     memset(l->netplay_session, 0, sizeof(ulnet_session_t));
     ulnet_session_init_defaulted(l->netplay_session);
-    l->netplay_session->delay_frames = 2; // @todo Make configurable
+    l->netplay_session->delay_frames = FMath::Clamp(LibretroCoreInstance->NetplayDelayFrames, 0, ULNET_DELAY_FRAMES_MAX);
+
+    // Capture the declarative netplay intent before the core thread starts
+    ELibretroNetplayRole ResolvedNetplayRole = LibretroCoreInstance->NetplayRole;
+    if (ResolvedNetplayRole == ELibretroNetplayRole::FromUnrealNetRole)
+    {
+        // Authority (dedicated/listen server or standalone) hosts; clients join. With the same
+        // NetplayPeerId configured everywhere, the room finds itself with no further wiring
+        AActor* NetOwner = LibretroCoreInstance->GetOwner();
+        ResolvedNetplayRole = !NetOwner || NetOwner->HasAuthority()
+            ? ELibretroNetplayRole::Host
+            : ELibretroNetplayRole::Join;
+    }
+    l->PendingNetplayRole = (int)ResolvedNetplayRole;
+    l->PendingNetplayPeerId = LibretroCoreInstance->NetplayPeerId;
+    // Join must target a concrete id, and FromUnrealNetRole only works when every side shares one
+    // (the authority claims it, clients look for it) -- so both require a valid NetplayPeerId
+    bool bRequiresConcretePeerId = ResolvedNetplayRole == ELibretroNetplayRole::Join
+        || LibretroCoreInstance->NetplayRole == ELibretroNetplayRole::FromUnrealNetRole;
+    if (   bRequiresConcretePeerId
+        && (l->PendingNetplayPeerId <= SAM2_PORT_SENTINELS_MAX || l->PendingNetplayPeerId > 65535))
+    {
+        UE_LOG(Libretro, Warning, TEXT("NetplayRole requires a concrete NetplayPeerId but %d is invalid (must be %d-65535); netplay disabled for this launch"),
+            LibretroCoreInstance->NetplayPeerId, SAM2_PORT_SENTINELS_MAX + 1);
+        l->PendingNetplayRole = 0;
+    }
+    {
+        AActor* Owner = LibretroCoreInstance->GetOwner();
+        FTCHARToUTF8 RoomNameUtf8(Owner ? *Owner->GetName() : *LibretroCoreInstance->GetName());
+        FCStringAnsi::Strncpy(l->netplay_room_name, RoomNameUtf8.Get(), sizeof(l->netplay_room_name));
+    }
 
     auto LibretroSettings = GetDefault<ULibretroSettings>();
 
@@ -1555,6 +1712,13 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
 
     l->StartingOptions = LibretroSettings->GlobalCoreOptions;
     l->StartingOptions.Append(LibretroCoreInstance->EditorPresetOptions); // Potentially overrides global options
+    if (!FApp::CanEverRender())
+    {
+        // Environment constraints beat per-instance preferences: headless processes refuse hardware
+        // rendering (see RETRO_ENVIRONMENT_SET_HW_RENDER), so e.g. a per-instance GLideN64 preset
+        // must yield to the server's angrylion override or the core won't produce frames at all
+        l->StartingOptions.Append(LibretroSettings->ServerGlobalCoreOptions);
+    }
 
     l->UnrealRenderTarget = MakeWeakObjectPtr(RenderTarget);
     l->UnrealSoundBuffer  = MakeWeakObjectPtr(SoundBuffer);
@@ -1564,7 +1728,8 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
     l->LambdaRunnable = FLambdaRunnable::RunLambdaOnBackGroundThread(FPaths::GetCleanFilename(core) + FPaths::GetCleanFilename(game),
         [=, LoadedCallback = MoveTemp(LoadedCallback), EditorPresetControllers = LibretroCoreInstance->EditorPresetControllers, WeakLibretroCoreInstance = MakeWeakObjectPtr(LibretroCoreInstance),
         Sam2ServerAddress = LibretroCoreInstance->Sam2ServerAddress]() {
-            sam2_room_t NetplayRoomOld = {0};
+            sam2_room_t NetplayRoomOld = {};
+            int64_t DesyncedFrameOld = 0;
             int ErrorCode;
             // Here I load a copy of the dll instead of the original. If you load the same dll multiple times you won't obtain a new instance of the dll loaded into memory,
             // instead all variables and function pointers will point to the original loaded dll
@@ -1587,6 +1752,19 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                 goto cleanup;
             }
 
+#if PLATFORM_MAC
+            // Loading per-instance copies is not enough for isolation on macOS: dyld coalesces C++
+            // weak-definition symbols ACROSS images, so the second copy's weak-bound function tables
+            // (e.g. snes9x's PPU renderer tables) end up pointing into the first copy's code and
+            // statics -- visually a "console VRAM corruption" when cores run side by side. Neutering
+            // the copy's weak-bind participation keeps every reference bound within its own image.
+            if (!MacIsolateWeakBindsForInstancedCore(InstancedCorePath))
+            {
+                UE_LOG(Libretro, Warning, TEXT("Could not isolate weak-bound symbols in '%s'; running multiple"
+                    " instances of this core in one process may corrupt each other's state"), *InstancedCorePath);
+            }
+#endif
+
             l->core.hw.version_major = 4;
             l->core.hw.version_minor = 5;
             l->core.hw.context_type = RETRO_HW_CONTEXT_OPENGL_CORE;
@@ -1602,13 +1780,6 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
             }
 
             l->libretro_api.get_system_info(&l->system);
-
-            if (!l->libretro_api.supports_no_game && game.IsEmpty())
-            {
-                UE_LOG(Libretro, Warning, TEXT("Failed to launch Libretro core '%s'. Path given for ROM was empty"), *core);
-                l->CoreState.store(ECoreState::StartFailed, std::memory_order_release);
-                goto cleanup;
-            }
 
             for (int Port = 0; Port < PortCount; Port++)
             {
@@ -1663,6 +1834,11 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                 FLibretroContext* LibretroContext = (FLibretroContext*)user_ptr;
                 return sam2_client_send(LibretroContext->sam_socket, message);
             };
+            // Fires on the core thread from inside ulnet_poll_session/ulnet_service_network;
+            // stashed and broadcast to the game thread further down this loop
+            l->netplay_session->session_event_callback = [](void* user_ptr, int event) {
+                ((FLibretroContext*)user_ptr)->netplay_session_event_pending = event;
+            };
 
 #if UNREALLIBRETRO_NETIMGUI
             { // Setup ImGui
@@ -1716,11 +1892,11 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                         memcpy(l->netplay_session->next_input_state, l->NextInputState, sizeof(l->NextInputState));
                         l->netplay_session->retro_run = [](void* user_ptr) {
                             FLibretroContext* l = (FLibretroContext*)user_ptr;
-                            if (l->core.gl.shared_context) {
+                            if (l->core.gl.use_shared_context) {
                                 verify(0 == l->SwitchOpenGLContext(UNREALLIBRETRO_SHARED_CONTEXT));
                             }
                             l->libretro_api.run();
-                            if (l->core.gl.shared_context) {
+                            if (l->core.gl.use_shared_context) {
                                 verify(0 == l->SwitchOpenGLContext(UNREALLIBRETRO_FRONTEND_CONTEXT));
                             }
                         };
@@ -1784,13 +1960,54 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                             }, TStatId(), nullptr, ENamedThreads::GameThread);
                         }
 
-                        if (l->connected_to_sam2) {
-                            TUniqueFunction<void(libretro_api_t&)> NetplayTask;
-                            while (l->NetplayTasks.Dequeue(NetplayTask))
-                            {
-                                NetplayTask(l->libretro_api);
+                        // A lifecycle event (host lost, savestate timeout) was recorded by ulnet; relay it to Blueprint
+                        if (int SessionEvent = l->netplay_session_event_pending) {
+                            l->netplay_session_event_pending = 0;
+                            if (l->PendingNetplayRole == (int)ELibretroNetplayRole::Join) {
+                                // A declarative join is still retrying; the event already reset the session
+                                // to solo, which is exactly the state the next attempt needs. Only the final
+                                // deadline failure is surfaced
+                                SAM2_LOG_WARN("Ignoring netplay session event %d while a declarative join is pending", SessionEvent);
+                                SessionEvent = 0;
                             }
+                            if (SessionEvent)
+                            FFunctionGraphTask::CreateAndDispatchWhenReady([WeakLibretroCoreInstance, SessionEvent]
+                                {
+                                    if (WeakLibretroCoreInstance.IsValid())
+                                    {
+                                        WeakLibretroCoreInstance->OnNetplayError.Broadcast(
+                                            SessionEvent == ULNET_SESSION_EVENT_AUTHORITY_LOST
+                                                ? TEXT("Disconnected from the netplay host")
+                                                : TEXT("Timed out waiting for the savestate from the netplay host"),
+                                            SessionEvent);
+                                    }
+                                }, TStatId(), nullptr, ENamedThreads::GameThread);
+                        }
 
+                        {
+                            int OurPort = sam2_get_port_of_peer(&l->netplay_session->room_we_are_in, l->netplay_session->our_peer_id);
+                            int64_t DesyncedFrame = OurPort != -1 && l->netplay_session->peer[OurPort]
+                                ? l->netplay_session->peer[OurPort]->desynced_frame : 0;
+                            if (DesyncedFrame != 0 && DesyncedFrameOld == 0) {
+                                FFunctionGraphTask::CreateAndDispatchWhenReady([WeakLibretroCoreInstance, DesyncedFrame]
+                                    {
+                                        if (WeakLibretroCoreInstance.IsValid())
+                                        {
+                                            WeakLibretroCoreInstance->OnNetplayDesync.Broadcast(DesyncedFrame);
+                                        }
+                                    }, TStatId(), nullptr, ENamedThreads::GameThread);
+                            }
+                            DesyncedFrameOld = DesyncedFrame;
+                        }
+
+                        // Run queued netplay requests even without sam2 so they can report why they can't proceed
+                        TUniqueFunction<void(libretro_api_t&)> NetplayTask;
+                        while (l->NetplayTasks.Dequeue(NetplayTask))
+                        {
+                            NetplayTask(l->libretro_api);
+                        }
+
+                        if (l->connected_to_sam2) {
                             for (int _prevent_infinite_loop_counter = 0; _prevent_infinite_loop_counter < 64; _prevent_infinite_loop_counter++) {
 
                                 int status = sam2_client_poll(l->sam_socket, &l->latest_sam2_message);
@@ -1813,15 +2030,72 @@ FLibretroContext* FLibretroContext::Launch(ULibretroCoreInstance* LibretroCoreIn
                                     );
 
                                     if (sam2_header_matches((const char*)&l->latest_sam2_message, sam2_fail_header)) {
-                                        FFunctionGraphTask::CreateAndDispatchWhenReady([WeakLibretroCoreInstance, ErrorMessage = l->latest_sam2_message.error_message]
+                                        if (l->PendingNetplayRole == (int)ELibretroNetplayRole::Join) {
+                                            // Transient while a declarative join is retrying (e.g. the host's room
+                                            // doesn't exist yet because both instances launched the same frame).
+                                            // Reset to solo so the next attempt can proceed; only the final
+                                            // deadline failure is surfaced to the user
+                                            SAM2_LOG_WARN("Ignoring sam2 error while a declarative netplay join is pending: %s",
+                                                l->latest_sam2_message.error_message.description);
+                                            ulnet_session_tear_down(l->netplay_session);
+                                            ulnet_session_init_defaulted(l->netplay_session);
+                                        } else {
+                                            FFunctionGraphTask::CreateAndDispatchWhenReady([WeakLibretroCoreInstance, ErrorMessage = l->latest_sam2_message.error_message]
+                                                {
+                                                    if (WeakLibretroCoreInstance.IsValid())
+                                                    {
+                                                        WeakLibretroCoreInstance->OnNetplayError.Broadcast(FString(ErrorMessage.description), ErrorMessage.code);
+                                                    }
+                                                }, TStatId(), nullptr, ENamedThreads::GameThread);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Declarative netplay (NetplayRole/NetplayPeerId properties): consumed once the
+                        // sam2 connection is up. Host is fire-and-forget; Join retries until the deadline
+                        // so two instances launched the same frame order themselves without user timers
+                        if (l->PendingNetplayRole != 0 && l->connected_to_sam2)
+                        {
+                            int64 now_usec = ulnet__get_unix_time_microseconds();
+                            if (l->PendingNetplayDeadlineUnixUsec == 0)
+                            {
+                                l->PendingNetplayDeadlineUnixUsec = now_usec + 15 * 1000000LL;
+                            }
+
+                            if (l->PendingNetplayRole == (int)ELibretroNetplayRole::Host)
+                            {
+                                l->NetplayHost_CoreThread((uint16)l->PendingNetplayPeerId);
+                                l->PendingNetplayRole = 0;
+                            }
+                            else // Join
+                            {
+                                bool joined = l->netplay_session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+                                bool attempt_in_flight = l->netplay_session->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
+                                if (joined)
+                                {
+                                    l->PendingNetplayRole = 0;
+                                }
+                                else if (!attempt_in_flight)
+                                {
+                                    if (now_usec > l->PendingNetplayDeadlineUnixUsec)
+                                    {
+                                        l->PendingNetplayRole = 0;
+                                        FFunctionGraphTask::CreateAndDispatchWhenReady([WeakLibretroCoreInstance, PeerId = l->PendingNetplayPeerId]
                                             {
                                                 if (WeakLibretroCoreInstance.IsValid())
                                                 {
-                                                    WeakLibretroCoreInstance->OnNetplayError.Broadcast(FString(ErrorMessage.description), ErrorMessage.code);
+                                                    WeakLibretroCoreInstance->OnNetplayError.Broadcast(
+                                                        FString::Printf(TEXT("Timed out looking for netplay host %05d"), PeerId),
+                                                        SAM2_RESPONSE_PEER_DOES_NOT_EXIST);
                                                 }
                                             }, TStatId(), nullptr, ENamedThreads::GameThread);
-                                        //g_last_sam2_error = latest_sam2_message.error_response;
-                                        //SAM2_LOG_ERROR("Received error response from SAM2 (%" PRId64 "): %s", g_last_sam2_error.code, g_last_sam2_error.description);
+                                    }
+                                    else if (now_usec >= l->PendingNetplayNextAttemptUnixUsec)
+                                    {
+                                        l->NetplaySync_CoreThread((uint16)l->PendingNetplayPeerId);
+                                        l->PendingNetplayNextAttemptUnixUsec = now_usec + 2 * 1000000LL;
                                     }
                                 }
                             }
@@ -1937,12 +2211,7 @@ cleanup:
                     verify(DestroyWindow(l->core.gl.window));
                 }
 #endif
-                // The double nested command enqueue is based on boilerplate I found elsewhere in the engine
-                // Since render commands are executed fifo we only delete shared resources after the render thread is done with them
-                // The actual render command execution is done on the RHI thread so we have to synchronize there as well
-                ENQUEUE_RENDER_COMMAND(LibretroCleanupResourcesSharedWithRenderThread)([l](FRHICommandListImmediate& RHICmdList)
-                    {
-                        RHICmdList.EnqueueLambda([l](FRHICommandList&)
+                auto FreeResourcesSharedWithRenderThread = [l]()
                             {
                                 for (void* buffer : l->Unreal.FrameUpload.Buffers)
                                 {
@@ -2003,9 +2272,33 @@ cleanup:
                                 FPlatformProcess::ReturnSynchEventToPool(l->TickCompletedEvent);
 
                                 delete l; /** Task queue released */
-                            });
-                    }
-                );
+                            };
+
+                if (!FApp::CanEverRender())
+                {
+                    // Headless (dedicated server/commandlet/nullrhi): there is no render or RHI thread to
+                    // defer to, and the render-command pipe would run this inline on the libretro thread
+                    // itself, which must not delete its own runnable. The GL/RHI members are all null in
+                    // this mode (video init was skipped) so only the CPU-side frees actually do anything
+                    FFunctionGraphTask::CreateAndDispatchWhenReady([FreeResourcesSharedWithRenderThread]
+                        {
+                            FreeResourcesSharedWithRenderThread();
+                        }, TStatId(), nullptr, ENamedThreads::GameThread);
+                }
+                else
+                {
+                    // The double nested command enqueue is based on boilerplate I found elsewhere in the engine
+                    // Since render commands are executed fifo we only delete shared resources after the render thread is done with them
+                    // The actual render command execution is done on the RHI thread so we have to synchronize there as well
+                    ENQUEUE_RENDER_COMMAND(LibretroCleanupResourcesSharedWithRenderThread)([FreeResourcesSharedWithRenderThread](FRHICommandListImmediate& RHICmdList)
+                        {
+                            RHICmdList.EnqueueLambda([FreeResourcesSharedWithRenderThread](FRHICommandList&)
+                                {
+                                    FreeResourcesSharedWithRenderThread();
+                                });
+                        }
+                    );
+                }
             }
         }
     );
@@ -2013,7 +2306,68 @@ cleanup:
     return l;
 }
 
-void FLibretroContext::Shutdown(FLibretroContext* Instance) 
+void FLibretroContext::NetplayHost_CoreThread(uint16 PeerId)
+{
+    sam2_room_message_t HostRoomRequest = { SAM2_MAKE_HEADER };
+    FCStringAnsi::Strncpy(HostRoomRequest.room.name, netplay_room_name, SAM2_ARRAY_LENGTH(HostRoomRequest.room.name));
+    HostRoomRequest.room.flags |= SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+    HostRoomRequest.room.peer_topology |= (1ULL << SAM2_AUTHORITY_INDEX);
+    HostRoomRequest.room.rom_hash = (uint32)rom_hash;
+    sam2_format_core_version(&HostRoomRequest.room, system.library_name, system.library_version);
+
+    if (netplay_session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)
+    {
+        if (ulnet_is_spectator(netplay_session, netplay_session->our_peer_id))
+        {
+            ulnet_session_tear_down(netplay_session);
+        }
+        else if (ulnet_is_authority(netplay_session))
+        {
+            SAM2_LOG_WARN("We're already hosting a room, we can't host a new room");
+            return;
+        }
+        else
+        {
+            SAM2_LOG_ERROR("We're connected peer to peer we have to exit gracefully before we can host a new room");
+            // @todo Disconnect gracefully
+            return;
+        }
+    }
+
+    if (PeerId)
+    {
+        // We want to change our peer id
+        sam2_connect_message_t ChangePeerIdRequest = { SAM2_CONN_HEADER };
+        ChangePeerIdRequest.peer_id = PeerId;
+
+        if (int ErrorCode = sam2_client_send(sam_socket, (char*)&ChangePeerIdRequest))
+        {
+            SAM2_LOG_ERROR("Failed to send message with header '%.8s' (error=%d)", (char*)&ChangePeerIdRequest, ErrorCode);
+        }
+    }
+
+    if (int ErrorCode = sam2_client_send(sam_socket, (char*)&HostRoomRequest))
+    {
+        SAM2_LOG_ERROR("Failed to send message with header '%.8s' (error=%d)", (char*)&HostRoomRequest, ErrorCode);
+    }
+}
+
+void FLibretroContext::NetplaySync_CoreThread(uint16 PeerId)
+{
+    if (netplay_session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)
+    {
+        SAM2_LOG_INFO("Leaving the current room and connecting to peer %05d", PeerId);
+        ulnet_session_tear_down(netplay_session);
+    }
+
+    // Directly signaling the authority just means spectate
+    ulnet_session_init_defaulted(netplay_session);
+    netplay_session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = PeerId;
+    netplay_session->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
+    ulnet_startup_nat_for_peer(netplay_session, PeerId, SAM2_AUTHORITY_INDEX, NULL);
+}
+
+void FLibretroContext::Shutdown(FLibretroContext* Instance)
 {
     // We enqueue the shutdown procedure as the final task since we want outstanding tasks to be executed first
     Instance->EnqueueTask([Instance](auto&&)

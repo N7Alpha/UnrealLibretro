@@ -1602,6 +1602,141 @@ done:
     return status;
 }
 
+typedef struct ulnet_test_session_event_capture {
+    int count;
+    int event;
+} ulnet_test_session_event_capture_t;
+
+static void ulnet__test_session_event_callback(void *user_ptr, int event) {
+    ulnet_test_session_event_capture_t *capture = (ulnet_test_session_event_capture_t *)user_ptr;
+    capture->count++;
+    capture->event = event;
+}
+
+int ulnet_test_inproc_disconnect_handling(void) {
+    g_test_name = __func__;
+    ulnet_session_t *sessions[2] = {0};
+    ulnet_transport_inproc_t transport = {0};
+    ulnet_test_session_event_capture_t capture = {0};
+    int64_t now_usec;
+    int status = 0;
+
+    // An idle READY link emits an ACK-only keepalive without being disconnected.
+    ulnet__test_inproc_pair_setup(sessions, &transport, 0);
+    now_usec = ulnet__get_unix_time_microseconds();
+    sessions[0]->peer[ULNET__TEST_SPECTATOR_PORT]->last_packet_receive_unix_usec = now_usec;
+    sessions[0]->peer[ULNET__TEST_SPECTATOR_PORT]->last_packet_send_local_unix_usec =
+        now_usec - sessions[0]->peer_disconnect_timeout_usec / 2;
+    ulnet_service_network(sessions[0], 0);
+    if (!sessions[0]->transport[ULNET__TEST_SPECTATOR_PORT]
+        || sessions[0]->peer[ULNET__TEST_SPECTATOR_PORT]->last_packet_send_local_unix_usec <=
+            now_usec - sessions[0]->peer_disconnect_timeout_usec / 2) {
+        SAM2_LOG_ERROR("Idle READY link did not send a keepalive");
+        status = 1;
+        goto done;
+    }
+    ulnet_session_tear_down(sessions[0]);
+    ulnet_session_tear_down(sessions[1]);
+    free(sessions[0]);
+    free(sessions[1]);
+    sessions[0] = sessions[1] = NULL;
+    memset(&transport, 0, sizeof(transport));
+
+    // An authority culls a silent spectator and immediately frees its advertised room slot.
+    ulnet__test_inproc_pair_setup(sessions, &transport, 0);
+    sessions[0]->peer[ULNET__TEST_SPECTATOR_PORT]->last_packet_receive_unix_usec =
+        ulnet__get_unix_time_microseconds() - sessions[0]->peer_disconnect_timeout_usec - 1;
+    ulnet_service_network(sessions[0], 0);
+    if (sessions[0]->peer[ULNET__TEST_SPECTATOR_PORT]
+        || sessions[0]->transport[ULNET__TEST_SPECTATOR_PORT]
+        || sessions[0]->room_we_are_in.peer_ids[ULNET__TEST_SPECTATOR_PORT] != SAM2_PORT_AVAILABLE
+        || sessions[0]->next_room.peer_ids[ULNET__TEST_SPECTATOR_PORT] != SAM2_PORT_AVAILABLE) {
+        SAM2_LOG_ERROR("Authority did not reclaim a timed-out spectator slot");
+        status = 1;
+        goto done;
+    }
+    ulnet_session_tear_down(sessions[0]);
+    ulnet_session_tear_down(sessions[1]);
+    free(sessions[0]);
+    free(sessions[1]);
+    sessions[0] = sessions[1] = NULL;
+    memset(&transport, 0, sizeof(transport));
+
+    // A spectator losing its authority resets to solo and reports a lifecycle event.
+    ulnet__test_inproc_pair_setup(sessions, &transport, 0);
+    sessions[1]->user_ptr = &capture;
+    sessions[1]->session_event_callback = ulnet__test_session_event_callback;
+    sessions[1]->peer[SAM2_AUTHORITY_INDEX]->last_packet_receive_unix_usec =
+        ulnet__get_unix_time_microseconds() - sessions[1]->peer_disconnect_timeout_usec - 1;
+    ulnet_service_network(sessions[1], 0);
+    if (capture.count != 1 || capture.event != ULNET_SESSION_EVENT_AUTHORITY_LOST
+        || sessions[1]->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED
+        || !ulnet_is_authority(sessions[1])) {
+        SAM2_LOG_ERROR("Authority loss did not reset spectator to solo and emit its event");
+        status = 1;
+        goto done;
+    }
+    ulnet_session_tear_down(sessions[0]);
+    ulnet_session_tear_down(sessions[1]);
+    free(sessions[0]);
+    free(sessions[1]);
+    sessions[0] = sessions[1] = NULL;
+    memset(&transport, 0, sizeof(transport));
+
+    // Waiting for the initial savestate has an independent bounded deadline.
+    memset(&capture, 0, sizeof(capture));
+    ulnet__test_inproc_pair_setup(sessions, &transport, 0);
+    sessions[1]->user_ptr = &capture;
+    sessions[1]->session_event_callback = ulnet__test_session_event_callback;
+    sessions[1]->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
+    sessions[1]->waiting_for_save_state_since_unix_usec =
+        ulnet__get_unix_time_microseconds()
+        - ULNET_WAITING_FOR_SAVE_STATE_GRACE_USEC - 1;
+    ulnet_poll_session(sessions[1], false, NULL, 0, 60.0, 0.0);
+    if (capture.count != 1 || capture.event != ULNET_SESSION_EVENT_SAVESTATE_TIMEOUT
+        || sessions[1]->frame_counter == ULNET_WAITING_FOR_SAVE_STATE_SENTINEL
+        || sessions[1]->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+        SAM2_LOG_ERROR("Savestate wait timeout did not reset to solo and emit its event");
+        status = 1;
+        goto done;
+    }
+    ulnet_session_tear_down(sessions[0]);
+    ulnet_session_tear_down(sessions[1]);
+    free(sessions[0]);
+    free(sessions[1]);
+    sessions[0] = sessions[1] = NULL;
+    memset(&transport, 0, sizeof(transport));
+
+    // A full reliable queue marks the link as ungracefully dead; service reclaims the slot.
+    ulnet__test_inproc_pair_setup(sessions, &transport, 0);
+    sessions[0]->peer[ULNET__TEST_SPECTATOR_PORT]->reliable_tx_head = 0;
+    sessions[0]->peer[ULNET__TEST_SPECTATOR_PORT]->reliable_tx_next_seq =
+        ULNET_RELIABLE_ACK_BUFFER_SIZE;
+    if (ulnet_reliable_send(sessions[0], ULNET__TEST_SPECTATOR_PORT,
+            (const uint8_t *)"X", 1) == 0) {
+        SAM2_LOG_ERROR("Full reliable queue unexpectedly accepted another packet");
+        status = 1;
+        goto done;
+    }
+    ulnet_service_network(sessions[0], 0);
+    if (sessions[0]->peer[ULNET__TEST_SPECTATOR_PORT]
+        || sessions[0]->room_we_are_in.peer_ids[ULNET__TEST_SPECTATOR_PORT] != SAM2_PORT_AVAILABLE) {
+        SAM2_LOG_ERROR("Full reliable queue did not cull peer and reclaim slot");
+        status = 1;
+    }
+
+done:
+    if (sessions[0]) {
+        ulnet_session_tear_down(sessions[0]);
+        free(sessions[0]);
+    }
+    if (sessions[1]) {
+        ulnet_session_tear_down(sessions[1]);
+        free(sessions[1]);
+    }
+    return status;
+}
+
 // Drop a middle sequence, deliver later sequences out of order, then retransmit the missing one and
 // confirm the buffered packets drain in order.
 int ulnet_test_inproc_reliable_ack_unblocks_queue(void) {
@@ -1777,12 +1912,19 @@ int ulnet_test_inproc_multigroup_savestate(void) {
         goto done_multigroup;
     }
 
-    for (int i = 0; i < FEC_PACKET_GROUPS_MAX + 1 && !g_large_savestate_received; i++) {
-        ulnet_service_network(sessions[1], 0);
+    int64_t sender_timeout_usec = sessions[0]->savestate_tx_payload->transfer_timeout_usec;
+    ulnet_service_network(sessions[1], 0);
+    if (sessions[1]->waiting_for_save_state_timeout_usec != sender_timeout_usec) {
+        SAM2_LOG_ERROR("multigroup savestate test: receiver did not adopt sender timeout");
+        goto done_multigroup;
+    }
+
+    for (int i = 1; i < FEC_PACKET_GROUPS_MAX + 1 && !g_large_savestate_received; i++) {
         if (sessions[0]->savestate_tx_payload) {
             sessions[0]->savestate_tx_next_group_unix_usec = 0;
             ulnet_service_network(sessions[0], 0);
         }
+        ulnet_service_network(sessions[1], 0);
     }
     ulnet_service_network(sessions[1], 0);
     ulnet_service_network(sessions[0], 0);
@@ -2130,7 +2272,7 @@ int ulnet_test_solo_authority_input(void) {
     ulnet_session_t session;
     memset(&session, 0, sizeof(session));
     ulnet_session_init_defaulted(&session);
-    session.delay_frames = 2;
+    session.delay_frames = 2; // Ignored outside a hosted room -- solo play runs at zero input delay
     session.retro_run = ulnet__test_retro_run;
     session.retro_serialize_size = ulnet__test_retro_serialize_size;
     session.retro_serialize = ulnet__test_retro_serialize;
@@ -2139,6 +2281,10 @@ int ulnet_test_solo_authority_input(void) {
     session.next_input_state[0][0] = 1;
     session.next_input_state[7][7] = 1;
     session.next_input_state[7][ULNET_INPUT_ANALOG_FIRST_INDEX] = 2345;
+
+    // Zero-delay solo consumes input the same poll it is buffered; hold the tick back so the
+    // buffered frame is still current when we read it back below
+    session.core_wants_tick_at_unix_usec = ulnet__get_unix_time_microseconds() + 1000000;
 
     int status = ulnet_poll_session(&session, 0, 0, 0, 60.0, 0.0);
     if (!(status & ULNET_POLL_SESSION_BUFFERED_INPUT)) {
@@ -2696,6 +2842,275 @@ static int ulnet__test_nat_matrix_spectator(const char *host, int port, uint16_t
     return 1;
 }
 
+// ===========================================================================
+// == Disconnect harness peers (driven by ulnet_disconnect_test.sh)         ==
+// ===========================================================================
+// Real sam2 signaling + ICE-lite loopback sessions exercising the disconnect
+// handling: liveness timeouts, keepalives, authority-loss reset, savestate-wait
+// timeout, and room-slot reclamation. The script coordinates roles across
+// processes by grepping the "HARNESS ..." markers and killing peers.
+
+static int g_test_session_event = 0;
+static void ulnet__test_record_session_event(void *user_ptr, int event) {
+    (void)user_ptr;
+    g_test_session_event = event;
+}
+
+static void ulnet__test_disconnect_session_setup(ulnet_session_t *session, sam2_socket_t *socket,
+    const char *host, int port, double peer_timeout_seconds) {
+    memset(session, 0, sizeof(*session));
+    ulnet_session_init_defaulted(session);
+    ulnet_set_stun_server(session, host, (uint16_t)port);
+    session->peer_disconnect_timeout_usec = (int64_t)(peer_timeout_seconds * 1e6);
+    session->sam2_send_callback = ulnet__test_sam2_send_callback;
+    session->session_event_callback = ulnet__test_record_session_event;
+    session->user_ptr = socket;
+    session->retro_run = ulnet__test_retro_run;
+    session->retro_serialize_size = ulnet__test_retro_serialize_size;
+    session->retro_serialize = ulnet__test_retro_serialize;
+    session->retro_unserialize = ulnet__test_retro_unserialize;
+}
+
+// Modes:
+//   expect-leave -> succeed once a previously-connected spectator's slot is fully reclaimed
+//                   (covers both a graceful EXIT and a killed peer culled by the liveness timeout)
+//   never-sync   -> admit the spectator but never tick, so no savestate is ever produced; the
+//                   spectator asserts its savestate-wait timeout. Runs until its deadline, exit 0.
+//   pause        -> after the spectator syncs, stop ticking for 3.5x the liveness timeout (only
+//                   ulnet_service_network runs, like a hitching frontend), verify the spectator
+//                   survived on keepalives, then resume ticking briefly and exit
+static int ulnet__test_disconnect_authority(const char *host, int port, const char *ready_path,
+    int timeout_seconds, double peer_timeout_seconds, const char *mode) {
+    g_test_name = __func__;
+    int never_sync = strcmp(mode, "never-sync") == 0;
+    int pause_after_sync = strcmp(mode, "pause") == 0;
+    int expect_leave = strcmp(mode, "expect-leave") == 0;
+    if (!never_sync && !pause_after_sync && !expect_leave) {
+        SAM2_LOG_ERROR("Unknown disconnect-authority mode '%s'", mode);
+        return 2;
+    }
+
+    ulnet_session_t session;
+    sam2_socket_t socket = SAM2_SOCKET_INVALID;
+    ulnet__test_disconnect_session_setup(&session, &socket, host, port, peer_timeout_seconds);
+
+    int status = ulnet__test_connect_client(&session, &socket, host, port, timeout_seconds);
+    if (status) {
+        return status;
+    }
+
+    sam2_room_message_t request = { SAM2_MAKE_HEADER };
+    request.room.flags = SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
+    request.room.peer_ids[SAM2_AUTHORITY_INDEX] = session.our_peer_id;
+    request.room.peer_topology = (1ULL << SAM2_AUTHORITY_INDEX);
+    status = sam2_client_send(socket, (char *)&request);
+    if (status) {
+        SAM2_LOG_ERROR("Failed to send MAKE message");
+        return status;
+    }
+
+    if (ready_path && ready_path[0]) {
+        FILE *ready_file = fopen(ready_path, "w");
+        if (ready_file) {
+            fprintf(ready_file, "%u\n", (unsigned)session.our_peer_id);
+            fclose(ready_file);
+        }
+    }
+
+    int spectator_port = -1;
+    int64_t pause_until_usec = 0; // Nonzero while/after the tick pause is scheduled; ticking stops until this time
+    int64_t exit_at_usec = 0;     // Set once the pause is verified; tick normally until then so the spectator sees the resume
+    int64_t deadline = ulnet__get_unix_time_microseconds() + (int64_t)timeout_seconds * 1000000;
+    while (ulnet__get_unix_time_microseconds() < deadline) {
+        int64_t now_usec = ulnet__get_unix_time_microseconds();
+        int in_pause = pause_until_usec != 0 && now_usec < pause_until_usec;
+        if (never_sync || in_pause) {
+            ulnet_service_network(&session, 1);
+            status = 0;
+        } else {
+            status = ulnet_poll_session(&session, 0, 0, 0, 60.0, 5e-3);
+        }
+        if (status < 0) break;
+
+        status = ulnet__test_poll_client_messages(&session, socket);
+        if (status < 0) break;
+
+        if (spectator_port == -1) {
+            for (int p = SAM2_AUTHORITY_INDEX + 1; p < SAM2_TOTAL_PEERS; p++) {
+                if (ulnet_transport_state(session.transport[p]) == ULNET_TRANSPORT_READY) {
+                    spectator_port = p;
+                    printf("HARNESS spectator connected at port %d\n", p);
+                    fflush(stdout);
+                    break;
+                }
+            }
+        }
+
+        if (expect_leave && spectator_port != -1
+            && session.room_we_are_in.peer_ids[spectator_port] == SAM2_PORT_AVAILABLE
+            && session.next_room.peer_ids[spectator_port] == SAM2_PORT_AVAILABLE
+            && session.peer[spectator_port] == NULL
+            && session.transport[spectator_port] == NULL) {
+            printf("HARNESS spectator slot reclaimed\n");
+            fflush(stdout);
+            ulnet_session_tear_down(&session);
+            return 0;
+        }
+
+        if (pause_after_sync && spectator_port != -1 && pause_until_usec == 0
+            && session.frame_counter > 3 * ULNET_STATE_PACKET_HISTORY_SIZE // Well past the initial savestate transfer trigger
+            && !session.peer_needs_sync_bitfield
+            && !session.savestate_transfer_awaiting_bitfield) {
+            pause_until_usec = now_usec + (int64_t)(3.5 * peer_timeout_seconds * 1e6);
+            printf("HARNESS pausing ticks\n");
+            fflush(stdout);
+        }
+
+        if (pause_after_sync && pause_until_usec != 0 && now_usec >= pause_until_usec && exit_at_usec == 0) {
+            if (   ulnet_transport_state(session.transport[spectator_port]) == ULNET_TRANSPORT_READY
+                && session.room_we_are_in.peer_ids[spectator_port] > SAM2_PORT_SENTINELS_MAX) {
+                printf("HARNESS spectator survived pause\n");
+                fflush(stdout);
+                exit_at_usec = now_usec + 3000000; // Resume ticking long enough for the spectator to observe it
+            } else {
+                SAM2_LOG_ERROR("Spectator did not survive the tick pause");
+                ulnet_session_tear_down(&session);
+                return 1;
+            }
+        }
+
+        if (exit_at_usec != 0 && now_usec >= exit_at_usec) {
+            ulnet_session_tear_down(&session);
+            return 0;
+        }
+
+        ulnet__sleep(1);
+    }
+
+    ulnet_session_tear_down(&session);
+    if (status < 0) return 1;
+    return never_sync ? 0 : 1; // never-sync just has to outlive the spectator's assertion
+}
+
+// Modes:
+//   sync-then-hang          -> sync and keep polling until the script kills the process
+//   sync-then-leave         -> sync, tick a bit, then leave gracefully (EXIT to the host)
+//   expect-authority-lost   -> succeed when the AUTHORITY_LOST event fires (script kills the host)
+//   expect-savestate-timeout-> succeed when the SAVESTATE_TIMEOUT event fires; the wait deadline is
+//                              shortened to peer_timeout_seconds so the case runs quickly
+//   stay-connected          -> succeed when frames advance again after a >= 1.5x-liveness-timeout
+//                              stall (proves keepalives carried the link through a host pause)
+static int ulnet__test_disconnect_spectator(const char *host, int port, uint16_t authority_peer_id,
+    int timeout_seconds, double peer_timeout_seconds, const char *mode) {
+    g_test_name = __func__;
+    int sync_then_hang = strcmp(mode, "sync-then-hang") == 0;
+    int sync_then_leave = strcmp(mode, "sync-then-leave") == 0;
+    int expect_authority_lost = strcmp(mode, "expect-authority-lost") == 0;
+    int expect_savestate_timeout = strcmp(mode, "expect-savestate-timeout") == 0;
+    int stay_connected = strcmp(mode, "stay-connected") == 0;
+    if (!sync_then_hang && !sync_then_leave && !expect_authority_lost && !expect_savestate_timeout && !stay_connected) {
+        SAM2_LOG_ERROR("Unknown disconnect-spectator mode '%s'", mode);
+        return 2;
+    }
+
+    ulnet_session_t session;
+    sam2_socket_t socket = SAM2_SOCKET_INVALID;
+    ulnet__test_disconnect_session_setup(&session, &socket, host, port, peer_timeout_seconds);
+
+    int status = ulnet__test_connect_client(&session, &socket, host, port, timeout_seconds);
+    if (status) {
+        return status;
+    }
+
+    session.room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = authority_peer_id;
+    session.frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
+    if (expect_savestate_timeout) {
+        session.waiting_for_save_state_timeout_usec = (int64_t)(peer_timeout_seconds * 1e6);
+    }
+    ulnet_startup_nat_for_peer(&session, authority_peer_id, SAM2_AUTHORITY_INDEX, NULL);
+
+    int synced = 0;
+    int64_t synced_frame = 0;
+    int64_t last_frame = -1;
+    int64_t last_advance_usec = 0;
+    int64_t deadline = ulnet__get_unix_time_microseconds() + (int64_t)timeout_seconds * 1000000;
+    while (ulnet__get_unix_time_microseconds() < deadline) {
+        status = ulnet_poll_session(&session, 0, 0, 0, 60.0, 5e-3);
+        if (status < 0) break;
+
+        status = ulnet__test_poll_client_messages(&session, socket);
+        if (status < 0) break;
+
+        int64_t now_usec = ulnet__get_unix_time_microseconds();
+
+        if (!synced
+            && session.frame_counter != ULNET_WAITING_FOR_SAVE_STATE_SENTINEL
+            && session.room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED) {
+            synced = 1;
+            synced_frame = session.frame_counter;
+            last_frame = session.frame_counter;
+            last_advance_usec = now_usec;
+            printf("HARNESS spectator synced at frame %" PRId64 "\n", session.frame_counter);
+            fflush(stdout);
+        }
+
+        if (expect_authority_lost && g_test_session_event == ULNET_SESSION_EVENT_AUTHORITY_LOST) {
+            printf("HARNESS spectator observed authority loss\n");
+            fflush(stdout);
+            ulnet_session_tear_down(&session);
+            return 0;
+        }
+
+        if (expect_savestate_timeout) {
+            if (g_test_session_event == ULNET_SESSION_EVENT_SAVESTATE_TIMEOUT) {
+                printf("HARNESS spectator observed savestate timeout\n");
+                fflush(stdout);
+                ulnet_session_tear_down(&session);
+                return 0;
+            }
+            if (synced) {
+                SAM2_LOG_ERROR("Spectator synced but this case expected the savestate wait to time out");
+                ulnet_session_tear_down(&session);
+                return 1;
+            }
+        }
+
+        if (stay_connected && g_test_session_event != 0) {
+            SAM2_LOG_ERROR("Spectator was disconnected during the host pause (event %d)", g_test_session_event);
+            ulnet_session_tear_down(&session);
+            return 1;
+        }
+
+        if (synced && session.frame_counter > last_frame) {
+            int64_t stall_usec = now_usec - last_advance_usec;
+            if (stay_connected && stall_usec >= (int64_t)(1.5 * peer_timeout_seconds * 1e6)) {
+                printf("HARNESS spectator resumed after a %" PRId64 " microsecond stall\n", stall_usec);
+                fflush(stdout);
+                ulnet_session_tear_down(&session);
+                return 0;
+            }
+            last_frame = session.frame_counter;
+            last_advance_usec = now_usec;
+        }
+
+        if (sync_then_leave && synced && session.frame_counter >= synced_frame + 30) {
+            printf("HARNESS spectator leaving\n");
+            fflush(stdout);
+            ulnet_session_tear_down(&session);
+            return 0;
+        }
+
+        ulnet__sleep(1);
+    }
+
+    ulnet_session_tear_down(&session);
+    if (sync_then_hang && synced) {
+        return 0; // The script should have killed us; not reaching the marker is its failure to catch, not ours
+    }
+    SAM2_LOG_ERROR("Spectator timed out in mode '%s' (synced=%d)", mode, synced);
+    return 1;
+}
+
 void sam2_log_write(int level, const char *file, int line, const char *format, ...) {
     if (level == 2) {
         printf("WARN %s:%d | %s | ", file, line, g_test_name);
@@ -2741,6 +3156,22 @@ int main (int argc, char **argv) {
         return ulnet__test_nat_matrix_spectator(argv[2], atoi(argv[3]), (uint16_t)atoi(argv[4]), atoi(argv[5]));
     }
 
+    if (argc > 1 && strcmp(argv[1], "--disconnect-authority") == 0) {
+        if (argc < 8) {
+            fprintf(stderr, "usage: %s --disconnect-authority <host> <port> <ready-file> <timeout-seconds> <peer-timeout-seconds> <expect-leave|never-sync|pause>\n", argv[0]);
+            return 2;
+        }
+        return ulnet__test_disconnect_authority(argv[2], atoi(argv[3]), argv[4], atoi(argv[5]), atof(argv[6]), argv[7]);
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--disconnect-spectator") == 0) {
+        if (argc < 8) {
+            fprintf(stderr, "usage: %s --disconnect-spectator <host> <port> <authority-peer-id> <timeout-seconds> <peer-timeout-seconds> <sync-then-hang|sync-then-leave|expect-authority-lost|expect-savestate-timeout|stay-connected>\n", argv[0]);
+            return 2;
+        }
+        return ulnet__test_disconnect_spectator(argv[2], atoi(argv[3]), (uint16_t)atoi(argv[4]), atoi(argv[5]), atof(argv[6]), argv[7]);
+    }
+
     if (argc > 1 && strcmp(argv[1], "--nat-matrix-peer-file") == 0) {
         if (argc < 8) {
             fprintf(stderr, "usage: %s --nat-matrix-peer-file <stun-host> <stun-port> <signal-dir> <name> <remote-name> <timeout-seconds>\n", argv[0]);
@@ -2752,6 +3183,12 @@ int main (int argc, char **argv) {
     int status = ulnet_test_inproc(NULL, NULL);
     if (status != 0) {
         printf("Inproc test failed with status: %d\n", status);
+        return status;
+    }
+
+    status = ulnet_test_inproc_disconnect_handling();
+    if (status != 0) {
+        printf("Inproc disconnect handling test failed with status: %d\n", status);
         return status;
     }
 

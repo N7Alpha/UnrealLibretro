@@ -5,8 +5,19 @@
 #include "GameFramework/PlayerController.h"
 #include "Components/AudioComponent.h"
 #include "LibretroInputDefinitions.h"
+#include "LibretroCore.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "LibretroCoreInstance.generated.h"
+
+/** What this instance should do with netplay when it launches. @see ULibretroCoreInstance::NetplayRole */
+UENUM(BlueprintType)
+enum class ELibretroNetplayRole : uint8
+{
+    None = 0 UMETA(ToolTip = "No netplay unless NetplayHost/NetplaySync are called explicitly"),
+    Host = 1 UMETA(ToolTip = "Host a room after launching (NetplayPeerId is the id to claim; 0 keeps the assigned one)"),
+    Join = 2 UMETA(ToolTip = "Join the room hosted by NetplayPeerId after launching, retrying until it exists"),
+    FromUnrealNetRole = 3 UMETA(ToolTip = "Host when the owning actor has network authority (server/standalone), Join otherwise (clients). Give every side the same NetplayPeerId"),
+};
 
 USTRUCT(BlueprintType)
 struct FLibretroControllerDescriptions
@@ -25,7 +36,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCoreFramebufferResize);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnNetplayRoomModified, FString, RoomName, TArray<int32>, RoomPeers);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNetplayDesync, int64, FrameWeDesynced);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnNetplayError, FString, ErrorMessage, int64, ErrorCode);
-DECLARE_DYNAMIC_DELEGATE_ThreeParams(FOnReadMemoryComplete, int64, TheFrameMemoryWasRead, int64, Address, const TArray<uint8>&, Memory);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCoreLaunched, ULibretroCore*, Core);
 
 
 UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent) )
@@ -61,6 +72,18 @@ public:
     FOnLaunchComplete OnLaunchComplete;
 
     /**
+     * Fired on successful launch with a valid ULibretroCore handle -- the preferred way to drive a
+     * running core. Unlike this component's IneffectiveBeforeLaunch functions (which silently no-op
+     * before launch), a handle only exists while the core runs, so validity is an explicit null check
+     */
+    UPROPERTY(BlueprintAssignable)
+    FOnCoreLaunched OnCoreLaunched;
+
+    /** The handle to the running core, or null when nothing is launched */
+    UFUNCTION(BlueprintPure, Category = "Libretro")
+    ULibretroCore* GetCore() const { return Core; }
+
+    /**
      * Issued initially whenever the core framebuffer is changes dimensions. The arguments provided will scale uv's appropriately to exactly fit the framebuffer
      */
     UPROPERTY(BlueprintAssignable)
@@ -90,12 +113,40 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
     void NetplaySync(int PeerId);
 
+    /** Leave the current netplay room (best-effort goodbye to the host) and resume playing locally. No-op when not in a room */
+    UFUNCTION(BlueprintCallable, Category = "Libretro|IneffectiveBeforeLaunch")
+    void NetplayLeave();
+
+    /**
+     * How many frames of local input to buffer before they're applied while in a netplay room;
+     * higher values hide network latency at the cost of input latency. Costs nothing outside
+     * netplay (solo play always runs at zero delay). Read once at Launch. The host can change it
+     * mid-session for everyone via the "netplay_delay_frames" core option
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Libretro|Netplay",
+              meta = (EditCondition = "NetplayRole != ELibretroNetplayRole::None", ClampMin = "0", ClampMax = "3"))
+    int32 NetplayDelayFrames = 2;
+
+    /**
+     * Declarative netplay: what this instance does once it launches and reaches the signaling server.
+     * Host sends its room immediately; Join retries every couple seconds (up to ~15s) until the host's
+     * room exists, so a host and a joiner launched the same frame order themselves without user-side
+     * delay timers. None (the default) changes nothing -- the NetplayHost/NetplaySync calls still work
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Libretro|Netplay")
+    ELibretroNetplayRole NetplayRole = ELibretroNetplayRole::None;
+
+    /** Host: the peer id to claim (0 keeps the server-assigned one) - Join: the host's peer id to connect to */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Libretro|Netplay",
+              meta = (EditCondition = "NetplayRole != ELibretroNetplayRole::None", ClampMin = "0", ClampMax = "65535"))
+    int32 NetplayPeerId = 0;
+
     /** Cosmetic */
     UPROPERTY(BlueprintReadOnly, Category = Libretro)
     FString NetplayRoomName;
 
-    /** Always 64 elements the host is at index 8, peer-to-peer connections (if any) are in index 0-7
-     * People only connected to the host are at index 9-63. 0 is a sentinel for empty 1 is a sentinel for unavailable
+    /**
+     * Always 64 elements the host is at index 0, 0 is a sentinel for empty 1 is a sentinel for unavailable
      */
     UPROPERTY(BlueprintReadOnly, Category = Libretro)
     TArray<int32> NetplayRoomPeerIds;
@@ -289,10 +340,18 @@ public:
     UPROPERTY(BlueprintReadOnly, Category = Libretro)
     FString Sam2ServerAddress;
 
+    // Marshals an OnNetplayError broadcast onto the game thread; shared by the component, the
+    // ULibretroCore handle, and the core-thread loop
+    static void BroadcastNetplayErrorOnGameThread(TWeakObjectPtr<ULibretroCoreInstance> WeakThis, FString Message, int64 Code);
+
 protected:
 
     // @todo: It'd be nice if I could use something like std::wrapped_reference however Unreal doesn't offer an equivalent for now
     TOptional<struct FLibretroContext*> CoreInstance;
+
+    /** Handle to the running core; kept as a UPROPERTY so GC sees it. Invalidated and dropped at Shutdown */
+    UPROPERTY(Transient)
+    ULibretroCore* Core = nullptr;
 
     bool Paused = false;
 

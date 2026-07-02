@@ -22,8 +22,20 @@ THIRD_PARTY_INCLUDES_END
 #include "LibretroInputDefinitions.h"
 #include "RawAudioSoundWave.h"
 #include "LibretroContext.h"
+#include "Async/TaskGraphInterfaces.h"
 
 #define NOT_LAUNCHED_GUARD if (!CoreInstance.IsSet()) return;
+
+void ULibretroCoreInstance::BroadcastNetplayErrorOnGameThread(TWeakObjectPtr<ULibretroCoreInstance> WeakThis, FString Message, int64 Code)
+{
+    FFunctionGraphTask::CreateAndDispatchWhenReady([WeakThis, Message = MoveTemp(Message), Code]
+        {
+            if (WeakThis.IsValid())
+            {
+                WeakThis->OnNetplayError.Broadcast(Message, Code);
+            }
+        }, TStatId(), nullptr, ENamedThreads::GameThread);
+}
 
 ULibretroCoreInstance::ULibretroCoreInstance()
 {
@@ -61,175 +73,47 @@ FString ULibretroCoreInstance::GetAuthorityIP()
 
 void ULibretroCoreInstance::NetplaySync(int PeerId)
 {
-    NOT_LAUNCHED_GUARD
+    if (Core) Core->NetplaySync(PeerId);
+}
 
-    if (PeerId <= SAM2_PORT_SENTINELS_MAX || PeerId > 65535)
-    {
-        SAM2_LOG_ERROR("Invalid peer id %05d. It should be between %05d and 65535 inclusive", PeerId, SAM2_PORT_SENTINELS_MAX + 1);
-        return;
-    }
-
-    CoreInstance.GetValue()->NetplayTasks.Enqueue([CoreInstance = this->CoreInstance.GetValue(), PeerId](libretro_api_t& libretro_api)
-        {
-            if (CoreInstance->netplay_session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)
-            {
-                SAM2_LOG_INFO("Leaving the current room and connecting to peer %05d", PeerId);
-                ulnet_session_tear_down(CoreInstance->netplay_session);
-            }
-
-            // Directly signaling the authority just means spectate
-            ulnet_session_init_defaulted(CoreInstance->netplay_session);
-            CoreInstance->netplay_session->room_we_are_in.peer_ids[SAM2_AUTHORITY_INDEX] = PeerId;
-            CoreInstance->netplay_session->frame_counter = ULNET_WAITING_FOR_SAVE_STATE_SENTINEL;
-            ulnet_startup_nat_for_peer(
-                CoreInstance->netplay_session,
-                PeerId,
-                SAM2_AUTHORITY_INDEX,
-                NULL
-            );
-        });
+void ULibretroCoreInstance::NetplayLeave()
+{
+    if (Core) Core->NetplayLeave();
 }
 
 void ULibretroCoreInstance::NetplayHost(int PeerId)
 {
-    NOT_LAUNCHED_GUARD
-
-    if (PeerId) {
-        // We want to change our peer id
-        if (PeerId <= SAM2_PORT_SENTINELS_MAX || PeerId > 65535) {
-            SAM2_LOG_ERROR("Invalid peer id %05d. It should be between %05d and 65535 inclusive", PeerId, SAM2_PORT_SENTINELS_MAX + 1);
-            return;
-        }
-    }
-
-    sam2_room_message_t HostRoomRequest = { SAM2_MAKE_HEADER };
-
-    FString RoomName = GetOwner() ? GetOwner()->GetName() : GetName();
-    FTCHARToUTF8 RoomNameUTF8{ *RoomName };
-
-    int EndOfRoomNameIndex = SAM2_MIN(RoomNameUTF8.Length(), SAM2_ARRAY_LENGTH(HostRoomRequest.room.name)-1);
-    FMemory::Memcpy(HostRoomRequest.room.name, RoomNameUTF8.Get(), EndOfRoomNameIndex);
-    HostRoomRequest.room.name[EndOfRoomNameIndex] = '\0';
-    HostRoomRequest.room.flags |= SAM2_FLAG_ROOM_IS_NETWORK_HOSTED;
-    HostRoomRequest.room.peer_topology |= (1ULL << SAM2_AUTHORITY_INDEX);
-    CoreInstance.GetValue()->NetplayTasks.Enqueue([CoreInstance = this->CoreInstance.GetValue(), HostRoomRequest, PeerId](libretro_api_t& libretro_api)
-        mutable {
-            HostRoomRequest.room.rom_hash = CoreInstance->rom_hash;
-
-            sam2_format_core_version(
-                &HostRoomRequest.room,
-                CoreInstance->system.library_name,
-                CoreInstance->system.library_version
-            );
-
-            if (CoreInstance->netplay_session->room_we_are_in.flags & SAM2_FLAG_ROOM_IS_NETWORK_HOSTED)
-            {
-                if (ulnet_is_spectator(CoreInstance->netplay_session, CoreInstance->netplay_session->our_peer_id))
-                {
-                    ulnet_session_tear_down(CoreInstance->netplay_session);
-                }
-                else if (ulnet_is_authority(CoreInstance->netplay_session))
-                {
-                    SAM2_LOG_WARN("We're already hosting a room, we can't host a new room");
-                    return;
-                }
-                else
-                {
-                    SAM2_LOG_ERROR("We're connected peer to peer we have to exit gracefully before we can host a new room");
-                    // @todo Disconnect gracefully
-                    return;
-                }
-            }
-
-            if (PeerId)
-            {
-                sam2_connect_message_t ChangePeerIdRequest = { SAM2_CONN_HEADER };
-                ChangePeerIdRequest.peer_id = PeerId;
-
-                if (int ErrorCode = sam2_client_send(CoreInstance->sam_socket, (char*)&ChangePeerIdRequest))
-                {
-                    SAM2_LOG_ERROR("Failed to send message with header '%.8s' (error=%d)", (char*)&ChangePeerIdRequest, ErrorCode);
-                }
-            }
-
-            if (int ErrorCode = sam2_client_send(CoreInstance->sam_socket, (char*)&HostRoomRequest))
-            {
-                SAM2_LOG_ERROR("Failed to send message with header '%.8s' (error=%d)", (char*)&HostRoomRequest, ErrorCode);
-            }
-        });
+    if (Core) Core->NetplayHost(PeerId);
 }
 
 void ULibretroCoreInstance::SetController(int Port, int64 ID)
 {
-    NOT_LAUNCHED_GUARD
-
-    // This if statement guards against a datarace on FLibretroContext::DeviceIDs
-    if (CoreInstance.GetValue()->CoreState.load(std::memory_order_acquire) != FLibretroContext::ECoreState::Starting)
-    {
-        CoreInstance.GetValue()->DeviceIDs[Port] = ID;
-        CoreInstance.GetValue()->EnqueueTask([Port, ID](libretro_api_t &libretro_api)
-            {
-                libretro_api.set_controller_port_device(Port, ID);
-            }); 
-    }
+    if (Core) Core->SetController(Port, ID);
 }
 
 void ULibretroCoreInstance::GetController(int Port, int64& ID, FString& Description)
 {
-    NOT_LAUNCHED_GUARD
-
-    // This if statement guards against a datarace on FLibretroContext::DeviceIDs
-    if (CoreInstance.GetValue()->CoreState.load(std::memory_order_acquire) != FLibretroContext::ECoreState::Starting)
-    {
-        ID = CoreInstance.GetValue()->DeviceIDs[Port];
-        for (FLibretroControllerDescription& ControllerDescription : CoreInstance.GetValue()->ControllerDescriptions[Port])
-        {
-            if (ControllerDescription.ID == ID)
-            {
-                Description = ControllerDescription.Description;
-                break;
-            }
-        }
-    }
+    if (Core) Core->GetController(Port, ID, Description);
 }
 
 TArray<FLibretroOptionDescription> ULibretroCoreInstance::GetOptionDescriptions()
 {
-    return CoreInstance.IsSet() ? CoreInstance.GetValue()->OptionDescriptions           : TArray<FLibretroOptionDescription>{};
+    return Core ? Core->GetOptionDescriptions() : TArray<FLibretroOptionDescription>{};
 }
 
 TArray<FLibretroControllerDescription> ULibretroCoreInstance::GetControllerDescriptions(int Port)
 {
-    return CoreInstance.IsSet() ? CoreInstance.GetValue()->ControllerDescriptions[Port] : TArray<FLibretroControllerDescription>{};
+    return Core ? Core->GetControllerDescriptions(Port) : TArray<FLibretroControllerDescription>{};
 }
 
 void ULibretroCoreInstance::GetOption(const FString& Key, FString& Value, int& Index)
 {
-    NOT_LAUNCHED_GUARD
-
-    for (int i = 0; i < CoreInstance.GetValue()->OptionDescriptions.Num(); i++)
-    {
-        if (CoreInstance.GetValue()->OptionDescriptions[i].Key == Key)
-        {
-            Index = CoreInstance.GetValue()->OptionSelectedIndex[i].load(std::memory_order_relaxed);
-            Value = CoreInstance.GetValue()->OptionDescriptions[i].Values[Index];
-        }
-    }
+    if (Core) Core->GetOption(Key, Value, Index);
 }
 
 void ULibretroCoreInstance::SetOption(const FString& Key, const FString& Value)
 {
-    NOT_LAUNCHED_GUARD
-
-    for (int i = 0; i < CoreInstance.GetValue()->OptionDescriptions.Num(); i++)
-    {
-        if (CoreInstance.GetValue()->OptionDescriptions[i].Key == Key)
-        {
-            int32 Index = CoreInstance.GetValue()->OptionDescriptions[i].Values.IndexOfByKey(Value);
-            CoreInstance.GetValue()->OptionSelectedIndex[i].store(Index, std::memory_order_relaxed);
-            CoreInstance.GetValue()->OptionsHaveBeenModified.store(true, std::memory_order_release);
-        }
-    }
+    if (Core) Core->SetOption(Key, Value);
 }
 
 void ULibretroCoreInstance::Launch() 
@@ -312,10 +196,20 @@ void ULibretroCoreInstance::Launch()
                     {
                         weakThis->LastErrorMessage = ErrorMessage;
                         weakThis->CoreInstance.Reset();
+                        if (weakThis->Core)
+                        {
+                            weakThis->Core->Context = nullptr; // Invalidate any handle Blueprint already grabbed
+                            weakThis->Core = nullptr;
+                        }
                     }
 
                     weakThis->OnLaunchComplete.Broadcast(weakThis->RenderTarget,
                         weakThis->AudioBuffer, bCoreLaunchSucceeded);
+
+                    if (bCoreLaunchSucceeded && weakThis->Core)
+                    {
+                        weakThis->OnCoreLaunched.Broadcast(weakThis->Core);
+                    }
                 }
             }, TStatId(), nullptr, ENamedThreads::GameThread);
 
@@ -352,6 +246,14 @@ void ULibretroCoreInstance::Launch()
             }
         });
     
+    // The handle mirrors the legacy semantics: it exists as soon as the launch is kicked off (like
+    // CoreInstance being Set) and is invalidated on failure/shutdown. New API surface lives on it.
+    Core = NewObject<ULibretroCore>(this);
+    Core->Context = CoreInstance.GetValue();
+    Core->CorePath = this->CorePath;
+    Core->RomPath = this->RomPath;
+    Core->OwningComponent = this;
+
     // @todo theres a data race with how I assign this
     this->CoreInstance.GetValue()->CoreEnvironmentCallback = [weakThis = MakeWeakObjectPtr(this), CoreInstance = this->CoreInstance.GetValue()](unsigned cmd, void* data)->bool
     {
@@ -420,15 +322,22 @@ void ULibretroCoreInstance::Launch()
 
 void ULibretroCoreInstance::Pause(bool ShouldPause)
 {
-    NOT_LAUNCHED_GUARD
-
-    CoreInstance.GetValue()->Pause(ShouldPause);
-    Paused = ShouldPause;
+    if (Core)
+    {
+        Core->Pause(ShouldPause);
+        Paused = ShouldPause;
+    }
 }
 
-void ULibretroCoreInstance::Shutdown() 
+void ULibretroCoreInstance::Shutdown()
 {
     NOT_LAUNCHED_GUARD
+
+    if (Core)
+    {
+        Core->Context = nullptr; // Handles Blueprint stashed elsewhere go inert rather than dangling
+        Core = nullptr;
+    }
 
     FLibretroContext::Shutdown(CoreInstance.GetValue());
     CoreInstance.Reset();
@@ -438,44 +347,12 @@ void ULibretroCoreInstance::Shutdown()
 //       Where multiple cores access data from the file system at the same time
 void ULibretroCoreInstance::LoadState(const FString& FilePath)
 {
-    NOT_LAUNCHED_GUARD
-
-    CoreInstance.GetValue()->EnqueueTask(
-        [CorePath = this->CorePath, SaveStatePath = FUnrealLibretroModule::ResolveSaveStatePath(RomPath, FilePath)]
-        (auto libretro_api)
-        {
-            TArray<uint8> SaveStateBuffer;
-
-            if (!FFileHelper::LoadFileToArray(SaveStateBuffer, *SaveStatePath))
-            {
-                UE_LOG(Libretro, Warning, TEXT("Couldn't load save state '%s' error code:%u"), *SaveStatePath, FPlatformMisc::GetLastError());
-                return; // We just assume failure means the file did not exist and we do nothing
-            }
-
-            if (SaveStateBuffer.Num() != libretro_api.serialize_size()) // because of emulator versions these might not match up also some Libretro cores don't follow spec so the size can change between calls to serialize_size
-            {
-                UE_LOG(Libretro, Warning, TEXT("Save state file size specified by '%s' did not match the save state size in folder. File Size : %d Core Size: %zu. Going to try to load it anyway."), *CorePath, SaveStateBuffer.Num(), libretro_api.serialize_size())
-            }
-
-            libretro_api.unserialize(SaveStateBuffer.GetData(), SaveStateBuffer.Num());
-        });
+    if (Core) Core->LoadState(FilePath);
 }
 
 void ULibretroCoreInstance::SaveState(const FString& FilePath)
 {
-    NOT_LAUNCHED_GUARD
-    
-    this->CoreInstance.GetValue()->EnqueueTask
-    (
-        [SaveStatePath = FUnrealLibretroModule::ResolveSaveStatePath(RomPath, FilePath)](libretro_api_t& libretro_api)
-        {
-            TArray<uint8> SaveStateBuffer; // @dynamic
-            SaveStateBuffer.Reserve(libretro_api.serialize_size() + 2); // The plus two is a slight optimization based on how SaveArrayToFile works
-            SaveStateBuffer.AddUninitialized(libretro_api.serialize_size());
-            libretro_api.serialize(static_cast<void*>(SaveStateBuffer.GetData()), libretro_api.serialize_size());
-            FFileHelper::SaveArrayToFile(SaveStateBuffer, *SaveStatePath);
-        }
-    );
+    if (Core) Core->SaveState(FilePath);
 }
 
 #include "Scalability.h"
@@ -491,92 +368,22 @@ void ULibretroCoreInstance::BeginPlay()
 
 void ULibretroCoreInstance::SetInputDigital(int Port, bool Pressed, ERetroDeviceID Input)
 {
-    NOT_LAUNCHED_GUARD
-
-    CoreInstance.GetValue()->EnqueueTask([=, CoreInstance = CoreInstance.GetValue()](auto)
-    {
-        CoreInstance->NextInputState[Port][Input] = Pressed;
-    });
+    if (Core) Core->SetInputDigital(Port, Pressed, Input);
 }
 
 void ULibretroCoreInstance::SetInputAnalog(int Port, int _16BitSignedInteger, ERetroDeviceID Input)
 {
-    NOT_LAUNCHED_GUARD
-
-    CoreInstance.GetValue()->EnqueueTask([=, CoreInstance = CoreInstance.GetValue()](auto)
-    {
-        CoreInstance->NextInputState[Port][Input] = _16BitSignedInteger;
-    });
+    if (Core) Core->SetInputAnalog(Port, _16BitSignedInteger, Input);
 }
 
 void ULibretroCoreInstance::ReadMemory(ERetroMemoryType MemoryType, int64 Address, int64 Size, const FOnReadMemoryComplete& OnReadMemoryComplete)
 {
-    NOT_LAUNCHED_GUARD
-
-    if (Size <= 0)
-    {
-        UE_LOG(Libretro, Warning, TEXT("ReadMemory: Invalid Size (%lld)"), Size);
-        return;
-    }
-
-    CoreInstance.GetValue()->EnqueueTask([=, weakThis = MakeWeakObjectPtr(this)](libretro_api_t libretro_api)
-    {
-        void*  memory_data = libretro_api.get_memory_data(MemoryType);
-        size_t memory_size = libretro_api.get_memory_size(MemoryType);
-
-        if (memory_data == nullptr)
-        {
-            UE_LOG(Libretro, Warning, TEXT("ReadMemory: Memory data is null for MemoryType %d"), MemoryType);
-            return;
-        }
-
-        if (static_cast<uint64>(Address) + static_cast<uint64>(Size) > memory_size)
-        {
-            UE_LOG(Libretro, Warning, TEXT("ReadMemory: Address + Size (%lld + %lld) exceeds memory size (%zu) for MemoryType %d"), Address, Size, memory_size, MemoryType);
-            return;
-        }
-
-        TArray<uint8> Data;
-        Data.SetNumUninitialized(Size);
-        FMemory::Memcpy(Data.GetData(), (uint8*)memory_data + static_cast<uint64>(Address), Size);
-
-        FFunctionGraphTask::CreateAndDispatchWhenReady(
-            [=]()
-            {
-                OnReadMemoryComplete.ExecuteIfBound(0, Address, Data);
-            }, TStatId(), nullptr, ENamedThreads::GameThread);
-    });
+    if (Core) Core->ReadMemory(MemoryType, Address, Size, OnReadMemoryComplete);
 }
 
 void ULibretroCoreInstance::WriteMemory(ERetroMemoryType MemoryType, int64 Address, const TArray<uint8>& Data)
 {
-    NOT_LAUNCHED_GUARD
-
-    if (Data.Num() <= 0)
-    {
-        UE_LOG(Libretro, Warning, TEXT("WriteMemory: Data array is empty"));
-        return;
-    }
-
-    CoreInstance.GetValue()->EnqueueTask([=, weakThis = MakeWeakObjectPtr(this)](libretro_api_t libretro_api)
-    {
-        void* memory_data = libretro_api.get_memory_data(MemoryType);
-        size_t memory_size = libretro_api.get_memory_size(MemoryType);
-
-        if (memory_data == nullptr)
-        {
-            UE_LOG(Libretro, Warning, TEXT("WriteMemory: Memory data is null for MemoryType %d"), MemoryType);
-            return;
-        }
-
-        if (static_cast<uint64>(Address) + static_cast<uint64>(Data.Num()) > memory_size)
-        {
-            UE_LOG(Libretro, Warning, TEXT("WriteMemory: Address + Data.Num() (%lld + %d) exceeds memory size (%zu) for MemoryType %d"), Address, Data.Num(), memory_size, MemoryType);
-            return;
-        }
-
-        FMemory::Memcpy(static_cast<uint8*>(memory_data) + static_cast<uint64>(Address), Data.GetData(), Data.Num());
-    });
+    if (Core) Core->WriteMemory(MemoryType, Address, Data);
 }
 
 

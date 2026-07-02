@@ -2907,6 +2907,9 @@ static bool core_environment(unsigned cmd, void *data) {
         return video_set_pixel_format(*fmt);
     }
     case RETRO_ENVIRONMENT_SET_HW_RENDER: {
+        if (g_headless) {
+            return false; // No GL context exists; refusal makes multi-renderer cores fall back to their software/null path
+        }
         struct retro_hw_render_callback *hw = (struct retro_hw_render_callback*)data;
         hw->get_current_framebuffer = core_get_current_framebuffer;
         hw->get_proc_address = (retro_hw_get_proc_address_t)SDL_GL_GetProcAddress;
@@ -3453,7 +3456,7 @@ static void handle_ulnet_poll_status(int status, void *rom_data, size_t rom_size
 
 static bool ulnet_session_wants_tick_now(ulnet_session_t *session) {
     return ulnet_session_can_tick(session)
-        && core_wants_tick_in_seconds(session->core_wants_tick_at_unix_usec) <= 0.0;
+        && ulnet__get_unix_time_microseconds() >= session->core_wants_tick_at_unix_usec;
 }
 
 static int poll_foreground_netplay_until_present_guard(int status, void *rom_data, size_t rom_size) {
@@ -3705,7 +3708,7 @@ int main(int argc, char *argv[]) {
         clock_gettime(CLOCK_MONOTONIC, &start_time);
 #endif
 
-        g_core_wants_tick_in_milliseconds[g_main_loop_cyclic_offset] = core_wants_tick_in_seconds(g_ulnet_session.core_wants_tick_at_unix_usec) * 1000.0;
+        g_core_wants_tick_in_milliseconds[g_main_loop_cyclic_offset] = (g_ulnet_session.core_wants_tick_at_unix_usec - ulnet__get_unix_time_microseconds()) / 1000.0;
 
         if (!g_headless && !NetImgui::IsConnected()) {
             ImGui_ImplOpenGL3_NewFrame();

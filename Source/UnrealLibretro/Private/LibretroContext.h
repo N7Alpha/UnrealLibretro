@@ -223,10 +223,25 @@ public:
     sam2_message_u latest_sam2_message;
 
     struct ulnet_session* netplay_session = nullptr;
+    int netplay_session_event_pending = 0; // Only touched on the core thread; latest ulnet_session_event_t awaiting broadcast
     unsigned char* netplay_save_state_data = nullptr;
     size_t netplay_save_state_size = 0;
     uint64 rom_hash = 0;
     TQueue<TUniqueFunction<void(libretro_api_t&)>, EQueueMode::Spsc> NetplayTasks;
+
+    // Declarative netplay (ULibretroCoreInstance::NetplayRole/NetplayPeerId): set before the core
+    // thread starts, consumed on the core thread once the sam2 connection is up. Join retries until
+    // the deadline so two instances launched the same frame order themselves without user timers.
+    int   PendingNetplayRole = 0; // Matches ELibretroNetplayRole: 0 none, 1 host, 2 join
+    int32 PendingNetplayPeerId = 0;
+    int64 PendingNetplayDeadlineUnixUsec = 0;
+    int64 PendingNetplayNextAttemptUnixUsec = 0;
+    char  netplay_room_name[64] = {0}; // Captured at launch (owning actor's name); sam2 room names are ANSI
+
+    // The single implementation behind both the imperative Blueprint calls and the declarative
+    // role property. Core thread only; callers ensure connected_to_sam2 first.
+    void NetplayHost_CoreThread(uint16 PeerId); // PeerId 0 keeps the sam2-assigned id
+    void NetplaySync_CoreThread(uint16 PeerId);
 
 protected:
     FLibretroContext() {}

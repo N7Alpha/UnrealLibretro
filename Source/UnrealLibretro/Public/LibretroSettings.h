@@ -21,6 +21,17 @@ public:
     UPROPERTY(config, EditAnywhere, Category = Libretro)
     TMap<FString, FString> GlobalCoreOptions;
 
+    /**
+     * Core options applied on top of everything else (including per-instance options) when running
+     * headless: dedicated servers, commandlets, and -nullrhi. Hardware rendering is refused in those
+     * environments, so use this to steer cores onto their software/null renderers, e.g.
+     *   mupen64plus-rdp-plugin = angrylion
+     *   dolphin_renderer       = Null
+     * These win over per-instance options because they express environment constraints, not preferences
+     */
+    UPROPERTY(config, EditAnywhere, Category = Libretro, meta = (DisplayName = "Server (Headless) Core Option Overrides"))
+    TMap<FString, FString> ServerGlobalCoreOptions;
+
     /* GetCategoryName and GetSectionName are used for linking to the settings details pane */
     FName GetCategoryName() const override
     {

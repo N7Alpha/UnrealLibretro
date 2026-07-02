@@ -27,6 +27,8 @@ extern char UnrealLibretroVersionAnsi[];
 #   define PLATFORM_INDEX 1
 #elif PLATFORM_ANDROID_ARM64
 #   define PLATFORM_INDEX 2
+#elif PLATFORM_MAC
+#   define PLATFORM_INDEX 3
 #endif
 
 static const struct { FString DistributionPath; FString Extension; FString BuildbotPath; FName ImageName; } CoreLibMetadata[] =
@@ -34,8 +36,8 @@ static const struct { FString DistributionPath; FString Extension; FString Build
     { TEXT("Win64/"),                  "_libretro.dll",           "https://buildbot.libretro.com/nightly/windows/x86_64/latest/",        "Launcher.Platform_Windows.Large" },
     { TEXT("Android/armeabi-v7a/"),    "_libretro_android.so",    "https://buildbot.libretro.com/nightly/android/latest/armeabi-v7a/",   "Launcher.Platform_Android.Large" },
     { TEXT("Android/arm64-v8a/"),      "_libretro_android.so",    "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/",     "Launcher.Platform_Android.Large" },
+    { TEXT("Mac/arm64-v8a/"),          "_libretro.dylib",         "https://buildbot.libretro.com/nightly/apple/osx/arm64/latest/",       "Launcher.Platform_Mac.Large"     },
 //  { TEXT("Linux/x86_64/"),           "_libretro.so",            "https://buildbot.libretro.com/nightly/linux/x86_64/latest/",          "Launcher.Platform_Linux.Large"   },
-//  { TEXT("Mac/arm64-v8a/"),          "_libretro.dylib",         "https://buildbot.libretro.com/nightly/apple/osx/arm64/latest/",       "Launcher.Platform_Mac.Large"     },
 //  { TEXT("iOS/universal/"),          "_libretro_ios.dylib",     "https://buildbot.libretro.com/nightly/apple/ios-arm64/latest/",       "Launcher.Platform_iOS.Large"     },
 };
 
@@ -78,6 +80,19 @@ static void* Win32GLGetProcAddress(const char* procname)
 }
 
 #include "Windows/HideWindowsPlatformTypes.h"
+#elif PLATFORM_MAC
+#include <dlfcn.h>
+
+// OpenGL context creation isn't implemented on Mac yet (see FLibretroContext's video context init),
+// so this only has to resolve symbols for the code to compile and fail gracefully at runtime.
+// macOS exports every GL entry point flat from the OpenGL framework, so dlsym suffices if a
+// context path is ever added
+static void* MacGLGetProcAddress(const char* procname)
+{
+    return dlsym(RTLD_DEFAULT, procname);
+}
+
+#define GL_GET_PROC_ADDRESS MacGLGetProcAddress
 #endif
 
 class FUnrealLibretroModule : public IModuleInterface

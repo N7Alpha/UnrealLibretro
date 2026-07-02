@@ -218,8 +218,10 @@ static int sam2_format_core_version(sam2_room_t *room, const char *name, const c
 
 #ifdef _WIN32
 typedef uintptr_t sam2_socket_t;
+#define SAM2_SOCKET_INVALID (~(sam2_socket_t)0) // Same value as winsock's INVALID_SOCKET without needing its header here
 #else
 typedef int sam2_socket_t;
+#define SAM2_SOCKET_INVALID (-1)
 #endif
 
 #define SAM2__INDEX_NULL ((uint16_t) 0x0000U)
@@ -338,14 +340,13 @@ int sam2_socket_buffer_size_server_to_client = 8192;
 
 #ifdef _WIN32
     #define SAM2_SOCKET_ERROR (SOCKET_ERROR)
-    #define SAM2_SOCKET_INVALID (INVALID_SOCKET)
     #define SAM2_CLOSESOCKET closesocket
     #define SAM2_SOCKERRNO ((int)WSAGetLastError())
     #define SAM2_EINPROGRESS WSAEWOULDBLOCK
+    SAM2_STATIC_ASSERT(SAM2_SOCKET_INVALID == (sam2_socket_t)INVALID_SOCKET, "SAM2_SOCKET_INVALID must match INVALID_SOCKET");
 #else
     #include <unistd.h>
     #define SAM2_SOCKET_ERROR (-1)
-    #define SAM2_SOCKET_INVALID (-1)
     #define SAM2_CLOSESOCKET close
     #define SAM2_SOCKERRNO errno
     #define SAM2_EINPROGRESS EINPROGRESS

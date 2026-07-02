@@ -49,6 +49,9 @@ jobs:
           -o /tmp/ulnet_test
         /tmp/ulnet_test
 
+    - name: Run disconnect handling test
+      run: Source/ThirdParty/netarch/ulnet_disconnect_test.sh --timeout 30 --peer-timeout 2
+
     - name: Run NAT matrix smoke test
       run: sudo Source/ThirdParty/netarch/ulnet_nat_matrix_test.sh --skip-expected-fail --timeout 10
 
