@@ -49,6 +49,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build and package UnrealLibretro plugin.")
     parser.add_argument("ue_path", help="Path to an Unreal Engine installation you want to build the plugin for.")
     parser.add_argument("package_path", nargs='?', help="Path where the plugin will be packaged.")
+    parser.add_argument("--compiler", choices=["VS2019", "VS2022"], default=None,
+                        help="Visual Studio toolchain to pass to UAT. Omit to let UnrealBuildTool pick the default. UE4 requires VS2019.")
 
     args = parser.parse_args()
     ue_path = args.ue_path
@@ -75,10 +77,11 @@ if __name__ == "__main__":
     uplugin_json["VersionName"] = git_get_version_name(revision="HEAD")
     json.dump(uplugin_json, open("UnrealLibretro.uplugin", "w"), indent=4)
 
+    compiler_flag = f' -{args.compiler}' if args.compiler else ''
     status = os.system(
         f'"{ue_path}/Engine/Build/BatchFiles/RunUAT" BuildPlugin -Rocket'
         f' -Plugin={plugin_path}/UnrealLibretro.uplugin -TargetPlatforms=Win64'
-        f' -Package={package_path}/UnrealLibretro-{major}.{minor}/UnrealLibretro -VS2019'
+        f' -Package={package_path}/UnrealLibretro-{major}.{minor}/UnrealLibretro{compiler_flag}'
     )
 
     if status:

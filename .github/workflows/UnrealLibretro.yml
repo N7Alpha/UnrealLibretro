@@ -1,5 +1,13 @@
 name: UnrealLibretro
 
+# Builds the plugin on GitHub-hosted Windows runners, in parallel across engine
+# versions. Runners don't have Unreal Engine and don't have the disk for a full
+# install, so each job downloads a minimal AES-256-encrypted engine snapshot
+# from a `ue-cache/<major>.<minor>` prerelease of this repository and decrypts
+# it with the ENGINE_CACHE_KEY repository secret. Those snapshots are produced
+# by Tools/CI/prune_engine.py on a machine that has the engine installed --
+# see Tools/CI/README.md for setup and Epic EULA considerations.
+
 on:
   workflow_dispatch:
   push:
@@ -8,50 +16,128 @@ on:
       - 'v*.*.*'
 
 jobs:
-  create-release:
+  # The matrix is generated from whichever ue-cache/* releases actually exist,
+  # so adding a new engine version to CI is just uploading a new engine cache.
+  discover-engines:
     runs-on: ubuntu-latest
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      matrix: ${{ steps.engines.outputs.matrix }}
+      found: ${{ steps.engines.outputs.found }}
     steps:
-      - name: Create Release
-        id: create_release
-        if: startsWith(github.ref, 'refs/tags/') # Only release when a tag is pushed
-        uses: actions/create-release@v1
-        with:
-          draft: false
-          prerelease: false
-          release_name: ${{ github.ref }}
-          tag_name: ${{ github.ref }}
-#          body: This is an automated release for ${{ github.ref }}`.
+      - name: List available engine caches
+        id: engines
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          matrix=$(gh api "repos/${{ github.repository }}/releases" --paginate --jq '.[].tag_name' \
+            | { grep -E '^ue-cache/[0-9]+\.[0-9]+$' || true; } \
+            | sed 's|^ue-cache/||' \
+            | sort -t. -k1,1n -k2,2n \
+            | jq -Rc 'split(".") | {major: (.[0] | tonumber), minor: (.[1] | tonumber)}' \
+            | jq -sc '.')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          if [ "$matrix" != "[]" ] && [ -n "$matrix" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "Engine caches available: $matrix"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No ue-cache/* releases found. Upload engine caches with Tools/CI/prune_engine.py to enable plugin builds."
+          fi
+
+  create-release:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') # Only release when a tag is pushed
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
+            || echo "Release already exists"
 
   build:
-    runs-on: self-hosted
-    needs: create-release
+    needs: [discover-engines, create-release]
+    # create-release is skipped on non-tag pushes; build should still run then
+    if: >-
+      always() && needs.discover-engines.outputs.found == 'true' &&
+      (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
+    runs-on: windows-2025
+    timeout-minutes: 300
+    permissions:
+      contents: write
     strategy:
+      fail-fast: false
       matrix:
-        version:
-          - {major: 4, minor: 24}
-          - {major: 4, minor: 25}
-          - {major: 4, minor: 26}
-          - {major: 4, minor: 27}
-          - {major: 5, minor: 0}
-          - {major: 5, minor: 1}
-          - {major: 5, minor: 2}
-          - {major: 5, minor: 3}
-          - {major: 5, minor: 4}
-          - {major: 5, minor: 5}
-          - {major: 5, minor: 6}
+        version: ${{ fromJSON(needs.discover-engines.outputs.matrix) }}
+    env:
+      ENGINE_CACHE_TAG: ue-cache/${{ matrix.version.major }}.${{ matrix.version.minor }}
+      ENGINE_ROOT: C:\UE
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check ENGINE_CACHE_KEY secret is configured
+        env:
+          ENGINE_CACHE_KEY: ${{ secrets.ENGINE_CACHE_KEY }}
+        run: |
+          if (-not $env:ENGINE_CACHE_KEY) {
+            Write-Host "::error::The ENGINE_CACHE_KEY repository secret is not set. It must match the key used by Tools/CI/prune_engine.py when the engine caches were created."
+            exit 1
+          }
+
+      # The workspace lives on the small D: drive; the engine goes on C: which
+      # has much more free space on hosted Windows runners
+      - name: Report disk space
+        run: Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+
+      - name: Download engine cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$env:ENGINE_CACHE_TAG" --repo "${{ github.repository }}" --dir C:\ue-cache
+          Get-ChildItem C:\ue-cache | Format-Table Name, Length -AutoSize
+
+      - name: Verify volume checksums
+        run: |
+          $manifest = Get-Content C:\ue-cache\manifest.json | ConvertFrom-Json
+          foreach ($volume in $manifest.volumes) {
+            $actual = (Get-FileHash -Algorithm SHA256 "C:\ue-cache\$($volume.name)").Hash.ToLower()
+            if ($actual -ne $volume.sha256) {
+              Write-Host "::error::Checksum mismatch for $($volume.name)"
+              exit 1
+            }
+          }
+          Write-Host "All $($manifest.volumes.Count) volume(s) verified for engine $($manifest.engine_version)"
+
+      - name: Extract engine
+        env:
+          ENGINE_CACHE_KEY: ${{ secrets.ENGINE_CACHE_KEY }}
+        run: |
+          $firstVolume = (Get-ChildItem C:\ue-cache\*.7z.001).FullName
+          7z x -aoa "-p$env:ENGINE_CACHE_KEY" "-o$env:ENGINE_ROOT" $firstVolume
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item C:\ue-cache -Recurse -Force # Reclaim the disk before building
+
+      # UE4 needs the VS2019 (v142) toolchain which hosted images no longer
+      # carry. Best effort; drop 4.x engine caches if this ever breaks
+      - name: Install VS2019 Build Tools (UE4 only)
+        if: matrix.version.major == 4
+        run: |
+          choco install visualstudio2019buildtools --no-progress -y --package-parameters `
+            "--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows10SDK.19041 --includeRecommended --quiet --norestart"
+          if ($LASTEXITCODE -in 0, 3010) { exit 0 } else { exit $LASTEXITCODE } # 3010 = success, reboot required
 
       - name: Run Setup Script
         run: ./setup.cmd
 
       - name: Package for Unreal Engine
-        run: python package.py "$env:UE_${{ matrix.version.major }}_${{ matrix.version.minor }}" "$env:RUNNER_TEMP"
+        run: |
+          $compiler = if (${{ matrix.version.major }} -eq 4) { @("--compiler", "VS2019") } else { @() }
+          python package.py "$env:ENGINE_ROOT" "$env:RUNNER_TEMP" @compiler
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload Build-Artifact
         if: startsWith(github.ref, 'refs/heads/') # Upload artifacts when commits (not tags) are pushed
@@ -62,13 +148,9 @@ jobs:
           if-no-files-found: error
 
       - name: Upload Release Asset
-        id: upload-release-asset 
         if: startsWith(github.ref, 'refs/tags/') # Only release when a tag is pushed
-        uses: actions/upload-release-asset@v1
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }} # Reference the output from create-release job
-          asset_path: ${{ runner.temp }}/UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}.zip
-          asset_name: UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}.zip
-          asset_content_type: application/zip
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$env:GITHUB_REF_NAME" --repo "${{ github.repository }}" --clobber `
+            "$env:RUNNER_TEMP/UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}.zip"
