@@ -40,9 +40,14 @@ on:
         description: "Give up after this many checkpoint/resume cycles"
         required: false
         default: "6"
+  # Temporary bring-up trigger: workflow_dispatch only works once this file is
+  # on the default branch, so during development pushes to the working branch
+  # run the workflow with the defaults below. Remove before merging to master
+  push:
+    branches: [ claude/github-issues-triage-lu1k09 ]
 
 concurrency:
-  group: engine-cache-${{ inputs.ue_ref }}
+  group: engine-cache-${{ inputs.ue_ref || '5.3.2-release' }}
   cancel-in-progress: false
 
 jobs:
@@ -53,9 +58,9 @@ jobs:
       contents: write
     env:
       UE_SRC: C:\UE-src
-      UE_REF: ${{ inputs.ue_ref }}
-      ATTEMPT: ${{ inputs.attempt }}
-      MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+      UE_REF: ${{ inputs.ue_ref || '5.3.2-release' }}
+      ATTEMPT: ${{ inputs.attempt || '1' }}
+      MAX_ATTEMPTS: ${{ inputs.max_attempts || '6' }}
       # Stop compiling this many minutes after the job started, leaving time to
       # checkpoint ~30GB of encrypted volumes and upload them
       BUILD_DEADLINE_MINUTES: "280"
@@ -92,6 +97,14 @@ jobs:
         run: |
           gh release download $env:WIP_TAG --repo "${{ github.repository }}" --dir C:\ue-wip 2>$null
           if ($LASTEXITCODE -eq 0) {
+            # Push-triggered resumes carry no inputs, so the attempt counter
+            # lives in the checkpoint release notes to keep the runaway guard working
+            $body = gh release view $env:WIP_TAG --repo "${{ github.repository }}" --json body --jq .body
+            if ("$body" -match 'next_attempt=(\d+)') {
+              $effective = [Math]::Max([int]$env:ATTEMPT, [int]$Matches[1])
+              "ATTEMPT=$effective" | Out-File -Append $env:GITHUB_ENV
+              $env:ATTEMPT = "$effective"
+            }
             Write-Host "Resuming from checkpoint $env:WIP_TAG (attempt $env:ATTEMPT)"
             $firstVolume = (Get-ChildItem C:\ue-wip\*.7z.001).FullName
             7z x -aoa "-p$env:ENGINE_CACHE_KEY" "-o$env:UE_SRC" $firstVolume
@@ -223,6 +236,11 @@ jobs:
           foreach ($asset in @($existing | Where-Object { $_ })) { gh release delete-asset $env:WIP_TAG $asset --repo "${{ github.repository }}" --yes }
           gh release upload $env:WIP_TAG --repo "${{ github.repository }}" @((Get-ChildItem "$out\*.7z.*").FullName)
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # Persist the attempt counter for push-triggered resumes (no inputs there)
+          $next = [int]$env:ATTEMPT + 1
+          gh release edit $env:WIP_TAG --repo "${{ github.repository }}" `
+            --notes "Encrypted intermediate build state for resumable engine cache builds. Deleted automatically when the build completes.`n`nnext_attempt=$next"
           exit 0
 
       - name: Resume via re-dispatch
@@ -239,6 +257,17 @@ jobs:
           Write-Host "Re-dispatching attempt $next of $env:MAX_ATTEMPTS"
           gh workflow run engine-cache.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}" `
             -f ue_ref="$env:UE_REF" -f attempt="$next" -f max_attempts="$env:MAX_ATTEMPTS"
+          if ($LASTEXITCODE -eq 0) { exit 0 }
+
+          # workflow_dispatch 404s until this file lands on the default branch.
+          # Fall back to an empty commit pushed with the PAT (pushes made with
+          # the built-in GITHUB_TOKEN would not trigger workflows), which fires
+          # this workflow's push trigger and resumes from the checkpoint
+          Write-Host "workflow_dispatch unavailable, falling back to an empty commit on ${{ github.ref_name }}"
+          git config user.email "noreply@anthropic.com"
+          git config user.name "engine-cache resume"
+          git commit --allow-empty -m "Resume engine cache build ($env:UE_REF, attempt $next)"
+          git push "https://x-access-token:$($env:GH_TOKEN)@github.com/${{ github.repository }}.git" HEAD:"${{ github.ref_name }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           exit 0
 
