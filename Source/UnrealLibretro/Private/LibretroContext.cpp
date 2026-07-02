@@ -636,6 +636,14 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
         return; // Headless (dedicated server/commandlet/nullrhi): no upload buffers, RHI textures, or render thread exist
     }
 
+    // When the render thread doesn't exist IsInRenderingThread() is true on EVERY thread, so
+    // ENQUEUE_RENDER_COMMAND executes its lambda inline right here on the libretro thread and the
+    // RHI trips thread-affinity asserts (early startup on Android issue #12, PIE teardown issue #15,
+    // and -onethread). Drop the frame instead until threaded rendering is back up
+    if (!GIsThreadedRendering) {
+        return;
+    }
+
     // Unreal's render queue can be more than one frame deep, so a single pending-frame slot drops
     // frames when the render thread falls behind. Instead each frame gets its own ringbuffer entry
     // and its own unconditionally dispatched upload; when every buffer is in flight we block here
@@ -2127,6 +2135,10 @@ cleanup:
 #endif
 
            // @todo Make state transitions better so StartFailed can't be overwritten
+            // Note when a core dies mid-run (ErrorMessage set after a successful launch) this
+            // deliberately re-invokes LoadedCallback as a failure: that's what resets the game
+            // thread's CoreInstance handle so it doesn't dangle, at the cost of a second
+            // OnLaunchComplete(false) broadcast
             if (   l->ErrorMessage.Len() > 0
                 || l->CoreState.load(std::memory_order_relaxed) == ECoreState::StartFailed)
             {
