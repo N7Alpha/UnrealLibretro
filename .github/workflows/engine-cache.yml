@@ -1,0 +1,247 @@
+name: engine-cache
+
+# Builds an encrypted minimal Unreal Engine cache FROM EPIC'S SOURCE REPO on a
+# free GitHub-hosted runner, for the UnrealLibretro workflow to build against.
+# No self-hosted runner and no local engine install required.
+#
+# Strategy: shallow-clone EpicGames/UnrealEngine at the requested ref, slim the
+# tree down to what a plugin compile needs, then run the normal plugin build
+# (package.py -> RunUAT BuildPlugin). UnrealBuildTool compiles exactly the
+# engine-module closure the plugin depends on -- much less than a full editor
+# build, but still potentially more than fits in one 6-hour job on 4 cores. So
+# the build runs against a wall-clock budget: on timeout the whole working tree
+# (sources + intermediates) is checkpointed to an encrypted ue-cache-wip/*
+# prerelease and the workflow re-dispatches itself to resume incrementally.
+# When the plugin build finally succeeds, the tree is published as the
+# ue-cache/<major>.<minor> release that .github/workflows/UnrealLibretro.yml
+# discovers and consumes.
+#
+# Required repository secrets:
+#   UE_SOURCE_TOKEN  Classic PAT with `repo` scope from a GitHub account linked
+#                    to Epic Games (grants read access to EpicGames/UnrealEngine;
+#                    also used to re-dispatch this workflow, which the built-in
+#                    GITHUB_TOKEN is not allowed to do)
+#   ENGINE_CACHE_KEY Symmetric encryption password for the published archives
+#
+# Only UE5 refs are expected to work for now (UE4 needs the VS2019 toolchain
+# and .NET Framework era tooling that would need extra bring-up).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ue_ref:
+        description: "EpicGames/UnrealEngine tag or branch (e.g. 5.3.2-release)"
+        required: true
+      attempt:
+        description: "Internal: resume attempt counter"
+        required: false
+        default: "1"
+      max_attempts:
+        description: "Give up after this many checkpoint/resume cycles"
+        required: false
+        default: "6"
+
+concurrency:
+  group: engine-cache-${{ inputs.ue_ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-engine:
+    runs-on: windows-2025
+    timeout-minutes: 350
+    permissions:
+      contents: write
+    env:
+      UE_SRC: C:\UE-src
+      UE_REF: ${{ inputs.ue_ref }}
+      ATTEMPT: ${{ inputs.attempt }}
+      MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+      # Stop compiling this many minutes after the job started, leaving time to
+      # checkpoint ~30GB of encrypted volumes and upload them
+      BUILD_DEADLINE_MINUTES: "280"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required secrets
+        env:
+          UE_SOURCE_TOKEN: ${{ secrets.UE_SOURCE_TOKEN }}
+          ENGINE_CACHE_KEY: ${{ secrets.ENGINE_CACHE_KEY }}
+        run: |
+          if (-not $env:UE_SOURCE_TOKEN) { Write-Host "::error::Missing UE_SOURCE_TOKEN secret (classic PAT with repo scope from an Epic-linked GitHub account)"; exit 1 }
+          if (-not $env:ENGINE_CACHE_KEY) { Write-Host "::error::Missing ENGINE_CACHE_KEY secret"; exit 1 }
+          "JOB_START=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" | Out-File -Append $env:GITHUB_ENV
+          "WIP_TAG=ue-cache-wip/$($env:UE_REF -replace '[/\\]','-')" | Out-File -Append $env:GITHUB_ENV
+
+      # The engine needs most of the ~90GB free on C:, reclaim what we can from
+      # preinstalled tooling we don't use
+      - name: Reclaim disk space
+        run: |
+          foreach ($dir in @("C:\Android", "$env:ANDROID_HOME", "C:\Program Files\PostgreSQL",
+                             "C:\Program Files\MySQL", "C:\Strawberry", "C:\Julia", "C:\Miniconda",
+                             "C:\Program Files\MongoDB", "C:\selenium")) {
+            if ($dir -and (Test-Path $dir)) { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
+          }
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+
+      - name: Restore checkpoint if one exists
+        id: restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENGINE_CACHE_KEY: ${{ secrets.ENGINE_CACHE_KEY }}
+        run: |
+          gh release download $env:WIP_TAG --repo "${{ github.repository }}" --dir C:\ue-wip 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Resuming from checkpoint $env:WIP_TAG (attempt $env:ATTEMPT)"
+            $firstVolume = (Get-ChildItem C:\ue-wip\*.7z.001).FullName
+            7z x -aoa "-p$env:ENGINE_CACHE_KEY" "-o$env:UE_SRC" $firstVolume
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Remove-Item C:\ue-wip -Recurse -Force
+            "resumed=true" | Out-File -Append $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "No checkpoint at $env:WIP_TAG, starting fresh"
+            "resumed=false" | Out-File -Append $env:GITHUB_OUTPUT
+          }
+          exit 0
+
+      - name: Clone Unreal Engine source
+        if: steps.restore.outputs.resumed == 'false'
+        env:
+          UE_SOURCE_TOKEN: ${{ secrets.UE_SOURCE_TOKEN }}
+        run: |
+          git clone --depth 1 --branch $env:UE_REF `
+            "https://x-access-token:$($env:UE_SOURCE_TOKEN)@github.com/EpicGames/UnrealEngine.git" $env:UE_SRC
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Slim before Setup.bat downloads dependencies on top: git metadata and
+          # sample/template/doc trees play no part in compiling a plugin
+          foreach ($dir in @(".git", "Samples", "Templates", "FeaturePacks", "Engine\Documentation", "Engine\Extras")) {
+            $path = Join-Path $env:UE_SRC $dir
+            if (Test-Path $path) { Remove-Item $path -Recurse -Force }
+          }
+
+      - name: Download engine dependencies (Setup.bat)
+        if: steps.restore.outputs.resumed == 'false'
+        working-directory: ${{ env.UE_SRC }}
+        run: |
+          # GitDependencies supports excluding platform payloads we never build
+          cmd /c "Setup.bat --exclude=Android --exclude=Linux --exclude=Linux32 --exclude=LinuxArm64 --exclude=Mac --exclude=IOS --exclude=TVOS --exclude=HoloLens --exclude=HTML5 --force"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Editor content isn't read when compiling/linking a plugin and is one
+          # of the largest payloads Setup.bat brings in
+          foreach ($dir in @("Engine\Content", "Engine\Documentation", "Engine\Extras", "Samples", "Templates", "FeaturePacks")) {
+            if (Test-Path $dir) { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
+          }
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
+
+      - name: Run Setup Script
+        run: ./setup.cmd
+
+      - name: Build plugin against engine source (budgeted)
+        id: build
+        run: |
+          $elapsedMinutes = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [int64]$env:JOB_START) / 60
+          $budgetMinutes = [math]::Max(10, [int]$env:BUILD_DEADLINE_MINUTES - $elapsedMinutes)
+          Write-Host "Build budget: $([int]$budgetMinutes) minutes (attempt $env:ATTEMPT of $env:MAX_ATTEMPTS)"
+
+          $proc = Start-Process python -ArgumentList "package.py", "$env:UE_SRC", "$env:RUNNER_TEMP" -PassThru -NoNewWindow
+          if ($proc.WaitForExit([int]($budgetMinutes * 60 * 1000))) {
+            if ($proc.ExitCode -eq 0) {
+              "outcome=success" | Out-File -Append $env:GITHUB_OUTPUT
+              Write-Host "Plugin build succeeded"
+            } else {
+              "outcome=failed" | Out-File -Append $env:GITHUB_OUTPUT
+              Write-Host "::error::Plugin build failed with exit code $($proc.ExitCode) (not a timeout). A checkpoint will still be uploaded so a fix can resume from here."
+            }
+          } else {
+            Write-Host "Budget exhausted, stopping the build for checkpointing"
+            taskkill /T /F /PID $proc.Id
+            "outcome=timeout" | Out-File -Append $env:GITHUB_OUTPUT
+          }
+          exit 0
+
+      - name: Publish finished engine cache
+        if: steps.build.outputs.outcome == 'success'
+        working-directory: ${{ env.UE_SRC }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENGINE_CACHE_KEY: ${{ secrets.ENGINE_CACHE_KEY }}
+        run: |
+          $version = Get-Content Engine\Build\Build.version | ConvertFrom-Json
+          $tag = "ue-cache/$($version.MajorVersion).$($version.MinorVersion)"
+          $out = "C:\ue-out"
+          New-Item -ItemType Directory -Force $out | Out-Null
+
+          7z a -t7z -mx=3 -mhe=on -v1900m "-p$env:ENGINE_CACHE_KEY" "$out\UE-$($version.MajorVersion).$($version.MinorVersion)-min.7z" Engine Default.uprojectdirs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $volumes = Get-ChildItem "$out\*.7z.*" | Sort-Object Name
+          $manifest = @{
+            engine_version = "$($version.MajorVersion).$($version.MinorVersion)"
+            source_ref = $env:UE_REF
+            volumes = @($volumes | ForEach-Object {
+              @{ name = $_.Name; bytes = $_.Length; sha256 = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() }
+            })
+          }
+          $manifest | ConvertTo-Json -Depth 4 | Out-File -Encoding utf8 "$out\manifest.json"
+
+          gh release view $tag --repo "${{ github.repository }}" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo "${{ github.repository }}" --prerelease `
+              --title "Engine cache $($version.MajorVersion).$($version.MinorVersion)" `
+              --notes "AES-256 encrypted minimal Unreal Engine build (from source ref $env:UE_REF) for CI plugin builds. Usable only by holders of the repository's ENGINE_CACHE_KEY secret, who must have agreed to Epic's EULA. See Tools/CI/README.md."
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          gh release upload $tag --repo "${{ github.repository }}" --clobber @($volumes.FullName) "$out\manifest.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # The work-in-progress checkpoint is no longer needed
+          gh release delete $env:WIP_TAG --repo "${{ github.repository }}" --cleanup-tag --yes 2>$null
+          exit 0
+
+      - name: Upload checkpoint
+        if: steps.build.outputs.outcome != 'success'
+        working-directory: ${{ env.UE_SRC }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENGINE_CACHE_KEY: ${{ secrets.ENGINE_CACHE_KEY }}
+        run: |
+          $out = "C:\ue-wip-out"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          # Fast compression: this is transient state, upload time matters more than size
+          7z a -t7z -mx=1 -mhe=on -v1900m "-p$env:ENGINE_CACHE_KEY" "$out\checkpoint.7z" Engine Default.uprojectdirs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          gh release view $env:WIP_TAG --repo "${{ github.repository }}" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:WIP_TAG --repo "${{ github.repository }}" --prerelease `
+              --title "WIP engine cache ($env:UE_REF)" `
+              --notes "Encrypted intermediate build state for resumable engine cache builds. Deleted automatically when the build completes."
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          # Replace the previous checkpoint's volumes entirely in case this one has fewer
+          $existing = gh release view $env:WIP_TAG --repo "${{ github.repository }}" --json assets --jq '.assets[].name'
+          foreach ($asset in @($existing | Where-Object { $_ })) { gh release delete-asset $env:WIP_TAG $asset --repo "${{ github.repository }}" --yes }
+          gh release upload $env:WIP_TAG --repo "${{ github.repository }}" @((Get-ChildItem "$out\*.7z.*").FullName)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          exit 0
+
+      - name: Resume via re-dispatch
+        if: steps.build.outputs.outcome == 'timeout'
+        env:
+          # The default GITHUB_TOKEN can't trigger new workflow runs; the PAT can
+          GH_TOKEN: ${{ secrets.UE_SOURCE_TOKEN }}
+        run: |
+          $next = [int]$env:ATTEMPT + 1
+          if ($next -gt [int]$env:MAX_ATTEMPTS) {
+            Write-Host "::error::Build did not finish within $env:MAX_ATTEMPTS attempts. The checkpoint is preserved at $env:WIP_TAG; re-dispatch manually with a higher attempt/max_attempts to continue."
+            exit 1
+          }
+          Write-Host "Re-dispatching attempt $next of $env:MAX_ATTEMPTS"
+          gh workflow run engine-cache.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}" `
+            -f ue_ref="$env:UE_REF" -f attempt="$next" -f max_attempts="$env:MAX_ATTEMPTS"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          exit 0
+
+      - name: Fail job if the build failed outright
+        if: steps.build.outputs.outcome == 'failed'
+        run: exit 1

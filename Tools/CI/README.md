@@ -10,7 +10,26 @@ How it fits together:
 
 Release assets are used instead of Actions artifacts because artifacts expire after at most 90 days and can only be uploaded from inside a workflow run — and the machine with the engine on it isn't a runner anymore. Release assets are permanent and capped at 2 GiB per file, which the 7z volume splitting stays under.
 
-## One-time setup
+There are two ways to produce an engine cache:
+
+- **From Epic's source repo, entirely in CI** (`.github/workflows/engine-cache.yml`) — no local engine needed, see below.
+- **From a local launcher install** (`Tools/CI/prune_engine.py`) — faster if you already have the version installed, see "Capturing from a local install".
+
+## Building a cache in CI from Epic's source repo
+
+The `engine-cache` workflow shallow-clones `EpicGames/UnrealEngine` at a tag you give it, slims the tree (no git metadata, samples, templates, docs, editor content, or non-Windows platform payloads), and runs the normal plugin build. UnrealBuildTool compiles only the engine-module closure the plugin needs, but on a 4-core free runner that can still exceed the 6-hour job limit — so the build runs against a wall-clock budget and **checkpoints itself**: on timeout it uploads the whole working tree (sources + intermediates) as an encrypted `ue-cache-wip/<ref>` prerelease and re-dispatches itself to resume incrementally. When the plugin build succeeds, the tree is published as the final `ue-cache/<major>.<minor>` release and the checkpoint is deleted.
+
+Setup:
+
+1. Secrets (Settings → Secrets and variables → Actions):
+   - `UE_SOURCE_TOKEN` — **classic** PAT with `repo` scope from a GitHub account linked to Epic Games (fine-grained tokens can't reach `EpicGames/UnrealEngine`). Also used for the self-re-dispatch, which the built-in `GITHUB_TOKEN` isn't allowed to trigger.
+   - `ENGINE_CACHE_KEY` — any long random string; this encrypts every published archive.
+2. Run the workflow: Actions → engine-cache → Run workflow, with e.g. `ue_ref: 5.3.2-release`.
+3. Watch it iterate. Each attempt is a separate run; expect a few for the first version. When it finishes, the `UnrealLibretro` workflow picks the version up automatically.
+
+Caches built this way are source builds, so consumer jobs run UnrealBuildTool incrementally against them — the engine modules are already compiled and only the plugin compiles. Only UE5 refs are expected to work for now; UE4 needs VS2019-era tooling that hasn't been brought up.
+
+## Capturing from a local install
 
 1. Generate a strong key and store it as a repository secret:
 
