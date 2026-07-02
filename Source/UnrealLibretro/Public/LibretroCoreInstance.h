@@ -355,6 +355,9 @@ protected:
 
     bool Paused = false;
 
+    /** SRAM path resolved when the core was launched; Shutdown persists to it even if RomPath/SRAMPath changed since */
+    FString ResolvedSRAMPath;
+
     UPROPERTY()
     USoundWave* AudioBuffer;
 };
