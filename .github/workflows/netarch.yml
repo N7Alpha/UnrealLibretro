@@ -58,27 +58,6 @@ jobs:
     - name: Run IPv6 matrix smoke test
       run: sudo Source/ThirdParty/netarch/ulnet_ipv6_matrix_test.sh --skip-expected-fail --timeout 10
 
-  build-macos-x86_64:
-    runs-on: macos-13 # Intel runner
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        submodules: 'recursive'
-    - name: Configure CMake (macOS x86_64)
-      run: |
-        cmake -S . -B build -G Ninja \
-          -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_OSX_ARCHITECTURES="x86_64" \
-          -DCMAKE_OSX_DEPLOYMENT_TARGET="11.0"
-    - name: Build (macOS x86_64)
-      run: cmake --build build --parallel
-    - name: Upload macOS x86_64 Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: netarch-macos-x86_64
-        path: build/netarch
-        if-no-files-found: error
-
   build-macos-arm64:
     runs-on: macos-latest
     steps:

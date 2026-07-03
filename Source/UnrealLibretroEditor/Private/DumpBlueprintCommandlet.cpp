@@ -4,6 +4,9 @@
 #include "UnrealExporter.h"
 #include "Misc/FileHelper.h"
 #include "Misc/OutputDevice.h"
+#if __has_include("Misc/StringOutputDevice.h")
+#include "Misc/StringOutputDevice.h" // FStringOutputDevice lives here since UE 5.7
+#endif
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "UObject/Package.h"
@@ -27,7 +30,11 @@ int32 UDumpBlueprintCommandlet::Main(const FString& Params)
         // Accept both /Long/Package/Names and filesystem paths
         FString PackageFilename = Token;
         if (FPackageName::IsValidLongPackageName(Token)
+#if ENGINE_MAJOR_VERSION >= 5
             && !FPackageName::DoesPackageExist(Token, &PackageFilename))
+#else // UE4 takes an optional package GUID before the filename out-param
+            && !FPackageName::DoesPackageExist(Token, nullptr, &PackageFilename))
+#endif
         {
             UE_LOG(Libretro, Error, TEXT("Package '%s' does not exist"), *Token);
             ExitCode = 1;

@@ -162,13 +162,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "ue-cache/${{ matrix.version }}"
+          # gh exits nonzero when the release doesn't exist (the common case);
+          # the runner's pwsh wrapper turns a lingering $LASTEXITCODE into a
+          # step failure, so treat any gh failure as "not published" and exit 0
           $alreadyComplete = gh release view $tag --repo "${{ github.repository }}" --json assets --jq '[.assets[].name] | contains(["manifest.json"])' 2>$null
+          if ($LASTEXITCODE -ne 0) { $alreadyComplete = "false" }
           if ("$alreadyComplete" -eq "true") {
             Write-Host "$tag was already published (likely by a run that finished while this job was queued behind the concurrency lock). Skipping."
             "proceed=false" | Out-File -Append $env:GITHUB_OUTPUT
           } else {
             "proceed=true" | Out-File -Append $env:GITHUB_OUTPUT
           }
+          exit 0
 
       - name: Check required secrets
         if: steps.gate.outputs.proceed == 'true'
@@ -351,6 +356,22 @@ jobs:
             Write-Host "Budget exhausted, stopping the build for checkpointing"
             taskkill /T /F /PID $proc.Id
             "outcome=timeout" | Out-File -Append $env:GITHUB_OUTPUT
+          }
+          exit 0
+
+      # AutomationTool sometimes dies "before a log file was set" (5.6 does
+      # this), leaving the real reason only in its ErrorLog on the runner disk
+      - name: Dump AutomationTool logs on failure
+        if: steps.gate.outputs.proceed == 'true' && steps.build.outputs.outcome == 'failed'
+        run: |
+          foreach ($log in @(
+            (Join-Path $env:UE_SRC "Engine\Programs\AutomationTool\Saved\Logs\ErrorLog.txt"),
+            (Join-Path $env:UE_SRC "Engine\Programs\AutomationTool\Saved\Logs\Log.txt")
+          )) {
+            if (Test-Path $log) {
+              Write-Host "===== $log ====="
+              Get-Content $log -Tail 200
+            }
           }
           exit 0
 
@@ -666,9 +687,16 @@ jobs:
             exit 0
           fi
 
+          # Stray clang/UBT workers from the build can still be mutating
+          # Engine/Saved while 7z scans it, which is a fatal stat error; kill
+          # them and leave that volatile dir out of the archive entirely
+          pkill -TERM -f "RunUAT|UnrealBuildTool|clang" 2>/dev/null || true
+          sleep 5
+          pkill -KILL -f "RunUAT|UnrealBuildTool|clang" 2>/dev/null || true
+
           out="$HOME/ue-out"
           mkdir -p "$out"
-          7z a -t7z -mx=3 -mhe=on -v1900m -p"$ENGINE_CACHE_KEY" "$out/UE-$major.$minor-mac-min.7z" Engine Default.uprojectdirs
+          7z a -t7z -mx=3 -mhe=on -v1900m -p"$ENGINE_CACHE_KEY" '-x!Engine/Saved' "$out/UE-$major.$minor-mac-min.7z" Engine Default.uprojectdirs
 
           (cd "$out" && for v in *.7z.*; do
             printf '{"name":"%s","bytes":%s,"sha256":"%s"}\n' \
@@ -695,6 +723,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ENGINE_CACHE_KEY: ${{ secrets.ENGINE_CACHE_KEY }}
         run: |
+          # Same stray-writer hazard as the publish step: make sure nothing is
+          # still mutating the tree while 7z scans it
+          pkill -KILL -f "RunUAT|UnrealBuildTool|clang" 2>/dev/null || true
+          sleep 5
+
           out="$HOME/ue-wip-out"
           mkdir -p "$out"
           7z a -t7z -mx=1 -mhe=on -v1900m -p"$ENGINE_CACHE_KEY" "$out/checkpoint.7z" Engine Default.uprojectdirs
