@@ -163,6 +163,22 @@ jobs:
       - name: Run Setup Script
         run: ./setup.cmd
 
+      # The MSVC toolset UnrealBuildTool selects on this runner image (14.29)
+      # flags a constant-arithmetic overflow in stock RenderCore source and the
+      # build promotes it to an error; silence that one warning in the one file.
+      # Runs on resumed attempts too, but the marker check keeps it idempotent
+      # so file timestamps stay stable and UBT's incremental build isn't spoiled
+      - name: Patch known engine-source warnings
+        run: |
+          $file = Join-Path $env:UE_SRC "Engine\Source\Runtime\RenderCore\Private\RenderGraphPrivate.cpp"
+          if ((Test-Path $file) -and -not (Select-String -Path $file -Pattern "4756" -Quiet)) {
+            $content = Get-Content $file -Raw
+            Set-Content $file -NoNewline -Value ("#ifdef _MSC_VER`r`n#pragma warning(disable: 4756) // overflow in constant arithmetic; fires in stock engine code on MSVC 14.29`r`n#endif`r`n" + $content)
+            Write-Host "Patched $file"
+          } else {
+            Write-Host "Patch not needed"
+          }
+
       # PDBs multiply intermediate size several times over and slow the link;
       # nothing debugs these binaries so build without debug info
       - name: Disable debug info via BuildConfiguration.xml

@@ -1788,11 +1788,11 @@ static size_t uzstd__encode_sequences(uzstd__ctx *cx, uzstd__u8 *dst, uzstd__u8 
         if (lc > mll) mll = lc; if (oc > mof) mof = oc; if (mc > mml) mml = mc;
     }
     modep = d++;
-    if (!(sz = uzstd__seq_table(d, (size_t)(dend-d), cll, mll, (uzstd__u32)ns, 9, &modes[0], &ctll))) return 0;
+    if ((sz = uzstd__seq_table(d, (size_t)(dend-d), cll, mll, (uzstd__u32)ns, 9, &modes[0], &ctll)) == 0) return 0;
     d += sz;
-    if (!(sz = uzstd__seq_table(d, (size_t)(dend-d), cof, mof, (uzstd__u32)ns, 8, &modes[1], &ctof))) return 0;
+    if ((sz = uzstd__seq_table(d, (size_t)(dend-d), cof, mof, (uzstd__u32)ns, 8, &modes[1], &ctof)) == 0) return 0;
     d += sz;
-    if (!(sz = uzstd__seq_table(d, (size_t)(dend-d), cml, mml, (uzstd__u32)ns, 9, &modes[2], &ctml))) return 0;
+    if ((sz = uzstd__seq_table(d, (size_t)(dend-d), cml, mml, (uzstd__u32)ns, 9, &modes[2], &ctml)) == 0) return 0;
     d += sz;
     *modep = (uzstd__u8)((modes[0]<<6) | (modes[1]<<4) | (modes[2]<<2));
     {   uzstd__fse_cs sll, sof, sml;
@@ -1818,7 +1818,7 @@ static size_t uzstd__encode_sequences(uzstd__ctx *cx, uzstd__u8 *dst, uzstd__u8 
         uzstd__fse_flush_state(&bw, &sml, &ctml);
         uzstd__fse_flush_state(&bw, &sof, &ctof);
         uzstd__fse_flush_state(&bw, &sll, &ctll);
-        if (!(sz = uzstd__bw_close(&bw))) return 0;
+        if ((sz = uzstd__bw_close(&bw)) == 0) return 0;
         d += sz;
     }
     return (size_t)(d - dst);
