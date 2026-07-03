@@ -804,7 +804,11 @@ int FLibretroContext::video_configure(const struct retro_game_geometry *geom) {
                         Region.Width, Region.Height, // Source USize, VSize
                         TargetSize,                  // Target buffer size
                         FIntPoint(SourceTexture->GetSizeX(), SourceTexture->GetSizeY()),
-                        VertexShader,
+#if ENGINE_MAJOR_VERSION > 4 || ENGINE_MINOR_VERSION >= 25
+                        VertexShader,                // 4.25 rewrote shaders as handle types DrawRectangle accepts directly
+#else
+                        *VertexShader,               // 4.24 wants the raw FShader*
+#endif
                         EDRF_Default);
                 }
                 RHICmdList.EndRenderPass();

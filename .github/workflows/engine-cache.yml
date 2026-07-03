@@ -145,6 +145,11 @@ jobs:
       # Stop compiling this many minutes after the job started, leaving time to
       # checkpoint ~30GB of encrypted volumes and upload them
       BUILD_DEADLINE_MINUTES: "280"
+      # MSBuild reads env vars as global properties. Epic pins NuGet packages
+      # that accrue vulnerability advisories after the engine tag ships, and
+      # 5.6-era script projects promote those audit warnings to errors, which
+      # kills AutomationTool before it can even open a log file
+      NuGetAudit: "false"
 
     steps:
       - uses: actions/checkout@v4
@@ -227,6 +232,12 @@ jobs:
               gh release delete $env:WIP_TAG --repo "${{ github.repository }}" --cleanup-tag --yes 2>$null
               "resumed=false" | Out-File -Append $env:GITHUB_OUTPUT
             } else {
+              # C# obj/bin intermediates don't survive being resumed under a
+              # different dotnet SDK: protobuf codegen appends duplicate members
+              # into the generated sources already in obj (seen on 5.8's
+              # EpicGames.Horde). They rebuild in seconds, so always drop them
+              Get-ChildItem "$env:UE_SRC\Engine\Source\Programs" -Recurse -Directory -Include obj, bin -ErrorAction SilentlyContinue |
+                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
               "resumed=true" | Out-File -Append $env:GITHUB_OUTPUT
             }
           } else {
@@ -309,30 +320,56 @@ jobs:
       - name: Patch known engine-source warnings
         if: steps.gate.outputs.proceed == 'true'
         run: |
-          $file = Join-Path $env:UE_SRC "Engine\Source\Runtime\RenderCore\Private\RenderGraphPrivate.cpp"
-          if ((Test-Path $file) -and -not (Select-String -Path $file -Pattern "4756" -Quiet)) {
+          # C4756 (overflow in constant arithmetic) fires in stock RenderCore
+          # source on the MSVC toolsets these runner images provide. Which file
+          # trips it moved between engine versions
+          foreach ($name in @("RenderGraphPrivate.cpp", "RenderGraphBuilder.cpp")) {
+            $file = Join-Path $env:UE_SRC "Engine\Source\Runtime\RenderCore\Private\$name"
+            if ((Test-Path $file) -and -not (Select-String -Path $file -Pattern "4756" -Quiet)) {
+              $content = Get-Content $file -Raw
+              Set-Content $file -NoNewline -Value ("#ifdef _MSC_VER`r`n#pragma warning(disable: 4756) // overflow in constant arithmetic; fires in stock engine code on this MSVC toolset`r`n#endif`r`n" + $content)
+              Write-Host "Patched $file"
+            }
+          }
+
+          # 5.4-era Core uses clang's __has_feature in a plain #if, which the
+          # newer MSVC preprocessor rejects under warnings-as-errors (C4067 /
+          # C4668). Give MSVC a no-op fallback at the top of the header
+          $file = Join-Path $env:UE_SRC "Engine\Source\Runtime\Core\Public\Experimental\ConcurrentLinearAllocator.h"
+          if ((Test-Path $file) -and -not (Select-String -Path $file -Pattern "__has_feature\(x\) 0" -Quiet)) {
             $content = Get-Content $file -Raw
-            Set-Content $file -NoNewline -Value ("#ifdef _MSC_VER`r`n#pragma warning(disable: 4756) // overflow in constant arithmetic; fires in stock engine code on MSVC 14.29`r`n#endif`r`n" + $content)
+            Set-Content $file -NoNewline -Value ("#if defined(_MSC_VER) && !defined(__clang__) && !defined(__has_feature)`r`n#define __has_feature(x) 0 // MSVC has no __has_feature; stock engine code assumes clang here`r`n#endif`r`n" + $content)
             Write-Host "Patched $file"
-          } else {
-            Write-Host "Patch not needed"
           }
 
       # PDBs multiply intermediate size several times over and slow the link;
       # nothing debugs these binaries so build without debug info
+      # Old engines can't compile the newest Windows SDK's headers under
+      # warnings-as-errors (C4668: NTDDI_WIN10_GE undefined in shellapi.h), and
+      # UBT auto-picks the newest SDK installed. Install and pin the era-
+      # appropriate SDK for those versions; the VS2019 step above already
+      # installs 19041 for UE4, so only 5.0 needs the standalone install
+      - name: Install Windows SDK 19041 (UE 5.0 only)
+        if: steps.gate.outputs.proceed == 'true' && matrix.version == '5.0'
+        run: choco install windows-sdk-10-version-2004-all --no-progress -y
+
       - name: Disable debug info via BuildConfiguration.xml
         if: steps.gate.outputs.proceed == 'true'
         run: |
           $bcDir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Unreal Engine\UnrealBuildTool'
           New-Item -ItemType Directory -Force $bcDir | Out-Null
-          @'
+          $pinSdk = if (("${{ matrix.major }}" -eq "4") -or ("${{ matrix.version }}" -eq "5.0")) {
+            "    <WindowsPlatform>`n      <WindowsSdkVersion>10.0.19041.0</WindowsSdkVersion>`n    </WindowsPlatform>`n"
+          } else { "" }
+          @"
           <?xml version="1.0" encoding="utf-8"?>
           <Configuration xmlns="https://www.unrealengine.com/BuildConfiguration">
             <BuildConfiguration>
               <bDisableDebugInfo>true</bDisableDebugInfo>
             </BuildConfiguration>
-          </Configuration>
-          '@ | Out-File -Encoding utf8 (Join-Path $bcDir 'BuildConfiguration.xml')
+          $pinSdk</Configuration>
+          "@ | Out-File -Encoding utf8 (Join-Path $bcDir 'BuildConfiguration.xml')
+          Get-Content (Join-Path $bcDir 'BuildConfiguration.xml')
 
       - name: Build plugin against engine source (budgeted)
         if: steps.gate.outputs.proceed == 'true'
@@ -376,6 +413,7 @@ jobs:
           exit 0
 
       - name: Publish finished engine cache
+        id: publish
         if: steps.gate.outputs.proceed == 'true' && steps.build.outputs.outcome == 'success'
         working-directory: ${{ env.UE_SRC }}
         env:
@@ -395,7 +433,11 @@ jobs:
 
           $out = "D:\ue-out"
           New-Item -ItemType Directory -Force $out | Out-Null
-          7z a -t7z -mx=3 -mhe=on -v1900m "-p$env:ENGINE_CACHE_KEY" "$out\UE-$($version.MajorVersion).$($version.MinorVersion)-min.7z" Engine Default.uprojectdirs
+          # The uprojectdirs file is named differently across engine eras
+          # (UE4Games.uprojectdirs vs Default.uprojectdirs); 7z treats a
+          # hardcoded missing name as a fatal scan error
+          $uprojectdirs = @((Get-ChildItem *.uprojectdirs -ErrorAction SilentlyContinue).Name)
+          7z a -t7z -mx=3 -mhe=on -v1900m "-p$env:ENGINE_CACHE_KEY" "$out\UE-$($version.MajorVersion).$($version.MinorVersion)-min.7z" Engine @uprojectdirs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           $volumes = Get-ChildItem "$out\*.7z.*" | Sort-Object Name
@@ -426,8 +468,13 @@ jobs:
           gh release delete $env:WIP_TAG --repo "${{ github.repository }}" --cleanup-tag --yes 2>$null
           exit 0
 
+      # Runs on build failure/timeout, and also when the build succeeded but
+      # only the publish step failed -- otherwise a packaging hiccup forfeits
+      # the entire multi-hour compile
       - name: Upload checkpoint
-        if: steps.gate.outputs.proceed == 'true' && steps.build.outputs.outcome != 'success'
+        if: >-
+          !cancelled() && steps.gate.outputs.proceed == 'true' &&
+          (steps.build.outputs.outcome != 'success' || steps.publish.conclusion == 'failure')
         working-directory: ${{ env.UE_SRC }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -436,7 +483,8 @@ jobs:
           $out = "D:\ue-wip-out"
           New-Item -ItemType Directory -Force $out | Out-Null
           # Fast compression: this is transient state, upload time matters more than size
-          7z a -t7z -mx=1 -mhe=on -v1900m "-p$env:ENGINE_CACHE_KEY" "$out\checkpoint.7z" Engine Default.uprojectdirs
+          $uprojectdirs = @((Get-ChildItem *.uprojectdirs -ErrorAction SilentlyContinue).Name)
+          7z a -t7z -mx=1 -mhe=on -v1900m "-p$env:ENGINE_CACHE_KEY" "$out\checkpoint.7z" Engine @uprojectdirs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           gh release view $env:WIP_TAG --repo "${{ github.repository }}" 2>$null
@@ -516,6 +564,8 @@ jobs:
       ATTEMPT: ${{ inputs.attempt || '1' }}
       MAX_ATTEMPTS: ${{ inputs.max_attempts || '6' }}
       BUILD_DEADLINE_MINUTES: "280"
+      # See the Windows job: post-release NuGet advisories break UAT's script build
+      NuGetAudit: "false"
 
     steps:
       - uses: actions/checkout@v4
@@ -582,6 +632,9 @@ jobs:
               gh release delete "$WIP_TAG" --repo "${{ github.repository }}" --cleanup-tag --yes 2>/dev/null || true
               echo "resumed=false" >> "$GITHUB_OUTPUT"
             else
+              # Stale C# obj/bin from a previous attempt corrupt protobuf
+              # codegen under a different dotnet SDK; they rebuild in seconds
+              find "$UE_SRC/Engine/Source/Programs" -type d \( -name obj -o -name bin \) -prune -exec rm -rf {} + 2>/dev/null || true
               echo "resumed=true" >> "$GITHUB_OUTPUT"
             fi
           else
@@ -624,6 +677,28 @@ jobs:
             --exclude=Win32 --exclude=Win64 --force
           rm -rf Engine/Content Engine/Documentation Engine/Extras Samples Templates FeaturePacks
           df -h
+
+      # The arm64 runners have 3 cores but only ~7GB RAM; three concurrent
+      # editor-sized unity files swap-thrash hard enough that GitHub loses
+      # contact and kills the runner outright, which bypasses checkpointing
+      # entirely (it happened on Module.Sequencer.*). Make UBT budget memory
+      # per compile action so it schedules fewer of the giant ones at once
+      - name: Cap UnrealBuildTool memory use via BuildConfiguration.xml
+        if: steps.gate.outputs.proceed == 'true'
+        run: |
+          bcDir="$HOME/Documents/Unreal Engine/UnrealBuildTool"
+          mkdir -p "$bcDir"
+          cat > "$bcDir/BuildConfiguration.xml" <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <Configuration xmlns="https://www.unrealengine.com/BuildConfiguration">
+            <BuildConfiguration>
+              <bDisableDebugInfo>true</bDisableDebugInfo>
+            </BuildConfiguration>
+            <ParallelExecutor>
+              <MemoryPerActionBytes>3221225472</MemoryPerActionBytes>
+            </ParallelExecutor>
+          </Configuration>
+          XML
 
       - name: Build plugin against engine source (budgeted)
         if: steps.gate.outputs.proceed == 'true'
@@ -670,6 +745,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish finished engine cache
+        id: publish
         if: steps.gate.outputs.proceed == 'true' && steps.build.outputs.outcome == 'success'
         working-directory: ${{ env.UE_SRC }}
         env:
@@ -716,8 +792,12 @@ jobs:
           gh release upload "$tag" --repo "${{ github.repository }}" --clobber "$out"/*.7z.* "$out/manifest.json"
           gh release delete "$WIP_TAG" --repo "${{ github.repository }}" --cleanup-tag --yes 2>/dev/null || true
 
+      # Also fires when only the publish failed, so a packaging hiccup doesn't
+      # forfeit the multi-hour compile (see the Windows twin of this step)
       - name: Upload checkpoint
-        if: steps.gate.outputs.proceed == 'true' && steps.build.outputs.outcome != 'success'
+        if: >-
+          !cancelled() && steps.gate.outputs.proceed == 'true' &&
+          (steps.build.outputs.outcome != 'success' || steps.publish.conclusion == 'failure')
         working-directory: ${{ env.UE_SRC }}
         env:
           GH_TOKEN: ${{ github.token }}

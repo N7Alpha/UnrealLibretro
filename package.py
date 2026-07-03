@@ -53,6 +53,9 @@ if __name__ == "__main__":
                         help="Visual Studio toolchain to pass to UAT. Omit to let UnrealBuildTool pick the default. UE4 requires VS2019.")
     parser.add_argument("--target-platforms", default="Mac" if sys.platform == "darwin" else "Win64",
                         help="Comma-separated -TargetPlatforms value for BuildPlugin. Defaults to the host platform.")
+    parser.add_argument("--architecture-mac", default="arm64",
+                        help="-Architecture_Mac value for BuildPlugin. UAT's default is arm64+x64 (universal), "
+                             "which doubles compile work and memory; nothing consumes the x64 slice anymore.")
 
     args = parser.parse_args()
     ue_path = args.ue_path
@@ -86,11 +89,12 @@ if __name__ == "__main__":
     json.dump(uplugin_json, open("UnrealLibretro.uplugin", "w"), indent=4)
 
     compiler_flag = f' -{args.compiler}' if args.compiler else ''
+    mac_arch_flag = f' -Architecture_Mac={args.architecture_mac}' if "Mac" in args.target_platforms and args.architecture_mac else ''
     run_uat = "RunUAT" if sys.platform == "win32" else "RunUAT.sh"
     status = os.system(
         f'"{ue_path}/Engine/Build/BatchFiles/{run_uat}" BuildPlugin -Rocket'
         f' -Plugin={plugin_path}/UnrealLibretro.uplugin -TargetPlatforms={args.target_platforms}'
-        f' -Package={package_path}/{package_name}/UnrealLibretro{compiler_flag}'
+        f' -Package={package_path}/{package_name}/UnrealLibretro{compiler_flag}{mac_arch_flag}'
     )
 
     if status:
