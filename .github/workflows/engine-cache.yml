@@ -607,6 +607,22 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         run: brew install p7zip
 
+      # The engine deps download alone is ~26GB and free space on the image
+      # varies run to run (one run died at 70% of the download). The unused
+      # Xcode installs are the big win at ~15-20GB apiece
+      - name: Reclaim disk space
+        if: steps.gate.outputs.proceed == 'true'
+        run: |
+          df -h /
+          active=$(xcode-select -p | sed 's|/Contents/Developer||')
+          for xcode in /Applications/Xcode*.app; do
+            if [ "$xcode" != "$active" ]; then sudo rm -rf "$xcode" & fi
+          done
+          sudo rm -rf /Library/Developer/CoreSimulator/Volumes ~/Library/Android \
+            /Users/runner/hostedtoolcache/CodeQL 2>/dev/null || true
+          wait
+          df -h /
+
       - name: Restore checkpoint if one exists
         if: steps.gate.outputs.proceed == 'true'
         id: restore
