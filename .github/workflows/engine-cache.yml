@@ -189,7 +189,17 @@ jobs:
             7z x -aoa "-p$env:ENGINE_CACHE_KEY" "-o$env:UE_SRC" $firstVolume
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Remove-Item D:\ue-wip -Recurse -Force
-            "resumed=true" | Out-File -Append $env:GITHUB_OUTPUT
+            # Early checkpoints were made from trees whose IOS/TVOS automation
+            # projects had been deleted, which newer UAT versions hard-fail on.
+            # Those trees can't be repaired incrementally, discard them
+            if (-not (Test-Path "$env:UE_SRC\Engine\Source\Programs\AutomationTool\IOS")) {
+              Write-Host "Checkpoint predates the IOS/TVOS automation fix, discarding it and starting fresh"
+              Remove-Item $env:UE_SRC -Recurse -Force
+              gh release delete $env:WIP_TAG --repo "${{ github.repository }}" --cleanup-tag --yes 2>$null
+              "resumed=false" | Out-File -Append $env:GITHUB_OUTPUT
+            } else {
+              "resumed=true" | Out-File -Append $env:GITHUB_OUTPUT
+            }
           } else {
             Write-Host "No checkpoint at $env:WIP_TAG, starting fresh"
             "resumed=false" | Out-File -Append $env:GITHUB_OUTPUT
@@ -200,20 +210,29 @@ jobs:
         if: steps.restore.outputs.resumed == 'false'
         env:
           UE_SOURCE_TOKEN: ${{ secrets.UE_SOURCE_TOKEN }}
+          GH_TOKEN: ${{ secrets.UE_SOURCE_TOKEN }}
         run: |
           git clone --depth 1 --branch $env:UE_REF `
             "https://x-access-token:$($env:UE_SOURCE_TOKEN)@github.com/EpicGames/UnrealEngine.git" $env:UE_SRC
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # Slim before GitDependencies downloads on top: git metadata and
-          # sample/template/doc trees play no part in compiling a plugin. The
-          # IOS/TVOS automation projects must go too -- RunUAT compiles every
-          # *.automation.csproj it finds, and those two reference resource files
-          # that the --exclude=IOS dependency filter deliberately doesn't download
-          foreach ($dir in @(".git", "Samples", "Templates", "FeaturePacks", "Engine\Documentation", "Engine\Extras",
-                             "Engine\Source\Programs\AutomationTool\IOS", "Engine\Source\Programs\AutomationTool\TVOS")) {
+          # sample/template/doc trees play no part in compiling a plugin
+          foreach ($dir in @(".git", "Samples", "Templates", "FeaturePacks", "Engine\Documentation", "Engine\Extras")) {
             $path = Join-Path $env:UE_SRC $dir
             if (Test-Path $path) { Remove-Item $path -Recurse -Force }
           }
+          # Older tags ship Commit.gitdeps.xml files that reference retired CDN
+          # packs (Epic's 2023 dependency-security incident); Epic attached
+          # corrected files to the tags' GitHub releases. Best effort: not
+          # every tag has or needs one
+          gh release download $env:UE_REF --repo EpicGames/UnrealEngine --pattern "Commit.gitdeps.xml" `
+            --dir "$env:UE_SRC\Engine\Build" --clobber
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Applied updated Commit.gitdeps.xml from the $env:UE_REF release"
+          } else {
+            Write-Host "No updated Commit.gitdeps.xml published for $env:UE_REF"
+          }
+          exit 0
 
       - name: Download engine dependencies (GitDependencies)
         if: steps.restore.outputs.resumed == 'false'
@@ -229,7 +248,9 @@ jobs:
             "Engine\Binaries\DotNET\GitDependencies.exe"
           ) | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $gitDeps) { Write-Host "::error::GitDependencies.exe not found in the engine tree"; exit 1 }
-          & ".\$gitDeps" --exclude=Android --exclude=Linux --exclude=Linux32 --exclude=LinuxArm64 --exclude=Mac --exclude=IOS --exclude=TVOS --exclude=HoloLens --exclude=HTML5 --force
+          # IOS/TVOS payloads stay INCLUDED: RunUAT compiles their automation
+          # projects, which need resource files from the dependency stream
+          & ".\$gitDeps" --exclude=Android --exclude=Linux --exclude=Linux32 --exclude=LinuxArm64 --exclude=Mac --exclude=HoloLens --exclude=HTML5 --force
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # Editor content isn't read when compiling/linking a plugin and is one
           # of the largest payloads GitDependencies brings in
@@ -480,7 +501,16 @@ jobs:
             echo "Resuming from checkpoint $WIP_TAG (attempt $ATTEMPT)"
             7z x -aoa -p"$ENGINE_CACHE_KEY" -o"$UE_SRC" "$HOME"/ue-wip/*.7z.001
             rm -rf "$HOME/ue-wip"
-            echo "resumed=true" >> "$GITHUB_OUTPUT"
+            # Early checkpoints were made from trees whose IOS/TVOS automation
+            # projects had been deleted, which UAT hard-fails on. Discard them
+            if [ ! -d "$UE_SRC/Engine/Source/Programs/AutomationTool/IOS" ]; then
+              echo "Checkpoint predates the IOS/TVOS automation fix, discarding it and starting fresh"
+              rm -rf "$UE_SRC"
+              gh release delete "$WIP_TAG" --repo "${{ github.repository }}" --cleanup-tag --yes 2>/dev/null || true
+              echo "resumed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "resumed=true" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "No checkpoint at $WIP_TAG, starting fresh"
             echo "resumed=false" >> "$GITHUB_OUTPUT"
@@ -490,12 +520,17 @@ jobs:
         if: steps.restore.outputs.resumed == 'false'
         env:
           UE_SOURCE_TOKEN: ${{ secrets.UE_SOURCE_TOKEN }}
+          GH_TOKEN: ${{ secrets.UE_SOURCE_TOKEN }}
         run: |
           git clone --depth 1 --branch "$UE_REF" \
             "https://x-access-token:${UE_SOURCE_TOKEN}@github.com/EpicGames/UnrealEngine.git" "$UE_SRC"
           cd "$UE_SRC"
-          rm -rf .git Samples Templates FeaturePacks Engine/Documentation Engine/Extras \
-                 Engine/Source/Programs/AutomationTool/IOS Engine/Source/Programs/AutomationTool/TVOS
+          rm -rf .git Samples Templates FeaturePacks Engine/Documentation Engine/Extras
+          # Apply Epic's corrected Commit.gitdeps.xml if the tag's release has one
+          gh release download "$UE_REF" --repo EpicGames/UnrealEngine --pattern "Commit.gitdeps.xml" \
+            --dir "$UE_SRC/Engine/Build" --clobber \
+            && echo "Applied updated Commit.gitdeps.xml from the $UE_REF release" \
+            || echo "No updated Commit.gitdeps.xml published for $UE_REF"
 
       - name: Download engine dependencies (GitDependencies)
         if: steps.restore.outputs.resumed == 'false'
@@ -508,9 +543,11 @@ jobs:
           done
           if [ -z "$gitdeps" ]; then echo "::error::GitDependencies not found in the engine tree"; exit 1; fi
           chmod +x "$gitdeps"
-          # Windows payloads stay excluded too -- this cache only ever builds Mac
+          # Windows payloads stay excluded too -- this cache only ever builds
+          # Mac. IOS/TVOS payloads stay INCLUDED because RunUAT compiles their
+          # automation projects, which need resources from the dependency stream
           "./$gitdeps" --exclude=Android --exclude=Linux --exclude=Linux32 --exclude=LinuxArm64 \
-            --exclude=IOS --exclude=TVOS --exclude=HoloLens --exclude=HTML5 \
+            --exclude=HoloLens --exclude=HTML5 \
             --exclude=Win32 --exclude=Win64 --force
           rm -rf Engine/Content Engine/Documentation Engine/Extras Samples Templates FeaturePacks
           df -h
