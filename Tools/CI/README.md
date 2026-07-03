@@ -29,7 +29,7 @@ Setup:
 
 Caches built this way are source builds, so consumer jobs run UnrealBuildTool incrementally against them — the engine modules are already compiled and only the plugin compiles. UE4 versions get VS2019 Build Tools installed on the fly and are best-effort: UE4-era UnrealBuildTool may not cope with the modern runner image, expect iteration there.
 
-There is also a best-effort **Apple Silicon** job that builds UE 5.8 on a `macos-latest` (arm64) runner, publishes it as `ue-cache-mac/5.8`, and uploads the packaged Mac plugin as a workflow artifact (`package.py` grew `--target-platforms` for this). Nothing consumes Mac caches automatically yet.
+There is also a best-effort **Apple Silicon** job that builds UE 5.8 on a `macos-latest` (arm64) runner and publishes it as `ue-cache-mac/5.8` (`package.py` grew `--target-platforms` for this). This is a Darwin canary, not a full Mac matrix: it tracks one version to catch platform regressions early, not every engine release. `UnrealLibretro.yml` has a parallel `discover-mac-engines`/`build-mac` job pair that consumes whatever `ue-cache-mac/*` exists the same way the Windows side consumes `ue-cache/*`, packaging with a `-Mac` suffix (`package.py` keeps Win64 package names unsuffixed for backward compatibility) so a Windows and Mac asset for the same version can coexist in one tagged release.
 
 ## Capturing from a local install
 
@@ -86,7 +86,7 @@ and if that fixes it, note the offending file so the keep-list in `prune_engine.
 
 - **UE4 versions need the VS2019 (v142) toolchain**, which GitHub's `windows-2022`/`windows-2025` images no longer include. The workflow installs VS2019 Build Tools via Chocolatey for `4.x` matrix entries (~10–20 min per job) and passes `--compiler VS2019` to `package.py`. If Epic's UBT in a given 4.x version refuses to discover the Build Tools SKU, that version can't build on hosted runners.
 - `package.py` no longer hardcodes `-VS2019`; pass `--compiler VS2019` explicitly when building UE4 locally.
-- Hosted Windows runners put the workspace on the small `D:` drive; the engine extracts to `C:\UE`, which has substantially more free space. If extraction ever runs out of disk, the pruning needs to get more aggressive (or the version dropped).
+- Hosted Windows runners have far more free space on `D:` (~147 GB) than `C:` (~40 GB); the engine extracts to `D:\UE`. If extraction ever runs out of disk, the pruning needs to get more aggressive (or the version dropped).
 - Fork PRs can't read `ENGINE_CACHE_KEY` (GitHub doesn't expose secrets to fork PR runs); the workflow only triggers on pushes to this repository's branches and manual dispatch, same as before.
 
 ## Epic EULA considerations

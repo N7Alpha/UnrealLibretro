@@ -1,12 +1,18 @@
 name: UnrealLibretro
 
-# Builds the plugin on GitHub-hosted Windows runners, in parallel across engine
+# Builds the plugin on GitHub-hosted runners, in parallel across engine
 # versions. Runners don't have Unreal Engine and don't have the disk for a full
 # install, so each job downloads a minimal AES-256-encrypted engine snapshot
-# from a `ue-cache/<major>.<minor>` prerelease of this repository and decrypts
-# it with the ENGINE_CACHE_KEY repository secret. Those snapshots are produced
-# by Tools/CI/prune_engine.py on a machine that has the engine installed --
-# see Tools/CI/README.md for setup and Epic EULA considerations.
+# from a `ue-cache/<major>.<minor>` (Windows) or `ue-cache-mac/<major>.<minor>`
+# (Mac) prerelease of this repository and decrypts it with the
+# ENGINE_CACHE_KEY repository secret. Those snapshots are produced by the
+# engine-cache workflow (built from Epic's source) or by
+# Tools/CI/prune_engine.py against a local engine install -- see
+# Tools/CI/README.md for setup and Epic EULA considerations.
+#
+# The Mac side currently tracks a single canary version rather than the full
+# matrix: it exists to catch Darwin-specific regressions early, not to publish
+# every engine version for Mac.
 
 on:
   workflow_dispatch:
@@ -42,6 +48,35 @@ jobs:
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
             echo "::warning::No ue-cache/* releases found. Upload engine caches with Tools/CI/prune_engine.py to enable plugin builds."
+          fi
+
+  # Mirrors discover-engines but for the Mac canary cache(s). Kept as a
+  # separate job/matrix since Mac currently tracks one version, not the full
+  # 4.24-5.8 range, and runs on a different (macos) runner image.
+  discover-mac-engines:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.engines.outputs.matrix }}
+      found: ${{ steps.engines.outputs.found }}
+    steps:
+      - name: List available Mac engine caches
+        id: engines
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          matrix=$(gh api "repos/${{ github.repository }}/releases" --paginate --jq '.[].tag_name' \
+            | { grep -E '^ue-cache-mac/[0-9]+\.[0-9]+$' || true; } \
+            | sed 's|^ue-cache-mac/||' \
+            | sort -t. -k1,1n -k2,2n \
+            | jq -Rc 'split(".") | {major: (.[0] | tonumber), minor: (.[1] | tonumber)}' \
+            | jq -sc '.')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          if [ "$matrix" != "[]" ] && [ -n "$matrix" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "Mac engine caches available: $matrix"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No ue-cache-mac/* releases found yet; skipping Mac build."
           fi
 
   create-release:
@@ -153,3 +188,95 @@ jobs:
         run: |
           gh release upload "$env:GITHUB_REF_NAME" --repo "${{ github.repository }}" --clobber `
             "$env:RUNNER_TEMP/UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}.zip"
+
+  # Canary Mac build: proves the plugin still compiles on Darwin. Package
+  # names get a "-Mac" suffix (see package.py) so they never collide with the
+  # unsuffixed Win64 assets of the same engine version in one release.
+  build-mac:
+    needs: [discover-mac-engines, create-release]
+    if: >-
+      always() && needs.discover-mac-engines.outputs.found == 'true' &&
+      (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
+    runs-on: macos-latest
+    timeout-minutes: 300
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.discover-mac-engines.outputs.matrix) }}
+    env:
+      ENGINE_CACHE_TAG: ue-cache-mac/${{ matrix.version.major }}.${{ matrix.version.minor }}
+      ENGINE_ROOT: ${{ github.workspace }}/../UE-mac
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check ENGINE_CACHE_KEY secret is configured
+        env:
+          ENGINE_CACHE_KEY: ${{ secrets.ENGINE_CACHE_KEY }}
+        run: |
+          if [ -z "$ENGINE_CACHE_KEY" ]; then
+            echo "::error::The ENGINE_CACHE_KEY repository secret is not set. It must match the key used when the engine-cache workflow built this cache."
+            exit 1
+          fi
+
+      - name: Install 7-Zip
+        run: brew install p7zip
+
+      - name: Report disk space
+        run: df -h
+
+      - name: Download engine cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$ENGINE_CACHE_TAG" --repo "${{ github.repository }}" --dir "$HOME/ue-cache"
+          ls -la "$HOME/ue-cache"
+
+      - name: Verify volume checksums
+        run: |
+          python3 - <<'EOF'
+          import json, hashlib, os, sys
+          manifest = json.load(open(os.path.expanduser("~/ue-cache/manifest.json")))
+          for volume in manifest["volumes"]:
+              path = os.path.expanduser(f"~/ue-cache/{volume['name']}")
+              h = hashlib.sha256()
+              with open(path, "rb") as f:
+                  for chunk in iter(lambda: f.read(1 << 20), b""):
+                      h.update(chunk)
+              if h.hexdigest() != volume["sha256"]:
+                  print(f"::error::Checksum mismatch for {volume['name']}")
+                  sys.exit(1)
+          print(f"All {len(manifest['volumes'])} volume(s) verified for engine {manifest['engine_version']}")
+          EOF
+
+      - name: Extract engine
+        env:
+          ENGINE_CACHE_KEY: ${{ secrets.ENGINE_CACHE_KEY }}
+        run: |
+          firstVolume=$(ls "$HOME"/ue-cache/*.7z.001)
+          7z x -aoa -p"$ENGINE_CACHE_KEY" -o"$ENGINE_ROOT" "$firstVolume"
+          rm -rf "$HOME/ue-cache" # Reclaim disk before building
+
+      - name: Prepare user content folders
+        run: mkdir -p MyROMs MyCores
+
+      - name: Package for Unreal Engine
+        run: python3 package.py "$ENGINE_ROOT" "$RUNNER_TEMP" --target-platforms Mac
+
+      - name: Upload Build-Artifact
+        if: startsWith(github.ref, 'refs/heads/') # Upload artifacts when commits (not tags) are pushed
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnrealLibretro-Mac-${{ matrix.version.major }}.${{ matrix.version.minor }}
+          path: ${{ runner.temp }}/UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}-Mac
+          if-no-files-found: error
+
+      - name: Upload Release Asset
+        if: startsWith(github.ref, 'refs/tags/') # Only release when a tag is pushed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" --repo "${{ github.repository }}" --clobber \
+            "$RUNNER_TEMP/UnrealLibretro-${{ matrix.version.major }}.${{ matrix.version.minor }}-Mac.zip"

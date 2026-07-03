@@ -71,6 +71,12 @@ if __name__ == "__main__":
 
     major, minor = get_unreal_version(ue_path)
 
+    # Win64 keeps the historical unsuffixed name so existing consumers of
+    # release assets aren't broken; other platforms get a suffix so a Win64
+    # and e.g. a Mac package for the same engine version can coexist in one release
+    platform_suffix = "" if args.target_platforms == "Win64" else f"-{args.target_platforms.replace(',', '-')}"
+    package_name = f"UnrealLibretro-{major}.{minor}{platform_suffix}"
+
     if major == 4 or minor <= 2:
         uplugin_json = json.load(open(f"UnrealLibretro.uplugin.UE5.2"))
     else:
@@ -84,7 +90,7 @@ if __name__ == "__main__":
     status = os.system(
         f'"{ue_path}/Engine/Build/BatchFiles/{run_uat}" BuildPlugin -Rocket'
         f' -Plugin={plugin_path}/UnrealLibretro.uplugin -TargetPlatforms={args.target_platforms}'
-        f' -Package={package_path}/UnrealLibretro-{major}.{minor}/UnrealLibretro{compiler_flag}'
+        f' -Package={package_path}/{package_name}/UnrealLibretro{compiler_flag}'
     )
 
     if status:
@@ -95,7 +101,7 @@ if __name__ == "__main__":
         Path(os.path.dirname(path)).mkdir()
         Path(path).touch()
 
-    unix_touch(f'{package_path}/UnrealLibretro-{major}.{minor}/UnrealLibretro/MyROMs/Place Your ROMs in this Directory')
-    unix_touch(f'{package_path}/UnrealLibretro-{major}.{minor}/UnrealLibretro/MyCores/Place Your Libretro Cores in this Directory')
+    unix_touch(f'{package_path}/{package_name}/UnrealLibretro/MyROMs/Place Your ROMs in this Directory')
+    unix_touch(f'{package_path}/{package_name}/UnrealLibretro/MyCores/Place Your Libretro Cores in this Directory')
 
-    os.system(f'tar -acf {package_path}/UnrealLibretro-{major}.{minor}.zip -C {package_path}/UnrealLibretro-{major}.{minor} UnrealLibretro')
+    os.system(f'tar -acf {package_path}/{package_name}.zip -C {package_path}/{package_name} UnrealLibretro')
