@@ -24,10 +24,12 @@ Setup:
 1. Secrets (Settings → Secrets and variables → Actions):
    - `UE_SOURCE_TOKEN` — **classic** PAT with `repo` scope from a GitHub account linked to Epic Games (fine-grained tokens can't reach `EpicGames/UnrealEngine`). Also used for the self-re-dispatch, which the built-in `GITHUB_TOKEN` isn't allowed to trigger.
    - `ENGINE_CACHE_KEY` — any long random string; this encrypts every published archive.
-2. Run the workflow: Actions → engine-cache → Run workflow, with e.g. `ue_ref: 5.3.2-release`.
-3. Watch it iterate. Each attempt is a separate run; expect a few for the first version. When it finishes, the `UnrealLibretro` workflow picks the version up automatically.
+2. Run the workflow: Actions → engine-cache → Run workflow. With no inputs it runs in **automatic mode**: a prepare job resolves the newest `X.Y.Z-release` tag for every version in the matrix (4.24 through 5.8), drops versions that already have a published cache, and builds the rest in parallel. Pass `ue_ref` (e.g. `5.3.2-release`) to force-rebuild one version.
+3. Watch it iterate. Timed-out builds checkpoint and re-trigger themselves; each attempt is a separate run. When a version finishes, the `UnrealLibretro` workflow picks it up automatically.
 
-Caches built this way are source builds, so consumer jobs run UnrealBuildTool incrementally against them — the engine modules are already compiled and only the plugin compiles. Only UE5 refs are expected to work for now; UE4 needs VS2019-era tooling that hasn't been brought up.
+Caches built this way are source builds, so consumer jobs run UnrealBuildTool incrementally against them — the engine modules are already compiled and only the plugin compiles. UE4 versions get VS2019 Build Tools installed on the fly and are best-effort: UE4-era UnrealBuildTool may not cope with the modern runner image, expect iteration there.
+
+There is also a best-effort **Apple Silicon** job that builds UE 5.8 on a `macos-latest` (arm64) runner, publishes it as `ue-cache-mac/5.8`, and uploads the packaged Mac plugin as a workflow artifact (`package.py` grew `--target-platforms` for this). Nothing consumes Mac caches automatically yet.
 
 ## Capturing from a local install
 

@@ -51,6 +51,8 @@ if __name__ == "__main__":
     parser.add_argument("package_path", nargs='?', help="Path where the plugin will be packaged.")
     parser.add_argument("--compiler", choices=["VS2019", "VS2022"], default=None,
                         help="Visual Studio toolchain to pass to UAT. Omit to let UnrealBuildTool pick the default. UE4 requires VS2019.")
+    parser.add_argument("--target-platforms", default="Mac" if sys.platform == "darwin" else "Win64",
+                        help="Comma-separated -TargetPlatforms value for BuildPlugin. Defaults to the host platform.")
 
     args = parser.parse_args()
     ue_path = args.ue_path
@@ -61,8 +63,8 @@ if __name__ == "__main__":
 
     win64_redist_path = os.path.join(plugin_path, "Binaries", "Win64", "ThirdParty", "libretro")
 
-    # Check if the directory exists
-    if not os.path.isdir(win64_redist_path):
+    # Check if the directory exists (the redistributables only ship with Win64 packages)
+    if "Win64" in args.target_platforms and not os.path.isdir(win64_redist_path):
         print(f"{__file__}: ERROR: Required directory not found: {win64_redist_path}")
         print(f"{__file__}: Please run setup.sh (Linux/macOS) or setup.cmd (Windows) first.")
         sys.exit(1)
@@ -78,9 +80,10 @@ if __name__ == "__main__":
     json.dump(uplugin_json, open("UnrealLibretro.uplugin", "w"), indent=4)
 
     compiler_flag = f' -{args.compiler}' if args.compiler else ''
+    run_uat = "RunUAT" if sys.platform == "win32" else "RunUAT.sh"
     status = os.system(
-        f'"{ue_path}/Engine/Build/BatchFiles/RunUAT" BuildPlugin -Rocket'
-        f' -Plugin={plugin_path}/UnrealLibretro.uplugin -TargetPlatforms=Win64'
+        f'"{ue_path}/Engine/Build/BatchFiles/{run_uat}" BuildPlugin -Rocket'
+        f' -Plugin={plugin_path}/UnrealLibretro.uplugin -TargetPlatforms={args.target_platforms}'
         f' -Package={package_path}/UnrealLibretro-{major}.{minor}/UnrealLibretro{compiler_flag}'
     )
 
