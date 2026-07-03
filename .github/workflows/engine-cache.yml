@@ -132,12 +132,21 @@ jobs:
             if (Test-Path $path) { Remove-Item $path -Recurse -Force }
           }
 
-      - name: Download engine dependencies (Setup.bat)
+      - name: Download engine dependencies (GitDependencies)
         if: steps.restore.outputs.resumed == 'false'
         working-directory: ${{ env.UE_SRC }}
         run: |
-          # GitDependencies supports excluding platform payloads we never build
-          cmd /c "Setup.bat --exclude=Android --exclude=Linux --exclude=Linux32 --exclude=LinuxArm64 --exclude=Mac --exclude=IOS --exclude=TVOS --exclude=HoloLens --exclude=HTML5 --force"
+          # Call GitDependencies.exe directly rather than Setup.bat: Setup.bat
+          # ends with a `pause` whenever cmd was invoked with /c (its heuristic
+          # for being double-clicked) which hangs CI forever, and the
+          # prerequisites installer + engine registration it also runs aren't
+          # needed just to compile. Platform payloads we never build are excluded
+          $gitDeps = @(
+            "Engine\Binaries\DotNET\GitDependencies\win-x64\GitDependencies.exe",
+            "Engine\Binaries\DotNET\GitDependencies.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $gitDeps) { Write-Host "::error::GitDependencies.exe not found in the engine tree"; exit 1 }
+          & ".\$gitDeps" --exclude=Android --exclude=Linux --exclude=Linux32 --exclude=LinuxArm64 --exclude=Mac --exclude=IOS --exclude=TVOS --exclude=HoloLens --exclude=HTML5 --force
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # Editor content isn't read when compiling/linking a plugin and is one
           # of the largest payloads Setup.bat brings in
