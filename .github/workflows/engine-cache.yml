@@ -149,7 +149,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Every push to the bring-up branch (and every re-dispatch) re-triggers
+      # this workflow with the full matrix, so a version already being built by
+      # an older run's concurrency-locked job gets queued right behind it (see
+      # the "Waiting: this job is waiting on build-engine (...)" message in the
+      # Actions UI). Once this job is finally released from that queue the
+      # version may have finished and published while it waited, so check
+      # before doing 4+ hours of pointless work
+      - name: Skip if this version was already published while queued
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "ue-cache/${{ matrix.version }}"
+          $alreadyComplete = gh release view $tag --repo "${{ github.repository }}" --json assets --jq '[.assets[].name] | contains(["manifest.json"])' 2>$null
+          if ("$alreadyComplete" -eq "true") {
+            Write-Host "$tag was already published (likely by a run that finished while this job was queued behind the concurrency lock). Skipping."
+            "proceed=false" | Out-File -Append $env:GITHUB_OUTPUT
+          } else {
+            "proceed=true" | Out-File -Append $env:GITHUB_OUTPUT
+          }
+
       - name: Check required secrets
+        if: steps.gate.outputs.proceed == 'true'
         env:
           UE_SOURCE_TOKEN: ${{ secrets.UE_SOURCE_TOKEN }}
           ENGINE_CACHE_KEY: ${{ secrets.ENGINE_CACHE_KEY }}
@@ -160,6 +182,7 @@ jobs:
           "WIP_TAG=ue-cache-wip/$($env:UE_REF -replace '[/\\]','-')" | Out-File -Append $env:GITHUB_ENV
 
       - name: Reclaim disk space
+        if: steps.gate.outputs.proceed == 'true'
         run: |
           foreach ($dir in @("C:\Android", "$env:ANDROID_HOME", "C:\Program Files\PostgreSQL",
                              "C:\Program Files\MySQL", "C:\Strawberry", "C:\Julia", "C:\Miniconda",
@@ -169,6 +192,7 @@ jobs:
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
 
       - name: Restore checkpoint if one exists
+        if: steps.gate.outputs.proceed == 'true'
         id: restore
         env:
           GH_TOKEN: ${{ github.token }}
@@ -207,7 +231,7 @@ jobs:
           exit 0
 
       - name: Clone Unreal Engine source
-        if: steps.restore.outputs.resumed == 'false'
+        if: steps.gate.outputs.proceed == 'true' && steps.restore.outputs.resumed == 'false'
         env:
           UE_SOURCE_TOKEN: ${{ secrets.UE_SOURCE_TOKEN }}
           GH_TOKEN: ${{ secrets.UE_SOURCE_TOKEN }}
@@ -235,7 +259,7 @@ jobs:
           exit 0
 
       - name: Download engine dependencies (GitDependencies)
-        if: steps.restore.outputs.resumed == 'false'
+        if: steps.gate.outputs.proceed == 'true' && steps.restore.outputs.resumed == 'false'
         working-directory: ${{ env.UE_SRC }}
         run: |
           # Call GitDependencies.exe directly rather than Setup.bat: Setup.bat
@@ -262,13 +286,14 @@ jobs:
       # UE4's UnrealBuildTool needs the VS2019 (v142) era toolchain and .NET
       # Framework tooling that hosted images no longer carry. Best effort
       - name: Install VS2019 Build Tools (UE4 only)
-        if: matrix.major == 4
+        if: steps.gate.outputs.proceed == 'true' && matrix.major == 4
         run: |
           choco install visualstudio2019buildtools --no-progress -y --package-parameters `
             "--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.Component.MSBuild --add Microsoft.Net.Component.4.6.2.TargetingPack --add Microsoft.VisualStudio.Component.Windows10SDK.19041 --includeRecommended --quiet --norestart"
           if ($LASTEXITCODE -in 0, 3010) { exit 0 } else { exit $LASTEXITCODE } # 3010 = success, reboot required
 
       - name: Run Setup Script
+        if: steps.gate.outputs.proceed == 'true'
         run: ./setup.cmd
 
       # The MSVC toolset UnrealBuildTool selects on this runner image (14.29)
@@ -277,6 +302,7 @@ jobs:
       # Runs on resumed attempts too, but the marker check keeps it idempotent
       # so file timestamps stay stable and UBT's incremental build isn't spoiled
       - name: Patch known engine-source warnings
+        if: steps.gate.outputs.proceed == 'true'
         run: |
           $file = Join-Path $env:UE_SRC "Engine\Source\Runtime\RenderCore\Private\RenderGraphPrivate.cpp"
           if ((Test-Path $file) -and -not (Select-String -Path $file -Pattern "4756" -Quiet)) {
@@ -290,6 +316,7 @@ jobs:
       # PDBs multiply intermediate size several times over and slow the link;
       # nothing debugs these binaries so build without debug info
       - name: Disable debug info via BuildConfiguration.xml
+        if: steps.gate.outputs.proceed == 'true'
         run: |
           $bcDir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Unreal Engine\UnrealBuildTool'
           New-Item -ItemType Directory -Force $bcDir | Out-Null
@@ -303,6 +330,7 @@ jobs:
           '@ | Out-File -Encoding utf8 (Join-Path $bcDir 'BuildConfiguration.xml')
 
       - name: Build plugin against engine source (budgeted)
+        if: steps.gate.outputs.proceed == 'true'
         id: build
         run: |
           $elapsedMinutes = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [int64]$env:JOB_START) / 60
@@ -327,7 +355,7 @@ jobs:
           exit 0
 
       - name: Publish finished engine cache
-        if: steps.build.outputs.outcome == 'success'
+        if: steps.gate.outputs.proceed == 'true' && steps.build.outputs.outcome == 'success'
         working-directory: ${{ env.UE_SRC }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -378,7 +406,7 @@ jobs:
           exit 0
 
       - name: Upload checkpoint
-        if: steps.build.outputs.outcome != 'success'
+        if: steps.gate.outputs.proceed == 'true' && steps.build.outputs.outcome != 'success'
         working-directory: ${{ env.UE_SRC }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -410,7 +438,7 @@ jobs:
           exit 0
 
       - name: Resume via re-dispatch
-        if: steps.build.outputs.outcome == 'timeout'
+        if: steps.gate.outputs.proceed == 'true' && steps.build.outputs.outcome == 'timeout'
         env:
           # The default GITHUB_TOKEN can't trigger new workflow runs; the PAT can
           GH_TOKEN: ${{ secrets.UE_SOURCE_TOKEN }}
@@ -444,13 +472,13 @@ jobs:
           exit 1
 
       - name: Fail job if the build failed outright
-        if: steps.build.outputs.outcome == 'failed'
+        if: steps.gate.outputs.proceed == 'true' && steps.build.outputs.outcome == 'failed'
         run: exit 1
 
-  # Bonus: UE on Apple Silicon. Same checkpoint/resume scheme, publishing to
-  # ue-cache-mac/<version>, and the packaged Mac plugin is uploaded as an
-  # artifact since the Windows-centric UnrealLibretro workflow doesn't consume
-  # Mac caches yet
+  # Bonus: UE on Apple Silicon, as a Darwin canary rather than a full matrix.
+  # Same checkpoint/resume scheme, publishing to ue-cache-mac/<version>, which
+  # UnrealLibretro.yml's discover-mac-engines/build-mac jobs consume the same
+  # way the Windows side consumes ue-cache/<version>
   build-engine-mac:
     needs: prepare
     if: needs.prepare.outputs.mac_ref != ''
@@ -471,7 +499,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # See the equivalent step in build-engine: a version already finished
+      # and published by an older run can sit fully built while this job waits
+      # behind the concurrency lock, so check before redoing 4+ hours of work.
+      # The major.minor isn't known for certain until after cloning (it comes
+      # from Engine/Build/Build.version), but Epic's -release tags consistently
+      # follow X.Y.Z-release, so parse it from the ref instead of cloning first
+      - name: Skip if this version was already published while queued
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(echo "${UE_REF%%-*}" | cut -d. -f1,2)
+          tag="ue-cache-mac/$version"
+          alreadyComplete=$(gh release view "$tag" --repo "${{ github.repository }}" --json assets --jq '[.assets[].name] | contains(["manifest.json"])' 2>/dev/null || echo false)
+          if [ "$alreadyComplete" = "true" ]; then
+            echo "$tag was already published (likely by a run that finished while this job was queued behind the concurrency lock). Skipping."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check required secrets
+        if: steps.gate.outputs.proceed == 'true'
         env:
           UE_SOURCE_TOKEN: ${{ secrets.UE_SOURCE_TOKEN }}
           ENGINE_CACHE_KEY: ${{ secrets.ENGINE_CACHE_KEY }}
@@ -483,9 +533,11 @@ jobs:
           df -h
 
       - name: Install 7-Zip
+        if: steps.gate.outputs.proceed == 'true'
         run: brew install p7zip
 
       - name: Restore checkpoint if one exists
+        if: steps.gate.outputs.proceed == 'true'
         id: restore
         env:
           GH_TOKEN: ${{ github.token }}
@@ -517,7 +569,7 @@ jobs:
           fi
 
       - name: Clone Unreal Engine source
-        if: steps.restore.outputs.resumed == 'false'
+        if: steps.gate.outputs.proceed == 'true' && steps.restore.outputs.resumed == 'false'
         env:
           UE_SOURCE_TOKEN: ${{ secrets.UE_SOURCE_TOKEN }}
           GH_TOKEN: ${{ secrets.UE_SOURCE_TOKEN }}
@@ -533,7 +585,7 @@ jobs:
             || echo "No updated Commit.gitdeps.xml published for $UE_REF"
 
       - name: Download engine dependencies (GitDependencies)
-        if: steps.restore.outputs.resumed == 'false'
+        if: steps.gate.outputs.proceed == 'true' && steps.restore.outputs.resumed == 'false'
         working-directory: ${{ env.UE_SRC }}
         run: |
           gitdeps=""
@@ -553,6 +605,7 @@ jobs:
           df -h
 
       - name: Build plugin against engine source (budgeted)
+        if: steps.gate.outputs.proceed == 'true'
         id: build
         run: |
           elapsed=$(( $(date +%s) - JOB_START ))
@@ -588,7 +641,7 @@ jobs:
           echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
 
       - name: Upload packaged Mac plugin
-        if: steps.build.outputs.outcome == 'success'
+        if: steps.gate.outputs.proceed == 'true' && steps.build.outputs.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: UnrealLibretro-Mac-${{ env.UE_REF }}
@@ -596,7 +649,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish finished engine cache
-        if: steps.build.outputs.outcome == 'success'
+        if: steps.gate.outputs.proceed == 'true' && steps.build.outputs.outcome == 'success'
         working-directory: ${{ env.UE_SRC }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -605,6 +658,14 @@ jobs:
           major=$(python3 -c "import json;print(json.load(open('Engine/Build/Build.version'))['MajorVersion'])")
           minor=$(python3 -c "import json;print(json.load(open('Engine/Build/Build.version'))['MinorVersion'])")
           tag="ue-cache-mac/$major.$minor"
+
+          # Another run may have published this version while we were building
+          alreadyComplete=$(gh release view "$tag" --repo "${{ github.repository }}" --json assets --jq '[.assets[].name] | contains(["manifest.json"])' 2>/dev/null || echo false)
+          if [ "$alreadyComplete" = "true" ]; then
+            echo "$tag was already published by another run, skipping publish"
+            exit 0
+          fi
+
           out="$HOME/ue-out"
           mkdir -p "$out"
           7z a -t7z -mx=3 -mhe=on -v1900m -p"$ENGINE_CACHE_KEY" "$out/UE-$major.$minor-mac-min.7z" Engine Default.uprojectdirs
@@ -628,7 +689,7 @@ jobs:
           gh release delete "$WIP_TAG" --repo "${{ github.repository }}" --cleanup-tag --yes 2>/dev/null || true
 
       - name: Upload checkpoint
-        if: steps.build.outputs.outcome != 'success'
+        if: steps.gate.outputs.proceed == 'true' && steps.build.outputs.outcome != 'success'
         working-directory: ${{ env.UE_SRC }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -651,7 +712,7 @@ jobs:
             --notes "$(printf 'Encrypted intermediate build state for resumable engine cache builds. Deleted automatically when the build completes.\n\nnext_attempt=%s' "$next")"
 
       - name: Resume via re-dispatch
-        if: steps.build.outputs.outcome == 'timeout'
+        if: steps.gate.outputs.proceed == 'true' && steps.build.outputs.outcome == 'timeout'
         env:
           GH_TOKEN: ${{ secrets.UE_SOURCE_TOKEN }}
         run: |
@@ -679,5 +740,5 @@ jobs:
           exit 1
 
       - name: Fail job if the build failed outright
-        if: steps.build.outputs.outcome == 'failed'
+        if: steps.gate.outputs.proceed == 'true' && steps.build.outputs.outcome == 'failed'
         run: exit 1
