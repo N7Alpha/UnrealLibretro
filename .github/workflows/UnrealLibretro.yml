@@ -74,7 +74,8 @@ jobs:
         version: ${{ fromJSON(needs.discover-engines.outputs.matrix) }}
     env:
       ENGINE_CACHE_TAG: ue-cache/${{ matrix.version.major }}.${{ matrix.version.minor }}
-      ENGINE_ROOT: C:\UE
+      # D: has ~147GB free on hosted Windows runners; C: only has ~40GB
+      ENGINE_ROOT: D:\UE
 
     steps:
       - uses: actions/checkout@v4
@@ -88,8 +89,6 @@ jobs:
             exit 1
           }
 
-      # The workspace lives on the small D: drive; the engine goes on C: which
-      # has much more free space on hosted Windows runners
       - name: Report disk space
         run: Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize
 
@@ -97,14 +96,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download "$env:ENGINE_CACHE_TAG" --repo "${{ github.repository }}" --dir C:\ue-cache
-          Get-ChildItem C:\ue-cache | Format-Table Name, Length -AutoSize
+          gh release download "$env:ENGINE_CACHE_TAG" --repo "${{ github.repository }}" --dir D:\ue-cache
+          Get-ChildItem D:\ue-cache | Format-Table Name, Length -AutoSize
 
       - name: Verify volume checksums
         run: |
-          $manifest = Get-Content C:\ue-cache\manifest.json | ConvertFrom-Json
+          $manifest = Get-Content D:\ue-cache\manifest.json | ConvertFrom-Json
           foreach ($volume in $manifest.volumes) {
-            $actual = (Get-FileHash -Algorithm SHA256 "C:\ue-cache\$($volume.name)").Hash.ToLower()
+            $actual = (Get-FileHash -Algorithm SHA256 "D:\ue-cache\$($volume.name)").Hash.ToLower()
             if ($actual -ne $volume.sha256) {
               Write-Host "::error::Checksum mismatch for $($volume.name)"
               exit 1
@@ -116,10 +115,10 @@ jobs:
         env:
           ENGINE_CACHE_KEY: ${{ secrets.ENGINE_CACHE_KEY }}
         run: |
-          $firstVolume = (Get-ChildItem C:\ue-cache\*.7z.001).FullName
+          $firstVolume = (Get-ChildItem D:\ue-cache\*.7z.001).FullName
           7z x -aoa "-p$env:ENGINE_CACHE_KEY" "-o$env:ENGINE_ROOT" $firstVolume
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Remove-Item C:\ue-cache -Recurse -Force # Reclaim the disk before building
+          Remove-Item D:\ue-cache -Recurse -Force # Reclaim the disk before building
 
       # UE4 needs the VS2019 (v142) toolchain which hosted images no longer
       # carry. Best effort; drop 4.x engine caches if this ever breaks

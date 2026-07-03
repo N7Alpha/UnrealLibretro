@@ -57,7 +57,8 @@ jobs:
     permissions:
       contents: write
     env:
-      UE_SRC: C:\UE-src
+      # D: has ~147GB free on windows-2025 runners; C: only has ~40GB
+      UE_SRC: D:\UE-src
       UE_REF: ${{ inputs.ue_ref || '5.3.2-release' }}
       ATTEMPT: ${{ inputs.attempt || '1' }}
       MAX_ATTEMPTS: ${{ inputs.max_attempts || '6' }}
@@ -95,7 +96,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ENGINE_CACHE_KEY: ${{ secrets.ENGINE_CACHE_KEY }}
         run: |
-          gh release download $env:WIP_TAG --repo "${{ github.repository }}" --dir C:\ue-wip 2>$null
+          gh release download $env:WIP_TAG --repo "${{ github.repository }}" --dir D:\ue-wip 2>$null
           if ($LASTEXITCODE -eq 0) {
             # Push-triggered resumes carry no inputs, so the attempt counter
             # lives in the checkpoint release notes to keep the runaway guard working
@@ -106,10 +107,10 @@ jobs:
               $env:ATTEMPT = "$effective"
             }
             Write-Host "Resuming from checkpoint $env:WIP_TAG (attempt $env:ATTEMPT)"
-            $firstVolume = (Get-ChildItem C:\ue-wip\*.7z.001).FullName
+            $firstVolume = (Get-ChildItem D:\ue-wip\*.7z.001).FullName
             7z x -aoa "-p$env:ENGINE_CACHE_KEY" "-o$env:UE_SRC" $firstVolume
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Remove-Item C:\ue-wip -Recurse -Force
+            Remove-Item D:\ue-wip -Recurse -Force
             "resumed=true" | Out-File -Append $env:GITHUB_OUTPUT
           } else {
             Write-Host "No checkpoint at $env:WIP_TAG, starting fresh"
@@ -125,9 +126,13 @@ jobs:
           git clone --depth 1 --branch $env:UE_REF `
             "https://x-access-token:$($env:UE_SOURCE_TOKEN)@github.com/EpicGames/UnrealEngine.git" $env:UE_SRC
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # Slim before Setup.bat downloads dependencies on top: git metadata and
-          # sample/template/doc trees play no part in compiling a plugin
-          foreach ($dir in @(".git", "Samples", "Templates", "FeaturePacks", "Engine\Documentation", "Engine\Extras")) {
+          # Slim before GitDependencies downloads on top: git metadata and
+          # sample/template/doc trees play no part in compiling a plugin. The
+          # IOS/TVOS automation projects must go too -- RunUAT compiles every
+          # *.automation.csproj it finds, and those two reference resource files
+          # that the --exclude=IOS dependency filter deliberately doesn't download
+          foreach ($dir in @(".git", "Samples", "Templates", "FeaturePacks", "Engine\Documentation", "Engine\Extras",
+                             "Engine\Source\Programs\AutomationTool\IOS", "Engine\Source\Programs\AutomationTool\TVOS")) {
             $path = Join-Path $env:UE_SRC $dir
             if (Test-Path $path) { Remove-Item $path -Recurse -Force }
           }
@@ -157,6 +162,21 @@ jobs:
 
       - name: Run Setup Script
         run: ./setup.cmd
+
+      # PDBs multiply intermediate size several times over and slow the link;
+      # nothing debugs these binaries so build without debug info
+      - name: Disable debug info via BuildConfiguration.xml
+        run: |
+          $bcDir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Unreal Engine\UnrealBuildTool'
+          New-Item -ItemType Directory -Force $bcDir | Out-Null
+          @'
+          <?xml version="1.0" encoding="utf-8"?>
+          <Configuration xmlns="https://www.unrealengine.com/BuildConfiguration">
+            <BuildConfiguration>
+              <bDisableDebugInfo>true</bDisableDebugInfo>
+            </BuildConfiguration>
+          </Configuration>
+          '@ | Out-File -Encoding utf8 (Join-Path $bcDir 'BuildConfiguration.xml')
 
       - name: Build plugin against engine source (budgeted)
         id: build
@@ -190,7 +210,7 @@ jobs:
         run: |
           $version = Get-Content Engine\Build\Build.version | ConvertFrom-Json
           $tag = "ue-cache/$($version.MajorVersion).$($version.MinorVersion)"
-          $out = "C:\ue-out"
+          $out = "D:\ue-out"
           New-Item -ItemType Directory -Force $out | Out-Null
 
           7z a -t7z -mx=3 -mhe=on -v1900m "-p$env:ENGINE_CACHE_KEY" "$out\UE-$($version.MajorVersion).$($version.MinorVersion)-min.7z" Engine Default.uprojectdirs
@@ -227,7 +247,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ENGINE_CACHE_KEY: ${{ secrets.ENGINE_CACHE_KEY }}
         run: |
-          $out = "C:\ue-wip-out"
+          $out = "D:\ue-wip-out"
           New-Item -ItemType Directory -Force $out | Out-Null
           # Fast compression: this is transient state, upload time matters more than size
           7z a -t7z -mx=1 -mhe=on -v1900m "-p$env:ENGINE_CACHE_KEY" "$out\checkpoint.7z" Engine Default.uprojectdirs
