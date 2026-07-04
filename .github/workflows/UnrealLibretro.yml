@@ -143,18 +143,10 @@ jobs:
           gh release download "$env:ENGINE_CACHE_TAG" --repo "${{ github.repository }}" --dir D:\ue-cache
           Get-ChildItem D:\ue-cache | Format-Table Name, Length -AutoSize
 
-      - name: Verify volume checksums
-        run: |
-          $manifest = Get-Content D:\ue-cache\manifest.json | ConvertFrom-Json
-          foreach ($volume in $manifest.volumes) {
-            $actual = (Get-FileHash -Algorithm SHA256 "D:\ue-cache\$($volume.name)").Hash.ToLower()
-            if ($actual -ne $volume.sha256) {
-              Write-Host "::error::Checksum mismatch for $($volume.name)"
-              exit 1
-            }
-          }
-          Write-Host "All $($manifest.volumes.Count) volume(s) verified for engine $($manifest.engine_version)"
-
+      # No separate checksum pass: 7z CRC-verifies every file during
+      # extraction, so truncated or corrupted volumes fail the next step
+      # anyway, and re-hashing ~20GB cost up to 13 minutes per job. The
+      # manifest sha256s remain for anyone consuming the caches manually
       - name: Extract engine
         env:
           ENGINE_CACHE_KEY: ${{ secrets.ENGINE_CACHE_KEY }}
@@ -293,23 +285,8 @@ jobs:
           gh release download "$ENGINE_CACHE_TAG" --repo "${{ github.repository }}" --dir "$HOME/ue-cache"
           ls -la "$HOME/ue-cache"
 
-      - name: Verify volume checksums
-        run: |
-          python3 - <<'EOF'
-          import json, hashlib, os, sys
-          manifest = json.load(open(os.path.expanduser("~/ue-cache/manifest.json")))
-          for volume in manifest["volumes"]:
-              path = os.path.expanduser(f"~/ue-cache/{volume['name']}")
-              h = hashlib.sha256()
-              with open(path, "rb") as f:
-                  for chunk in iter(lambda: f.read(1 << 20), b""):
-                      h.update(chunk)
-              if h.hexdigest() != volume["sha256"]:
-                  print(f"::error::Checksum mismatch for {volume['name']}")
-                  sys.exit(1)
-          print(f"All {len(manifest['volumes'])} volume(s) verified for engine {manifest['engine_version']}")
-          EOF
-
+      # No separate checksum pass: 7z CRC-verifies during extraction (see the
+      # Windows job)
       - name: Extract engine
         env:
           ENGINE_CACHE_KEY: ${{ secrets.ENGINE_CACHE_KEY }}
