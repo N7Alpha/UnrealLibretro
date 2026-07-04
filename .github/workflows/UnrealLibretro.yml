@@ -109,8 +109,11 @@ jobs:
         version: ${{ fromJSON(needs.discover-engines.outputs.matrix) }}
     env:
       ENGINE_CACHE_TAG: ue-cache/${{ matrix.version.major }}.${{ matrix.version.minor }}
-      # D: has ~147GB free on hosted Windows runners; C: only has ~40GB
-      ENGINE_ROOT: D:\UE
+      # Must match the path engine-cache.yml built at: UnrealBuildTool decides
+      # what is out of date partly by hashing each action's command line, which
+      # contains absolute paths, so extracting the cache anywhere else makes
+      # swathes of prebuilt engine actions look stale and recompile
+      ENGINE_ROOT: D:\UE-src
       # The plugin build recompiles UAT's script projects, so it needs the
       # same MSBuild mitigations as engine-cache.yml: post-release NuGet
       # advisories are warnings-as-errors in 5.6-era script builds, and 5.8's
@@ -179,21 +182,27 @@ jobs:
         if: matrix.version.major == 5 && matrix.version.minor == 0
         run: choco install windows-sdk-10-version-2004-all --no-progress -y
 
-      # No CompilerVersion pin: several UE4 UBTs (4.24, 4.25) cannot resolve
-      # one even when the toolset is installed, and the cached engine sources
-      # carry the warning patches a modern-MSVC build needs anyway
-      - name: Pin era-appropriate Windows SDK via BuildConfiguration.xml
-        if: matrix.version.major == 4 || (matrix.version.major == 5 && matrix.version.minor == 0)
+      # Mirror engine-cache.yml's BuildConfiguration exactly: any difference in
+      # build settings (bDisableDebugInfo changes every compile command line)
+      # invalidates the cached engine objects and recompiles them for nothing.
+      # No CompilerVersion pin: several UE4 UBTs (4.24, 4.25, 4.26) cannot
+      # resolve one even when the toolset is installed, and the cached engine
+      # sources carry the warning patches a modern-MSVC build needs anyway
+      - name: Write BuildConfiguration.xml matching the engine cache build
         run: |
+          $pins = ""
+          if (("${{ matrix.version.major }}" -eq "4") -or ("${{ matrix.version.major }}.${{ matrix.version.minor }}" -eq "5.0")) {
+            $pins = "  <WindowsPlatform>`n    <WindowsSdkVersion>10.0.19041.0</WindowsSdkVersion>`n  </WindowsPlatform>`n"
+          }
           $bcDir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Unreal Engine\UnrealBuildTool'
           New-Item -ItemType Directory -Force $bcDir | Out-Null
           @"
           <?xml version="1.0" encoding="utf-8"?>
           <Configuration xmlns="https://www.unrealengine.com/BuildConfiguration">
-            <WindowsPlatform>
-              <WindowsSdkVersion>10.0.19041.0</WindowsSdkVersion>
-            </WindowsPlatform>
-          </Configuration>
+            <BuildConfiguration>
+              <bDisableDebugInfo>true</bDisableDebugInfo>
+            </BuildConfiguration>
+          $pins</Configuration>
           "@ | Out-File -Encoding utf8 (Join-Path $bcDir 'BuildConfiguration.xml')
           Get-Content (Join-Path $bcDir 'BuildConfiguration.xml')
 
@@ -240,7 +249,8 @@ jobs:
         version: ${{ fromJSON(needs.discover-mac-engines.outputs.matrix) }}
     env:
       ENGINE_CACHE_TAG: ue-cache-mac/${{ matrix.version.major }}.${{ matrix.version.minor }}
-      ENGINE_ROOT: ${{ github.workspace }}/../UE-mac
+      # Must match the path engine-cache.yml built at (see the Windows job)
+      ENGINE_ROOT: ${{ github.workspace }}/../UE-src
       # See the Windows build job: UAT script recompiles need these
       NuGetAudit: "false"
       DefaultItemExcludes: "obj/**;bin/**;uatobj/**"
@@ -307,6 +317,24 @@ jobs:
           firstVolume=$(ls "$HOME"/ue-cache/*.7z.001)
           7z x -aoa -p"$ENGINE_CACHE_KEY" -o"$ENGINE_ROOT" "$firstVolume"
           rm -rf "$HOME/ue-cache" # Reclaim disk before building
+
+      # Mirror engine-cache.yml's Mac BuildConfiguration exactly, or the
+      # changed compile command lines invalidate the cached engine objects
+      - name: Write BuildConfiguration.xml matching the engine cache build
+        run: |
+          bcDir="$HOME/Documents/Unreal Engine/UnrealBuildTool"
+          mkdir -p "$bcDir"
+          cat > "$bcDir/BuildConfiguration.xml" <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <Configuration xmlns="https://www.unrealengine.com/BuildConfiguration">
+            <BuildConfiguration>
+              <bDisableDebugInfo>true</bDisableDebugInfo>
+            </BuildConfiguration>
+            <ParallelExecutor>
+              <MemoryPerActionBytes>3221225472</MemoryPerActionBytes>
+            </ParallelExecutor>
+          </Configuration>
+          XML
 
       - name: Prepare user content folders
         run: mkdir -p MyROMs MyCores
