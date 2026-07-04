@@ -111,6 +111,12 @@ jobs:
       ENGINE_CACHE_TAG: ue-cache/${{ matrix.version.major }}.${{ matrix.version.minor }}
       # D: has ~147GB free on hosted Windows runners; C: only has ~40GB
       ENGINE_ROOT: D:\UE
+      # The plugin build recompiles UAT's script projects, so it needs the
+      # same MSBuild mitigations as engine-cache.yml: post-release NuGet
+      # advisories are warnings-as-errors in 5.6-era script builds, and 5.8's
+      # obj/uatobj build flavors glob each other's generated protobuf sources
+      NuGetAudit: "false"
+      DefaultItemExcludes: "obj/**;bin/**;uatobj/**"
 
     steps:
       - uses: actions/checkout@v4
@@ -243,6 +249,9 @@ jobs:
     env:
       ENGINE_CACHE_TAG: ue-cache-mac/${{ matrix.version.major }}.${{ matrix.version.minor }}
       ENGINE_ROOT: ${{ github.workspace }}/../UE-mac
+      # See the Windows build job: UAT script recompiles need these
+      NuGetAudit: "false"
+      DefaultItemExcludes: "obj/**;bin/**;uatobj/**"
 
     steps:
       - uses: actions/checkout@v4
