@@ -164,6 +164,41 @@ jobs:
             "--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows10SDK.19041 --includeRecommended --quiet --norestart"
           if ($LASTEXITCODE -in 0, 3010) { exit 0 } else { exit $LASTEXITCODE } # 3010 = success, reboot required
 
+      # Same era-appropriate SDK/toolchain pins as engine-cache.yml: the
+      # engine-source patches travel inside the cache archives, but
+      # BuildConfiguration.xml is per-runner state, so the consumer must
+      # recreate it or UBT picks the newest SDK, whose headers old engines
+      # can't compile under warnings-as-errors (C4668 NTDDI_WIN10_GE)
+      - name: Install Windows SDK 19041 (UE 5.0 only)
+        if: matrix.version.major == 5 && matrix.version.minor == 0
+        run: choco install windows-sdk-10-version-2004-all --no-progress -y
+
+      - name: Pin era-appropriate SDK and toolchain via BuildConfiguration.xml
+        if: matrix.version.major == 4 || (matrix.version.major == 5 && matrix.version.minor == 0)
+        run: |
+          $pins = @("      <WindowsSdkVersion>10.0.19041.0</WindowsSdkVersion>")
+          # 4.25's UBT can't enumerate the BuildTools SKU, so a compiler pin it
+          # can't resolve is fatal there; it builds with the modern toolchain
+          # (the cached engine sources carry the warning patches this needs)
+          if (("${{ matrix.version.major }}" -eq "4") -and ("${{ matrix.version.minor }}" -ne "25")) {
+            $msvcRoot = "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC"
+            if (Test-Path $msvcRoot) {
+              $compiler = (Get-ChildItem $msvcRoot -Directory | Sort-Object Name | Select-Object -Last 1).Name
+              $pins += "      <CompilerVersion>$compiler</CompilerVersion>"
+            }
+          }
+          $bcDir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Unreal Engine\UnrealBuildTool'
+          New-Item -ItemType Directory -Force $bcDir | Out-Null
+          @"
+          <?xml version="1.0" encoding="utf-8"?>
+          <Configuration xmlns="https://www.unrealengine.com/BuildConfiguration">
+            <WindowsPlatform>
+          $($pins -join "`n")
+            </WindowsPlatform>
+          </Configuration>
+          "@ | Out-File -Encoding utf8 (Join-Path $bcDir 'BuildConfiguration.xml')
+          Get-Content (Join-Path $bcDir 'BuildConfiguration.xml')
+
       - name: Run Setup Script
         run: ./setup.cmd
 
