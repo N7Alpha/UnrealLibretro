@@ -309,19 +309,12 @@ jobs:
       - name: Install VS2019 Build Tools (UE4 only)
         if: steps.gate.outputs.proceed == 'true' && matrix.major == 4
         run: |
-          # 4.25's UBT enumerates Visual Studio through a path that can't see
-          # Build Tools SKUs at all ("VS2019 must be installed" even when the
-          # pinned toolset exists there); 4.24/4.27 handle Build Tools fine.
-          # Community registers as a full product every discovery path finds
-          if ("${{ matrix.version }}" -eq "4.25") {
-            $pkg = "visualstudio2019community"
-            $workload = "Microsoft.VisualStudio.Workload.NativeDesktop" # VCTools workload id only exists in the BuildTools SKU
-          } else {
-            $pkg = "visualstudio2019buildtools"
-            $workload = "Microsoft.VisualStudio.Workload.VCTools"
-          }
-          choco install $pkg --no-progress -y --package-parameters `
-            "--add $workload --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.Component.MSBuild --add Microsoft.Net.Component.4.6.2.TargetingPack --add Microsoft.VisualStudio.Component.Windows10SDK.19041 --includeRecommended --quiet --norestart"
+          # Also delivers the Windows 10 SDK 19041 payload the SDK pin needs.
+          # 4.25's UBT can't enumerate this SKU (nor a Community install we
+          # tried) and builds with the modern toolchain + patched sources
+          # instead, but it still uses the 19041 SDK installed here
+          choco install visualstudio2019buildtools --no-progress -y --package-parameters `
+            "--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.Component.MSBuild --add Microsoft.Net.Component.4.6.2.TargetingPack --add Microsoft.VisualStudio.Component.Windows10SDK.19041 --includeRecommended --quiet --norestart"
           if ($LASTEXITCODE -in 0, 3010) { exit 0 } else { exit $LASTEXITCODE } # 3010 = success, reboot required
 
       - name: Run Setup Script
@@ -346,6 +339,16 @@ jobs:
               Set-Content $file -NoNewline -Value ("#ifdef _MSC_VER`r`n#pragma warning(disable: 4756) // overflow in constant arithmetic; fires in stock engine code on this MSVC toolset`r`n#endif`r`n" + $content)
               Write-Host "Patched $file"
             }
+          }
+
+          # 4.25 is stuck on the modern MSVC (its UBT cannot enumerate any
+          # VS2019 SKU we install), whose optimizer trips C4723 in stock
+          # Shader.cpp under warnings-as-errors -- the only hard error left
+          $file = Join-Path $env:UE_SRC "Engine\Source\Runtime\RenderCore\Private\Shader.cpp"
+          if ((Test-Path $file) -and -not (Select-String -Path $file -Pattern "4723" -Quiet)) {
+            $content = Get-Content $file -Raw
+            Set-Content $file -NoNewline -Value ("#ifdef _MSC_VER`r`n#pragma warning(disable: 4723) // potential divide by 0; fires in stock engine code on modern MSVC`r`n#endif`r`n" + $content)
+            Write-Host "Patched $file"
           }
 
           # 5.4-era Core uses clang's __has_feature in a plain #if, which the
@@ -378,7 +381,10 @@ jobs:
           if (("${{ matrix.major }}" -eq "4") -or ("${{ matrix.version }}" -eq "5.0")) {
             $pins += "      <WindowsSdkVersion>10.0.19041.0</WindowsSdkVersion>"
           }
-          if ("${{ matrix.major }}" -eq "4") {
+          # Not for 4.25: its UBT cannot enumerate the BuildTools SKU (nor a
+          # Community install we tried), so a pin it can't resolve is fatal.
+          # It builds with the modern toolchain plus source patches instead
+          if (("${{ matrix.major }}" -eq "4") -and ("${{ matrix.version }}" -ne "4.25")) {
             # UE4's UBT predates VS2026 and its version-range check happily
             # selects that MSVC as "VS2019", whose optimizer then fails stock
             # engine code with new warnings-as-errors (C4723 in Shader.cpp).
