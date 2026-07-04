@@ -363,9 +363,22 @@ jobs:
         run: |
           $bcDir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Unreal Engine\UnrealBuildTool'
           New-Item -ItemType Directory -Force $bcDir | Out-Null
-          $pinSdk = if (("${{ matrix.major }}" -eq "4") -or ("${{ matrix.version }}" -eq "5.0")) {
-            "    <WindowsPlatform>`n      <WindowsSdkVersion>10.0.19041.0</WindowsSdkVersion>`n    </WindowsPlatform>`n"
-          } else { "" }
+          $pins = @()
+          if (("${{ matrix.major }}" -eq "4") -or ("${{ matrix.version }}" -eq "5.0")) {
+            $pins += "      <WindowsSdkVersion>10.0.19041.0</WindowsSdkVersion>"
+          }
+          if ("${{ matrix.major }}" -eq "4") {
+            # UE4's UBT predates VS2026 and its version-range check happily
+            # selects that MSVC as "VS2019", whose optimizer then fails stock
+            # engine code with new warnings-as-errors (C4723 in Shader.cpp).
+            # Pin the real 14.29 toolchain from the VS2019 BuildTools install
+            $msvcRoot = "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC"
+            if (Test-Path $msvcRoot) {
+              $compiler = (Get-ChildItem $msvcRoot -Directory | Sort-Object Name | Select-Object -Last 1).Name
+              $pins += "      <CompilerVersion>$compiler</CompilerVersion>"
+            }
+          }
+          $pinSdk = if ($pins) { "    <WindowsPlatform>`n" + ($pins -join "`n") + "`n    </WindowsPlatform>`n" } else { "" }
           @"
           <?xml version="1.0" encoding="utf-8"?>
           <Configuration xmlns="https://www.unrealengine.com/BuildConfiguration">
