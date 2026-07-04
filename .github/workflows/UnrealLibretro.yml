@@ -268,6 +268,19 @@ jobs:
       - name: Install 7-Zip
         run: brew install p7zip
 
+      # The downloaded volumes plus the extracted engine tree don't fit in
+      # what the image leaves free (the runner dies mid-extraction, killing
+      # the job with no step conclusion). Unused Xcodes are 15-20GB apiece
+      - name: Reclaim disk space
+        run: |
+          active=$(xcode-select -p | sed 's|/Contents/Developer||')
+          for xcode in /Applications/Xcode*.app; do
+            if [ "$xcode" != "$active" ]; then sudo rm -rf "$xcode" & fi
+          done
+          sudo rm -rf /Library/Developer/CoreSimulator/Volumes ~/Library/Android \
+            /Users/runner/hostedtoolcache/CodeQL 2>/dev/null || true
+          wait
+
       - name: Report disk space
         run: df -h
 
